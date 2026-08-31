@@ -1,0 +1,15 @@
+version = 1
+id = "runtime.image.status"
+path = ["runtime", "image", "status"]
+summary = "Show canonical runtime image status"
+description = "Reports the pinned image name, immutable digest, containerd availability, Deno version, and matching gVisor smoke-test result."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/runtime/image/status/status.go"
+symbol = "New"
+[[result]]
+name = "image"
+type = "object"
+[[examples]]
+command = "runtime image status"

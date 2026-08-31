@@ -1,0 +1,30 @@
+version = 1
+id = "development.sandbox.delete"
+path = ["development", "sandbox", "delete"]
+summary = "Delete a development workspace"
+description = "Deletes the workspace and durable private source; user home and system storage are retained unless --delete-home is supplied."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/development/sandbox/delete/delete.go"
+symbol = "New"
+[[parameters]]
+name = "workspace_id"
+type = "string"
+position = 0
+required = true
+description = "Development workspace ID."
+[[parameters]]
+name = "delete_home"
+type = "boolean"
+option = "delete-home"
+required = false
+description = "Also delete the persistent developer home."
+[[result]]
+name = "deleted"
+type = "boolean"
+[[result]]
+name = "developer_home_deleted"
+type = "boolean"
+[[examples]]
+command = "development sandbox delete default-0123456789abcdef"

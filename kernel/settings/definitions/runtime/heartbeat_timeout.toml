@@ -1,0 +1,10 @@
+key = "runtime.supervisor.heartbeat_timeout"
+type = "integer"
+storage = "node"
+default = 15000
+environment = "KERNEL_RUNTIME_SUPERVISOR_HEARTBEAT_TIMEOUT"
+minimum = 500
+maximum = 300000
+runtime_mutable = false
+restart_required = true
+description = "Maximum supervisor heartbeat age in milliseconds."

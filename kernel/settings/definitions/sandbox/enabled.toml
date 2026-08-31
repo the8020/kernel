@@ -1,0 +1,8 @@
+key = "sandbox.enabled"
+type = "boolean"
+storage = "node"
+default = true
+environment = "KERNEL_SANDBOX_ENABLED"
+runtime_mutable = false
+restart_required = true
+description = "Enable automatic full or rootless gVisor sandboxing."

@@ -1,0 +1,10 @@
+key = "auth.bootstrap.session_duration"
+type = "integer"
+storage = "node"
+default = 43200000
+environment = "KERNEL_AUTH_BOOTSTRAP_SESSION_DURATION"
+minimum = 60000
+maximum = 31536000000
+runtime_mutable = false
+restart_required = true
+description = "Absolute bootstrap authentication-session duration in milliseconds."

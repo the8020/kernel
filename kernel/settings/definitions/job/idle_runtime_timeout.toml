@@ -1,0 +1,10 @@
+key = "job.default.idle_runtime_timeout"
+type = "integer"
+storage = "node"
+default = 60000
+environment = "KERNEL_JOB_DEFAULT_IDLE_RUNTIME_TIMEOUT"
+minimum = 1000
+maximum = 86400000
+runtime_mutable = false
+restart_required = true
+description = "Idle job runtime-group timeout in milliseconds."

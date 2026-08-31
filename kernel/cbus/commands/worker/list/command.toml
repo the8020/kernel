@@ -1,0 +1,23 @@
+version = 1
+id = "worker.list"
+path = ["worker", "list"]
+summary = "List Deno Workers"
+description = "Lists concise live Worker identity, workload type, state, ownership, sandbox, and in-flight counts. Use worker inspect for the complete record."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/worker/list/list.go"
+symbol = "New"
+[[parameters]]
+name = "sandbox_id"
+type = "string"
+position = 0
+required = false
+description = "Optional sandbox or runtime-group filter."
+[[result]]
+name = "workers"
+type = "array"
+[[examples]]
+command = "worker list"
+[[examples]]
+command = "worker list sbx-ax9thsl3"

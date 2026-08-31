@@ -1,0 +1,21 @@
+version = 1
+id = "development.sandbox.restart"
+path = ["development", "sandbox", "restart"]
+summary = "Restart a developer sandbox"
+description = "Recreates the sandbox process on the same native durable source, home, and system filesystems."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/development/sandbox/restart/restart.go"
+symbol = "New"
+[[parameters]]
+name = "workspace_id"
+type = "string"
+position = 0
+required = true
+description = "Development workspace ID."
+[[result]]
+name = "workspace"
+type = "object"
+[[examples]]
+command = "development sandbox restart default-0123456789abcdef"

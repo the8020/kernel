@@ -1,0 +1,27 @@
+version = 1
+id = "package.version.list"
+path = ["package", "version", "list"]
+summary = "List package commits"
+description = "Fetches the indexed public source when present and lists a bounded recent commit history with tags and current/selected markers."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/package/version/list/list.go"
+symbol = "New"
+[[parameters]]
+name = "package_id"
+type = "string"
+position = 0
+required = true
+description = "Author/repository package ID."
+[[parameters]]
+name = "limit"
+type = "integer"
+option = "limit"
+required = false
+description = "Maximum commits from 1 through 200; defaults to 100."
+[[result]]
+name = "package"
+type = "object"
+[[examples]]
+command = "package version list the8020/uui --limit 50"

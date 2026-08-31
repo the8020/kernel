@@ -1,0 +1,10 @@
+key = "sandbox.warm_pool.size"
+type = "integer"
+storage = "node"
+default = 0
+environment = "KERNEL_SANDBOX_WARM_POOL_SIZE"
+minimum = 0
+maximum = 32
+runtime_mutable = false
+restart_required = true
+description = "Desired prestarted clean runtime groups per profile; zero creates sandboxes lazily on workload demand."

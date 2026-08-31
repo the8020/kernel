@@ -1,0 +1,10 @@
+key = "services.startup_timeout"
+type = "integer"
+storage = "node"
+default = 30000
+environment = "KERNEL_SERVICES_STARTUP_TIMEOUT"
+minimum = 1000
+maximum = 600000
+runtime_mutable = false
+restart_required = true
+description = "Maximum time to prepare one service generation in milliseconds."

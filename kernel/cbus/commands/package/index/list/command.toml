@@ -1,0 +1,15 @@
+version = 1
+id = "package.index.list"
+path = ["package", "index", "list"]
+summary = "List desired packages"
+description = "Lists the fixed-depth package index, including source and optional commit or tag selection."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/package/index/list/list.go"
+symbol = "New"
+[[result]]
+name = "packages"
+type = "array"
+[[examples]]
+command = "package index list"

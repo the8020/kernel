@@ -1,0 +1,21 @@
+version = 1
+id = "service.inspect"
+path = ["service", "inspect"]
+summary = "Inspect one filesystem service"
+description = "Reads the current manifests and desired state and reports effective configuration, generations, local instances, Workers, failures, and metrics."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/service/inspect/inspect.go"
+symbol = "New"
+[[parameters]]
+name = "service_id"
+type = "string"
+position = 0
+required = true
+description = "Service ID."
+[[result]]
+name = "service"
+type = "object"
+[[examples]]
+command = "service inspect the8020/demo/variables"

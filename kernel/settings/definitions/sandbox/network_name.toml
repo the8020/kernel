@@ -1,0 +1,8 @@
+key = "sandbox.network.name"
+type = "string"
+storage = "node"
+default = "the8020"
+environment = "KERNEL_SANDBOX_NETWORK_NAME"
+runtime_mutable = false
+restart_required = true
+description = "CNI network-list name used for sandbox attachments."

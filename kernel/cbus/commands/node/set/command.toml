@@ -1,0 +1,45 @@
+version = 1
+id = "node.set"
+path = ["node", "set"]
+summary = "Create or update an application-server node"
+description = "Atomically updates one entry in shared config/nodes.toml. Local recipient listener changes apply after kernel restart."
+mutates_state = true
+restart_behavior = "kernel_restart_required"
+[handler]
+file = "kernel/cbus/commands/node/set/set.go"
+symbol = "New"
+[[parameters]]
+name = "node_id"
+type = "string"
+position = 0
+required = true
+description = "Stable node ID, normally its kernel instance UUID."
+[[parameters]]
+name = "url"
+type = "string"
+option = "url"
+required = true
+description = "Absolute public HTTP or HTTPS URL."
+[[parameters]]
+name = "recipient_address"
+type = "string"
+option = "recipient-address"
+required = true
+description = "Address used by kernels to reach this node's authenticated recipient listener."
+[[parameters]]
+name = "recipient_port"
+type = "integer"
+option = "recipient-port"
+required = true
+description = "Port used by the kernel recipient listener."
+[[parameters]]
+name = "enabled"
+type = "boolean"
+option = "enabled"
+required = true
+description = "Whether the node accepts placement and forwarded traffic."
+[[result]]
+name = "node"
+type = "object"
+[[examples]]
+command = "node set 018f-node --url https://node.example --recipient-address 10.0.0.12 --recipient-port 9443 --enabled"

@@ -1,0 +1,21 @@
+version = 1
+id = "auth.session.revoke_user"
+path = ["auth", "session", "revoke-user"]
+summary = "Revoke a user's authentication sessions"
+description = "Idempotently deletes every bootstrap authentication session belonging to the exact case-sensitive username."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/auth/session/revokeuser/revokeuser.go"
+symbol = "New"
+[[parameters]]
+name = "username"
+type = "string"
+position = 0
+required = true
+description = "Case-sensitive bootstrap administrator username."
+[[result]]
+name = "revoked_count"
+type = "integer"
+[[examples]]
+command = "auth session revoke-user admin"

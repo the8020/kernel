@@ -1,0 +1,8 @@
+key = "logging.max_file_size"
+type = "byte_size"
+storage = "node"
+default = "1GB"
+environment = "KERNEL_LOGGING_MAX_FILE_SIZE"
+runtime_mutable = true
+restart_required = false
+description = "Maximum size of one kernel log file."

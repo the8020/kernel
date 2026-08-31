@@ -1,0 +1,9 @@
+key = "sandbox.runtime.mode"
+type = "enum"
+storage = "node"
+default = "auto"
+environment = "KERNEL_SANDBOX_RUNTIME_MODE"
+allowed = ["auto", "full", "rootless"]
+runtime_mutable = false
+restart_required = true
+description = "Select full containerd isolation, direct rootless gVisor, or automatic best-available detection."

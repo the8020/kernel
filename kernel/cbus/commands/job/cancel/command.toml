@@ -1,0 +1,21 @@
+version = 1
+id = "job.cancel"
+path = ["job", "cancel"]
+summary = "Cancel a job execution"
+description = "Cancels a queued execution or immediately terminates its active Worker, then persists the cancelled state."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/job/cancel/cancel.go"
+symbol = "New"
+[[parameters]]
+name = "execution_id"
+type = "string"
+position = 0
+required = true
+description = "Execution ID."
+[[result]]
+name = "cancelled"
+type = "boolean"
+[[examples]]
+command = "job cancel execution-123"

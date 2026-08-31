@@ -1,0 +1,227 @@
+package shared
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+
+	"the8020/kernel/cbus/commands/internal/commandutil"
+	"the8020/kernel/cbus/core"
+	"the8020/kernel/development"
+	"the8020/kernel/services"
+)
+
+func service(serviceSet *services.Services) (services.DevelopmentService, error) {
+	if serviceSet == nil || serviceSet.Development == nil {
+		return nil, core.NewError(core.CodeRuntimeUnavailable, "development workspace manager is unavailable")
+	}
+	return serviceSet.Development, nil
+}
+func operation(err error) error {
+	if err == nil {
+		return nil
+	}
+	var commandError *core.Error
+	if errors.As(err, &commandError) {
+		return err
+	}
+	return commandutil.OperationError(err)
+}
+
+func ImageStatus(s *services.Services) core.Handler {
+	return func(_ context.Context, _ core.Request) (core.Result, error) {
+		service, err := service(s)
+		if err != nil {
+			return nil, err
+		}
+		result, err := service.ImageStatus()
+		return core.Result{"image": result}, operation(err)
+	}
+}
+func SandboxCreate(s *services.Services) core.Handler {
+	return func(ctx context.Context, request core.Request) (core.Result, error) {
+		service, err := service(s)
+		if err != nil {
+			return nil, err
+		}
+		result, err := service.Create(ctx, commandutil.String(request, "user_id"))
+		return core.Result{"workspace": result}, operation(err)
+	}
+}
+func SandboxList(s *services.Services) core.Handler {
+	return func(_ context.Context, _ core.Request) (core.Result, error) {
+		service, err := service(s)
+		if err != nil {
+			return nil, err
+		}
+		result, err := service.List()
+		return core.Result{"workspaces": result}, operation(err)
+	}
+}
+func SandboxInspect(s *services.Services) core.Handler {
+	return workspaceOne(s, func(ctx context.Context, service services.DevelopmentService, id string, _ core.Request) (development.Workspace, error) {
+		return service.Inspect(id)
+	})
+}
+func SandboxStart(s *services.Services) core.Handler {
+	return workspaceOne(s, func(ctx context.Context, service services.DevelopmentService, id string, _ core.Request) (development.Workspace, error) {
+		return service.Start(ctx, id)
+	})
+}
+func SandboxStop(s *services.Services) core.Handler {
+	return workspaceOne(s, func(ctx context.Context, service services.DevelopmentService, id string, _ core.Request) (development.Workspace, error) {
+		return service.Stop(ctx, id)
+	})
+}
+func SandboxRestart(s *services.Services) core.Handler {
+	return workspaceOne(s, func(ctx context.Context, service services.DevelopmentService, id string, _ core.Request) (development.Workspace, error) {
+		return service.Restart(ctx, id)
+	})
+}
+func SandboxKill(s *services.Services) core.Handler {
+	return workspaceOne(s, func(ctx context.Context, service services.DevelopmentService, id string, _ core.Request) (development.Workspace, error) {
+		return service.Kill(ctx, id)
+	})
+}
+func SandboxResetSource(s *services.Services) core.Handler {
+	return workspaceOne(s, func(ctx context.Context, service services.DevelopmentService, id string, request core.Request) (development.Workspace, error) {
+		return service.ResetSource(ctx, id, commandutil.Bool(request, "confirm"))
+	})
+}
+func SandboxFactoryReset(s *services.Services) core.Handler {
+	return workspaceOne(s, func(ctx context.Context, service services.DevelopmentService, id string, request core.Request) (development.Workspace, error) {
+		return service.FactoryReset(ctx, id, commandutil.Bool(request, "confirm"))
+	})
+}
+func workspaceOne(s *services.Services, call func(context.Context, services.DevelopmentService, string, core.Request) (development.Workspace, error)) core.Handler {
+	return func(ctx context.Context, request core.Request) (core.Result, error) {
+		service, err := service(s)
+		if err != nil {
+			return nil, err
+		}
+		result, err := call(ctx, service, commandutil.String(request, "workspace_id"), request)
+		return core.Result{"workspace": result}, operation(err)
+	}
+}
+func SandboxDelete(s *services.Services) core.Handler {
+	return func(ctx context.Context, request core.Request) (core.Result, error) {
+		service, err := service(s)
+		if err != nil {
+			return nil, err
+		}
+		deleteHome := commandutil.Bool(request, "delete_home")
+		err = service.Delete(ctx, commandutil.String(request, "workspace_id"), deleteHome)
+		return core.Result{"deleted": err == nil, "developer_home_deleted": deleteHome}, operation(err)
+	}
+}
+func SandboxShell(s *services.Services) core.Handler {
+	return func(ctx context.Context, request core.Request) (core.Result, error) {
+		service, err := service(s)
+		if err != nil {
+			return nil, err
+		}
+		command := commandutil.String(request, "command")
+		if command == "" {
+			command = "pwd"
+		}
+		result, err := service.Shell(ctx, commandutil.String(request, "workspace_id"), command)
+		return core.Result{"shell": result}, operation(err)
+	}
+}
+func ActivatePreview(s *services.Services) core.Handler {
+	return func(ctx context.Context, request core.Request) (core.Result, error) {
+		service, err := service(s)
+		if err != nil {
+			return nil, err
+		}
+		options, err := activationOptions(request)
+		if err != nil {
+			return nil, err
+		}
+		result, err := service.Preview(ctx, commandutil.String(request, "workspace_id"), options)
+		return core.Result{"preview": result}, operation(err)
+	}
+}
+func ActivateRun(s *services.Services) core.Handler {
+	return func(ctx context.Context, request core.Request) (core.Result, error) {
+		service, err := service(s)
+		if err != nil {
+			return nil, err
+		}
+		options, err := activationOptions(request)
+		if err != nil {
+			return nil, err
+		}
+		result, activationErr := service.Activate(ctx, commandutil.String(request, "workspace_id"), options)
+		if result.WorkspaceID != "" {
+			return core.Result{"activation": result}, nil
+		}
+		return nil, operation(activationErr)
+	}
+}
+func activationOptions(request core.Request) (development.ActivationOptions, error) {
+	messages := map[string]string{}
+	if raw := commandutil.String(request, "package_messages"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &messages); err != nil {
+			return development.ActivationOptions{}, core.NewError(core.CodeInvalidArguments, "package-messages must be a JSON object of package IDs to messages")
+		}
+	}
+	metadata := map[string]string{}
+	if raw := commandutil.String(request, "metadata"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &metadata); err != nil {
+			return development.ActivationOptions{}, core.NewError(core.CodeInvalidArguments, "metadata must be a JSON object of string values")
+		}
+	}
+	return development.ActivationOptions{Description: commandutil.String(request, "message"), SelectedPackages: commandutil.CSV(request, "packages"), PackageMessages: messages, AuthorName: commandutil.String(request, "author_name"), AuthorEmail: commandutil.String(request, "author_email"), Metadata: metadata}, nil
+}
+
+func RepositoryList(s *services.Services) core.Handler {
+	return func(_ context.Context, _ core.Request) (core.Result, error) {
+		service, err := service(s)
+		if err != nil {
+			return nil, err
+		}
+		result, err := service.ListRepositories()
+		return core.Result{"repositories": result}, operation(err)
+	}
+}
+func RepositoryInspect(s *services.Services) core.Handler {
+	return func(_ context.Context, request core.Request) (core.Result, error) {
+		service, err := service(s)
+		if err != nil {
+			return nil, err
+		}
+		result, err := service.InspectRepository(commandutil.String(request, "package_id"))
+		return core.Result{"repository": result}, operation(err)
+	}
+}
+func RepositoryInit(s *services.Services) core.Handler {
+	return func(ctx context.Context, request core.Request) (core.Result, error) {
+		service, err := service(s)
+		if err != nil {
+			return nil, err
+		}
+		result, err := service.InitializeRepository(ctx, commandutil.String(request, "package_id"), commandutil.String(request, "author_name"), commandutil.String(request, "author_email"), commandutil.String(request, "message"))
+		return core.Result{"repository": result}, operation(err)
+	}
+}
+func RepositoryRemote(s *services.Services) core.Handler {
+	return func(ctx context.Context, request core.Request) (core.Result, error) {
+		service, err := service(s)
+		if err != nil {
+			return nil, err
+		}
+		result, err := service.ConfigureRemote(ctx, commandutil.String(request, "package_id"), commandutil.String(request, "name"), commandutil.String(request, "url"))
+		return core.Result{"repository": result}, operation(err)
+	}
+}
+func RepositoryStatus(s *services.Services) core.Handler {
+	return func(_ context.Context, request core.Request) (core.Result, error) {
+		service, err := service(s)
+		if err != nil {
+			return nil, err
+		}
+		result, err := service.RepositoryStatus(commandutil.String(request, "package_id"))
+		return core.Result{"repository": result}, operation(err)
+	}
+}

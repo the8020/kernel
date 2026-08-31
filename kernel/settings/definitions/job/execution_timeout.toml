@@ -1,0 +1,10 @@
+key = "job.default.execution_timeout"
+type = "integer"
+storage = "node"
+default = 300000
+environment = "KERNEL_JOB_DEFAULT_EXECUTION_TIMEOUT"
+minimum = 100
+maximum = 86400000
+runtime_mutable = false
+restart_required = true
+description = "Default job execution timeout in milliseconds."

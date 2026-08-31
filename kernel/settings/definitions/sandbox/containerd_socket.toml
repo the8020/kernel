@@ -1,0 +1,8 @@
+key = "sandbox.containerd.socket"
+type = "string"
+storage = "node"
+default = "/run/containerd/containerd.sock"
+environment = "KERNEL_SANDBOX_CONTAINERD_SOCKET"
+runtime_mutable = false
+restart_required = true
+description = "Unix socket used by the official containerd client."

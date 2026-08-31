@@ -1,0 +1,57 @@
+version = 1
+id = "development.activate.run"
+path = ["development", "activate", "run"]
+summary = "Activate package changes"
+description = "Scans selected durable workspace sources once, then uses Git merge and commit machinery to publish them without pushing remotes."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/development/activate/run/run.go"
+symbol = "New"
+[[parameters]]
+name = "workspace_id"
+type = "string"
+position = 0
+required = true
+description = "Development workspace ID."
+[[parameters]]
+name = "message"
+type = "string"
+option = "message"
+required = true
+description = "Default commit message for every selected changed package."
+[[parameters]]
+name = "packages"
+type = "string"
+option = "packages"
+required = false
+description = "Comma-separated package IDs selected for activation."
+[[parameters]]
+name = "package_messages"
+type = "string"
+option = "package-messages"
+required = false
+description = "JSON object of per-package commit-message overrides."
+[[parameters]]
+name = "author_name"
+type = "string"
+option = "author-name"
+required = false
+description = "Git author name."
+[[parameters]]
+name = "author_email"
+type = "string"
+option = "author-email"
+required = false
+description = "Git author email."
+[[parameters]]
+name = "metadata"
+type = "string"
+option = "metadata"
+required = false
+description = "JSON object of activation metadata."
+[[result]]
+name = "activation"
+type = "object"
+[[examples]]
+command = "development activate run default-0123456789abcdef --message 'Update examples'"

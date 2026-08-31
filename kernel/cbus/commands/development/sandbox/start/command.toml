@@ -1,0 +1,21 @@
+version = 1
+id = "development.sandbox.start"
+path = ["development", "sandbox", "start"]
+summary = "Start a developer sandbox"
+description = "Starts the sandbox directly on its durable private source, home, and system filesystem."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/development/sandbox/start/start.go"
+symbol = "New"
+[[parameters]]
+name = "workspace_id"
+type = "string"
+position = 0
+required = true
+description = "Development workspace ID."
+[[result]]
+name = "workspace"
+type = "object"
+[[examples]]
+command = "development sandbox start default-0123456789abcdef"

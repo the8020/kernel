@@ -1,0 +1,22 @@
+version = 1
+id = "settings.unset"
+path = ["settings", "unset"]
+aliases = [["config", "unset"]]
+summary = "Remove a persisted setting override"
+description = "Removes the override from the setting's declared node or global store and reveals the next lower-precedence value."
+mutates_state = true
+restart_behavior = "depends_on_setting"
+[handler]
+file = "kernel/cbus/commands/settings/unset/unset.go"
+symbol = "New"
+[[parameters]]
+name = "key"
+type = "string"
+position = 0
+required = true
+description = "Dot-separated setting key."
+[[result]]
+name = "setting"
+type = "object"
+[[examples]]
+command = "settings unset network.main_port"

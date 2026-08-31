@@ -1,0 +1,21 @@
+version = 1
+id = "job.inspect"
+path = ["job", "inspect"]
+summary = "Inspect one job execution"
+description = "Shows durable job input, result, Worker/runtime identity, timing, reuse, state, and failure."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/job/inspect/inspect.go"
+symbol = "New"
+[[parameters]]
+name = "execution_id"
+type = "string"
+position = 0
+required = true
+description = "Execution ID."
+[[result]]
+name = "execution"
+type = "object"
+[[examples]]
+command = "job inspect execution-123"

@@ -1,0 +1,77 @@
+# Purpose
+
+- Define the canonical package-neutral Deno service/job runtime and the
+  separate development-sandbox image.
+
+# Ownership
+
+- Own pinned runtime versions and checksums, generic protocol source, the Deno
+  supervisor and Worker bootstrap, generic HTTP/WebSocket and kernel-capability
+  SDKs, image definitions, portable/full materialization, and runtime-specific
+  tests.
+- The Go kernel owns backend selection, sandbox/network/resource/mount policy,
+  placement, opaque persistent routing, and node-local runtime state.
+- Application packages own every application protocol and behavior. This tree
+  must contain no UUI implementation, package tests, package build products, or
+  hardcoded application identity.
+
+# Local Contracts
+
+- Generic application workloads are exactly `service` and `job`. Development
+  workspaces use a separate image with `sleep` as init and do not host the
+  supervisor.
+- Every service sandbox has one infrastructure supervisor and zero or more
+  Workers. Entrypoints load only inside Workers; Worker permissions cannot
+  exceed the sandbox envelope, and neither supervisor nor Worker runs with
+  unrestricted permissions.
+- Stateless/persistent service pools, persistent execution bindings,
+  keep-alive, exact-Worker reuse, explicit persistent completion, physical
+  WebSocket relay, and registered JSON-in/JSON-out Worker functions are generic
+  capabilities. Function names and application payloads remain opaque.
+- `versions.toml` and `protocol/schema.json` are authoritative. Generation
+  writes `protocol/generated.ts`, build-only Go output, and the tracked Go
+  mirror under `kernel/runtime/protocol/`; generated files are not hand-edited.
+- `install.sh` refreshes this tracked tree into each instance's
+  `config/runtime/`, hashes the complete generic image input set before build,
+  and publishes only verified artifacts under
+  `node/kernel/runtime/images/`. Unchanged verified digests are reused.
+- Deno dependency preparation and generic HTTP bundling execute inside the
+  pinned isolated image build after a digest miss. Normal startup has no
+  host-side Deno or image-build process, and the Go kernel never invokes these
+  scripts.
+- Portable construction materializes the pinned OCI base and declared packages
+  inside rootless gVisor without copying host executables, libraries, package
+  metadata, certificates, or terminal data. Full construction uses the same
+  staged generic runtime and pinned image definition through BuildKit when host
+  authority exists.
+- The service image runs non-root and includes only pinned Deno, generic runtime
+  modules/protocol, and explicitly required administrator debugging tools.
+  `stage-service-runtime.sh` excludes tests, DOX files, examples, application
+  source, and unrelated files.
+
+# Work Guidance
+
+- Keep modules small, strict, generic, and free of application branching. Use
+  Web Workers, transferable streams, explicit permissions, structured control
+  envelopes, and bounded diagnostics.
+- Portable mode must not mutate the host. Full host installation requires
+  detected Linux root authority with `SYS_ADMIN`, `NET_ADMIN`, and writable
+  cgroup v2.
+
+# Verification
+
+- Deno formatting, linting, type checking, and tests cover supervisor/Worker
+  lifecycle, service/job contracts, streaming, persistent binding/completion,
+  exact registered Worker invocation, cancellation, permissions, and crashes.
+- Portable verification launches the staged rootfs as UID/GID 1993 through the
+  pinned rootless runsc and imports the generic HTTP and kernel modules before
+  publishing image and smoke records. Full verification imports and launches
+  the canonical image when host authority is available.
+
+# Child DOX Index
+
+- `cni/AGENTS.md`: canonical full-mode CNI template.
+- `protocol/AGENTS.md`: versioned generic control schema and generation.
+- `deno/AGENTS.md`: generic supervisor, Worker bootstrap, SDKs, examples, and
+  Deno verification.
+- `development/AGENTS.md`: separate development image and materialization.

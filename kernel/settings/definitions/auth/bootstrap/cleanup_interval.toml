@@ -1,0 +1,10 @@
+key = "auth.bootstrap.cleanup_interval"
+type = "integer"
+storage = "node"
+default = 900000
+environment = "KERNEL_AUTH_BOOTSTRAP_CLEANUP_INTERVAL"
+minimum = 1000
+maximum = 86400000
+runtime_mutable = false
+restart_required = true
+description = "Per-node expired bootstrap authentication-session cleanup interval in milliseconds."

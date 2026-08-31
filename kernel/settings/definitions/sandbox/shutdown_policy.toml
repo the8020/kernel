@@ -1,0 +1,9 @@
+key = "sandbox.shutdown_policy"
+type = "enum"
+storage = "node"
+default = "destroy"
+environment = "KERNEL_SANDBOX_SHUTDOWN_POLICY"
+allowed = ["destroy", "leave"]
+runtime_mutable = false
+restart_required = true
+description = "Runtime-group policy applied during kernel shutdown."

@@ -1,0 +1,21 @@
+version = 1
+id = "debug.targets"
+path = ["debug", "targets"]
+summary = "List Deno inspector targets"
+description = "Queries one sandbox inspector and lists concise target identity, type, title, execution identity, and description; connection URLs remain in debug open output."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/debug/targets/targets.go"
+symbol = "New"
+[[parameters]]
+name = "sandbox_id"
+type = "string"
+position = 0
+required = true
+description = "Sandbox or runtime-group ID."
+[[result]]
+name = "targets"
+type = "array"
+[[examples]]
+command = "debug targets sbx-ax9thsl3"

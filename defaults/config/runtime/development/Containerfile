@@ -1,0 +1,18 @@
+ARG DENO_BASE=docker.io/denoland/deno:2.9.4@sha256:c777b4b225501a61074837e90a826a58f99124837824023cd60334b1e2374498
+FROM ${DENO_BASE}
+
+ARG CODEX_VERSION=0.149.1
+USER root
+COPY build.sh /tmp/the8020-image-build.sh
+RUN CODEX_VERSION="${CODEX_VERSION}" /bin/bash /tmp/the8020-image-build.sh \
+ && rm -f /tmp/the8020-image-build.sh
+
+COPY files/ /opt/development/
+RUN chmod 0555 /opt/development/keepalive.sh \
+ && install -m 0555 /opt/development/activate /usr/local/bin/activate \
+ && install -m 0444 /opt/development/profile /etc/profile
+
+USER developer
+ENV HOME=/home/developer DENO_DIR=/home/developer/.cache/deno DENO_NO_UPDATE_CHECK=1 DENO_NO_PROMPT=1
+WORKDIR /workspace
+ENTRYPOINT ["/bin/bash", "/opt/development/keepalive.sh"]

@@ -1,0 +1,10 @@
+key = "job.default.queued_execution_limit"
+type = "integer"
+storage = "node"
+default = 1024
+environment = "KERNEL_JOB_DEFAULT_QUEUED_EXECUTION_LIMIT"
+minimum = 1
+maximum = 100000
+runtime_mutable = false
+restart_required = true
+description = "Maximum queued job executions awaiting a Worker slot."

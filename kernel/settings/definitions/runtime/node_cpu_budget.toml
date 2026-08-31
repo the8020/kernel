@@ -1,0 +1,10 @@
+key = "runtime.node.cpu_millicores_budget"
+type = "integer"
+storage = "node"
+default = 0
+environment = "KERNEL_RUNTIME_NODE_CPU_MILLICORES_BUDGET"
+minimum = 0
+maximum = 1000000
+runtime_mutable = false
+restart_required = true
+description = "Total sandbox CPU budget in millicores on this node; zero derives it from the online CPU count."

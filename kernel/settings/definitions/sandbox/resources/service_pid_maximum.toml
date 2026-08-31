@@ -1,0 +1,10 @@
+key = "sandbox.resources.service.pid_maximum"
+type = "integer"
+storage = "node"
+default = 256
+environment = "KERNEL_SANDBOX_RESOURCES_SERVICE_PID_MAXIMUM"
+minimum = 1
+maximum = 1048576
+runtime_mutable = false
+restart_required = true
+description = "Hard PID maximum for service runtime groups."

@@ -1,0 +1,10 @@
+key = "sandbox.resources.job.cpu_weight"
+type = "integer"
+storage = "node"
+default = 100
+environment = "KERNEL_SANDBOX_RESOURCES_JOB_CPU_WEIGHT"
+minimum = 1
+maximum = 10000
+runtime_mutable = false
+restart_required = true
+description = "Cgroup v2 CPU weight for job runtime groups."

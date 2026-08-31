@@ -1,0 +1,21 @@
+version = 1
+id = "package.index.inspect"
+path = ["package", "index", "inspect"]
+summary = "Inspect desired package"
+description = "Reads one exact package-index document."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/package/index/inspect/inspect.go"
+symbol = "New"
+[[parameters]]
+name = "package_id"
+type = "string"
+position = 0
+required = true
+description = "Author/repository package ID."
+[[result]]
+name = "package"
+type = "object"
+[[examples]]
+command = "package index inspect the8020/uui"

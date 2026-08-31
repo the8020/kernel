@@ -1,0 +1,21 @@
+version = 1
+id = "worker.stop"
+path = ["worker", "stop"]
+summary = "Gracefully stop a Worker"
+description = "Requests graceful termination of one Worker through its authenticated supervisor."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/worker/stop/stop.go"
+symbol = "New"
+[[parameters]]
+name = "worker_id"
+type = "string"
+position = 0
+required = true
+description = "Worker ID."
+[[result]]
+name = "stopped"
+type = "boolean"
+[[examples]]
+command = "worker stop wrk-ax9thsl3"

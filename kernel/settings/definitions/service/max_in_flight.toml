@@ -1,0 +1,10 @@
+key = "service.default.maximum_in_flight"
+type = "integer"
+storage = "node"
+default = 32
+environment = "KERNEL_SERVICE_DEFAULT_MAXIMUM_IN_FLIGHT"
+minimum = 1
+maximum = 10000
+runtime_mutable = false
+restart_required = true
+description = "Default maximum in-flight requests per service Worker."

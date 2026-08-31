@@ -1,0 +1,21 @@
+version = 1
+id = "sandbox.kill"
+path = ["sandbox", "kill"]
+summary = "Immediately kill a sandbox"
+description = "Immediately terminates the complete gVisor sandbox and all of its Workers."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/sandbox/kill/kill.go"
+symbol = "New"
+[[parameters]]
+name = "sandbox_id"
+type = "string"
+position = 0
+required = true
+description = "Sandbox or runtime-group ID."
+[[result]]
+name = "killed"
+type = "boolean"
+[[examples]]
+command = "sandbox kill sbx-ax9thsl3"

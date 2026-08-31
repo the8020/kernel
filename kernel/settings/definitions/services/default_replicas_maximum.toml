@@ -1,0 +1,10 @@
+key = "services.default_replicas_maximum"
+type = "integer"
+storage = "node"
+default = 1
+environment = "KERNEL_SERVICES_DEFAULT_REPLICAS_MAXIMUM"
+minimum = 1
+maximum = 128
+runtime_mutable = false
+restart_required = true
+description = "Default maximum replicas for each service."

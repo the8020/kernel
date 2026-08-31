@@ -1,0 +1,59 @@
+version = 1
+id = "service.request"
+path = ["service", "request"]
+summary = "Send a request through the service boundary"
+description = "Routes a development request through the normal kernel-to-supervisor-to-Worker path and returns the status, headers, and body. Headers use a JSON object; --body and --json are mutually exclusive."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/service/request/request.go"
+symbol = "New"
+[[parameters]]
+name = "service_id"
+type = "string"
+position = 0
+required = true
+description = "Filesystem-derived service ID."
+[[parameters]]
+name = "method"
+type = "string"
+position = 1
+required = true
+description = "HTTP method."
+[[parameters]]
+name = "relative_path"
+type = "string"
+position = 2
+required = true
+description = "Service-relative path, optionally including a query string."
+[[parameters]]
+name = "headers"
+type = "string"
+option = "headers"
+required = false
+description = "JSON object of request headers; values may be strings or string arrays."
+[[parameters]]
+name = "body"
+type = "string"
+option = "body"
+required = false
+description = "Text request body."
+[[parameters]]
+name = "json"
+type = "string"
+option = "json"
+required = false
+description = "JSON request body; automatically sets application/json when absent."
+[[parameters]]
+name = "timeout"
+type = "integer"
+option = "timeout-ms"
+required = false
+description = "Administrative request timeout in milliseconds."
+[[result]]
+name = "response"
+type = "object"
+[[examples]]
+command = "service request the8020/demo/variables GET /value/Ada"
+[[examples]]
+command = "service request the8020/demo/variables-import GET /value/42"

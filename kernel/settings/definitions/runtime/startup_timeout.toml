@@ -1,0 +1,10 @@
+key = "runtime.sandbox.startup_timeout"
+type = "integer"
+storage = "node"
+default = 30000
+environment = "KERNEL_RUNTIME_SANDBOX_STARTUP_TIMEOUT"
+minimum = 1000
+maximum = 600000
+runtime_mutable = false
+restart_required = true
+description = "Maximum sandbox startup duration in milliseconds."

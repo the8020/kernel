@@ -1,0 +1,21 @@
+version = 1
+id = "development.sandbox.inspect"
+path = ["development", "sandbox", "inspect"]
+summary = "Inspect a developer sandbox"
+description = "Inspects one stable development workspace, mount profile, sandbox, and activation state."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/development/sandbox/inspect/inspect.go"
+symbol = "New"
+[[parameters]]
+name = "workspace_id"
+type = "string"
+position = 0
+required = true
+description = "Development workspace ID."
+[[result]]
+name = "workspace"
+type = "object"
+[[examples]]
+command = "development sandbox inspect default-0123456789abcdef"

@@ -1,0 +1,15 @@
+version = 1
+id = "job.list"
+path = ["job", "list"]
+summary = "List job executions"
+description = "Lists concise execution identity, job, state, owner, detached status, duration, and any failure in submission order. Use job inspect for the complete record."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/job/list/list.go"
+symbol = "New"
+[[result]]
+name = "executions"
+type = "array"
+[[examples]]
+command = "job list"

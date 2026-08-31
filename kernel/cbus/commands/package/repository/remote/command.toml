@@ -1,0 +1,33 @@
+version = 1
+id = "package.repository.remote"
+path = ["package", "repository", "remote"]
+summary = "Inspect or configure a package remote"
+description = "Inspects the configured remote or explicitly adds or changes one remote without pushing."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/package/repository/remote/remote.go"
+symbol = "New"
+[[parameters]]
+name = "package_id"
+type = "string"
+position = 0
+required = true
+description = "Namespace/repository package ID."
+[[parameters]]
+name = "name"
+type = "string"
+option = "name"
+required = false
+description = "Remote name; defaults to origin."
+[[parameters]]
+name = "url"
+type = "string"
+option = "url"
+required = false
+description = "Remote URL to add or change; omit to inspect."
+[[result]]
+name = "repository"
+type = "object"
+[[examples]]
+command = "package repository remote the8020/dev-core --url /srv/git/development-a.git"

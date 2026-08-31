@@ -1,0 +1,119 @@
+version = 1
+id = "job.run"
+path = ["job", "run"]
+summary = "Run a Deno job"
+description = "Selects a compatible job runtime group, starts or reuses a Worker, and returns a durable execution record."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/job/run/run.go"
+symbol = "New"
+[[parameters]]
+name = "job_id"
+type = "string"
+position = 0
+required = true
+description = "Logical job ID."
+[[parameters]]
+name = "entrypoint"
+type = "string"
+position = 1
+required = true
+description = "Absolute file or allowed HTTPS module URL."
+[[parameters]]
+name = "input"
+type = "string"
+option = "input"
+required = false
+description = "One JSON input value."
+[[parameters]]
+name = "detached"
+type = "boolean"
+option = "detached"
+required = false
+description = "Return after durable submission without waiting for completion."
+[[parameters]]
+name = "group_key"
+type = "string"
+option = "group-key"
+required = false
+description = "Explicit job runtime-group key."
+[[parameters]]
+name = "namespace"
+type = "string"
+option = "namespace"
+required = false
+description = "Grouping namespace."
+[[parameters]]
+name = "timeout"
+type = "integer"
+option = "timeout-ms"
+required = false
+description = "Execution timeout in milliseconds."
+[[parameters]]
+name = "parallelism"
+type = "integer"
+option = "parallelism"
+required = false
+description = "Per-invocation parallel Worker limit."
+[[parameters]]
+name = "reuse"
+type = "boolean"
+option = "reuse"
+required = false
+description = "Keep and reuse a compatible completed Worker."
+[[parameters]]
+name = "workspace"
+type = "string"
+option = "workspace"
+required = false
+description = "Project-root-bounded development directory mounted at /workspace."
+[[parameters]]
+name = "workspace_write"
+type = "boolean"
+option = "workspace-write"
+required = false
+description = "Mount the explicit development workspace read-write instead of read-only."
+[[parameters]]
+name = "read"
+type = "string"
+option = "read"
+required = false
+description = "Comma-separated Worker read paths."
+[[parameters]]
+name = "write"
+type = "string"
+option = "write"
+required = false
+description = "Comma-separated Worker write paths."
+[[parameters]]
+name = "network"
+type = "string"
+option = "network"
+required = false
+description = "Comma-separated allowed network hosts."
+[[parameters]]
+name = "imports"
+type = "string"
+option = "imports"
+required = false
+description = "Comma-separated allowed remote import hosts."
+[[parameters]]
+name = "environment"
+type = "string"
+option = "environment"
+required = false
+description = "Comma-separated environment variable names."
+[[parameters]]
+name = "system_info"
+type = "boolean"
+option = "system-info"
+required = false
+description = "Allow bounded system information."
+[[result]]
+name = "execution"
+type = "object"
+[[examples]]
+command = "job run nightly file:///artifacts/nightly.ts --input '{\"full\":true}'"
+[[examples]]
+command = "job run build file:///workspace/build.ts --workspace ./development-jobs --workspace-write"

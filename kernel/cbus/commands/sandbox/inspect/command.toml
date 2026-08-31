@@ -1,0 +1,21 @@
+version = 1
+id = "sandbox.inspect"
+path = ["sandbox", "inspect"]
+summary = "Inspect one sandbox"
+description = "Shows identity, workload, group, owners, profile, image, lifecycle, network, Workers, resources, heartbeat, ports, and failures."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/sandbox/inspect/inspect.go"
+symbol = "New"
+[[parameters]]
+name = "sandbox_id"
+type = "string"
+position = 0
+required = true
+description = "Sandbox or runtime-group ID."
+[[result]]
+name = "sandbox"
+type = "object"
+[[examples]]
+command = "sandbox inspect sbx-ax9thsl3"

@@ -1,0 +1,75 @@
+version = 1
+id = "service.scale"
+path = ["service", "scale"]
+summary = "Scale a filesystem service"
+description = "Updates replica/Worker bounds, hard per-Worker concurrency, target utilization, persistent keepalive, or sandbox group and reconciles the new generation."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/service/scale/scale.go"
+symbol = "New"
+[[parameters]]
+name = "service_id"
+type = "string"
+position = 0
+required = true
+description = "Service ID."
+[[parameters]]
+name = "replicas_min"
+type = "integer"
+option = "replicas-min"
+required = false
+description = "Minimum ready service replicas."
+[[parameters]]
+name = "replicas_max"
+type = "integer"
+option = "replicas-max"
+required = false
+description = "Maximum service replicas."
+[[parameters]]
+name = "workers_per_replica_min"
+type = "integer"
+option = "workers-per-replica-min"
+required = false
+description = "Minimum ready Workers per replica."
+[[parameters]]
+name = "workers_per_replica_max"
+type = "integer"
+option = "workers-per-replica-max"
+required = false
+description = "Maximum Workers per replica."
+[[parameters]]
+name = "concurrency_per_worker"
+type = "integer"
+option = "concurrency-per-worker"
+required = false
+description = "Hard concurrent execution-slot limit per Worker."
+[[parameters]]
+name = "target_utilization"
+type = "string"
+option = "target-utilization"
+required = false
+description = "Scale-out target as a decimal greater than zero and at most one."
+[[parameters]]
+name = "keep_alive"
+type = "string"
+option = "keep-alive"
+required = false
+description = "Persistent execution keepalive as a Go duration."
+[[parameters]]
+name = "sandbox_group"
+type = "string"
+option = "sandbox-group"
+required = false
+description = "Compatible sandbox-sharing group; empty uses the default shared group."
+[[parameters]]
+name = "detail"
+type = "boolean"
+option = "detail"
+required = false
+description = "Show complete effective configuration, instance identities, failures, and metrics."
+[[result]]
+name = "state"
+type = "string"
+[[examples]]
+command = "service scale the8020/demo/variables --replicas-min 2 --workers-per-replica-min 4"

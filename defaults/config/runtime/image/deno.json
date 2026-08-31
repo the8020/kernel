@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "noImplicitOverride": true,
+    "noUncheckedIndexedAccess": true,
+    "useUnknownInCatchVariables": true,
+    "lib": ["deno.ns", "dom", "dom.iterable", "esnext"]
+  },
+  "imports": {
+    "@the8020/http": "./http/the8020_http.js",
+    "@the8020/kernel": "./kernel/mod.ts",
+    "@the8020/protocol": "./protocol.ts",
+    "@packages/": "file:///workspace/packages/"
+  }
+}

@@ -1,0 +1,21 @@
+version = 1
+id = "port.close"
+path = ["port", "close"]
+summary = "Close a host-port lease"
+description = "Closes the host listener and removes its persisted lease record."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/port/close/close.go"
+symbol = "New"
+[[parameters]]
+name = "lease_id"
+type = "string"
+position = 0
+required = true
+description = "Port lease ID."
+[[result]]
+name = "closed"
+type = "boolean"
+[[examples]]
+command = "port close port-123"

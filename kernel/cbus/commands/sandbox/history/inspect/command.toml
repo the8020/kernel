@@ -1,0 +1,21 @@
+version = 1
+id = "sandbox.history.inspect"
+path = ["sandbox", "history", "inspect"]
+summary = "Inspect a historical sandbox"
+description = "Loads one immutable terminal sandbox record and bounded archived log tails directly from the separate history store."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/sandbox/history/inspect/inspect.go"
+symbol = "New"
+[[parameters]]
+name = "history_id"
+type = "string"
+position = 0
+required = true
+description = "History ID returned by sandbox history list."
+[[result]]
+name = "sandbox_history"
+type = "object"
+[[examples]]
+command = "sandbox history inspect 20260827T130405.123456789Z-sbx-ax9thsl3"

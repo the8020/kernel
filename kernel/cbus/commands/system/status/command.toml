@@ -1,0 +1,70 @@
+version = 1
+id = "system.status"
+path = ["system", "status"]
+aliases = [["status"]]
+summary = "Show kernel status"
+description = "Returns identity, process, listener, logging, runtime isolation mode, uptime, graceful shutdown/restart progress, and build information for the running kernel."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/system/status/status.go"
+symbol = "New"
+[[result]]
+name = "instance_uuid"
+type = "string"
+[[result]]
+name = "pid"
+type = "integer"
+[[result]]
+name = "instance_root"
+type = "string"
+[[result]]
+name = "uptime"
+type = "string"
+[[result]]
+name = "admin_socket"
+type = "string"
+[[result]]
+name = "main_port"
+type = "integer"
+[[result]]
+name = "logging_enabled"
+type = "boolean"
+[[result]]
+name = "active_log_file"
+type = "string"
+[[result]]
+name = "build_id"
+type = "string"
+[[result]]
+name = "runtime_ready"
+type = "boolean"
+[[result]]
+name = "runtime_mode"
+type = "string"
+[[result]]
+name = "runtime_failure"
+type = "string"
+[[result]]
+name = "shutdown_requested"
+type = "boolean"
+[[result]]
+name = "restart_requested"
+type = "boolean"
+[[result]]
+name = "shutdown_percent"
+type = "integer"
+[[result]]
+name = "shutdown_completed_steps"
+type = "integer"
+[[result]]
+name = "shutdown_total_steps"
+type = "integer"
+[[result]]
+name = "shutdown_step"
+type = "string"
+[[result]]
+name = "shutdown_message"
+type = "string"
+[[examples]]
+command = "system status"

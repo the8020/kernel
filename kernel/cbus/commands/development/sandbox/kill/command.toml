@@ -1,0 +1,21 @@
+version = 1
+id = "development.sandbox.kill"
+path = ["development", "sandbox", "kill"]
+summary = "Kill a developer sandbox"
+description = "Immediately kills and deletes the active sandbox process; native durable workspace filesystems remain recoverable."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/development/sandbox/kill/kill.go"
+symbol = "New"
+[[parameters]]
+name = "workspace_id"
+type = "string"
+position = 0
+required = true
+description = "Development workspace ID."
+[[result]]
+name = "workspace"
+type = "object"
+[[examples]]
+command = "development sandbox kill default-0123456789abcdef"

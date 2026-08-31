@@ -1,0 +1,15 @@
+version = 1
+id = "sandbox.list"
+path = ["sandbox", "list"]
+summary = "List runtime sandboxes"
+description = "Lists only live sandbox identity, workload type, state, Worker count, warm status, runtime-group ID, and any failure. Use sandbox history list for cleaned terminal sandboxes."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/sandbox/list/list.go"
+symbol = "New"
+[[result]]
+name = "sandboxes"
+type = "array"
+[[examples]]
+command = "sandbox list"

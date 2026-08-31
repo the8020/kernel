@@ -1,0 +1,24 @@
+version = 1
+id = "settings.list"
+path = ["settings", "list"]
+aliases = [["config", "list"]]
+summary = "List 80|20 settings"
+description = "Returns a compact key and description list by default. Use the detail view for declared storage, configured and active values, source, and override information."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/settings/list/list.go"
+symbol = "New"
+[[parameters]]
+name = "view"
+type = "string"
+position = 0
+required = false
+description = "Optional view; use detail for complete setting records."
+[[result]]
+name = "settings"
+type = "array"
+[[examples]]
+command = "settings list"
+[[examples]]
+command = "settings list detail"

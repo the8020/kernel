@@ -1,0 +1,9 @@
+key = "runtime.node.memory_reserved"
+type = "byte_size"
+storage = "node"
+default = "1GB"
+environment = "KERNEL_RUNTIME_NODE_MEMORY_RESERVED"
+minimum = 0
+runtime_mutable = false
+restart_required = true
+description = "Host memory retained for the operating system and kernel when the node sandbox budget is derived automatically."

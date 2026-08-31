@@ -1,0 +1,27 @@
+version = 1
+id = "development.sandbox.factory_reset"
+path = ["development", "sandbox", "factory-reset"]
+summary = "Factory reset a development workspace"
+description = "Destroys the sandbox and all durable workspace, home, and system customization, then recreates them from current defaults."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/development/sandbox/factory-reset/factory_reset.go"
+symbol = "New"
+[[parameters]]
+name = "workspace_id"
+type = "string"
+position = 0
+required = true
+description = "Development workspace ID."
+[[parameters]]
+name = "confirm"
+type = "boolean"
+option = "confirm"
+required = true
+description = "Confirm irreversible loss of source and developer-home data."
+[[result]]
+name = "workspace"
+type = "object"
+[[examples]]
+command = "development sandbox factory-reset default-0123456789abcdef --confirm"

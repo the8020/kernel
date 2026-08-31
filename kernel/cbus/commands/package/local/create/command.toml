@@ -1,0 +1,33 @@
+version = 1
+id = "package.local.create"
+path = ["package", "local", "create"]
+summary = "Create local package"
+description = "Creates a package.toml and independent Git repository with one initial commit, plus a local package-index entry without a remote."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/package/local/create/create.go"
+symbol = "New"
+[[parameters]]
+name = "author"
+type = "string"
+position = 0
+required = true
+description = "Package author or namespace."
+[[parameters]]
+name = "repository"
+type = "string"
+position = 1
+required = true
+description = "Package repository name."
+[[parameters]]
+name = "description"
+type = "string"
+option = "description"
+required = false
+description = "Portable package description."
+[[result]]
+name = "package"
+type = "object"
+[[examples]]
+command = "package local create example tools --description 'Example tools'"

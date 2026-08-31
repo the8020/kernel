@@ -1,0 +1,8 @@
+key = "job.default.worker_reuse"
+type = "boolean"
+storage = "node"
+default = false
+environment = "KERNEL_JOB_DEFAULT_WORKER_REUSE"
+runtime_mutable = false
+restart_required = true
+description = "Whether compatible completed job Workers remain available for reuse."

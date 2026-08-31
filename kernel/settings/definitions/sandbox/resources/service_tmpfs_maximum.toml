@@ -1,0 +1,8 @@
+key = "sandbox.resources.service.tmpfs_maximum"
+type = "byte_size"
+storage = "node"
+default = "128MB"
+environment = "KERNEL_SANDBOX_RESOURCES_SERVICE_TMPFS_MAXIMUM"
+runtime_mutable = false
+restart_required = true
+description = "Bounded temporary-filesystem maximum for service runtime groups."

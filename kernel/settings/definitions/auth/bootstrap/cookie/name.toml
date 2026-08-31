@@ -1,0 +1,8 @@
+key = "auth.bootstrap.cookie.name"
+type = "string"
+storage = "node"
+default = "the8020_auth"
+environment = "KERNEL_AUTH_BOOTSTRAP_COOKIE_NAME"
+runtime_mutable = false
+restart_required = true
+description = "Name of the opaque bootstrap authentication cookie."

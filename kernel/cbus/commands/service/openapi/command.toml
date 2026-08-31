@@ -1,0 +1,21 @@
+version = 1
+id = "service.openapi"
+path = ["service", "openapi"]
+summary = "Export service OpenAPI"
+description = "Returns the deterministic OpenAPI document from a running service or a temporary validation Worker."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/service/openapi/openapi.go"
+symbol = "New"
+[[parameters]]
+name = "service_id"
+type = "string"
+position = 0
+required = true
+description = "Filesystem-derived service ID."
+[[result]]
+name = "openapi"
+type = "object"
+[[examples]]
+command = "service openapi the8020/demo/variables"

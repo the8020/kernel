@@ -1,0 +1,29 @@
+schema = 1
+
+[[mounts]]
+id = "packages"
+target = "/workspace/packages"
+behavior = "workspace-source"
+writable = true
+persistence = "workspace"
+participates_activation = true
+workspace_owned = true
+
+[[mounts]]
+id = "home"
+source = "users/<user-id>/home"
+target = "/home/developer"
+behavior = "persistent-user"
+writable = true
+persistence = "persistent-user"
+participates_activation = false
+workspace_owned = false
+
+[[mounts]]
+id = "temporary"
+target = "/tmp"
+behavior = "ephemeral"
+writable = true
+persistence = "sandbox"
+participates_activation = false
+workspace_owned = false

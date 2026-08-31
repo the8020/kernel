@@ -1,0 +1,21 @@
+version = 1
+id = "auth.bootstrap_admin.remove"
+path = ["auth", "bootstrap-admin", "remove"]
+summary = "Remove a bootstrap administrator"
+description = "Removes a bootstrap administrator and deletes all of that administrator's authentication sessions."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/auth/bootstrapadmin/remove/remove.go"
+symbol = "New"
+[[parameters]]
+name = "username"
+type = "string"
+position = 0
+required = true
+description = "Case-sensitive bootstrap administrator username."
+[[result]]
+name = "removed"
+type = "boolean"
+[[examples]]
+command = "auth bootstrap-admin remove admin"

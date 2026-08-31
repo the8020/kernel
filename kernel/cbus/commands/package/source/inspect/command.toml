@@ -1,0 +1,21 @@
+version = 1
+id = "package.source.inspect"
+path = ["package", "source", "inspect"]
+summary = "Inspect public package source"
+description = "Validates a public HTTPS Git URL, derives author and repository identity, and lists bounded branch and tag commit references without cloning it."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/package/source/inspect/inspect.go"
+symbol = "New"
+[[parameters]]
+name = "source"
+type = "string"
+position = 0
+required = true
+description = "Public HTTPS Git URL."
+[[result]]
+name = "source"
+type = "object"
+[[examples]]
+command = "package source inspect https://github.com/the8020/uui.git"

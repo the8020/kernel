@@ -1,0 +1,475 @@
+package settings
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func integerPointer(value int64) *int64 { return &value }
+func testDefinitions() []Definition {
+	return []Definition{
+		{Key: "network.main_port", Type: TypeInteger, Storage: StorageNode, Default: int64(8080), Environment: "KERNEL_NETWORK_MAIN_PORT", Minimum: integerPointer(1), Maximum: integerPointer(65535), RuntimeMutable: true, Description: "port"},
+		{Key: "logging.enabled", Type: TypeBoolean, Storage: StorageNode, Default: true, Environment: "KERNEL_LOGGING_ENABLED", RuntimeMutable: true, Description: "enabled"},
+		{Key: "logging.split_period", Type: TypeEnum, Storage: StorageNode, Default: "day", Environment: "KERNEL_LOGGING_SPLIT_PERIOD", Allowed: []string{"none", "day"}, RuntimeMutable: true, Description: "period"},
+		{Key: "logging.max_file_size", Type: TypeByteSize, Storage: StorageNode, Default: "1GB", Environment: "KERNEL_LOGGING_MAX_FILE_SIZE", RuntimeMutable: true, Description: "file"},
+		{Key: "logging.max_total_size", Type: TypeByteSize, Storage: StorageNode, Default: "10GB", Environment: "KERNEL_LOGGING_MAX_TOTAL_SIZE", RuntimeMutable: true, Description: "total"},
+		{Key: "network.root_alias", Type: TypeString, Storage: StorageGlobal, Default: "the8020/uui/shell/", Environment: "KERNEL_NETWORK_ROOT_ALIAS", Pattern: `^[A-Za-z0-9_-]+(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*/?$`, RestartRequired: true, Description: "root alias"},
+		{Key: "platform.display_name", Type: TypeString, Storage: StorageGlobal, Default: "80|20", Environment: "KERNEL_PLATFORM_DISPLAY_NAME", RestartRequired: true, Description: "display name"},
+	}
+}
+
+type preparedTest struct{ committed, discarded *bool }
+
+func (p preparedTest) Commit()  { *p.committed = true }
+func (p preparedTest) Discard() { *p.discarded = true }
+
+type testApplier struct {
+	fail                 error
+	committed, discarded bool
+}
+
+func (a *testApplier) Prepare(context.Context, Values) (Prepared, error) {
+	if a.fail != nil {
+		return nil, a.fail
+	}
+	return preparedTest{&a.committed, &a.discarded}, nil
+}
+
+func newPersistencePaths(t *testing.T) PersistencePaths {
+	t.Helper()
+	root := t.TempDir()
+	paths := PersistencePaths{Node: filepath.Join(root, "node", "kernel", "settings.toml"), Global: filepath.Join(root, "config", "settings.toml")}
+	for _, path := range []string{paths.Node, paths.Global} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return paths
+}
+
+func newTestManager(t *testing.T, startup map[string]string, environment map[string]string) (*Manager, PersistencePaths) {
+	t.Helper()
+	paths := newPersistencePaths(t)
+	manager, err := New(testDefinitions(), paths, startup, func(name string) (string, bool) { value, ok := environment[name]; return value, ok })
+	if err != nil {
+		t.Fatal(err)
+	}
+	return manager, paths
+}
+
+func TestPrecedenceAndNodePersistedRemoval(t *testing.T) {
+	manager, paths := newTestManager(t, map[string]string{"network.main_port": "8082"}, map[string]string{"KERNEL_NETWORK_MAIN_PORT": "8081"})
+	applier := &testApplier{}
+	if err := manager.RegisterApplier([]string{"network.main_port"}, applier); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := manager.Get("network.main_port")
+	if info.ConfiguredValue != int64(8082) || info.Source != "startup_argument" {
+		t.Fatalf("startup precedence: %#v", info)
+	}
+	if _, err := manager.Set(context.Background(), "network.main_port", "8083"); err != nil {
+		t.Fatal(err)
+	}
+	info, _ = manager.Get("network.main_port")
+	if info.ConfiguredValue != int64(8083) || info.Source != "persisted" || !applier.committed {
+		t.Fatalf("persisted precedence: %#v", info)
+	}
+	data, err := os.ReadFile(paths.Node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "main_port = 8083") {
+		t.Fatalf("unexpected persistence: %s", data)
+	}
+	if temporary, _ := filepath.Glob(filepath.Join(filepath.Dir(paths.Node), ".settings-*.toml")); len(temporary) != 0 {
+		t.Fatalf("temporary settings files remain: %v", temporary)
+	}
+	fileInfo, err := os.Stat(paths.Node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fileInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("settings mode = %v", fileInfo.Mode().Perm())
+	}
+	applier.committed = false
+	if _, err := manager.Unset(context.Background(), "network.main_port"); err != nil {
+		t.Fatal(err)
+	}
+	info, _ = manager.Get("network.main_port")
+	if info.ConfiguredValue != int64(8082) || info.Source != "startup_argument" || !applier.committed {
+		t.Fatalf("unset precedence: %#v", info)
+	}
+	data, err = os.ReadFile(paths.Node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "main_port") {
+		t.Fatalf("unset value remains persisted: %s", data)
+	}
+}
+
+func TestGlobalSettingUsesGlobalStoreAndSurvivesRestart(t *testing.T) {
+	manager, paths := newTestManager(t, nil, nil)
+	info, err := manager.Set(context.Background(), "network.root_alias", "example/demo/shell/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Storage != StorageGlobal || info.ConfiguredValue != "example/demo/shell/" || info.ActiveValue != "the8020/uui/shell/" || !info.RestartPending {
+		t.Fatalf("global pending state: %#v", info)
+	}
+	global, err := os.ReadFile(paths.Global)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := os.ReadFile(paths.Node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(global), `root_alias = "example/demo/shell/"`) || strings.Contains(string(node), "root_alias") {
+		t.Fatalf("global=%q node=%q", global, node)
+	}
+	restarted, err := New(testDefinitions(), paths, nil, func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err = restarted.Get("network.root_alias")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.ConfiguredValue != "example/demo/shell/" || info.ActiveValue != "example/demo/shell/" || info.Source != "persisted" || info.RestartPending {
+		t.Fatalf("global state after restart: %#v", info)
+	}
+	info, err = restarted.Unset(context.Background(), "network.root_alias")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.ConfiguredValue != "the8020/uui/shell/" || !info.RestartPending {
+		t.Fatalf("global unset state: %#v", info)
+	}
+	global, err = os.ReadFile(paths.Global)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(global), "root_alias") {
+		t.Fatalf("global override remains after unset: %s", global)
+	}
+	for _, path := range []string{paths.Node, paths.Global} {
+		fileInfo, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fileInfo.Mode().Perm() != 0o600 {
+			t.Fatalf("%s mode = %v", path, fileInfo.Mode().Perm())
+		}
+		if temporary, _ := filepath.Glob(filepath.Join(filepath.Dir(path), ".settings-*.toml")); len(temporary) != 0 {
+			t.Fatalf("temporary settings files remain beside %s: %v", path, temporary)
+		}
+	}
+	lockInfo, err := os.Stat(filepath.Join(filepath.Dir(paths.Global), ".settings.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lockInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("global settings lock mode = %v", lockInfo.Mode().Perm())
+	}
+}
+
+func TestGlobalWritersMergeUnrelatedOverrides(t *testing.T) {
+	paths := newPersistencePaths(t)
+	first, err := New(testDefinitions(), paths, nil, func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := New(testDefinitions(), paths, nil, func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.Set(context.Background(), "network.root_alias", "example/demo/shell/"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.Set(context.Background(), "platform.display_name", "Example Platform"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(paths.Global)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `root_alias = "example/demo/shell/"`) || !strings.Contains(string(data), `display_name = "Example Platform"`) {
+		t.Fatalf("one global writer lost another writer's override: %s", data)
+	}
+	if _, err := first.Unset(context.Background(), "network.root_alias"); err != nil {
+		t.Fatal(err)
+	}
+	data, err = os.ReadFile(paths.Global)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "root_alias") || !strings.Contains(string(data), `display_name = "Example Platform"`) {
+		t.Fatalf("global unset removed an unrelated override: %s", data)
+	}
+}
+
+func TestPhaseOneDefaults(t *testing.T) {
+	manager, _ := newTestManager(t, nil, nil)
+	wants := map[string]any{"network.main_port": int64(8080), "logging.enabled": true, "logging.split_period": "day", "logging.max_file_size": "1GB", "logging.max_total_size": "10GB"}
+	for key, want := range wants {
+		info, err := manager.Get(key)
+		if err != nil || info.ConfiguredValue != want || info.ActiveValue != want || info.Source != "default" {
+			t.Errorf("%s default = %#v, error %v", key, info, err)
+		}
+	}
+}
+
+func TestPersistedHasHighestInitialPrecedence(t *testing.T) {
+	paths := newPersistencePaths(t)
+	if err := os.WriteFile(paths.Node, []byte("[network]\nmain_port = 8083\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager, err := New(testDefinitions(), paths, map[string]string{"network.main_port": "8082"}, func(name string) (string, bool) {
+		if name == "KERNEL_NETWORK_MAIN_PORT" {
+			return "8081", true
+		}
+		return "", false
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, _ := manager.Get("network.main_port")
+	if info.ConfiguredValue != int64(8083) || info.ActiveValue != int64(8083) || info.Source != "persisted" {
+		t.Fatalf("wrong initial state: %#v", info)
+	}
+}
+
+func TestRestartRequiredSettingPersistsWithoutChangingActiveValue(t *testing.T) {
+	paths := newPersistencePaths(t)
+	definitions := append(testDefinitions(), Definition{
+		Key:             "sandbox.runtime_name",
+		Type:            TypeString,
+		Storage:         StorageNode,
+		Default:         "io.containerd.runsc.v1",
+		Environment:     "KERNEL_SANDBOX_RUNTIME_NAME",
+		RestartRequired: true,
+		Description:     "runtime",
+	})
+	manager, err := New(definitions, paths, nil, func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := manager.Set(context.Background(), "sandbox.runtime_name", "io.containerd.alt.v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.ConfiguredValue != "io.containerd.alt.v1" || info.ActiveValue != "io.containerd.runsc.v1" || !info.RestartPending {
+		t.Fatalf("pending restart state: %#v", info)
+	}
+	data, err := os.ReadFile(paths.Node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `runtime_name = "io.containerd.alt.v1"`) {
+		t.Fatalf("restart setting was not persisted: %s", data)
+	}
+
+	restarted, err := New(definitions, paths, nil, func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err = restarted.Get("sandbox.runtime_name")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.ConfiguredValue != "io.containerd.alt.v1" || info.ActiveValue != "io.containerd.alt.v1" || info.RestartPending {
+		t.Fatalf("state after restart: %#v", info)
+	}
+}
+
+func TestApplicationAndPersistenceFailuresPreserveState(t *testing.T) {
+	manager, _ := newTestManager(t, nil, nil)
+	applier := &testApplier{fail: errors.New("prepare failed")}
+	_ = manager.RegisterApplier([]string{"network.main_port"}, applier)
+	if _, err := manager.Set(context.Background(), "network.main_port", "8081"); err == nil {
+		t.Fatal("expected preparation failure")
+	}
+	info, _ := manager.Get("network.main_port")
+	if info.ConfiguredValue != int64(8080) || info.ActiveValue != int64(8080) {
+		t.Fatalf("state changed after prepare failure: %#v", info)
+	}
+
+	root := t.TempDir()
+	brokenPaths := PersistencePaths{Node: filepath.Join(root, "missing-node", "settings.toml"), Global: filepath.Join(root, "missing-global", "settings.toml")}
+	broken, err := New(testDefinitions(), brokenPaths, nil, func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared := &testApplier{}
+	_ = broken.RegisterApplier([]string{"network.main_port"}, prepared)
+	if _, err := broken.Set(context.Background(), "network.main_port", "8081"); err == nil {
+		t.Fatal("expected persistence failure")
+	}
+	if !prepared.discarded || prepared.committed {
+		t.Fatalf("prepared resource lifecycle: %#v", prepared)
+	}
+	info, _ = broken.Get("network.main_port")
+	if info.ConfiguredValue != int64(8080) || info.ActiveValue != int64(8080) {
+		t.Fatalf("state changed after persistence failure: %#v", info)
+	}
+}
+
+func TestGlobalPersistenceFailurePreservesState(t *testing.T) {
+	root := t.TempDir()
+	paths := PersistencePaths{Node: filepath.Join(root, "node", "settings.toml"), Global: filepath.Join(root, "missing", "settings.toml")}
+	if err := os.MkdirAll(filepath.Dir(paths.Node), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manager, err := New(testDefinitions(), paths, nil, func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Set(context.Background(), "network.root_alias", "example/demo/shell/"); err == nil {
+		t.Fatal("expected global persistence failure")
+	}
+	info, _ := manager.Get("network.root_alias")
+	if info.ConfiguredValue != "the8020/uui/shell/" || info.ActiveValue != "the8020/uui/shell/" || info.RestartPending {
+		t.Fatalf("global state changed after persistence failure: %#v", info)
+	}
+}
+
+func TestLegacyGlobalOverrideMigratesFromNodeStore(t *testing.T) {
+	paths := newPersistencePaths(t)
+	legacy := "[network]\nmain_port = 8083\nroot_alias = \"example/demo/shell/\"\n"
+	if err := os.WriteFile(paths.Node, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager, err := New(testDefinitions(), paths, nil, func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, _ := manager.Get("network.root_alias")
+	if info.ConfiguredValue != "example/demo/shell/" || info.Source != "persisted" || info.Storage != StorageGlobal {
+		t.Fatalf("migrated global info: %#v", info)
+	}
+	node, _ := os.ReadFile(paths.Node)
+	global, _ := os.ReadFile(paths.Global)
+	if strings.Contains(string(node), "root_alias") || !strings.Contains(string(node), "main_port = 8083") || !strings.Contains(string(global), `root_alias = "example/demo/shell/"`) {
+		t.Fatalf("node=%q global=%q", node, global)
+	}
+}
+
+func TestWrongStoreAndInvalidStorageDefinitionsFail(t *testing.T) {
+	paths := newPersistencePaths(t)
+	if err := os.WriteFile(paths.Global, []byte("[network]\nmain_port = 8083\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(testDefinitions(), paths, nil, func(string) (string, bool) { return "", false }); err == nil || !strings.Contains(err.Error(), "belongs in the node settings store") {
+		t.Fatalf("wrong-store error = %v", err)
+	}
+
+	base := Definition{Key: "test.value", Type: TypeString, Default: "value", Environment: "TEST_VALUE", Description: "test"}
+	for name, mutate := range map[string]func(*Definition){
+		"missing": func(*Definition) {},
+		"invalid": func(definition *Definition) { definition.Storage = "cluster" },
+		"mutable global": func(definition *Definition) {
+			definition.Storage = StorageGlobal
+			definition.RuntimeMutable = true
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			definition := base
+			mutate(&definition)
+			if _, err := ValidateDefinition(definition); err == nil {
+				t.Fatalf("accepted definition: %#v", definition)
+			}
+		})
+	}
+}
+
+func TestConversionsAndCrossValidation(t *testing.T) {
+	for input, want := range map[string]ByteSize{"0B": 0, "1KB": 1000, "10MB": 10_000_000, "1GB": 1_000_000_000, "123B": 123} {
+		value, err := parseByteSize(input)
+		if err != nil || value != want {
+			t.Errorf("ParseByteSize(%q) = %d, %v", input, value, err)
+		}
+	}
+	minimum := int64(0)
+	if _, err := ValidateDefinition(Definition{Key: "runtime.node.auto_budget", Type: TypeByteSize, Storage: StorageNode, Default: "0B", Environment: "KERNEL_RUNTIME_NODE_AUTO_BUDGET", Minimum: &minimum, RestartRequired: true, Description: "auto"}); err != nil {
+		t.Fatalf("zero byte-size sentinel rejected: %v", err)
+	}
+	if _, err := ValidateDefinition(Definition{Key: "runtime.node.invalid_budget", Type: TypeByteSize, Storage: StorageNode, Default: "0B", Environment: "KERNEL_RUNTIME_NODE_INVALID_BUDGET", RestartRequired: true, Description: "invalid"}); err == nil {
+		t.Fatal("zero byte size accepted without explicit minimum")
+	}
+	definition := testDefinitions()[0]
+	if _, err := parse(definition, "0"); err == nil {
+		t.Error("accepted port zero")
+	}
+	if _, err := parse(definition, "65536"); err == nil {
+		t.Error("accepted high port")
+	}
+	if _, err := parse(testDefinitions()[2], "hour"); err == nil {
+		t.Error("accepted an enum value outside the definition")
+	}
+	manager, _ := newTestManager(t, nil, nil)
+	applier := &testApplier{}
+	_ = manager.RegisterApplier([]string{"logging.max_file_size", "logging.max_total_size"}, applier)
+	if _, err := manager.Set(context.Background(), "logging.max_file_size", "11GB"); err == nil {
+		t.Fatal("accepted file limit above total limit")
+	}
+	serviceDefaults := Values{
+		"services.default_replicas_minimum": int64(1), "services.default_replicas_maximum": int64(3),
+		"services.default_workers_per_replica_minimum": int64(1), "services.default_workers_per_replica_maximum": int64(4),
+	}
+	if err := validateSnapshot(serviceDefaults); err != nil {
+		t.Fatalf("valid service defaults: %v", err)
+	}
+	serviceDefaults["services.default_workers_per_replica_minimum"] = int64(5)
+	if err := validateSnapshot(serviceDefaults); err == nil || !strings.Contains(err.Error(), "minimum <= maximum") {
+		t.Fatalf("invalid service defaults error = %v", err)
+	}
+}
+
+func TestStringPatternValidation(t *testing.T) {
+	definition := Definition{
+		Key: "network.root_alias", Type: TypeString, Storage: StorageGlobal,
+		Default: "the8020/uui/shell/", Environment: "KERNEL_NETWORK_ROOT_ALIAS",
+		Pattern:         `^[A-Za-z0-9_-]+(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*/?$`,
+		RestartRequired: true, Description: "root alias",
+	}
+	validated, err := ValidateDefinition(definition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, err := parse(validated, "example/auth/login/"); err != nil || value != "example/auth/login/" {
+		t.Fatalf("valid path = %#v, %v", value, err)
+	}
+	for _, value := range []string{"/absolute", "../escape", "example//shell", "example/shell?query=1"} {
+		if _, err := parse(validated, value); err == nil {
+			t.Errorf("accepted invalid path %q", value)
+		}
+	}
+	definition.Pattern = "["
+	if _, err := ValidateDefinition(definition); err == nil {
+		t.Fatal("accepted invalid setting pattern")
+	}
+	definition.Pattern = "^value$"
+	definition.Type = TypeInteger
+	definition.Default = int64(1)
+	if _, err := ValidateDefinition(definition); err == nil {
+		t.Fatal("accepted pattern on non-string setting")
+	}
+}
+
+func TestPersistedUnknownAndInvalidValuesFailLoading(t *testing.T) {
+	for _, content := range []string{"[unknown]\nvalue = 1\n", "[network]\nmain_port = 70000\n"} {
+		paths := newPersistencePaths(t)
+		_ = os.WriteFile(paths.Node, []byte(content), 0o600)
+		if _, err := New(testDefinitions(), paths, nil, func(string) (string, bool) { return "", false }); err == nil {
+			t.Fatalf("accepted %q", content)
+		}
+	}
+}

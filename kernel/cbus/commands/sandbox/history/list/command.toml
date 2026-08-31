@@ -1,0 +1,30 @@
+version = 1
+id = "sandbox.history.list"
+path = ["sandbox", "history", "list"]
+summary = "List historical sandboxes"
+description = "Reads a bounded page from the separate terminal sandbox history. It never scans or changes the live sandbox catalog."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/sandbox/history/list/list.go"
+symbol = "New"
+[[parameters]]
+name = "limit"
+type = "integer"
+option = "limit"
+required = false
+description = "Maximum records to return; defaults to 100 and cannot exceed 1000."
+[[parameters]]
+name = "before"
+type = "string"
+option = "before"
+required = false
+description = "Exclusive history-ID cursor from the previous page."
+[[result]]
+name = "sandboxes"
+type = "array"
+[[result]]
+name = "next_cursor"
+type = "string"
+[[examples]]
+command = "sandbox history list --limit 100"

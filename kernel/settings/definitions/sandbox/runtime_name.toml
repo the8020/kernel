@@ -1,0 +1,8 @@
+key = "sandbox.runtime.name"
+type = "string"
+storage = "node"
+default = "io.containerd.runsc.v1"
+environment = "KERNEL_SANDBOX_RUNTIME_NAME"
+runtime_mutable = false
+restart_required = true
+description = "Containerd runtime name used when the selected sandbox mode is full."

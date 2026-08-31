@@ -1,0 +1,10 @@
+key = "network.ssh_port"
+type = "integer"
+storage = "node"
+default = 2222
+environment = "KERNEL_NETWORK_SSH_PORT"
+minimum = 1
+maximum = 65535
+runtime_mutable = false
+restart_required = true
+description = "Kernel SSH listener port."

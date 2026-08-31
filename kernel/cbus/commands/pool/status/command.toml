@@ -1,0 +1,15 @@
+version = 1
+id = "pool.status"
+path = ["pool", "status"]
+summary = "Show warm-pool status"
+description = "Shows desired, ready, creating, reserved, assigned, failed, and replenish counts per immutable runtime-profile hash."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/pool/status/status.go"
+symbol = "New"
+[[result]]
+name = "profiles"
+type = "array"
+[[examples]]
+command = "pool status"

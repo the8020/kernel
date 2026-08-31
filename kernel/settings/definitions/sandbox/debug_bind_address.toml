@@ -1,0 +1,8 @@
+key = "sandbox.debug.bind_address"
+type = "string"
+storage = "node"
+default = "127.0.0.1"
+environment = "KERNEL_SANDBOX_DEBUG_BIND_ADDRESS"
+runtime_mutable = false
+restart_required = true
+description = "Host address used for temporary inspector leases."

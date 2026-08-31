@@ -1,0 +1,27 @@
+ARG DENO_BASE
+FROM ${DENO_BASE}
+
+ENV DENO_NO_UPDATE_CHECK=1 \
+    DENO_NO_PROMPT=1 \
+    DENO_DIR=/runtime-cache
+
+USER root
+COPY build.sh /tmp/the8020-image-build.sh
+RUN /bin/bash /tmp/the8020-image-build.sh && \
+    rm -f /tmp/the8020-image-build.sh
+
+COPY --chown=deno:deno supervisor /opt/runtime/supervisor
+COPY --chown=deno:deno worker /opt/runtime/worker
+COPY --chown=deno:deno kernel /opt/runtime/kernel
+COPY --chown=deno:deno http-source /opt/runtime/http-source
+COPY --chown=deno:deno bundle-runtime.sh /opt/runtime/bundle-runtime.sh
+COPY --chown=deno:deno deno.json /opt/runtime/deno.json
+COPY --chown=deno:deno protocol.ts /opt/runtime/protocol.ts
+
+RUN /bin/bash /opt/runtime/bundle-runtime.sh /opt/runtime/http-source /opt/runtime/http && \
+    rm -rf /opt/runtime/http-source /opt/runtime/bundle-runtime.sh
+
+USER deno
+WORKDIR /opt/runtime
+EXPOSE 8000 9229
+ENTRYPOINT ["deno", "run", "--unstable-worker-options", "--config=/opt/runtime/deno.json", "--cached-only", "--no-prompt", "--inspect=0.0.0.0:9229", "--allow-read=/opt/runtime,/artifacts", "--allow-write=/tmp,/runtime-cache", "--allow-run=/usr/bin/deno", "--allow-net=0.0.0.0:8000", "--allow-env=SANDBOX_ID,RUNTIME_GROUP_ID,WORKLOAD_TYPE,IMAGE_DIGEST,INTERNAL_API_TOKEN,KERNEL_CALLBACK_ADDRESS,SUPERVISOR_HOST,SUPERVISOR_PORT,INSPECTOR_PORT,RUNTIME_PROFILE_HASH,HEARTBEAT_INTERVAL_MS,WORKER_STOP_GRACE_MS", "/opt/runtime/supervisor/main.ts"]

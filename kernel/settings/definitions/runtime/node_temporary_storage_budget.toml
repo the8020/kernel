@@ -1,0 +1,9 @@
+key = "runtime.node.temporary_storage_budget"
+type = "byte_size"
+storage = "node"
+default = "0B"
+environment = "KERNEL_RUNTIME_NODE_TEMPORARY_STORAGE_BUDGET"
+minimum = 0
+runtime_mutable = false
+restart_required = true
+description = "Total temporary-storage reservation budget for sandboxes on this node; zero derives it from the runtime filesystem."

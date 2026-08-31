@@ -1,0 +1,15 @@
+version = 1
+id = "node.paths.get"
+path = ["node", "paths", "get"]
+summary = "Show initialized storage paths"
+description = "Returns the node installation root and the configured packages, system configuration, shared state, and user-data roots."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/node/paths/get/get.go"
+symbol = "New"
+[[result]]
+name = "layout"
+type = "object"
+[[examples]]
+command = "node paths get"

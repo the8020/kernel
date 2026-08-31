@@ -1,0 +1,10 @@
+key = "service.worker.idle_timeout"
+type = "integer"
+storage = "node"
+default = 300000
+environment = "KERNEL_SERVICE_WORKER_IDLE_TIMEOUT"
+minimum = 1000
+maximum = 86400000
+runtime_mutable = false
+restart_required = true
+description = "Idle service Worker timeout in milliseconds."

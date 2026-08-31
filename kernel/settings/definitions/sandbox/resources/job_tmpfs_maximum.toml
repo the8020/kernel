@@ -1,0 +1,8 @@
+key = "sandbox.resources.job.tmpfs_maximum"
+type = "byte_size"
+storage = "node"
+default = "256MB"
+environment = "KERNEL_SANDBOX_RESOURCES_JOB_TMPFS_MAXIMUM"
+runtime_mutable = false
+restart_required = true
+description = "Bounded temporary-filesystem maximum for job runtime groups."

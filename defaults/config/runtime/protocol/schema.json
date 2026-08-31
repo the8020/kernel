@@ -1,0 +1,33 @@
+{
+  "protocol_version": 1,
+  "messages": [
+    "supervisor_registration",
+    "heartbeat",
+    "start_worker",
+    "stop_worker",
+    "worker_state_change",
+    "worker_log_event",
+    "worker_invoke",
+    "worker_result",
+    "persistent_execution_complete",
+    "persistent_execution_completed",
+    "job_start",
+    "job_result",
+    "service_pool_configuration",
+    "service_worker_scale_request",
+    "service_openapi",
+    "runtime_drain",
+    "runtime_shutdown",
+    "auth_bootstrap_login",
+    "auth_logout_current",
+    "auth_result",
+    "admin_command",
+    "admin_result",
+    "error_response"
+  ],
+  "required_envelope_fields": [
+    "protocol_version",
+    "message_type",
+    "runtime_group_id"
+  ]
+}

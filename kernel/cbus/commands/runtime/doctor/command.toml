@@ -1,0 +1,21 @@
+version = 1
+id = "runtime.doctor"
+path = ["runtime", "doctor"]
+summary = "Diagnose runtime host readiness"
+description = "Reports full containerd/CNI/cgroup readiness, direct rootless gVisor readiness, and the selected sandbox mode."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/runtime/doctor/doctor.go"
+symbol = "New"
+[[result]]
+name = "full"
+type = "object"
+[[result]]
+name = "rootless"
+type = "object"
+[[result]]
+name = "selection"
+type = "object"
+[[examples]]
+command = "runtime doctor"

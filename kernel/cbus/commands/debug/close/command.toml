@@ -1,0 +1,21 @@
+version = 1
+id = "debug.close"
+path = ["debug", "close"]
+summary = "Close a debug lease"
+description = "Closes one temporary inspector listener and removes its lease state."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/debug/close/close.go"
+symbol = "New"
+[[parameters]]
+name = "lease_id"
+type = "string"
+position = 0
+required = true
+description = "Debug port lease ID."
+[[result]]
+name = "closed"
+type = "boolean"
+[[examples]]
+command = "debug close port-123"

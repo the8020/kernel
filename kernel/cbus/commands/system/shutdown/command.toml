@@ -1,0 +1,16 @@
+version = 1
+id = "system.shutdown"
+path = ["system", "shutdown"]
+aliases = [["shutdown"]]
+summary = "Shut down the kernel"
+description = "Requests an orderly shutdown of the running kernel while leaving an interactive administrative console open."
+mutates_state = true
+restart_behavior = "stops_kernel"
+[handler]
+file = "kernel/cbus/commands/system/shutdown/shutdown.go"
+symbol = "New"
+[[result]]
+name = "requested"
+type = "boolean"
+[[examples]]
+command = "shutdown"

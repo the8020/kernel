@@ -1,0 +1,21 @@
+version = 1
+id = "auth.bootstrap_admin.invalidate_sessions"
+path = ["auth", "bootstrap-admin", "invalidate-sessions"]
+summary = "Invalidate administrator sessions"
+description = "Increments the bootstrap administrator authentication version and deletes current authentication sessions."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/auth/bootstrapadmin/invalidatesessions/invalidatesessions.go"
+symbol = "New"
+[[parameters]]
+name = "username"
+type = "string"
+position = 0
+required = true
+description = "Case-sensitive bootstrap administrator username."
+[[result]]
+name = "user"
+type = "object"
+[[examples]]
+command = "auth bootstrap-admin invalidate-sessions admin"

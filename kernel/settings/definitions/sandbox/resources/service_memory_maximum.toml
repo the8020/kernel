@@ -1,0 +1,8 @@
+key = "sandbox.resources.service.memory_maximum"
+type = "byte_size"
+storage = "node"
+default = "512MB"
+environment = "KERNEL_SANDBOX_RESOURCES_SERVICE_MEMORY_MAXIMUM"
+runtime_mutable = false
+restart_required = true
+description = "Hard memory maximum for service runtime groups."

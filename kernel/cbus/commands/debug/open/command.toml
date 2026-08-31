@@ -1,0 +1,27 @@
+version = 1
+id = "debug.open"
+path = ["debug", "open"]
+summary = "Open a temporary debug lease"
+description = "Allocates a bounded loopback-only host lease for one sandbox Deno inspector endpoint."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/debug/open/open.go"
+symbol = "New"
+[[parameters]]
+name = "sandbox_id"
+type = "string"
+position = 0
+required = true
+description = "Sandbox or runtime-group ID."
+[[parameters]]
+name = "duration"
+type = "integer"
+option = "duration-seconds"
+required = false
+description = "Lease lifetime in seconds."
+[[result]]
+name = "lease"
+type = "object"
+[[examples]]
+command = "debug open sbx-ax9thsl3 --duration-seconds 900"

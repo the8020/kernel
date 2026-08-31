@@ -1,0 +1,28 @@
+version = 1
+id = "settings.set"
+path = ["settings", "set"]
+aliases = [["config", "set"]]
+summary = "Persist and apply an 80|20 setting"
+description = "Creates or replaces the override in the setting's declared node or global store and applies a runtime-mutable node setting transactionally."
+mutates_state = true
+restart_behavior = "depends_on_setting"
+[handler]
+file = "kernel/cbus/commands/settings/set/set.go"
+symbol = "New"
+[[parameters]]
+name = "key"
+type = "string"
+position = 0
+required = true
+description = "Dot-separated setting key."
+[[parameters]]
+name = "value"
+type = "string"
+position = 1
+required = true
+description = "Value converted according to the setting definition."
+[[result]]
+name = "setting"
+type = "object"
+[[examples]]
+command = "settings set network.main_port 9090"

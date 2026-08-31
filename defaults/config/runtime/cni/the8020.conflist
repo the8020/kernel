@@ -1,0 +1,19 @@
+{
+  "cniVersion": "1.1.0",
+  "name": "the8020",
+  "plugins": [
+    {
+      "type": "bridge",
+      "bridge": "the8020",
+      "isGateway": true,
+      "ipMasq": false,
+      "hairpinMode": true,
+      "ipam": {
+        "type": "host-local",
+        "ranges": [[{"subnet": "10.88.0.0/16", "gateway": "10.88.0.1"}]],
+        "routes": [{"dst": "0.0.0.0/0"}]
+      }
+    },
+    {"type": "loopback"}
+  ]
+}

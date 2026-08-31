@@ -1,0 +1,15 @@
+version = 1
+id = "auth.session.list"
+path = ["auth", "session", "list"]
+summary = "List authentication sessions"
+description = "Lists bootstrap authentication-session identifiers, users, timestamps, validity, and authentication versions without secrets or hashes."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/auth/session/list/list.go"
+symbol = "New"
+[[result]]
+name = "authentication_sessions"
+type = "array"
+[[examples]]
+command = "auth session list"

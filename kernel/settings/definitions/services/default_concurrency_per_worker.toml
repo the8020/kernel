@@ -1,0 +1,10 @@
+key = "services.default_concurrency_per_worker"
+type = "integer"
+storage = "node"
+default = 32
+environment = "KERNEL_SERVICES_DEFAULT_CONCURRENCY_PER_WORKER"
+minimum = 1
+maximum = 65536
+runtime_mutable = false
+restart_required = true
+description = "Default hard concurrent execution-slot limit per service Worker."

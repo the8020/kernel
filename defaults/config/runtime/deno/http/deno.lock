@@ -1,0 +1,17 @@
+{
+  "version": "5",
+  "specifiers": {
+    "jsr:@hono/hono@4.9.8": "4.9.8",
+    "npm:zod@4.1.5": "4.1.5"
+  },
+  "jsr": {
+    "@hono/hono@4.9.8": {
+      "integrity": "908150f13e90181a051a3af3bf15203aff00190682afedfd38824d0cb9299a95"
+    }
+  },
+  "npm": {
+    "zod@4.1.5": {
+      "integrity": "sha512-rcUUZqlLJgBC33IT3PNMgsCq6TzLQEG/Ei/KTCU0PedSWRMAXoOUN+4t/0H+Q8bdnLPdqUYnvboJT0bn/229qg=="
+    }
+  }
+}

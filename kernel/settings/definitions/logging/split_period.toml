@@ -1,0 +1,9 @@
+key = "logging.split_period"
+type = "enum"
+storage = "node"
+default = "day"
+environment = "KERNEL_LOGGING_SPLIT_PERIOD"
+allowed = ["none", "minute", "hour", "day", "week", "month", "year"]
+runtime_mutable = true
+restart_required = false
+description = "UTC period used to split kernel log files."

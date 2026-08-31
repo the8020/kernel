@@ -1,0 +1,57 @@
+version = 1
+id = "port.expose"
+path = ["port", "expose"]
+summary = "Expose a sandbox port"
+description = "Allocates a kernel-owned host listener and streams traffic to one declared sandbox endpoint; host port zero selects a free port."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/port/expose/expose.go"
+symbol = "New"
+[[parameters]]
+name = "sandbox_id"
+type = "string"
+position = 0
+required = true
+description = "Sandbox or runtime-group ID."
+[[parameters]]
+name = "internal_port"
+type = "integer"
+position = 1
+required = true
+description = "Sandbox TCP port."
+[[parameters]]
+name = "host_port"
+type = "integer"
+option = "host-port"
+required = false
+description = "Explicit host port; zero allocates automatically."
+[[parameters]]
+name = "bind_address"
+type = "string"
+option = "bind-address"
+required = false
+description = "Host IP address; loopback is the default."
+[[parameters]]
+name = "protocol"
+type = "string"
+option = "protocol"
+required = false
+description = "TCP transport with tcp or http purpose metadata."
+[[parameters]]
+name = "purpose"
+type = "string"
+option = "purpose"
+required = false
+description = "Administrative lease purpose metadata."
+[[parameters]]
+name = "expiration"
+type = "integer"
+option = "expiration-seconds"
+required = false
+description = "Optional lease lifetime in seconds."
+[[result]]
+name = "port"
+type = "object"
+[[examples]]
+command = "port expose sbx-ax9thsl3 8080"

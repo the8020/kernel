@@ -1,0 +1,27 @@
+version = 1
+id = "development.sandbox.shell"
+path = ["development", "sandbox", "shell"]
+summary = "Execute inside a developer sandbox"
+description = "Connects through the kernel-owned sandbox driver and executes an ordinary shell command in the development workspace."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/development/sandbox/shell/shell.go"
+symbol = "New"
+[[parameters]]
+name = "workspace_id"
+type = "string"
+position = 0
+required = true
+description = "Development workspace ID."
+[[parameters]]
+name = "command"
+type = "string"
+option = "command"
+required = false
+description = "Shell command to execute; defaults to pwd."
+[[result]]
+name = "shell"
+type = "object"
+[[examples]]
+command = "development sandbox shell default-0123456789abcdef --command 'printf changed > packages/the8020/dev-core/value.txt'"

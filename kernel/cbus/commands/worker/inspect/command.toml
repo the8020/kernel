@@ -1,0 +1,21 @@
+version = 1
+id = "worker.inspect"
+path = ["worker", "inspect"]
+summary = "Inspect one Deno Worker"
+description = "Shows Worker, execution, workload, owner, release, debugger, state, and runtime-group identity."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/worker/inspect/inspect.go"
+symbol = "New"
+[[parameters]]
+name = "worker_id"
+type = "string"
+position = 0
+required = true
+description = "Worker ID."
+[[result]]
+name = "worker"
+type = "object"
+[[examples]]
+command = "worker inspect wrk-ax9thsl3"

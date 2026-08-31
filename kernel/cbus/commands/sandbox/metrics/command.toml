@@ -1,0 +1,21 @@
+version = 1
+id = "sandbox.metrics"
+path = ["sandbox", "metrics"]
+summary = "Read sandbox cgroup metrics"
+description = "Reads current CPU, memory, PID, pressure-event, and cgroup-event counters for one complete sandbox."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/sandbox/metrics/metrics.go"
+symbol = "New"
+[[parameters]]
+name = "sandbox_id"
+type = "string"
+position = 0
+required = true
+description = "Sandbox or runtime-group ID."
+[[result]]
+name = "metrics"
+type = "object"
+[[examples]]
+command = "sandbox metrics sbx-ax9thsl3"

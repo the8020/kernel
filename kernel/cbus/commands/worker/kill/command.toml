@@ -1,0 +1,21 @@
+version = 1
+id = "worker.kill"
+path = ["worker", "kill"]
+summary = "Immediately kill a Worker"
+description = "Requests immediate termination of one Worker without implicitly terminating its sandbox."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/worker/kill/kill.go"
+symbol = "New"
+[[parameters]]
+name = "worker_id"
+type = "string"
+position = 0
+required = true
+description = "Worker ID."
+[[result]]
+name = "killed"
+type = "boolean"
+[[examples]]
+command = "worker kill wrk-ax9thsl3"

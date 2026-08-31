@@ -1,0 +1,10 @@
+key = "runtime.worker.stop_grace_period"
+type = "integer"
+storage = "node"
+default = 1000
+environment = "KERNEL_RUNTIME_WORKER_STOP_GRACE_PERIOD"
+minimum = 10
+maximum = 60000
+runtime_mutable = false
+restart_required = true
+description = "Grace period before one Worker is terminated, in milliseconds."

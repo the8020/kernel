@@ -1,0 +1,15 @@
+version = 1
+id = "port.list"
+path = ["port", "list"]
+summary = "List host-port leases"
+description = "Lists concise active host-port lease identity, protocol, state, bind endpoint, sandbox target, purpose, and expiration."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/port/list/list.go"
+symbol = "New"
+[[result]]
+name = "ports"
+type = "array"
+[[examples]]
+command = "port list"

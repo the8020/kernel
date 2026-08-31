@@ -1,0 +1,21 @@
+version = 1
+id = "sandbox.delete"
+path = ["sandbox", "delete"]
+summary = "Delete a sandbox and its state"
+description = "Stops the sandbox when needed, deletes runtime and network resources, archives terminal metadata and logs, and removes live runtime-group state."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/sandbox/delete/delete.go"
+symbol = "New"
+[[parameters]]
+name = "sandbox_id"
+type = "string"
+position = 0
+required = true
+description = "Sandbox or runtime-group ID."
+[[result]]
+name = "deleted"
+type = "boolean"
+[[examples]]
+command = "sandbox delete sbx-ax9thsl3"

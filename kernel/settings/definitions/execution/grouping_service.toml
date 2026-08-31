@@ -1,0 +1,9 @@
+key = "execution.grouping.service"
+type = "enum"
+storage = "node"
+default = "owner"
+environment = "KERNEL_EXECUTION_GROUPING_SERVICE"
+allowed = ["isolated", "owner", "namespace", "shared"]
+runtime_mutable = false
+restart_required = true
+description = "Default runtime-group strategy for services."

@@ -1,0 +1,18 @@
+version = 1
+id = "node.list"
+path = ["node", "list"]
+summary = "List application-server nodes"
+description = "Lists shared node topology plus reachable node capacity, service replicas, Workers, execution slots, and the local node ID."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/node/list/list.go"
+symbol = "New"
+[[result]]
+name = "nodes"
+type = "array"
+[[result]]
+name = "local_node_id"
+type = "string"
+[[examples]]
+command = "node list"

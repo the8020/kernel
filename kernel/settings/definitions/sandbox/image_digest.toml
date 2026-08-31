@@ -1,0 +1,8 @@
+key = "sandbox.image.digest"
+type = "string"
+storage = "node"
+default = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+environment = "KERNEL_SANDBOX_IMAGE_DIGEST"
+runtime_mutable = false
+restart_required = true
+description = "Immutable digest of the canonical imported runtime image; the all-zero default auto-selects the verified image record."

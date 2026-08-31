@@ -1,0 +1,10 @@
+key = "runtime.supervisor.heartbeat_interval"
+type = "integer"
+storage = "node"
+default = 5000
+environment = "KERNEL_RUNTIME_SUPERVISOR_HEARTBEAT_INTERVAL"
+minimum = 100
+maximum = 60000
+runtime_mutable = false
+restart_required = true
+description = "Supervisor heartbeat interval in milliseconds."

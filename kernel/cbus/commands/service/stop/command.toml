@@ -1,0 +1,27 @@
+version = 1
+id = "service.stop"
+path = ["service", "stop"]
+summary = "Stop a filesystem service"
+description = "Disables the service in shared desired state, increments its generation, drains requests, and stops only its local capacity."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/service/stop/stop.go"
+symbol = "New"
+[[parameters]]
+name = "service_id"
+type = "string"
+position = 0
+required = true
+description = "Service ID."
+[[parameters]]
+name = "detail"
+type = "boolean"
+option = "detail"
+required = false
+description = "Show complete effective configuration, instance identities, failures, and metrics."
+[[result]]
+name = "state"
+type = "string"
+[[examples]]
+command = "service stop the8020/demo/variables"

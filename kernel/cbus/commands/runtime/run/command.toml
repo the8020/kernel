@@ -1,0 +1,131 @@
+version = 1
+id = "runtime.run"
+path = ["runtime", "run"]
+summary = "Run a local TypeScript module inside gVisor"
+description = "Validates and copies a bounded local module tree into a kernel-owned artifact before ordinary sandboxed job execution."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/runtime/run/run.go"
+symbol = "New"
+[[parameters]]
+name = "path"
+type = "string"
+position = 0
+required = true
+description = "Project-local TypeScript entrypoint path."
+[[parameters]]
+name = "workload_type"
+type = "string"
+option = "workload-type"
+required = false
+description = "Execution workload type; Phase 1B administrative modules run as job."
+[[parameters]]
+name = "owner_id"
+type = "string"
+option = "owner-id"
+required = false
+description = "Administrative execution owner ID."
+[[parameters]]
+name = "group_key"
+type = "string"
+option = "group-key"
+required = false
+description = "Explicit job runtime-group key."
+[[parameters]]
+name = "namespace"
+type = "string"
+option = "namespace"
+required = false
+description = "Grouping namespace."
+[[parameters]]
+name = "timeout"
+type = "integer"
+option = "timeout-ms"
+required = false
+description = "Execution timeout in milliseconds."
+[[parameters]]
+name = "input"
+type = "string"
+option = "input"
+required = false
+description = "One JSON input value."
+[[parameters]]
+name = "detached"
+type = "boolean"
+option = "detached"
+required = false
+description = "Return after the durable execution starts."
+[[parameters]]
+name = "workspace"
+type = "string"
+option = "workspace"
+required = false
+description = "Project-root-bounded development directory mounted at /workspace."
+[[parameters]]
+name = "workspace_write"
+type = "boolean"
+option = "workspace-write"
+required = false
+description = "Mount the explicit development workspace read-write instead of read-only."
+[[parameters]]
+name = "read"
+type = "string"
+option = "read"
+required = false
+description = "Comma-separated Worker read paths within the runtime profile."
+[[parameters]]
+name = "write"
+type = "string"
+option = "write"
+required = false
+description = "Comma-separated Worker write paths within the runtime profile."
+[[parameters]]
+name = "network"
+type = "string"
+option = "network"
+required = false
+description = "Comma-separated allowed outbound network hosts."
+[[parameters]]
+name = "imports"
+type = "string"
+option = "imports"
+required = false
+description = "Comma-separated allowed remote import hosts."
+[[parameters]]
+name = "environment"
+type = "string"
+option = "environment"
+required = false
+description = "Comma-separated environment variable names."
+[[parameters]]
+name = "system_info"
+type = "boolean"
+option = "system-info"
+required = false
+description = "Allow bounded system information."
+[[parameters]]
+name = "detail"
+type = "boolean"
+option = "detail"
+required = false
+description = "Show the complete artifact and execution record instead of the concise result."
+[[result]]
+name = "result"
+type = "object"
+[[result]]
+name = "state"
+type = "string"
+[[result]]
+name = "duration"
+type = "string"
+[[result]]
+name = "resources"
+type = "object"
+[[result]]
+name = "execution_id"
+type = "string"
+[[examples]]
+command = "runtime run ./example.ts"
+[[examples]]
+command = "runtime run ./example.ts --workspace ./development-data --workspace-write"

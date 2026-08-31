@@ -1,0 +1,10 @@
+key = "runtime.node.maximum_workers"
+type = "integer"
+storage = "node"
+default = 1024
+environment = "KERNEL_RUNTIME_NODE_MAXIMUM_WORKERS"
+minimum = 1
+maximum = 1000000
+runtime_mutable = false
+restart_required = true
+description = "Maximum total Deno Workers admitted across all sandboxes on this node."

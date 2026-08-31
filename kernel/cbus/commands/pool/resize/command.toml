@@ -1,0 +1,27 @@
+version = 1
+id = "pool.resize"
+path = ["pool", "resize"]
+summary = "Resize a warm runtime pool"
+description = "Changes the desired clean warm count for one immutable runtime-profile hash and reports replenishment accounting."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/pool/resize/resize.go"
+symbol = "New"
+[[parameters]]
+name = "profile"
+type = "string"
+position = 0
+required = true
+description = "Runtime profile SHA-256 hash."
+[[parameters]]
+name = "count"
+type = "integer"
+position = 1
+required = true
+description = "Desired non-negative warm count."
+[[result]]
+name = "profile"
+type = "object"
+[[examples]]
+command = "pool resize sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef 2"

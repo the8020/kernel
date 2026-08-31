@@ -1,0 +1,8 @@
+key = "sandbox.debug.enabled"
+type = "boolean"
+storage = "node"
+default = false
+environment = "KERNEL_SANDBOX_DEBUG_ENABLED"
+runtime_mutable = false
+restart_required = true
+description = "Allow temporary inspector leases for explicitly requested sandboxes."

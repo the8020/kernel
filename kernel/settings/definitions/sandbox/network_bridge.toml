@@ -1,0 +1,8 @@
+key = "sandbox.network.bridge"
+type = "string"
+storage = "node"
+default = "the8020"
+environment = "KERNEL_SANDBOX_NETWORK_BRIDGE"
+runtime_mutable = false
+restart_required = true
+description = "Dedicated host bridge used by sandbox CNI networking."

@@ -1,0 +1,10 @@
+key = "auth.bootstrap.argon2.parallelism"
+type = "integer"
+storage = "node"
+default = 1
+environment = "KERNEL_AUTH_BOOTSTRAP_ARGON2_PARALLELISM"
+minimum = 1
+maximum = 32
+runtime_mutable = false
+restart_required = true
+description = "Argon2id parallelism for bootstrap administrator passwords."

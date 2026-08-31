@@ -1,0 +1,60 @@
+version = 1
+id = "runtime.status"
+path = ["runtime", "status"]
+summary = "Show aggregate runtime status"
+description = "Reports selected gVisor mode, capabilities, limitations, readiness, and aggregate sandbox, Worker, port, and warm-pool counts. Use the resource list and inspect commands for individual records."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/runtime/status/status.go"
+symbol = "New"
+[[result]]
+name = "ready"
+type = "boolean"
+[[result]]
+name = "failure"
+type = "string"
+[[result]]
+name = "configured_mode"
+type = "string"
+[[result]]
+name = "selected_mode"
+type = "string"
+[[result]]
+name = "selection_reason"
+type = "string"
+[[result]]
+name = "full_ready"
+type = "boolean"
+[[result]]
+name = "rootless_ready"
+type = "boolean"
+[[result]]
+name = "capabilities"
+type = "object"
+[[result]]
+name = "limitations"
+type = "array"
+[[result]]
+name = "sandbox_count"
+type = "integer"
+[[result]]
+name = "worker_count"
+type = "integer"
+[[result]]
+name = "port_count"
+type = "integer"
+[[result]]
+name = "warm_pool_profile_count"
+type = "integer"
+[[result]]
+name = "warm_pool_desired_count"
+type = "integer"
+[[result]]
+name = "warm_pool_ready_count"
+type = "integer"
+[[result]]
+name = "warm_pool_failed_count"
+type = "integer"
+[[examples]]
+command = "runtime status"

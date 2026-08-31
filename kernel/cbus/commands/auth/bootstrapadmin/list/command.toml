@@ -1,0 +1,15 @@
+version = 1
+id = "auth.bootstrap_admin.list"
+path = ["auth", "bootstrap-admin", "list"]
+summary = "List bootstrap administrators"
+description = "Lists bootstrap administrators and active authentication-session counts without password hashes."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/auth/bootstrapadmin/list/list.go"
+symbol = "New"
+[[result]]
+name = "users"
+type = "array"
+[[examples]]
+command = "auth bootstrap-admin list"

@@ -1,0 +1,12 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run 80|20",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "./run.sh",
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}

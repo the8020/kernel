@@ -1,0 +1,21 @@
+version = 1
+id = "sandbox.stop"
+path = ["sandbox", "stop"]
+summary = "Gracefully stop a sandbox"
+description = "Drains the supervisor and stops the complete gVisor sandbox within the configured grace period."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/sandbox/stop/stop.go"
+symbol = "New"
+[[parameters]]
+name = "sandbox_id"
+type = "string"
+position = 0
+required = true
+description = "Sandbox or runtime-group ID."
+[[result]]
+name = "stopped"
+type = "boolean"
+[[examples]]
+command = "sandbox stop sbx-ax9thsl3"
