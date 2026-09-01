@@ -14,11 +14,11 @@ import (
 )
 
 type serviceAssociation struct {
-	ServiceID     string            `json:"service_id"`
-	State         webservices.State `json:"state"`
-	Enabled       bool              `json:"enabled"`
-	InstanceCount int               `json:"instance_count"`
-	WorkerCount   int               `json:"worker_count"`
+	ServiceID    string            `json:"service_id"`
+	State        webservices.State `json:"state"`
+	Enabled      bool              `json:"enabled"`
+	SandboxCount int               `json:"sandbox_count"`
+	WorkerCount  int               `json:"worker_count"`
 }
 
 func New(serviceSet *services.Services) core.Handler {
@@ -58,9 +58,9 @@ func New(serviceSet *services.Services) core.Handler {
 				return nil, commandutil.OperationError(listErr)
 			}
 			for _, status := range statuses {
-				for _, instance := range status.Instances {
-					if instance.SandboxID == item.Spec.SandboxID {
-						associatedServices = append(associatedServices, serviceAssociation{ServiceID: status.ServiceID, State: status.State, Enabled: status.Enabled, InstanceCount: status.InstanceCount, WorkerCount: status.WorkerCount})
+				for _, sandbox := range status.Sandboxes {
+					if sandbox.SandboxID == item.Spec.SandboxID {
+						associatedServices = append(associatedServices, serviceAssociation{ServiceID: status.ServiceID, State: status.State, Enabled: status.Enabled, SandboxCount: status.SandboxCount, WorkerCount: status.WorkerCount})
 						break
 					}
 				}

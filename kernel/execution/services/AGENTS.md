@@ -1,49 +1,52 @@
 # Purpose
 
-- Own low-level Deno service-replica Worker pools, capacity reconciliation,
-  supervisor dispatch, and legacy Go-hosted exposure primitives.
+- Own low-level sandbox-local Deno service Worker pools, capacity reconciliation,
+  and supervisor dispatch.
 
 # Ownership
 
 - Start a service in a coordinated service group, create/configure its Worker
-  pool, scale within limits, register/unregister path-prefix routes, optionally
-  allocate a host HTTP port, stream requests through the supervisor,
+  pool, scale within limits, stream requests through the supervisor,
   list/inspect, and stop.
 - Do not implement service program logic, buffer bodies, expose the supervisor
   control API, or create a separate service runtime.
 
 # Local Contracts
 
-- Public API includes lifecycle/query/exposure methods plus `EnsureCapacity`,
+- Public API includes lifecycle/query methods plus `EnsureCapacity`,
   `ReconcileCapacity`, exact-Worker dispatch, HTTP dispatch, and WebSocket
   proxy.
 - Shared service groups retain separate pools keyed by service ID. Requests
   select least-in-flight eligible Workers and remain streaming across
   Go/supervisor/Worker boundaries.
-- Each replica records stateless/persistent mode, hard concurrency per Worker,
-  Worker minimum/maximum, and target utilization. Request admission grows
-  Workers to preserve target headroom and reports typed replica-capacity failure
-  when the high-level scheduler must add a replica.
+- Each sandbox-local pool records internal stateless/persistent execution mode,
+  hard concurrency per Worker, Worker minimum/maximum, target utilization, and
+  Worker keepalive. Request admission uses the greater of supervisor-observed
+  occupancy and kernel-reserved requests, grows Workers to preserve target
+  headroom, and reports typed sandbox-capacity failure when the high-level
+  scheduler must place capacity elsewhere.
 - Persistent follow-ups carrying trusted execution identity bypass new-slot
   admission and target the bound Worker. Supervisor-reported persistent
   reservations remain occupied while disconnected during keep-alive.
 - An explicit instance-root-bounded development workspace becomes an
   owner-scoped runtime-profile mount at `/workspace`; incompatible workspace
   mounts split runtime groups.
-- Exposure handlers are owned by Go, route by a canonical path prefix, and
-  optional host listeners use the port manager; rollback removes partial
-  routes/leases and restart restoration reattaches Go HTTP handlers.
-- Ephemeral pools wake from zero on demand and return to zero after idle
-  timeout; saturated pools pre-scale within their maximum, completed requests
-  are counted, and Workers are replaced after the configured recycle count.
+- Scale-to-zero pools wake on demand and return to zero after Worker keepalive;
+  saturated pools pre-scale within their sandbox-local maximum. Request-count
+  recycling is not a second lifecycle policy.
 - Scale and request-capacity reconciliation treat only supervisor-reported
   `ready` Workers as usable, exclude failed/draining/missing Worker IDs before
   dispatch, reap pool-owned orphans, and replace lost capacity to the requested
   count.
-- Scale-down uses kernel-owned cooldown/hysteresis, removes only idle Workers,
-  excludes them from supervisor scheduling before graceful stop, and never
-  removes an occupied persistent slot. Full streams retain ownership through
-  end/cancel.
+- Target-utilization growth is best-effort when an existing Worker still has a
+  hard execution slot: a failed headroom start returns typed capacity evidence
+  so the kernel may try another sandbox and then safely use that slot. True hard
+  saturation never falls through to dispatch.
+- Scale-down uses supervisor-reported idle timestamps and an injected clock,
+  removes only expired idle excess while retaining the minimum and target-load
+  headroom, excludes Workers from supervisor scheduling before graceful stop,
+  and never removes an occupied persistent slot. Full streams retain ownership
+  through end/cancel.
 - Pool shutdown excludes every Worker from dispatch, durably removes each
   terminated Worker, releases its sandbox owner, and destroys the sandbox when
   that was its final owner. Failed startup also releases partial ownership. If
@@ -61,24 +64,25 @@
   failed with a durable runtime-unavailable marker. Subsequent shutdown clears
   its Worker indexes and releases ownership without calling the dead group.
 - Startup reconciliation may call `RetireUnavailable` for an exact pool whose
-  sandbox is authoritatively absent; it clears Worker, route, and lease indexes
-  and persists `STOPPED` without probing the vanished runtime.
+  sandbox is authoritatively absent; it clears Worker indexes and persists
+  `STOPPED` without probing the vanished runtime.
 - Restart restoration marks a persisted pool failed when its runtime group is
   unavailable or any recorded Worker is no longer `ready`, allowing the
   filesystem reconciler to recreate it immediately.
-- Invalid records are quarantined individually; route, Worker, and host-port
-  restoration failures mark only their owning pool failed and never roll back
-  healthy restored pools.
+- Invalid records are quarantined individually; Worker restoration failures mark
+  only their owning pool failed and never roll back healthy restored pools.
 
 # Work Guidance
 
-- Persist desired service and Worker-pool identity before/after mutations and
-  keep scaling deterministic by Worker ID.
+- Persist desired service and Worker-pool identity before/after mutations, keep
+  scaling deterministic by Worker ID, and keep capacity reconciliation scoped
+  to the selected pool.
 
 # Verification
 
 - Unit tests cover start/minimum pool, shared pools, stateless/persistent mode,
-  hard capacity, target scaling and hysteresis, exclude-before-stop ordering,
+  hard capacity, reserved-demand/target scaling, fake-clock Worker keepalive,
+  target-headroom scale-down and growth fallback, exclude-before-stop ordering,
   failed-Worker repair, streamed dispatch, exact-Worker routing, resumable stop,
   owner release, group failure, mixed valid/corrupt recovery, isolated
   restoration, missing-group retirement, terminal-record removal, and

@@ -59,16 +59,16 @@
   sandbox scans; cleanup errors are logged without making live runtime
   composition unavailable.
 - Restart restoration never rebinds a listener for an unavailable sandbox;
-  service listeners additionally require an exact live service/lease identity
-  match before routes and Go handlers are restored.
+  debug listeners are always discarded because their token and Go handler are
+  memory-only.
 - Persisted live service pools whose sandbox is absent from the reconciled
   healthy set are retired locally before service restoration, including pools
   already left `FAILED` by an earlier run; startup never waits on supervisor
   calls to known-missing groups.
-- Workload-record migration, quarantine, failure propagation, service/job
-  restoration, host-port restoration, and service-route restoration are
-  best-effort per workload. Their errors are logged and isolated; only failure
-  of a shared runtime prerequisite may make runtime composition unavailable.
+- Workload-record quarantine, failure propagation, service/job restoration, and
+  host-port restoration are best-effort per workload. Their errors are logged
+  and isolated; only failure of a shared runtime prerequisite may make runtime
+  composition unavailable.
 - Runtime-host failures retain both full and rootless diagnostics and
   command-bus availability without a native-Deno fallback; `auto` prefers full
   mode and selects rootless only when full host authority is unavailable.
@@ -83,7 +83,7 @@
   input; its absence falls back to the equivalent built-in profile.
 - Development-manager initialization starts inherited development-sandbox
   deletion asynchronously without restoring process state or scanning all
-  workspace records; native durable source, home, and system roots remain
+  workspace records; native durable source and system roots remain
   available for explicit workspace start.
 - The console broker registers `/_the8020/console` on the loopback main
   listener after authentication and development composition, receives the
@@ -108,8 +108,9 @@
   `/opt/runtime` modules, and keep portable dependency mode in runtime-group
   compatibility. The kernel never scans or interprets package state.
 - Runtime composition derives node memory/CPU/temp-storage budgets when their
-  node-local setting is zero, applies sandbox and Worker admission limits, and
-  publishes local sandbox/replica/Worker/execution-slot capacity to the
+  node-local setting is zero, applies node Worker admission plus kernel-wide
+  per-sandbox Worker/CPU/RAM targets, derives the canonical service framework
+  defaults, and publishes local sandbox/Worker/execution-slot capacity to the
   authenticated node topology owner.
 - Runtime composition exposes generic exact-Worker invocation through the
   authenticated local/cross-node path and generic persistent-execution

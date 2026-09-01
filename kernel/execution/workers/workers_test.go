@@ -149,6 +149,53 @@ func TestWorkerStartEnforcesNodeMaximum(t *testing.T) {
 	request := supervisor.StartWorkerRequest{Metadata: supervisor.ExecutionMetadata{WorkerID: "next", ExecutionID: "execution", WorkloadType: model.WorkloadJob, OwnerID: "job", Entrypoint: "file:///programs/main.ts"}}
 	if _, err := manager.Start(context.Background(), "group", request); err == nil || !strings.Contains(err.Error(), "Worker capacity") {
 		t.Fatalf("start error=%v", err)
+	} else if !errors.Is(err, ErrNodeCapacity) {
+		t.Fatalf("start error is not typed: %v", err)
+	}
+}
+
+func TestWorkerStartEnforcesExactSandboxCapacityPolicy(t *testing.T) {
+	request := supervisor.StartWorkerRequest{Metadata: supervisor.ExecutionMetadata{WorkerID: "next", ExecutionID: "execution", WorkloadType: model.WorkloadJob, OwnerID: "job", Entrypoint: "file:///programs/main.ts"}}
+	for _, test := range []struct {
+		name    string
+		workers []supervisor.WorkerStatus
+		metrics model.ResourceMetrics
+		want    string
+	}{
+		{name: "Workers", workers: []supervisor.WorkerStatus{{WorkerID: "first"}, {WorkerID: "second"}}, want: "sandbox Worker capacity"},
+		{name: "CPU", workers: []supervisor.WorkerStatus{{WorkerID: "first"}}, metrics: model.ResourceMetrics{CPUUtilization: 0.8}, want: "sandbox CPU utilization"},
+		{name: "RAM", workers: []supervisor.WorkerStatus{{WorkerID: "first"}}, metrics: model.ResourceMetrics{MemoryUtilization: 0.8}, want: "sandbox RAM utilization"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			spec := model.SandboxSpec{SandboxID: "sandbox", RuntimeGroupID: "group", WorkloadType: model.WorkloadJob, DependencyMode: model.DependencyCachedOnly, Permissions: model.Permissions{ReadPaths: []string{"/programs"}}}
+			sandboxes := &fakeSandboxes{items: []manager.Inspection{{Spec: spec, Status: model.SandboxStatus{Metrics: test.metrics}}}}
+			control := &fakeControl{workers: map[string][]supervisor.WorkerStatus{"group": test.workers}}
+			capacity := model.SandboxCapacityPolicy{MaximumWorkers: 2, TargetCPUUtilization: 0.8, TargetRAMUtilization: 0.8}
+			manager, err := NewWithCapacity(sandboxes, control, 0, capacity)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := manager.Start(context.Background(), "group", request); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("start error=%v, want %q", err, test.want)
+			} else if !errors.Is(err, ErrSandboxCapacity) {
+				t.Fatalf("start error is not typed: %v", err)
+			}
+		})
+	}
+}
+
+func TestFirstWorkerBootstrapsAnEmptySandboxDuringSupervisorResourceSpike(t *testing.T) {
+	spec := model.SandboxSpec{SandboxID: "sandbox", RuntimeGroupID: "group", WorkloadType: model.WorkloadJob, DependencyMode: model.DependencyCachedOnly, Permissions: model.Permissions{ReadPaths: []string{"/programs"}}}
+	sandboxes := &fakeSandboxes{items: []manager.Inspection{{Spec: spec, Status: model.SandboxStatus{Metrics: model.ResourceMetrics{CPUUtilization: 1, MemoryUtilization: 1}}}}}
+	control := &fakeControl{workers: map[string][]supervisor.WorkerStatus{"group": {}}}
+	capacity := model.SandboxCapacityPolicy{MaximumWorkers: 2, TargetCPUUtilization: 0.8, TargetRAMUtilization: 0.8}
+	manager, err := NewWithCapacity(sandboxes, control, 0, capacity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := supervisor.StartWorkerRequest{Metadata: supervisor.ExecutionMetadata{WorkerID: "first", ExecutionID: "execution", WorkloadType: model.WorkloadJob, OwnerID: "job", Entrypoint: "file:///programs/main.ts"}}
+	if _, err := manager.Start(context.Background(), "group", request); err != nil {
+		t.Fatalf("first Worker was rejected from an empty sandbox: %v", err)
 	}
 }
 

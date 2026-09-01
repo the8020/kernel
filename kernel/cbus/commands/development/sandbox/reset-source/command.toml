@@ -2,7 +2,7 @@ version = 1
 id = "development.sandbox.reset_source"
 path = ["development", "sandbox", "reset-source"]
 summary = "Discard private source changes"
-description = "Replaces the durable private source with current shared package contents while preserving developer home and system customization."
+description = "Replaces the durable private source with current shared package contents while preserving system customization, including root's home."
 mutates_state = true
 restart_behavior = "none"
 [handler]

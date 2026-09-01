@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +18,6 @@ import (
 	"the8020/kernel/execution/records"
 	"the8020/kernel/execution/supervisor"
 	"the8020/kernel/execution/workers"
-	"the8020/kernel/ports"
 	"the8020/kernel/sandbox/manager"
 	"the8020/kernel/sandbox/model"
 )
@@ -54,43 +54,53 @@ type fakeWorkers struct {
 	configurations []configuration
 	websocketCalls []string
 	inFlight       map[string]int
+	idleSinceMS    map[string]int64
 	states         map[string]string
 	lifecycle      []string
 	listErr        error
 	stopErrors     map[string]error
 }
 
-func TestServiceRestoreIsolatesCorruptAndRouteFailedRecords(t *testing.T) {
+func testOptions(minimum, maximum, concurrency int) Options {
+	return Options{
+		MinimumWorkers: minimum, MaximumWorkers: maximum,
+		ConcurrencyPerWorker: concurrency, WorkerKeepAlive: time.Minute,
+		ExecutionMode: "stateless", TargetUtilization: 0.7,
+		PlacementWorkers: minimum,
+	}
+}
+
+func testRecord(serviceID string) Record {
+	return Record{
+		ServiceID: serviceID, LogicalServiceID: "example/api/" + serviceID,
+		Entrypoint: "file:///" + serviceID + ".ts", ReleaseID: "current", State: "IDLE",
+		MaximumWorkers: 2, ConcurrencyPerWorker: 1, WorkerKeepAlive: time.Minute,
+		ExecutionMode: "stateless", TargetUtilization: 0.7,
+	}
+}
+
+func TestServiceRestoreIsolatesCorruptRecords(t *testing.T) {
 	root := t.TempDir()
 	store, err := records.New(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, record := range []Record{
-		{ServiceID: "a-route-failure", LogicalServiceID: "example/api/a", Entrypoint: "file:///a.ts", WorkerIDs: []string{}, ReleaseID: "current", State: "READY", PathPrefix: "/taken", ExecutionMode: "stateless", TargetUtilization: 0.7},
-		{ServiceID: "b-healthy", LogicalServiceID: "example/api/b", Entrypoint: "file:///b.ts", WorkerIDs: []string{}, ReleaseID: "current", State: "READY", PathPrefix: "/healthy", ExecutionMode: "stateless", TargetUtilization: 0.7},
-	} {
-		if err := store.Save(record.ServiceID, record); err != nil {
-			t.Fatal(err)
-		}
+	healthy := testRecord("healthy")
+	if err := store.Save(healthy.ServiceID, healthy); err != nil {
+		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "c-corrupt.json"), []byte(`{"service_id":"c-corrupt","unknown":true}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	router := &fakeRouter{handlers: map[string]http.Handler{"/taken": http.NotFoundHandler()}}
-	manager, err := New(&fakeCoordinator{}, &fakeWorkers{}, store, router, &fakePorts{}, Policy{Strategy: model.GroupingOwner})
+	manager, err := New(&fakeCoordinator{}, &fakeWorkers{}, store, Policy{Strategy: model.GroupingOwner})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := manager.Restore(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if router.handlers["/healthy"] == nil {
-		t.Fatal("healthy service route was not restored")
-	}
-	failed, err := manager.Inspect("a-route-failure")
-	if err != nil || failed.State != "FAILED" || !strings.Contains(failed.Failure, "restore route") {
-		t.Fatalf("failed=%#v err=%v", failed, err)
+	if restored, err := manager.Inspect(healthy.ServiceID); err != nil || restored.State != "IDLE" {
+		t.Fatalf("restored=%#v err=%v", restored, err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "c-corrupt.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("corrupt live record still exists: %v", err)
@@ -123,7 +133,7 @@ func (f *fakeWorkers) List(_ context.Context, group string) ([]workers.Record, e
 			if state == "" {
 				state = "ready"
 			}
-			result = append(result, workers.Record{RuntimeGroupID: group, Worker: supervisor.WorkerStatus{WorkerID: request.Metadata.WorkerID, WorkloadID: request.Metadata.WorkloadID, InFlight: f.inFlight[request.Metadata.WorkerID], State: state}})
+			result = append(result, workers.Record{RuntimeGroupID: group, Worker: supervisor.WorkerStatus{WorkerID: request.Metadata.WorkerID, WorkloadID: request.Metadata.WorkloadID, InFlight: f.inFlight[request.Metadata.WorkerID], IdleSinceMS: f.idleSinceMS[request.Metadata.WorkerID], State: state}})
 		}
 	}
 	return result, nil
@@ -134,12 +144,13 @@ func TestServiceRestoreMarksAStaleRuntimeRecordFailedSoItCanRestart(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	record := Record{ServiceID: "api", LogicalServiceID: "example/api/main", Entrypoint: "file:///api.ts", RuntimeGroupID: "missing-group", SandboxID: "missing-sandbox", WorkerIDs: []string{"missing-worker"}, State: "READY", ExecutionMode: "stateless"}
+	record := testRecord("api")
+	record.RuntimeGroupID, record.SandboxID, record.WorkerIDs, record.State = "missing-group", "missing-sandbox", []string{"missing-worker"}, "READY"
 	if err := store.Save(record.ServiceID, record); err != nil {
 		t.Fatal(err)
 	}
 	workersFake := &fakeWorkers{listErr: context.Canceled}
-	manager, err := New(&fakeCoordinator{}, workersFake, store, &fakeRouter{}, &fakePorts{}, Policy{Strategy: model.GroupingOwner})
+	manager, err := New(&fakeCoordinator{}, workersFake, store, Policy{Strategy: model.GroupingOwner})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +169,8 @@ func TestServiceRestoreRejectsPersistedFailedWorker(t *testing.T) {
 		t.Fatal(err)
 	}
 	const workerID = "worker-failed"
-	record := Record{ServiceID: "api", LogicalServiceID: "example/api/main", Entrypoint: "file:///api.ts", RuntimeGroupID: "group", SandboxID: "sandbox", WorkerIDs: []string{workerID}, State: "READY", ExecutionMode: "stateless"}
+	record := testRecord("api")
+	record.RuntimeGroupID, record.SandboxID, record.WorkerIDs, record.State = "group", "sandbox", []string{workerID}, "READY"
 	if err := store.Save(record.ServiceID, record); err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +178,7 @@ func TestServiceRestoreRejectsPersistedFailedWorker(t *testing.T) {
 		starts: []supervisor.StartWorkerRequest{{Metadata: supervisor.ExecutionMetadata{WorkerID: workerID, WorkloadID: record.ServiceID}}},
 		states: map[string]string{workerID: "failed"},
 	}
-	manager, err := New(&fakeCoordinator{}, workersFake, store, &fakeRouter{}, &fakePorts{}, Policy{Strategy: model.GroupingOwner})
+	manager, err := New(&fakeCoordinator{}, workersFake, store, Policy{Strategy: model.GroupingOwner})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,11 +202,11 @@ func (f *fakeWorkers) StopInGroup(_ context.Context, _ string, workerID string, 
 func TestServiceStopPersistsProgressAndResumes(t *testing.T) {
 	store, _ := records.New(t.TempDir())
 	workersFake := &fakeWorkers{stopErrors: map[string]error{}}
-	manager, err := New(&fakeCoordinator{}, workersFake, store, &fakeRouter{}, &fakePorts{}, Policy{Strategy: model.GroupingOwner, MinimumWorkers: 2, MaximumWorkers: 2, MaximumInFlight: 1})
+	manager, err := New(&fakeCoordinator{}, workersFake, store, Policy{Strategy: model.GroupingOwner})
 	if err != nil {
 		t.Fatal(err)
 	}
-	record, err := manager.Start(context.Background(), "api", "file:///programs/api.ts", Options{})
+	record, err := manager.Start(context.Background(), "api", "file:///programs/api.ts", testOptions(2, 2, 1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,16 +237,13 @@ func TestServiceStopRetiresMissingRuntimeGroupAndRecord(t *testing.T) {
 	store, _ := records.New(t.TempDir())
 	workersFake := &fakeWorkers{listErr: os.ErrNotExist}
 	coordinatorFake := &fakeCoordinator{}
-	manager, err := New(coordinatorFake, workersFake, store, &fakeRouter{}, &fakePorts{}, Policy{Strategy: model.GroupingOwner})
+	manager, err := New(coordinatorFake, workersFake, store, Policy{Strategy: model.GroupingOwner})
 	if err != nil {
 		t.Fatal(err)
 	}
-	record := Record{
-		ServiceID: "stale-pool", LogicalServiceID: "core/example/service",
-		RuntimeGroupID: "missing-group", SandboxID: "missing-sandbox",
-		WorkerIDs: []string{"missing-worker"}, WorkerRequests: map[string]int{"missing-worker": 3},
-		State: "FAILED", ExecutionMode: "stateless", TargetUtilization: 0.7,
-	}
+	record := testRecord("stale-pool")
+	record.LogicalServiceID, record.RuntimeGroupID, record.SandboxID = "core/example/service", "missing-group", "missing-sandbox"
+	record.WorkerIDs, record.State = []string{"missing-worker"}, "FAILED"
 	if err := store.Save(record.ServiceID, record); err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +251,7 @@ func TestServiceStopRetiresMissingRuntimeGroupAndRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	stopped, err := manager.Inspect(record.ServiceID)
-	if err != nil || stopped.State != "STOPPED" || len(stopped.WorkerIDs) != 0 || len(stopped.WorkerRequests) != 0 {
+	if err != nil || stopped.State != "STOPPED" || len(stopped.WorkerIDs) != 0 {
 		t.Fatalf("stopped=%#v err=%v", stopped, err)
 	}
 	if err := manager.RemoveStopped(record.ServiceID); err != nil {
@@ -255,11 +264,11 @@ func TestServiceStopRetiresMissingRuntimeGroupAndRecord(t *testing.T) {
 
 func TestServiceStartDiscardsRecordWhenGroupWasNeverAcquired(t *testing.T) {
 	store, _ := records.New(t.TempDir())
-	manager, err := New(&fakeCoordinator{ensureErr: errors.New("shared-group label update failed")}, &fakeWorkers{}, store, &fakeRouter{}, &fakePorts{}, Policy{Strategy: model.GroupingOwner})
+	manager, err := New(&fakeCoordinator{ensureErr: errors.New("shared-group label update failed")}, &fakeWorkers{}, store, Policy{Strategy: model.GroupingOwner})
 	if err != nil {
 		t.Fatal(err)
 	}
-	failed, err := manager.Start(context.Background(), "unassigned-pool", "file:///programs/api.ts", Options{})
+	failed, err := manager.Start(context.Background(), "unassigned-pool", "file:///programs/api.ts", testOptions(0, 1, 1))
 	if err == nil || failed.State != "FAILED" || !strings.Contains(err.Error(), "label update failed") {
 		t.Fatalf("failed=%#v err=%v", failed, err)
 	}
@@ -272,11 +281,11 @@ func TestRejectedServiceStartReleasesGroupAndDiscardsPoolRecord(t *testing.T) {
 	store, _ := records.New(t.TempDir())
 	coordinatorFake := &fakeCoordinator{}
 	workersFake := &fakeWorkers{startErr: &supervisor.ResponseError{Method: http.MethodPost, Path: "/v1/workers/start", Status: "400 Bad Request", StatusCode: http.StatusBadRequest, Message: "service type check failed"}}
-	manager, err := New(coordinatorFake, workersFake, store, &fakeRouter{}, &fakePorts{}, Policy{Strategy: model.GroupingOwner, MinimumWorkers: 1, MaximumWorkers: 1, MaximumInFlight: 1})
+	manager, err := New(coordinatorFake, workersFake, store, Policy{Strategy: model.GroupingOwner})
 	if err != nil {
 		t.Fatal(err)
 	}
-	failed, err := manager.Start(context.Background(), "rejected-pool", "file:///programs/api.ts", Options{})
+	failed, err := manager.Start(context.Background(), "rejected-pool", "file:///programs/api.ts", testOptions(1, 1, 1))
 	if !errors.Is(err, ErrInvalidServiceDefinition) || failed.State != "FAILED" || !strings.Contains(err.Error(), "type check failed") {
 		t.Fatalf("failed=%#v err=%v", failed, err)
 	}
@@ -290,12 +299,14 @@ func TestRejectedServiceStartReleasesGroupAndDiscardsPoolRecord(t *testing.T) {
 
 func TestServiceStopTreatsAnAlreadyRemovedRuntimeGroupAsReleased(t *testing.T) {
 	store, _ := records.New(t.TempDir())
-	record := Record{ServiceID: "stale-pool", LogicalServiceID: "core/example/service", RuntimeGroupID: "missing-group", SandboxID: "missing-sandbox", WorkerIDs: []string{"missing-worker"}, WorkerRequests: map[string]int{"missing-worker": 1}, State: "FAILED", ExecutionMode: "stateless", TargetUtilization: 0.7}
+	record := testRecord("stale-pool")
+	record.LogicalServiceID, record.RuntimeGroupID, record.SandboxID = "core/example/service", "missing-group", "missing-sandbox"
+	record.WorkerIDs, record.State = []string{"missing-worker"}, "FAILED"
 	if err := store.Save(record.ServiceID, record); err != nil {
 		t.Fatal(err)
 	}
 	coordinatorFake := &fakeCoordinator{releaseErr: fmt.Errorf("sandbox missing: %w", os.ErrNotExist)}
-	manager, err := New(coordinatorFake, &fakeWorkers{listErr: os.ErrNotExist}, store, &fakeRouter{}, &fakePorts{}, Policy{Strategy: model.GroupingOwner})
+	manager, err := New(coordinatorFake, &fakeWorkers{listErr: os.ErrNotExist}, store, Policy{Strategy: model.GroupingOwner})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,17 +322,13 @@ func TestServiceStopTreatsAnAlreadyRemovedRuntimeGroupAsReleased(t *testing.T) {
 func TestRetireUnavailableRequiresNoRuntimeCalls(t *testing.T) {
 	store, _ := records.New(t.TempDir())
 	workersFake := &fakeWorkers{listErr: errors.New("must not list Workers")}
-	manager, err := New(&fakeCoordinator{releaseErr: errors.New("must not release group")}, workersFake, store, &fakeRouter{}, &fakePorts{}, Policy{Strategy: model.GroupingOwner})
+	manager, err := New(&fakeCoordinator{releaseErr: errors.New("must not release group")}, workersFake, store, Policy{Strategy: model.GroupingOwner})
 	if err != nil {
 		t.Fatal(err)
 	}
-	record := Record{
-		ServiceID: "failed-pool", LogicalServiceID: "core/example/service",
-		RuntimeGroupID: "absent-group", SandboxID: "absent-sandbox",
-		WorkerIDs: []string{"absent-worker"}, WorkerRequests: map[string]int{"absent-worker": 2},
-		State: "FAILED", PathPrefix: "/old", PortLeaseID: "old-lease", HostPort: 1234,
-		ExecutionMode: "stateless", TargetUtilization: 0.7,
-	}
+	record := testRecord("failed-pool")
+	record.LogicalServiceID, record.RuntimeGroupID, record.SandboxID = "core/example/service", "absent-group", "absent-sandbox"
+	record.WorkerIDs, record.State = []string{"absent-worker"}, "FAILED"
 	if err := store.Save(record.ServiceID, record); err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +336,7 @@ func TestRetireUnavailableRequiresNoRuntimeCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	retired, err := manager.Inspect(record.ServiceID)
-	if err != nil || retired.State != "STOPPED" || len(retired.WorkerIDs) != 0 || len(retired.WorkerRequests) != 0 || retired.PathPrefix != "" || retired.PortLeaseID != "" || retired.HostPort != 0 || !strings.Contains(retired.Failure, "sandbox absent") {
+	if err != nil || retired.State != "STOPPED" || len(retired.WorkerIDs) != 0 || !strings.Contains(retired.Failure, "sandbox absent") {
 		t.Fatalf("retired=%#v err=%v", retired, err)
 	}
 }
@@ -357,15 +364,14 @@ func (f *fakeWorkers) ProxyServiceWebSocket(_ context.Context, group, serviceID 
 func TestPersistentModeUsesTheSamePrewarmedHTTPAndWebSocketWorkerPool(t *testing.T) {
 	store, _ := records.New(t.TempDir())
 	workersFake := &fakeWorkers{}
-	manager, err := New(&fakeCoordinator{}, workersFake, store, &fakeRouter{}, &fakePorts{}, Policy{
-		Strategy: model.GroupingOwner, MinimumWorkers: 2, MaximumWorkers: 8, MaximumInFlight: 4,
-	})
+	manager, err := New(&fakeCoordinator{}, workersFake, store, Policy{Strategy: model.GroupingOwner})
 	if err != nil {
 		t.Fatal(err)
 	}
 	record, err := manager.Start(context.Background(), "chat", "file:///programs/chat.ts", Options{
 		ExecutionMode: "persistent", LogicalServiceID: "example/chat/session", Generation: 3,
 		CanonicalBasePath: "/example/chat/session", MinimumWorkers: 2, MaximumWorkers: 8,
+		ConcurrencyPerWorker: 4, WorkerKeepAlive: time.Minute, TargetUtilization: 0.7, PlacementWorkers: 2,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -391,54 +397,14 @@ func TestPersistentModeUsesTheSamePrewarmedHTTPAndWebSocketWorkerPool(t *testing
 	}
 }
 
-type fakeRouter struct {
-	handlers map[string]http.Handler
-	removed  []string
-}
-
-func (f *fakeRouter) RegisterRoute(prefix string, handler http.Handler) error {
-	if f.handlers == nil {
-		f.handlers = map[string]http.Handler{}
-	}
-	if _, ok := f.handlers[prefix]; ok {
-		return context.Canceled
-	}
-	f.handlers[prefix] = handler
-	return nil
-}
-func (f *fakeRouter) UnregisterRoute(prefix string) {
-	delete(f.handlers, prefix)
-	f.removed = append(f.removed, prefix)
-}
-
-type fakePorts struct {
-	lease   ports.Lease
-	handler http.Handler
-	closed  []string
-}
-
-func (f *fakePorts) ExposeHTTP(_ context.Context, request ports.Request, handler http.Handler) (ports.Lease, error) {
-	f.handler = handler
-	f.lease = ports.Lease{LeaseID: "port-lease", SandboxID: request.SandboxID, SandboxIP: request.SandboxIP, HostPort: 18080}
-	return f.lease, nil
-}
-func (f *fakePorts) AttachHTTP(_ context.Context, leaseID string, handler http.Handler) (ports.Lease, error) {
-	if f.lease.LeaseID != leaseID {
-		return ports.Lease{}, context.Canceled
-	}
-	f.handler = handler
-	return f.lease, nil
-}
-func (f *fakePorts) Close(id string) error { f.closed = append(f.closed, id); return nil }
-
-func TestServicePoolScaleStreamingExposureAndStop(t *testing.T) {
+func TestServicePoolScaleStreamingDispatchAndStop(t *testing.T) {
 	store, _ := records.New(t.TempDir())
-	coordinatorFake, workersFake, routerFake, portsFake := &fakeCoordinator{}, &fakeWorkers{}, &fakeRouter{}, &fakePorts{}
-	manager, err := New(coordinatorFake, workersFake, store, routerFake, portsFake, Policy{Strategy: model.GroupingOwner, MinimumWorkers: 2, MaximumWorkers: 4, MaximumInFlight: 3})
+	coordinatorFake, workersFake := &fakeCoordinator{}, &fakeWorkers{}
+	manager, err := New(coordinatorFake, workersFake, store, Policy{Strategy: model.GroupingOwner})
 	if err != nil {
 		t.Fatal(err)
 	}
-	record, err := manager.Start(context.Background(), "api", "file:///programs/api.ts", Options{})
+	record, err := manager.Start(context.Background(), "api", "file:///programs/api.ts", testOptions(2, 4, 3))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -460,24 +426,21 @@ func TestServicePoolScaleStreamingExposureAndStop(t *testing.T) {
 	if len(scaled.WorkerIDs) != 1 || len(workersFake.stops) != 3 {
 		t.Fatalf("scaled=%#v stops=%#v", scaled, workersFake.stops)
 	}
-	if len(workersFake.lifecycle) != 4 || workersFake.lifecycle[3] != "configure:"+scaled.WorkerIDs[0] {
-		t.Fatalf("scale-down did not stop idle Workers before publishing the smaller pool: %#v", workersFake.lifecycle)
+	if len(workersFake.lifecycle) != 4 || workersFake.lifecycle[0] != "configure:"+scaled.WorkerIDs[0] {
+		t.Fatalf("scale-down did not exclude idle Workers before stopping them: %#v", workersFake.lifecycle)
 	}
 	if _, err := manager.Scale(context.Background(), "api", 5); err == nil {
 		t.Fatal("scale above maximum accepted")
 	}
-	exposed, err := manager.Expose(context.Background(), "api", ExposeOptions{PathPrefix: "/api/", AutomaticHostPort: true})
+	request := httptest.NewRequest(http.MethodPost, "http://the8020/api", strings.NewReader("body"))
+	response, err := manager.Dispatch(context.Background(), "api", request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if exposed.PathPrefix != "/api" || exposed.PortLeaseID != "port-lease" || portsFake.handler == nil {
-		t.Fatalf("exposed=%#v", exposed)
-	}
-	request := httptest.NewRequest(http.MethodPost, "http://the8020/api", strings.NewReader("body"))
-	recorder := httptest.NewRecorder()
-	routerFake.handlers["/api"].ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusAccepted || recorder.Header().Get("X-Service") != "test" || recorder.Body.String() != "reply:body" {
-		t.Fatalf("response=%#v body=%q", recorder.Result(), recorder.Body.String())
+	body, readErr := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if readErr != nil || response.StatusCode != http.StatusAccepted || response.Header.Get("X-Service") != "test" || string(body) != "reply:body" {
+		t.Fatalf("response=%#v body=%q err=%v", response, body, readErr)
 	}
 	if err := manager.ProxyWebSocket(context.Background(), "api", httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://service/events", nil)); err != nil {
 		t.Fatal(err)
@@ -489,19 +452,19 @@ func TestServicePoolScaleStreamingExposureAndStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	stopped, _ := manager.Inspect("api")
-	if stopped.State != "STOPPED" || stopped.PathPrefix != "" || len(portsFake.closed) != 1 {
-		t.Fatalf("stopped=%#v closed=%#v", stopped, portsFake.closed)
+	if stopped.State != "STOPPED" {
+		t.Fatalf("stopped=%#v", stopped)
 	}
 }
 
 func TestServiceScaleReplacesFailedWorkerAtUnchangedDesiredCount(t *testing.T) {
 	store, _ := records.New(t.TempDir())
 	workersFake := &fakeWorkers{states: map[string]string{}}
-	manager, err := New(&fakeCoordinator{}, workersFake, store, &fakeRouter{}, nil, Policy{Strategy: model.GroupingOwner, MinimumWorkers: 1, MaximumWorkers: 2, MaximumInFlight: 1})
+	manager, err := New(&fakeCoordinator{}, workersFake, store, Policy{Strategy: model.GroupingOwner})
 	if err != nil {
 		t.Fatal(err)
 	}
-	record, err := manager.Start(context.Background(), "api", "file:///programs/api.ts", Options{})
+	record, err := manager.Start(context.Background(), "api", "file:///programs/api.ts", testOptions(1, 2, 1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -528,17 +491,25 @@ func TestServiceScaleReplacesFailedWorkerAtUnchangedDesiredCount(t *testing.T) {
 	}
 }
 
-func TestServiceStartValidatesLimitsAndDuplicateExposure(t *testing.T) {
+func TestServiceStartRequiresCanonicalScalingPolicy(t *testing.T) {
 	store, _ := records.New(t.TempDir())
-	manager, _ := New(&fakeCoordinator{}, &fakeWorkers{}, store, &fakeRouter{}, &fakePorts{}, Policy{Strategy: model.GroupingOwner, MinimumWorkers: 1, MaximumWorkers: 2, MaximumInFlight: 1})
-	if _, err := manager.Start(context.Background(), "api", "file:///api.ts", Options{MinimumWorkers: 3, MaximumWorkers: 2}); err == nil {
-		t.Fatal("invalid limits accepted")
+	manager, _ := New(&fakeCoordinator{}, &fakeWorkers{}, store, Policy{Strategy: model.GroupingOwner})
+	for name, options := range map[string]Options{
+		"bounds":      {MinimumWorkers: 3, MaximumWorkers: 2, ConcurrencyPerWorker: 1, WorkerKeepAlive: time.Minute, ExecutionMode: "stateless", TargetUtilization: 0.7, PlacementWorkers: 3},
+		"concurrency": {MaximumWorkers: 2, WorkerKeepAlive: time.Minute, ExecutionMode: "stateless", TargetUtilization: 0.7},
+		"keepalive":   {MaximumWorkers: 2, ConcurrencyPerWorker: 1, ExecutionMode: "stateless", TargetUtilization: 0.7},
+		"utilization": {MaximumWorkers: 2, ConcurrencyPerWorker: 1, WorkerKeepAlive: time.Minute, ExecutionMode: "stateless"},
+		"placement":   {MaximumWorkers: 2, ConcurrencyPerWorker: 1, WorkerKeepAlive: time.Minute, ExecutionMode: "stateless", TargetUtilization: 0.7, PlacementWorkers: 3},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := manager.Start(context.Background(), name, "file:///api.ts", options); err == nil {
+				t.Fatal("invalid policy accepted")
+			}
+		})
 	}
-	if _, err := manager.Start(context.Background(), "api", "file:///api.ts", Options{PathPrefix: "/api"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := manager.Expose(context.Background(), "api", ExposeOptions{}); err == nil {
-		t.Fatal("duplicate exposure accepted")
+	record, err := manager.Start(context.Background(), "api", "file:///api.ts", testOptions(0, 2, 1))
+	if err != nil || record.State != "IDLE" {
+		t.Fatalf("record=%#v err=%v", record, err)
 	}
 }
 
@@ -546,8 +517,8 @@ func TestRuntimeGroupFailureMarksLiveServiceFailed(t *testing.T) {
 	store, _ := records.New(t.TempDir())
 	coordinatorFake := &fakeCoordinator{}
 	workersFake := &fakeWorkers{}
-	manager, _ := New(coordinatorFake, workersFake, store, &fakeRouter{}, &fakePorts{}, Policy{Strategy: model.GroupingOwner, MinimumWorkers: 1, MaximumWorkers: 2, MaximumInFlight: 1})
-	record, err := manager.Start(context.Background(), "api", "file:///api.ts", Options{})
+	manager, _ := New(coordinatorFake, workersFake, store, Policy{Strategy: model.GroupingOwner})
+	record, err := manager.Start(context.Background(), "api", "file:///api.ts", testOptions(1, 2, 1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -568,106 +539,209 @@ func TestRuntimeGroupFailureMarksLiveServiceFailed(t *testing.T) {
 	}
 }
 
-func TestServiceRestoreReattachesRouteAndDurableHTTPLease(t *testing.T) {
-	store, err := records.New(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	record := Record{ServiceID: "api", LogicalServiceID: "example/api/main", Entrypoint: "file:///api.ts", RuntimeGroupID: "group", SandboxID: "sandbox", SandboxIP: "10.88.0.2", State: "READY", PathPrefix: "/api", PortLeaseID: "port-original", HostPort: 18080, ExecutionMode: "stateless"}
-	if err := store.Save(record.ServiceID, record); err != nil {
-		t.Fatal(err)
-	}
-	workersFake, routerFake := &fakeWorkers{}, &fakeRouter{}
-	portsFake := &fakePorts{lease: ports.Lease{LeaseID: "port-original", HostPort: 18080, Protocol: "http"}}
-	manager, err := New(&fakeCoordinator{}, workersFake, store, routerFake, portsFake, Policy{Strategy: model.GroupingOwner})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := manager.Restore(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if routerFake.handlers["/api"] == nil || portsFake.handler == nil || portsFake.lease.LeaseID != "port-original" {
-		t.Fatalf("handlers=%#v port=%#v", routerFake.handlers, portsFake.lease)
-	}
-	request := httptest.NewRequest(http.MethodPost, "http://the8020/api", strings.NewReader("restored"))
-	recorder := httptest.NewRecorder()
-	portsFake.handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusAccepted || recorder.Body.String() != "reply:restored" {
-		t.Fatalf("status=%d body=%q", recorder.Code, recorder.Body.String())
-	}
-}
-
-func TestEphemeralServiceWakesRecyclesAndReturnsToZero(t *testing.T) {
+func TestScaleToZeroServiceWakesAndReturnsToZero(t *testing.T) {
 	store, _ := records.New(t.TempDir())
-	workersFake, routerFake := &fakeWorkers{}, &fakeRouter{}
-	manager, err := New(&fakeCoordinator{}, workersFake, store, routerFake, nil, Policy{Strategy: model.GroupingOwner, MinimumWorkers: 1, MaximumWorkers: 2, MaximumInFlight: 1, WorkerIdleTimeout: 5 * time.Millisecond, RecycleRequests: 1})
+	workersFake := &fakeWorkers{idleSinceMS: map[string]int64{}}
+	manager, err := New(&fakeCoordinator{}, workersFake, store, Policy{Strategy: model.GroupingOwner})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer manager.Close()
-	record, err := manager.Start(context.Background(), "preview", "file:///programs/preview.ts", Options{Ephemeral: true, MaximumWorkers: 2, MaximumInFlight: 1, PathPrefix: "/preview", IdleTimeout: 5 * time.Millisecond})
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	manager.now = func() time.Time { return now }
+	options := testOptions(0, 2, 1)
+	options.WorkerKeepAlive = 5 * time.Millisecond
+	record, err := manager.Start(context.Background(), "preview", "file:///programs/preview.ts", options)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(record.WorkerIDs) != 0 {
 		t.Fatalf("ephemeral service started Workers: %#v", record)
 	}
-	request := httptest.NewRequest(http.MethodPost, "http://the8020/preview", strings.NewReader("body"))
-	response := httptest.NewRecorder()
-	routerFake.handlers["/preview"].ServeHTTP(response, request)
-	if response.Code != http.StatusAccepted || response.Body.String() != "reply:body" {
-		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	response, err := manager.Dispatch(context.Background(), "preview", httptest.NewRequest(http.MethodPost, "http://the8020/preview", strings.NewReader("body")))
+	if err != nil {
+		t.Fatal(err)
 	}
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		current, inspectErr := manager.Inspect("preview")
-		if inspectErr == nil && current.State == "IDLE" && len(current.WorkerIDs) == 0 {
-			break
-		}
-		time.Sleep(time.Millisecond)
+	body, readErr := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if readErr != nil || response.StatusCode != http.StatusAccepted || string(body) != "reply:body" {
+		t.Fatalf("status=%d body=%q err=%v", response.StatusCode, body, readErr)
 	}
-	current, _ := manager.Inspect("preview")
-	if current.State != "IDLE" || len(current.WorkerIDs) != 0 || len(workersFake.starts) != 2 || len(workersFake.stops) != 2 {
+	current, err := manager.Inspect("preview")
+	if err != nil || len(current.WorkerIDs) != 1 {
+		t.Fatalf("awake service=%#v err=%v", current, err)
+	}
+	workersFake.idleSinceMS[current.WorkerIDs[0]] = now.Add(-5 * time.Millisecond).UnixMilli()
+	if _, err := manager.ReconcileCapacity(context.Background(), "preview", 0); err != nil {
+		t.Fatal(err)
+	}
+	current, _ = manager.Inspect("preview")
+	if current.State != "IDLE" || len(current.WorkerIDs) != 0 || len(workersFake.starts) != 1 || len(workersFake.stops) != 1 {
 		t.Fatalf("current=%#v starts=%d stops=%#v", current, len(workersFake.starts), workersFake.stops)
+	}
+}
+
+func TestWorkerKeepAliveRemovesOnlyExpiredExcessWorkersAndKeepsMinimum(t *testing.T) {
+	store, _ := records.New(t.TempDir())
+	workersFake := &fakeWorkers{idleSinceMS: map[string]int64{}}
+	manager, err := New(&fakeCoordinator{}, workersFake, store, Policy{Strategy: model.GroupingOwner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, time.February, 3, 4, 5, 6, 0, time.UTC)
+	manager.now = func() time.Time { return now }
+	options := testOptions(1, 3, 1)
+	options.WorkerKeepAlive = 2 * time.Minute
+	record, err := manager.Start(context.Background(), "api", "file:///programs/api.ts", options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = manager.Scale(context.Background(), record.ServiceID, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workersFake.idleSinceMS[record.WorkerIDs[0]] = now.Add(-3 * time.Minute).UnixMilli()
+	workersFake.idleSinceMS[record.WorkerIDs[1]] = now.Add(-time.Minute).UnixMilli()
+	workersFake.idleSinceMS[record.WorkerIDs[2]] = now.Add(-3 * time.Minute).UnixMilli()
+
+	reconciled, err := manager.ReconcileCapacity(context.Background(), record.ServiceID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reconciled.WorkerIDs) != 1 || reconciled.WorkerIDs[0] != record.WorkerIDs[1] {
+		t.Fatalf("reconciled Workers=%#v, want only recently idle Worker %s", reconciled.WorkerIDs, record.WorkerIDs[1])
+	}
+	now = now.Add(2 * time.Minute)
+	reconciled, err = manager.ReconcileCapacity(context.Background(), record.ServiceID, 1)
+	if err != nil || len(reconciled.WorkerIDs) != 1 {
+		t.Fatalf("minimum Worker was removed: record=%#v err=%v", reconciled, err)
+	}
+}
+
+func TestWorkerScaleDownRetainsTargetHeadroomUnderLoad(t *testing.T) {
+	store, _ := records.New(t.TempDir())
+	workersFake := &fakeWorkers{inFlight: map[string]int{}, idleSinceMS: map[string]int64{}}
+	manager, err := New(&fakeCoordinator{}, workersFake, store, Policy{Strategy: model.GroupingOwner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, time.February, 3, 4, 5, 6, 0, time.UTC)
+	manager.now = func() time.Time { return now }
+	record, err := manager.Start(context.Background(), "api", "file:///programs/api.ts", testOptions(0, 3, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = manager.Scale(context.Background(), record.ServiceID, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workersFake.inFlight[record.WorkerIDs[0]] = 1
+	workersFake.idleSinceMS[record.WorkerIDs[1]] = now.Add(-2 * time.Minute).UnixMilli()
+	workersFake.idleSinceMS[record.WorkerIDs[2]] = now.Add(-2 * time.Minute).UnixMilli()
+
+	reconciled, err := manager.ReconcileCapacity(context.Background(), record.ServiceID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reconciled.WorkerIDs) != 2 || !slices.Contains(reconciled.WorkerIDs, record.WorkerIDs[0]) {
+		t.Fatalf("Workers=%#v, want busy Worker plus target headroom", reconciled.WorkerIDs)
 	}
 }
 
 func TestServiceScalesBeforeDispatchWhenEveryWorkerIsSaturated(t *testing.T) {
 	store, _ := records.New(t.TempDir())
-	workersFake, routerFake := &fakeWorkers{inFlight: map[string]int{}}, &fakeRouter{}
-	manager, _ := New(&fakeCoordinator{}, workersFake, store, routerFake, nil, Policy{Strategy: model.GroupingOwner, MinimumWorkers: 1, MaximumWorkers: 2, MaximumInFlight: 1})
-	record, err := manager.Start(context.Background(), "api", "file:///programs/api.ts", Options{PathPrefix: "/api"})
+	workersFake := &fakeWorkers{inFlight: map[string]int{}}
+	manager, _ := New(&fakeCoordinator{}, workersFake, store, Policy{Strategy: model.GroupingOwner})
+	record, err := manager.Start(context.Background(), "api", "file:///programs/api.ts", testOptions(1, 2, 1))
 	if err != nil {
 		t.Fatal(err)
 	}
 	workersFake.inFlight[record.WorkerIDs[0]] = 1
-	request := httptest.NewRequest(http.MethodGet, "http://the8020/api", nil)
-	response := httptest.NewRecorder()
-	routerFake.handlers["/api"].ServeHTTP(response, request)
+	response, err := manager.Dispatch(context.Background(), "api", httptest.NewRequest(http.MethodGet, "http://the8020/api", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
 	current, _ := manager.Inspect("api")
-	if response.Code != http.StatusAccepted || len(current.WorkerIDs) != 2 || len(workersFake.starts) != 2 {
-		t.Fatalf("status=%d current=%#v starts=%d", response.Code, current, len(workersFake.starts))
+	if response.StatusCode != http.StatusAccepted || len(current.WorkerIDs) != 2 || len(workersFake.starts) != 2 {
+		t.Fatalf("status=%d current=%#v starts=%d", response.StatusCode, current, len(workersFake.starts))
+	}
+}
+
+func TestTargetUtilizationUsesPerWorkerConcurrencyToAddCapacity(t *testing.T) {
+	store, _ := records.New(t.TempDir())
+	workersFake := &fakeWorkers{inFlight: map[string]int{}}
+	manager, _ := New(&fakeCoordinator{}, workersFake, store, Policy{Strategy: model.GroupingOwner})
+	options := testOptions(1, 3, 10)
+	options.TargetUtilization = 0.5
+	record, err := manager.Start(context.Background(), "api", "file:///programs/api.ts", options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workersFake.inFlight[record.WorkerIDs[0]] = 4
+	record, err = manager.EnsureCapacity(context.Background(), record.ServiceID, 3, 0)
+	if err != nil || len(record.WorkerIDs) != 1 {
+		t.Fatalf("below target record=%#v err=%v", record, err)
+	}
+	workersFake.inFlight[record.WorkerIDs[0]] = 5
+	record, err = manager.EnsureCapacity(context.Background(), record.ServiceID, 3, 0)
+	if err != nil || len(record.WorkerIDs) != 2 {
+		t.Fatalf("above target record=%#v err=%v", record, err)
+	}
+}
+
+func TestTargetUtilizationIncludesKernelReservedRequests(t *testing.T) {
+	store, _ := records.New(t.TempDir())
+	workersFake := &fakeWorkers{inFlight: map[string]int{}}
+	manager, _ := New(&fakeCoordinator{}, workersFake, store, Policy{Strategy: model.GroupingOwner})
+	options := testOptions(1, 3, 10)
+	options.TargetUtilization = 0.5
+	record, err := manager.Start(context.Background(), "api", "file:///programs/api.ts", options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err = manager.EnsureCapacity(context.Background(), record.ServiceID, 3, 5)
+	if err != nil || len(record.WorkerIDs) != 2 {
+		t.Fatalf("reserved-demand record=%#v err=%v", record, err)
+	}
+}
+
+func TestTargetHeadroomFailurePreservesAvailableHardCapacity(t *testing.T) {
+	store, _ := records.New(t.TempDir())
+	workersFake := &fakeWorkers{inFlight: map[string]int{}}
+	manager, _ := New(&fakeCoordinator{}, workersFake, store, Policy{Strategy: model.GroupingOwner})
+	record, err := manager.Start(context.Background(), "api", "file:///programs/api.ts", testOptions(1, 2, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workersFake.startErr = errors.New("sandbox CPU utilization is at target")
+	record, err = manager.EnsureCapacity(context.Background(), record.ServiceID, 2, 0)
+	var capacity *SandboxCapacityError
+	if !errors.As(err, &capacity) || capacity.Occupied != 0 || capacity.Slots != 1 || len(record.WorkerIDs) != 1 {
+		t.Fatalf("record=%#v capacity=%#v err=%v", record, capacity, err)
 	}
 }
 
 func TestServiceDispatchRepairsFailedWorkerBeforeForwardingRequest(t *testing.T) {
 	store, _ := records.New(t.TempDir())
-	workersFake, routerFake := &fakeWorkers{states: map[string]string{}}, &fakeRouter{}
-	manager, err := New(&fakeCoordinator{}, workersFake, store, routerFake, nil, Policy{Strategy: model.GroupingOwner, MinimumWorkers: 1, MaximumWorkers: 1, MaximumInFlight: 1})
+	workersFake := &fakeWorkers{states: map[string]string{}}
+	manager, err := New(&fakeCoordinator{}, workersFake, store, Policy{Strategy: model.GroupingOwner})
 	if err != nil {
 		t.Fatal(err)
 	}
-	record, err := manager.Start(context.Background(), "api", "file:///programs/api.ts", Options{PathPrefix: "/api"})
+	record, err := manager.Start(context.Background(), "api", "file:///programs/api.ts", testOptions(1, 1, 1))
 	if err != nil {
 		t.Fatal(err)
 	}
 	failedWorkerID := record.WorkerIDs[0]
 	workersFake.states[failedWorkerID] = "failed"
 
-	response := httptest.NewRecorder()
-	routerFake.handlers["/api"].ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://the8020/api", nil))
-	if response.Code != http.StatusAccepted {
-		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	response, err := manager.Dispatch(context.Background(), "api", httptest.NewRequest(http.MethodGet, "http://the8020/api", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("status=%d", response.StatusCode)
 	}
 	repaired, inspectErr := manager.Inspect(record.ServiceID)
 	if inspectErr != nil || len(repaired.WorkerIDs) != 1 || repaired.WorkerIDs[0] == failedWorkerID {

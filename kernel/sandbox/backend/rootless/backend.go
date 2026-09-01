@@ -500,8 +500,12 @@ func (b *Backend) Metrics(ctx context.Context, sandboxID string) (model.Resource
 	if err := decoder.Decode(&event); err != nil || event.Type != "stats" {
 		return model.ResourceMetrics{}, errors.New("runsc returned an invalid stats event")
 	}
+	cpuUsageMicros := int64(event.Data.CPU.Usage.Total / 1000)
+	if processUsage, ok := b.processCPUUsageMicros(sandboxID); ok {
+		cpuUsageMicros = processUsage
+	}
 	return model.ResourceMetrics{
-		CPUUsageMicros: int64(event.Data.CPU.Usage.Total / 1000), MemoryCurrent: int64(event.Data.Memory.Usage.Usage),
+		CPUUsageMicros: cpuUsageMicros, MemoryCurrent: int64(event.Data.Memory.Usage.Usage),
 		MemoryPeak: int64(event.Data.Memory.Usage.Max), PIDCurrent: int64(event.Data.PIDs.Current),
 	}, nil
 }
@@ -787,6 +791,47 @@ func (b *Backend) sandboxPIDs(sandboxID string) []int {
 	}
 	sort.Ints(result)
 	return result
+}
+
+// Direct rootless runsc has no per-sandbox cgroup and reports a shared CPU
+// counter. Sum the kernel-owned sandbox and gofer tasks instead so placement
+// compares each sandbox's actual CPU use.
+func (b *Backend) processCPUUsageMicros(sandboxID string) (int64, bool) {
+	var total uint64
+	found := false
+	for _, pid := range b.sandboxPIDs(sandboxID) {
+		tasks, err := os.ReadDir(filepath.Join(b.procRoot, strconv.Itoa(pid), "task"))
+		if err != nil {
+			continue
+		}
+		for _, task := range tasks {
+			if !task.IsDir() {
+				continue
+			}
+			data, err := readLimitedFile(filepath.Join(b.procRoot, strconv.Itoa(pid), "task", task.Name(), "schedstat"), 4096)
+			if err != nil {
+				continue
+			}
+			fields := strings.Fields(string(data))
+			if len(fields) == 0 {
+				continue
+			}
+			nanoseconds, err := strconv.ParseUint(fields[0], 10, 64)
+			if err != nil {
+				continue
+			}
+			if ^uint64(0)-total < nanoseconds {
+				return int64(^uint64(0) >> 1), true
+			}
+			total += nanoseconds
+			found = true
+		}
+	}
+	microseconds := total / 1000
+	if microseconds > uint64(^uint64(0)>>1) {
+		return int64(^uint64(0) >> 1), true
+	}
+	return int64(microseconds), found
 }
 
 func readLimitedFile(path string, maximum int64) ([]byte, error) {

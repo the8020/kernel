@@ -10,6 +10,8 @@
 # Local Contracts
 
 - Bootstrap users live only in `config/auth/bootstrap-users.toml`; session records live only below sharded `state/auth/bootstrap-sessions/` and neither tree is sandbox-mounted.
+- Usernames are the shared Linux/storage/sandbox identity: 3-32 lowercase ASCII
+  letters or digits, with no normalization, aliases, or path-safe conversion.
 - Passwords use Argon2id with per-password random salts and encoded PHC parameters; unknown users follow the same Argon2 verification path as wrong passwords.
 - Browser login may create an opaque authentication session; SSH password
   verification returns only trusted user context, accepts mutable password

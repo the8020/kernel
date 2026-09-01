@@ -20,9 +20,11 @@ type Request struct {
 	Namespace        string
 	ExplicitGroupKey string
 	PlacementGroup   *string
-	ReplicaServiceID string
+	LogicalServiceID string
+	RequestedWorkers int
 	Strategy         model.GroupingStrategy
 	Profile          model.RuntimeProfile
+	Capacity         model.SandboxCapacityPolicy
 }
 
 type Group struct {
@@ -34,6 +36,9 @@ type Group struct {
 	ServiceIDs     []string
 	State          model.SandboxState
 	Healthy        bool
+	WorkerCount    int
+	CPUUtilization float64
+	RAMUtilization float64
 }
 
 type Selection struct {
@@ -44,7 +49,7 @@ type Selection struct {
 }
 
 func Select(request Request, existing []Group) (Selection, error) {
-	if !request.WorkloadType.Valid() || request.OwnerID == "" || !request.Strategy.Valid() {
+	if !request.WorkloadType.Valid() || request.OwnerID == "" || !request.Strategy.Valid() || request.RequestedWorkers < 0 {
 		return Selection{}, errors.New("valid workload type, owner, and grouping strategy are required")
 	}
 	if request.Profile.WorkloadType != request.WorkloadType {
@@ -68,7 +73,16 @@ func Select(request Request, existing []Group) (Selection, error) {
 		if group.State != model.StateReady && group.State != model.StateActive {
 			continue
 		}
-		if request.ReplicaServiceID != "" && slices.Contains(group.ServiceIDs, request.ReplicaServiceID) {
+		if request.Capacity.MaximumWorkers > 0 && group.WorkerCount+request.RequestedWorkers > request.Capacity.MaximumWorkers {
+			continue
+		}
+		if request.Capacity.TargetCPUUtilization > 0 && group.CPUUtilization >= request.Capacity.TargetCPUUtilization {
+			continue
+		}
+		if request.Capacity.TargetRAMUtilization > 0 && group.RAMUtilization >= request.Capacity.TargetRAMUtilization {
+			continue
+		}
+		if request.LogicalServiceID != "" && slices.Contains(group.ServiceIDs, request.LogicalServiceID) {
 			continue
 		}
 		selection.RuntimeGroupID, selection.Existing = group.RuntimeGroupID, true

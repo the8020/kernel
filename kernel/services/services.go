@@ -13,7 +13,6 @@ import (
 	"the8020/kernel/execution/adminrun"
 	"the8020/kernel/execution/groups"
 	"the8020/kernel/execution/jobs"
-	executionservices "the8020/kernel/execution/services"
 	"the8020/kernel/execution/workers"
 	"the8020/kernel/instance"
 	"the8020/kernel/lifecycle"
@@ -99,17 +98,6 @@ type WorkerService interface {
 	List(context.Context, string) ([]workers.Record, error)
 	Inspect(context.Context, string) (workers.Record, error)
 	Stop(context.Context, string, bool) error
-}
-
-// RuntimeServiceService is the handler-facing service-pool contract.
-type RuntimeServiceService interface {
-	Start(context.Context, string, string, executionservices.Options) (executionservices.Record, error)
-	List() ([]executionservices.Record, error)
-	Inspect(string) (executionservices.Record, error)
-	Scale(context.Context, string, int) (executionservices.Record, error)
-	Expose(context.Context, string, executionservices.ExposeOptions) (executionservices.Record, error)
-	Unexpose(string) error
-	Stop(context.Context, string) error
 }
 
 // PackageService is the handler-facing direct filesystem package contract.
@@ -216,7 +204,6 @@ type RuntimeServices struct {
 	Sandboxes      SandboxService
 	Workers        WorkerService
 	Services       WebServiceService
-	ServicePools   RuntimeServiceService
 	Jobs           JobService
 	Ports          PortService
 	Debugging      DebugService

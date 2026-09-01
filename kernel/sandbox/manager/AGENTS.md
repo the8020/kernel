@@ -32,6 +32,10 @@
 - Heartbeat monitoring merges metrics into the newest status and conditionally
   publishes failure against the newest heartbeat, so a concurrent fresh
   callback cannot be overwritten or killed by a stale monitor snapshot.
+- Inspection combines supervisor Worker count with backend resource samples.
+  Metrics derive RAM utilization from the sandbox memory maximum and CPU
+  utilization from sampled usage deltas and the configured CPU quota; placement
+  consumes these observations without moving scheduling into this package.
 - Shared-group reuse durably adds each distinct owner and logical service to
   specification/status state and container labels. Removing an owner updates
   those indexes transactionally and deletes the sandbox when no owner remains.
@@ -51,7 +55,8 @@
 - Unit tests cover successful creation, compact ID reservation, readiness,
   generic console routing, node-budget admission, warm
   assignment/shared-owner add/remove and final-owner destruction, failure
-  archival, lifecycle transitions, sandbox-scoped port release, metrics,
+  archival, lifecycle transitions, sandbox-scoped port release, Worker-count
+  and CPU/RAM utilization metrics,
   heartbeat timeout, OOM evidence preservation/full cleanup, deletion,
   reconstruction, missing groups, owned orphans, and startup/shutdown policies.
 

@@ -25,14 +25,16 @@
 - APT and shell `dpkg` use Debian's native binaries directly, without an
   image-owned compatibility wrapper or metadata emulation. Durable system-root
   storage must support native Linux ownership and mode semantics.
-- `keepalive.sh` immediately replaces Bash with `/usr/bin/sleep infinity`.
-  Images contain no draft/apply/snapshot helper and perform no background
-  filesystem traversal.
+- `sandbox.sh` restores Debian's standard lock directory in the fresh `/run`
+  tmpfs, then replaces Bash with `/usr/bin/sleep infinity`. Images contain no
+  draft/apply/snapshot helper and perform no background filesystem traversal.
 - Rootful mode exports the editable `Containerfile` through the provisioned host
   BuildKit; rootless mode materializes the same pinned OCI base and installs the
-  declared packages inside a temporary gVisor image-build sandbox. Neither mode
-  imports host binaries or host package closures. Both modes run behind the
-  direct runsc development driver.
+  declared packages inside a temporary gVisor image-build sandbox. When the
+  platform itself is built inside Docker, the already isolated build sandbox
+  supplies that boundary through `chroot` without a nested gVisor launch.
+  No mode imports host binaries or host package closures, and development
+  sandboxes run behind the direct runsc driver.
 - The image is an immutable template only. The kernel copies it once into an
   image-qualified native durable root per developer and runs that private root
   directly; interactive APT/dpkg and system changes therefore require no
@@ -52,9 +54,10 @@
   `dpkg`, common terminfo, pinned tools, and image identity. The real
   rootless/rootful E2E requires a contextual working-directory prompt, a
   native dpkg transaction, an actual `xterm` full-screen Nano session over
-  SSH, a `sleep` PID 1, no scanner, durable source/home/APT writes and package
-  directories across sandbox restart, helper preview/activation, and verified
-  source/factory reset boundaries.
+  SSH, a `sleep` PID 1, a usable Debian lock directory, ephemeral `/run`, no
+  scanner, durable source/root-home/APT writes and package directories across sandbox
+  restart, helper preview/activation, and verified source/factory reset
+  boundaries.
 
 # Child DOX Index
 

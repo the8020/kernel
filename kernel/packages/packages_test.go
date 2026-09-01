@@ -16,7 +16,7 @@ import (
 func TestPackageDiscoveryUsesExactlyTwoFilesystemLevels(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "packages", "the8020", "demo", "package.toml"), "schema = 1\ndescription = \"Example one\"\n")
-	writeFile(t, filepath.Join(root, "packages", "the8020", "demo", "services", "variables", "service.toml"), "schema = 1\ndescription = \"Variables\"\n")
+	writeFile(t, filepath.Join(root, "packages", "the8020", "demo", "services", "variables", "service.toml"), "schema = 2\ndescription = \"Variables\"\n")
 	writeFile(t, filepath.Join(root, "packages", "core", "missing", "README.md"), "not a package")
 	writeFile(t, filepath.Join(root, "packages", ".hidden", "ignored", "package.toml"), "schema = 1\n")
 	writeFile(t, filepath.Join(root, "packages", "the8020", "demo", "nested", "too-deep", "package.toml"), "schema = 1\n")
@@ -52,15 +52,15 @@ license = "Apache-2.0"
 `)
 	writeFile(t, filepath.Join(packageRoot, "README.md"), "Package documentation\n")
 	writeFile(t, filepath.Join(packageRoot, ".git", "config"), "internal metadata\n")
-	writeFile(t, filepath.Join(packageRoot, "services", "valid", "service.toml"), `schema = 1
+	writeFile(t, filepath.Join(packageRoot, "services", "valid", "service.toml"), `schema = 2
 description = "Valid service"
-[execution]
-mode = "persistent"
+[lifecycle]
+service_type = "session"
 [access]
 mode = "authenticated"
 `)
 	writeFile(t, filepath.Join(packageRoot, "services", "valid", "service.ts"), "export default {};\n")
-	writeFile(t, filepath.Join(packageRoot, "services", "broken", "service.toml"), "schema = 1\n")
+	writeFile(t, filepath.Join(packageRoot, "services", "broken", "service.toml"), "schema = 99\n")
 	writeFile(t, filepath.Join(packageRoot, "programs", "dashboard", "program.toml"), `schema = 1
 description = "Dashboard"
 default_layout = "layouts/main.json"
@@ -93,7 +93,7 @@ discoverable = false
 	if len(item.Services) != 2 || item.Services[0].ID != "the8020/demo/broken" || item.Services[0].Valid || item.Services[1].ID != "the8020/demo/valid" || !item.Services[1].Valid {
 		t.Fatalf("package services = %#v", item.Services)
 	}
-	if item.Services[1].ExecutionMode != ExecutionModePersistent || item.Services[1].AccessMode != AccessModeAuthenticated || item.Services[1].Entrypoint != "services/valid/service.ts" {
+	if item.Services[1].ServiceType != ServiceTypeSession || item.Services[1].AccessMode != AccessModeAuthenticated || item.Services[1].Entrypoint != "services/valid/service.ts" {
 		t.Fatalf("valid service metadata = %#v", item.Services[1])
 	}
 	if len(item.Programs) != 2 || item.Programs[0].ID != "the8020/demo/broken" || item.Programs[0].Valid || item.Programs[1].ID != "the8020/demo/dashboard" || !item.Programs[1].Valid || item.Programs[1].Discoverable {
@@ -122,9 +122,9 @@ func TestServiceDiscoveryReportsInvalidNamesMissingEntrypointsAndExplicitEntrypo
 	packageRoot := filepath.Join(root, "packages", "the8020", "demo")
 	writeFile(t, filepath.Join(packageRoot, "package.toml"), "schema = 1\ndescription = \"Package\"\n")
 	writeFile(t, filepath.Join(packageRoot, "services", "ignored", "README.md"), "no manifest")
-	writeFile(t, filepath.Join(packageRoot, "services", "bad service", "service.toml"), "schema = 1\n")
-	writeFile(t, filepath.Join(packageRoot, "services", "missing", "service.toml"), "schema = 1\n")
-	writeFile(t, filepath.Join(packageRoot, "services", "explicit", "service.toml"), "schema = 1\nentrypoint = \"main.ts\"\n")
+	writeFile(t, filepath.Join(packageRoot, "services", "bad service", "service.toml"), "schema = 2\n")
+	writeFile(t, filepath.Join(packageRoot, "services", "missing", "service.toml"), "schema = 2\n")
+	writeFile(t, filepath.Join(packageRoot, "services", "explicit", "service.toml"), "schema = 2\nentrypoint = \"main.ts\"\n")
 	writeFile(t, filepath.Join(packageRoot, "services", "explicit", "main.ts"), "export default {};\n")
 
 	store := newTestStore(t, root)
@@ -174,7 +174,7 @@ func TestPackageInspectionRejectsManifestSymlinkEscapes(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
 	writeFile(t, filepath.Join(outside, "package.toml"), "schema = 1\ndescription = \"Outside\"\n")
-	writeFile(t, filepath.Join(outside, "service.toml"), "schema = 1\n")
+	writeFile(t, filepath.Join(outside, "service.toml"), "schema = 2\n")
 	writeFile(t, filepath.Join(outside, "program.toml"), "schema = 1\ndescription = \"Outside\"\n")
 	packageRoot := filepath.Join(root, "packages", "core", "escaped-package")
 	if err := os.MkdirAll(packageRoot, 0o755); err != nil {
@@ -221,37 +221,35 @@ func TestPackageInspectionRejectsManifestSymlinkEscapes(t *testing.T) {
 func TestServiceDiscoveryDefaultsIdentityAndDesiredStatePrecedence(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "packages", "the8020", "demo", "package.toml"), "schema = 1\ndescription = \"Package\"\n")
-	writeFile(t, filepath.Join(root, "packages", "the8020", "demo", "services", "variables", "service.toml"), `schema = 1
+	writeFile(t, filepath.Join(root, "packages", "the8020", "demo", "services", "variables", "service.toml"), `schema = 2
 description = "Variable service"
-[execution]
-concurrency_per_worker = 20
 [scaling]
-replicas_min = 1
-replicas_max = 3
-workers_per_replica_min = 2
-workers_per_replica_max = 6
+minimum_workers = 2
+maximum_workers = 18
+concurrency_per_worker = 20
 target_utilization = 0.6
 [placement]
 sandbox_group = "proof"
+minimum_sandboxes = 1
+workers_per_sandbox = 6
 [openapi]
 title = "Variables"
 version = "1.0.0"
 `)
 	writeFile(t, filepath.Join(root, "packages", "the8020", "demo", "services", "variables", "service.ts"), "export default {};\n")
-	writeFile(t, filepath.Join(root, "state", "services", "the8020", "demo", "variables", "state.toml"), `schema = 1
+	writeFile(t, filepath.Join(root, "state", "services", "the8020", "demo", "variables", "state.toml"), `schema = 2
 enabled = true
 generation = 7
-[execution]
-concurrency_per_worker = 24
-keep_alive = "2m"
 [scaling]
-replicas_min = 2
-replicas_max = 4
-workers_per_replica_min = 4
-workers_per_replica_max = 8
+minimum_workers = 8
+maximum_workers = 32
+concurrency_per_worker = 24
 target_utilization = 0.75
+worker_keep_alive = "2m"
 [placement]
 sandbox_group = "shared-examples"
+minimum_sandboxes = 2
+workers_per_sandbox = 8
 `)
 
 	store := newTestStore(t, root)
@@ -268,11 +266,11 @@ sandbox_group = "shared-examples"
 	if !definition.StateExists || !definition.State.Enabled || definition.State.Generation != 7 {
 		t.Fatalf("state = %#v", definition.State)
 	}
-	if definition.Effective.Scaling.ReplicasMinimum != 2 || definition.Effective.Scaling.ReplicasMaximum != 4 {
-		t.Fatalf("replicas = %#v", definition.Effective.Scaling)
+	if definition.Effective.Scaling.MinimumWorkers != 8 || definition.Effective.Scaling.MaximumWorkers != 32 {
+		t.Fatalf("workers = %#v", definition.Effective.Scaling)
 	}
-	if definition.Effective.Scaling.WorkersPerReplicaMinimum != 4 || definition.Effective.Scaling.WorkersPerReplicaMaximum != 8 || definition.Effective.Execution.ConcurrencyPerWorker != 24 {
-		t.Fatalf("workers/execution = %#v %#v", definition.Effective.Scaling, definition.Effective.Execution)
+	if definition.Effective.Placement.MinimumSandboxes != 2 || definition.Effective.Placement.WorkersPerSandbox != 8 || definition.Effective.Scaling.ConcurrencyPerWorker != 24 {
+		t.Fatalf("scaling/placement = %#v %#v", definition.Effective.Scaling, definition.Effective.Placement)
 	}
 	if definition.Effective.Timeouts.Request != 30*time.Second || definition.Effective.Timeouts.Drain != 30*time.Second || definition.Effective.Placement.SandboxGroup != "shared-examples" || definition.Effective.Scaling.TargetUtilization != 0.75 {
 		t.Fatalf("effective = %#v", definition.Effective)
@@ -299,29 +297,83 @@ func TestFirstDiscoveryCreatesDisabledDesiredState(t *testing.T) {
 	}
 }
 
+func TestServiceDefaultsUseWorkerScalingAndIndependentKeepalives(t *testing.T) {
+	root := t.TempDir()
+	writeService(t, root, "the8020", "demo", "variables", "service.ts")
+	store := newTestStore(t, root)
+	definition, err := store.ReadService("the8020/demo/variables")
+	if err != nil {
+		t.Fatal(err)
+	}
+	effective := definition.Effective
+	if effective.Lifecycle.ServiceType != ServiceTypeStateless || effective.Lifecycle.SessionKeepAlive != 10*time.Minute {
+		t.Fatalf("lifecycle defaults = %#v", effective.Lifecycle)
+	}
+	if effective.Scaling.MinimumWorkers != 0 || effective.Scaling.MaximumWorkers != 0 || effective.Scaling.ConcurrencyPerWorker != 32 || effective.Scaling.TargetUtilization != 0.7 || effective.Scaling.WorkerKeepAlive != 2*time.Minute {
+		t.Fatalf("scaling defaults = %#v", effective.Scaling)
+	}
+	if effective.Placement.MinimumSandboxes != 0 || effective.Placement.WorkersPerSandbox != 4 || effective.Placement.SandboxGroup != "" {
+		t.Fatalf("placement defaults = %#v", effective.Placement)
+	}
+	if definition.State.Schema != serviceStateSchema || definition.State.Scaling.MinimumWorkers == nil || definition.State.Scaling.MaximumWorkers == nil || definition.State.Placement.MinimumSandboxes == nil {
+		t.Fatalf("materialized defaults = %#v", definition.State)
+	}
+}
+
+func TestServicePolicyValidation(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     string
+		contains string
+	}{
+		{"finite maximum below minimum", "[scaling]\nminimum_workers = 5\nmaximum_workers = 4\n", "minimum_workers <= maximum_workers"},
+		{"negative maximum", "[scaling]\nmaximum_workers = -1\n", "maximum_workers cannot be negative"},
+		{"zero concurrency", "[scaling]\nconcurrency_per_worker = 0\n", "concurrency_per_worker"},
+		{"invalid worker keepalive", "[scaling]\nworker_keep_alive = \"never\"\n", "worker_keep_alive"},
+		{"negative minimum sandboxes", "[placement]\nminimum_sandboxes = -1\n", "minimum_sandboxes"},
+		{"zero workers per sandbox", "[placement]\nworkers_per_sandbox = 0\n", "workers_per_sandbox"},
+		{"invalid service type", "[lifecycle]\nservice_type = \"persistent\"\n", "stateless or session"},
+		{"invalid session keepalive", "[lifecycle]\nservice_type = \"session\"\nsession_keep_alive = \"forever\"\n", "session_keep_alive"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, "packages", "the8020", "demo", "package.toml"), "schema = 1\n")
+			writeFile(t, filepath.Join(root, "packages", "the8020", "demo", "services", "variables", "service.toml"), "schema = 2\n"+test.body)
+			writeFile(t, filepath.Join(root, "packages", "the8020", "demo", "services", "variables", "service.ts"), "export default {};\n")
+			_, err := newTestStore(t, root).ReadService("the8020/demo/variables")
+			if err == nil || !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(test.contains)) {
+				t.Fatalf("error = %v, want %q", err, test.contains)
+			}
+		})
+	}
+
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "packages", "the8020", "demo", "package.toml"), "schema = 1\n")
+	writeFile(t, filepath.Join(root, "packages", "the8020", "demo", "services", "variables", "service.toml"), "schema = 2\n[lifecycle]\nservice_type = \"stateless\"\nsession_keep_alive = \"10m\"\n[scaling]\nminimum_workers = 7\nmaximum_workers = 0\n")
+	writeFile(t, filepath.Join(root, "packages", "the8020", "demo", "services", "variables", "service.ts"), "export default {};\n")
+	if _, err := newTestStore(t, root).ReadService("the8020/demo/variables"); err != nil {
+		t.Fatalf("zero maximum must mean unlimited: %v", err)
+	}
+}
+
 func TestServiceValidationRejectsEntrypointTraversalInvalidTOMLAndDefaults(t *testing.T) {
 	tests := []struct {
 		name     string
 		manifest string
 		contains string
 	}{
-		{"traversal", "schema = 1\nentrypoint = \"../outside.ts\"\n", "canonical relative path"},
+		{"traversal", "schema = 2\nentrypoint = \"../outside.ts\"\n", "canonical relative path"},
 		{"invalid TOML", "schema = [\n", "toml"},
-		{"invalid scaling bounds", "schema = 1\n[scaling]\nworkers_per_replica_min = 4\nworkers_per_replica_max = 3\n", "minimum <= maximum"},
-		{"invalid execution mode", "schema = 1\n[execution]\nmode = \"batch\"\n", "execution.mode"},
-		{"invalid concurrency", "schema = 1\n[execution]\nconcurrency_per_worker = 0\n", "concurrency_per_worker"},
-		{"invalid keep alive", "schema = 1\n[execution]\nmode = \"persistent\"\nkeep_alive = \"forever\"\n", "keep_alive"},
-		{"stateless keep alive", "schema = 1\n[execution]\nmode = \"stateless\"\nkeep_alive = \"2m\"\n", "only for persistent"},
-		{"invalid utilization", "schema = 1\n[scaling]\ntarget_utilization = 1.1\n", "target_utilization"},
-		{"invalid sandbox group", "schema = 1\n[placement]\nsandbox_group = \" bad \"\n", "sandbox_group"},
-		{"invalid access mode", "schema = 1\n[access]\nmode = \"private\"\n", "access.mode"},
-		{"invalid unauthenticated action", "schema = 1\n[access]\nmode = \"authenticated\"\n[access.unauthenticated]\naction = \"query-redirect\"\n", "reject or redirect"},
-		{"invalid reject status", "schema = 1\n[access]\nmode = \"authenticated\"\n[access.unauthenticated]\naction = \"reject\"\nstatus = 302\n", "reject status"},
-		{"invalid redirect status", "schema = 1\n[access]\nmode = \"authenticated\"\n[access.unauthenticated]\naction = \"redirect\"\nstatus = 401\nredirect_url = \"/login\"\n", "redirect status"},
-		{"invalid redirect URL", "schema = 1\n[access]\nmode = \"authenticated\"\n[access.unauthenticated]\naction = \"redirect\"\nredirect_url = \"/login\\nunsafe\"\n", "redirect_url"},
-		{"legacy affinity rejected", "schema = 1\n[routing]\naffinity = [\"auth.user_id\"]\n", "strict mode"},
-		{"legacy session rejected", "schema = 1\n[session]\ndisconnect_grace = \"2m\"\n", "strict mode"},
-		{"unknown identity", "schema = 1\nservice_id = \"wrong\"\n", "strict mode"},
+		{"invalid utilization", "schema = 2\n[scaling]\ntarget_utilization = 1.1\n", "target_utilization"},
+		{"invalid sandbox group", "schema = 2\n[placement]\nsandbox_group = \" bad \"\n", "sandbox_group"},
+		{"invalid access mode", "schema = 2\n[access]\nmode = \"private\"\n", "access.mode"},
+		{"invalid unauthenticated action", "schema = 2\n[access]\nmode = \"authenticated\"\n[access.unauthenticated]\naction = \"query-redirect\"\n", "reject or redirect"},
+		{"invalid reject status", "schema = 2\n[access]\nmode = \"authenticated\"\n[access.unauthenticated]\naction = \"reject\"\nstatus = 302\n", "reject status"},
+		{"invalid redirect status", "schema = 2\n[access]\nmode = \"authenticated\"\n[access.unauthenticated]\naction = \"redirect\"\nstatus = 401\nredirect_url = \"/login\"\n", "redirect status"},
+		{"invalid redirect URL", "schema = 2\n[access]\nmode = \"authenticated\"\n[access.unauthenticated]\naction = \"redirect\"\nredirect_url = \"/login\\nunsafe\"\n", "redirect_url"},
+		{"obsolete execution section", "schema = 2\n[execution]\nmode = \"persistent\"\n", "strict mode"},
+		{"unknown identity", "schema = 2\nservice_id = \"wrong\"\n", "strict mode"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -338,22 +390,22 @@ func TestServiceValidationRejectsEntrypointTraversalInvalidTOMLAndDefaults(t *te
 	}
 }
 
-func TestServiceExecutionAndAccessPoliciesDefaultAndNormalize(t *testing.T) {
+func TestServiceLifecycleAndAccessPoliciesDefaultAndNormalize(t *testing.T) {
 	root := t.TempDir()
 	writeService(t, root, "the8020", "demo", "public", "service.ts")
-	writeFile(t, filepath.Join(root, "packages", "the8020", "demo", "services", "protected", "service.toml"), `schema = 1
-[execution]
-mode = "persistent"
-concurrency_per_worker = 1
-keep_alive = "2m"
+	writeFile(t, filepath.Join(root, "packages", "the8020", "demo", "services", "protected", "service.toml"), `schema = 2
+[lifecycle]
+service_type = "session"
+session_keep_alive = "2m"
 [scaling]
-replicas_min = 2
-replicas_max = 10
-workers_per_replica_min = 1
-workers_per_replica_max = 50
+minimum_workers = 2
+maximum_workers = 500
+concurrency_per_worker = 1
 target_utilization = 0.7
 [placement]
 sandbox_group = "interactive"
+minimum_sandboxes = 2
+workers_per_sandbox = 50
 [access]
 mode = "authenticated"
 [access.unauthenticated]
@@ -366,7 +418,7 @@ redirect_url = "https://identity.example.test/login?return=static"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if public.Service.Execution.Mode != ExecutionModeStateless || public.Service.Access.Mode != AccessModePublic {
+	if public.Service.Lifecycle.ServiceType != ServiceTypeStateless || public.Service.Access.Mode != AccessModePublic {
 		t.Fatalf("public defaults = %#v", public.Service)
 	}
 	protected, err := store.ReadService("the8020/demo/protected")
@@ -374,10 +426,10 @@ redirect_url = "https://identity.example.test/login?return=static"
 		t.Fatal(err)
 	}
 	policy := protected.Service.Access.Unauthenticated
-	if protected.Service.Execution.Mode != ExecutionModePersistent || protected.Service.Access.Mode != AccessModeAuthenticated || policy.Action != UnauthenticatedRedirect || policy.Status != 302 || policy.RedirectURL != "https://identity.example.test/login?return=static" {
+	if protected.Service.Lifecycle.ServiceType != ServiceTypeSession || protected.Service.Access.Mode != AccessModeAuthenticated || policy.Action != UnauthenticatedRedirect || policy.Status != 302 || policy.RedirectURL != "https://identity.example.test/login?return=static" {
 		t.Fatalf("protected policy = %#v", protected.Service)
 	}
-	if protected.Effective.Execution.ConcurrencyPerWorker != 1 || protected.Effective.Execution.KeepAlive != 2*time.Minute || protected.Effective.Placement.SandboxGroup != "interactive" || protected.Effective.Scaling.ReplicasMinimum != 2 {
+	if protected.Effective.Scaling.ConcurrencyPerWorker != 1 || protected.Effective.Lifecycle.SessionKeepAlive != 2*time.Minute || protected.Effective.Placement.SandboxGroup != "interactive" || protected.Effective.Placement.MinimumSandboxes != 2 || protected.Effective.Scaling.MinimumWorkers != 2 {
 		t.Fatalf("protected execution/scaling/placement = %#v", protected.Effective)
 	}
 }
@@ -435,24 +487,34 @@ func TestMutateStateIsAtomicMonotonicAndSerialized(t *testing.T) {
 func TestMutateStateCanRepairInvalidEffectiveDesiredState(t *testing.T) {
 	root := t.TempDir()
 	writeService(t, root, "the8020", "demo", "variables", "service.ts")
-	writeFile(t, filepath.Join(root, "state", "services", "the8020", "demo", "variables", "state.toml"), `schema = 1
+	writeFile(t, filepath.Join(root, "state", "services", "the8020", "demo", "variables", "state.toml"), `schema = 2
 enabled = true
 generation = 8
+[lifecycle]
+service_type = "stateless"
+session_keep_alive = "10m"
 [scaling]
-workers_per_replica_min = 7
-workers_per_replica_max = 3
+minimum_workers = 7
+maximum_workers = 3
+concurrency_per_worker = 32
+target_utilization = 0.7
+worker_keep_alive = "2m"
+[placement]
+sandbox_group = ""
+minimum_sandboxes = 0
+workers_per_sandbox = 4
 `)
 	store := newTestStore(t, root)
 	state, err := store.MutateState(context.Background(), "the8020/demo/variables", func(state *DesiredServiceState) error {
 		minimum, maximum := 1, 4
-		state.Scaling.WorkersPerReplicaMinimum = &minimum
-		state.Scaling.WorkersPerReplicaMaximum = &maximum
+		state.Scaling.MinimumWorkers = &minimum
+		state.Scaling.MaximumWorkers = &maximum
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.Generation != 9 || state.Scaling.WorkersPerReplicaMinimum == nil || *state.Scaling.WorkersPerReplicaMinimum != 1 {
+	if state.Generation != 9 || state.Scaling.MinimumWorkers == nil || *state.Scaling.MinimumWorkers != 1 {
 		t.Fatalf("repaired state = %#v", state)
 	}
 }
@@ -506,7 +568,7 @@ func newTestStore(t *testing.T, root string) *Store {
 func writeService(t *testing.T, root, namespace, repository, service, entrypoint string) {
 	t.Helper()
 	writeFile(t, filepath.Join(root, "packages", namespace, repository, "package.toml"), "schema = 1\n")
-	writeFile(t, filepath.Join(root, "packages", namespace, repository, "services", service, "service.toml"), "schema = 1\nentrypoint = \""+entrypoint+"\"\n")
+	writeFile(t, filepath.Join(root, "packages", namespace, repository, "services", service, "service.toml"), "schema = 2\nentrypoint = \""+entrypoint+"\"\n")
 	writeFile(t, filepath.Join(root, "packages", namespace, repository, "services", service, entrypoint), "export default {};\n")
 }
 

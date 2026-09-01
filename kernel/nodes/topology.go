@@ -49,12 +49,12 @@ type topologyFile struct {
 }
 
 type ServiceCapacity struct {
-	ServiceID       string `json:"service_id"`
-	ReplicaCount    int    `json:"replica_count"`
-	HealthyReplicas int    `json:"healthy_replicas"`
-	WorkerCount     int    `json:"worker_count"`
-	ExecutionSlots  int    `json:"execution_slots"`
-	OccupiedSlots   int    `json:"occupied_slots"`
+	ServiceID        string `json:"service_id"`
+	SandboxCount     int    `json:"sandbox_count"`
+	HealthySandboxes int    `json:"healthy_sandboxes"`
+	WorkerCount      int    `json:"worker_count"`
+	ExecutionSlots   int    `json:"execution_slots"`
+	OccupiedSlots    int    `json:"occupied_slots"`
 }
 
 type Capacity struct {
@@ -75,8 +75,8 @@ type Capacity struct {
 	MaximumWorkers                 int               `json:"maximum_workers"`
 	WorkerCount                    int               `json:"worker_count"`
 	AvailableWorkers               int               `json:"available_workers"`
-	RunningServiceReplicas         int               `json:"running_service_replicas"`
-	HealthyServiceReplicas         int               `json:"healthy_service_replicas"`
+	RunningServiceSandboxes        int               `json:"running_service_sandboxes"`
+	HealthyServiceSandboxes        int               `json:"healthy_service_sandboxes"`
 	ExecutionSlots                 int               `json:"execution_slots"`
 	OccupiedExecutionSlots         int               `json:"occupied_execution_slots"`
 	Services                       []ServiceCapacity `json:"services,omitempty"`
@@ -144,13 +144,36 @@ func New(path, localID string) (*Manager, error) {
 
 func (m *Manager) LocalNodeID() string { return m.localID }
 
-// LocalReplicaIndexes deterministically partitions the global replica index
-// range across enabled nodes. An unconfigured local node is the sole-node
-// default; an explicitly disabled local node receives no indexes.
-func (m *Manager) LocalReplicaIndexes(limit int) []int {
+// LocalIndexes deterministically partitions global service allocation indexes
+// across enabled nodes. An unconfigured local node is the sole-node default;
+// an explicitly disabled local node receives no indexes.
+func (m *Manager) LocalIndexes(limit int) []int {
 	if limit <= 0 {
 		return nil
 	}
+	localOffset, width := m.localIndexPartition()
+	if localOffset < 0 {
+		return nil
+	}
+	result := make([]int, 0, (limit+width-1)/width)
+	for index := localOffset; index < limit; index += width {
+		result = append(result, index)
+	}
+	return result
+}
+
+// OwnsIndex reports whether this node owns one deterministic service
+// allocation index. It allows unlimited services to grow without inventing a
+// separate sandbox-count partition.
+func (m *Manager) OwnsIndex(index int) bool {
+	if index < 0 {
+		return false
+	}
+	localOffset, width := m.localIndexPartition()
+	return localOffset >= 0 && index%width == localOffset
+}
+
+func (m *Manager) localIndexPartition() (int, int) {
 	nodes := m.List()
 	ids := make([]string, 0, len(nodes)+1)
 	localConfigured := false
@@ -174,13 +197,9 @@ func (m *Manager) LocalReplicaIndexes(limit int) []int {
 		}
 	}
 	if localOffset < 0 || len(ids) == 0 {
-		return nil
+		return -1, 0
 	}
-	result := make([]int, 0, (limit+len(ids)-1)/len(ids))
-	for index := localOffset; index < limit; index += len(ids) {
-		result = append(result, index)
-	}
-	return result
+	return localOffset, len(ids)
 }
 
 func (m *Manager) SetCapacityProvider(provider CapacityProvider) {

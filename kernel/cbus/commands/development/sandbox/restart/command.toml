@@ -2,7 +2,7 @@ version = 1
 id = "development.sandbox.restart"
 path = ["development", "sandbox", "restart"]
 summary = "Restart a developer sandbox"
-description = "Recreates the sandbox process on the same native durable source, home, and system filesystems."
+description = "Recreates the sandbox process on the same native durable source and image-qualified system filesystem."
 mutates_state = true
 restart_behavior = "none"
 [handler]

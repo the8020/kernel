@@ -408,7 +408,7 @@ func (m *Manager) AssignWarm(ctx context.Context, runtimeGroupID, groupKey, owne
 }
 
 // AddOwner records another workload owner on an existing shared runtime group.
-func (m *Manager) AddOwner(ctx context.Context, runtimeGroupID, ownerID string, replicaServiceID ...string) (Inspection, error) {
+func (m *Manager) AddOwner(ctx context.Context, runtimeGroupID, ownerID string, logicalServiceID ...string) (Inspection, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if runtimeGroupID == "" || strings.TrimSpace(ownerID) == "" {
@@ -434,11 +434,11 @@ func (m *Manager) AddOwner(ctx context.Context, runtimeGroupID, ownerID string, 
 	updatedStatus.CurrentOwners = append(append([]string(nil), priorStatus.CurrentOwners...), ownerID)
 	sort.Strings(updatedSpec.OwnerIDs)
 	sort.Strings(updatedStatus.CurrentOwners)
-	if len(replicaServiceID) > 0 && replicaServiceID[0] != "" {
-		if slices.Contains(priorSpec.ServiceIDs, replicaServiceID[0]) {
-			return Inspection{}, fmt.Errorf("service %q already has a replica in runtime group %s", replicaServiceID[0], runtimeGroupID)
+	if len(logicalServiceID) > 0 && logicalServiceID[0] != "" {
+		if slices.Contains(priorSpec.ServiceIDs, logicalServiceID[0]) {
+			return Inspection{}, fmt.Errorf("service %q already has a sandbox allocation in runtime group %s", logicalServiceID[0], runtimeGroupID)
 		}
-		updatedSpec.ServiceIDs = append(append([]string(nil), priorSpec.ServiceIDs...), replicaServiceID[0])
+		updatedSpec.ServiceIDs = append(append([]string(nil), priorSpec.ServiceIDs...), logicalServiceID[0])
 		sort.Strings(updatedSpec.ServiceIDs)
 	}
 	if err := updatedSpec.Validate(); err != nil {
@@ -460,7 +460,7 @@ func (m *Manager) AddOwner(ctx context.Context, runtimeGroupID, ownerID string, 
 // RemoveOwner releases one workload from a shared runtime group. The sandbox
 // is deleted when the final owner leaves; otherwise the remaining ownership
 // and service-placement indexes are updated atomically before returning.
-func (m *Manager) RemoveOwner(ctx context.Context, runtimeGroupID, ownerID, replicaServiceID string) (bool, error) {
+func (m *Manager) RemoveOwner(ctx context.Context, runtimeGroupID, ownerID, logicalServiceID string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if runtimeGroupID == "" || strings.TrimSpace(ownerID) == "" {
@@ -479,8 +479,8 @@ func (m *Manager) RemoveOwner(ctx context.Context, runtimeGroupID, ownerID, repl
 	updatedSpec, updatedStatus := spec, status
 	updatedSpec.OwnerIDs = removeString(updatedSpec.OwnerIDs, ownerID)
 	updatedStatus.CurrentOwners = removeString(updatedStatus.CurrentOwners, ownerID)
-	if replicaServiceID != "" {
-		updatedSpec.ServiceIDs = removeString(updatedSpec.ServiceIDs, replicaServiceID)
+	if logicalServiceID != "" {
+		updatedSpec.ServiceIDs = removeString(updatedSpec.ServiceIDs, logicalServiceID)
 	}
 	if len(updatedSpec.OwnerIDs) == 0 {
 		return true, m.deleteLocked(ctx, spec.SandboxID)
@@ -543,9 +543,15 @@ func (m *Manager) Inspect(ctx context.Context, sandboxID string) (Inspection, er
 		return Inspection{}, err
 	}
 	workers, workerErr := m.supervisor.Workers(ctx, spec)
-	if workerErr == nil {
+	metrics, metricsErr := m.sampleMetrics(ctx, spec, status.Metrics)
+	if workerErr == nil || metricsErr == nil {
 		if updated, updateErr := m.store.UpdateStatus(spec.RuntimeGroupID, func(value *model.SandboxStatus) error {
-			value.WorkerCount = len(workers)
+			if workerErr == nil {
+				value.WorkerCount = len(workers)
+			}
+			if metricsErr == nil {
+				value.Metrics = metrics
+			}
 			return nil
 		}); updateErr == nil {
 			status = updated
@@ -557,11 +563,11 @@ func (m *Manager) Inspect(ctx context.Context, sandboxID string) (Inspection, er
 func (m *Manager) Metrics(sandboxID string) (model.ResourceMetrics, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	spec, _, err := m.find(sandboxID)
+	spec, status, err := m.find(sandboxID)
 	if err != nil {
 		return model.ResourceMetrics{}, err
 	}
-	metrics, err := m.readMetrics(context.Background(), spec)
+	metrics, err := m.sampleMetrics(context.Background(), spec, status.Metrics)
 	if err != nil {
 		return metrics, err
 	}
@@ -643,7 +649,7 @@ func (m *Manager) CheckHealth(ctx context.Context, heartbeatTimeout time.Duratio
 			}
 			continue
 		}
-		metrics, metricsErr := m.readMetrics(ctx, spec)
+		metrics, metricsErr := m.sampleMetrics(ctx, spec, status.Metrics)
 		status, err = m.store.UpdateStatus(id, func(current *model.SandboxStatus) error {
 			current.ContainerID, current.TaskPID = observation.ContainerID, observation.TaskPID
 			if metricsErr == nil {
@@ -930,6 +936,26 @@ func (m *Manager) readMetrics(ctx context.Context, spec model.SandboxSpec) (mode
 	}
 	directory := filepath.Join(m.cgroupRoot, "the8020", m.instanceUUID, spec.SandboxID)
 	return resources.ReadMetrics(directory)
+}
+
+func (m *Manager) sampleMetrics(ctx context.Context, spec model.SandboxSpec, previous model.ResourceMetrics) (model.ResourceMetrics, error) {
+	metrics, err := m.readMetrics(ctx, spec)
+	if err != nil {
+		return metrics, err
+	}
+	now := m.now()
+	metrics.SampledAt = now
+	if spec.ResourceLimits.MemoryMaximum > 0 {
+		metrics.MemoryUtilization = float64(metrics.MemoryCurrent) / float64(spec.ResourceLimits.MemoryMaximum)
+	}
+	if !previous.SampledAt.IsZero() && now.After(previous.SampledAt) && metrics.CPUUsageMicros >= previous.CPUUsageMicros {
+		quotaCores := float64(spec.ResourceLimits.CPUQuotaMicros) / float64(spec.ResourceLimits.CPUPeriodMicros)
+		elapsedMicros := float64(now.Sub(previous.SampledAt).Microseconds())
+		if quotaCores > 0 && elapsedMicros > 0 {
+			metrics.CPUUtilization = float64(metrics.CPUUsageMicros-previous.CPUUsageMicros) / elapsedMicros / quotaCores
+		}
+	}
+	return metrics, nil
 }
 
 func (m *Manager) restoreAvailable(runtimeGroupID string, status model.SandboxStatus, target model.SandboxState) error {

@@ -354,14 +354,43 @@ type DebugLeaseStatus struct {
 }
 
 type ResourceMetrics struct {
-	CPUUsageMicros int64             `json:"cpu_usage_micros"`
-	MemoryCurrent  int64             `json:"memory_current"`
-	MemoryPeak     int64             `json:"memory_peak"`
-	PIDCurrent     int64             `json:"pid_current"`
-	MemoryEvents   map[string]uint64 `json:"memory_events,omitempty"`
-	PIDEvents      map[string]uint64 `json:"pid_events,omitempty"`
-	CPUStat        map[string]uint64 `json:"cpu_stat,omitempty"`
-	CgroupEvents   map[string]uint64 `json:"cgroup_events,omitempty"`
+	CPUUsageMicros    int64             `json:"cpu_usage_micros"`
+	CPUUtilization    float64           `json:"cpu_utilization"`
+	MemoryCurrent     int64             `json:"memory_current"`
+	MemoryPeak        int64             `json:"memory_peak"`
+	MemoryUtilization float64           `json:"memory_utilization"`
+	PIDCurrent        int64             `json:"pid_current"`
+	SampledAt         time.Time         `json:"sampled_at,omitempty"`
+	MemoryEvents      map[string]uint64 `json:"memory_events,omitempty"`
+	PIDEvents         map[string]uint64 `json:"pid_events,omitempty"`
+	CPUStat           map[string]uint64 `json:"cpu_stat,omitempty"`
+	CgroupEvents      map[string]uint64 `json:"cgroup_events,omitempty"`
+}
+
+// SandboxCapacityPolicy is the kernel-owned admission policy applied both
+// when selecting a compatible sandbox and immediately before starting a
+// Worker. It is deliberately independent from per-service scaling policy.
+type SandboxCapacityPolicy struct {
+	MaximumWorkers       int     `json:"maximum_workers"`
+	TargetCPUUtilization float64 `json:"target_cpu_utilization"`
+	TargetRAMUtilization float64 `json:"target_ram_utilization"`
+}
+
+func DefaultSandboxCapacityPolicy() SandboxCapacityPolicy {
+	return SandboxCapacityPolicy{MaximumWorkers: 64, TargetCPUUtilization: 0.8, TargetRAMUtilization: 0.8}
+}
+
+func (p SandboxCapacityPolicy) Validate() error {
+	if p.MaximumWorkers < 1 {
+		return errors.New("sandbox maximum Workers must be positive")
+	}
+	if p.TargetCPUUtilization <= 0 || p.TargetCPUUtilization > 1 {
+		return errors.New("sandbox target CPU utilization must be greater than zero and at most one")
+	}
+	if p.TargetRAMUtilization <= 0 || p.TargetRAMUtilization > 1 {
+		return errors.New("sandbox target RAM utilization must be greater than zero and at most one")
+	}
+	return nil
 }
 
 type SandboxStatus struct {

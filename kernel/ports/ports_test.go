@@ -140,51 +140,6 @@ func TestExposeHTTPUsesGoOwnedStreamingHandler(t *testing.T) {
 	}
 }
 
-func TestAttachHTTPPreservesRestoredLeaseIdentity(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "ports")
-	manager, err := New(root, false, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	original, err := manager.ExposeHTTP(context.Background(), Request{SandboxID: "sandbox", SandboxIP: "10.88.0.2", InternalPort: 8000, Purpose: "service"}, http.NotFoundHandler())
-	if err != nil {
-		t.Fatal(err)
-	}
-	manager.mu.Lock()
-	listener := manager.listeners[original.LeaseID]
-	cancel := manager.cancel[original.LeaseID]
-	delete(manager.listeners, original.LeaseID)
-	delete(manager.cancel, original.LeaseID)
-	delete(manager.leases, original.LeaseID)
-	manager.mu.Unlock()
-	cancel()
-	_ = listener.Close()
-	if _, err := manager.Restore(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	handler := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		writer.WriteHeader(http.StatusCreated)
-		_, _ = writer.Write([]byte("attached"))
-	})
-	attached, err := manager.AttachHTTP(context.Background(), original.LeaseID, handler)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer manager.CloseAll()
-	if attached.LeaseID != original.LeaseID || attached.HostPort != original.HostPort || !attached.CreatedAt.Equal(original.CreatedAt) {
-		t.Fatalf("original=%#v attached=%#v", original, attached)
-	}
-	response, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/", attached.HostPort))
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, readErr := io.ReadAll(response.Body)
-	_ = response.Body.Close()
-	if readErr != nil || response.StatusCode != http.StatusCreated || string(body) != "attached" {
-		t.Fatalf("status=%d body=%q err=%v", response.StatusCode, body, readErr)
-	}
-}
-
 func TestLeaseExpiresAndRestoreRebindsSafeRecord(t *testing.T) {
 	upstream := echoServer(t)
 	target := upstream.Addr().(*net.TCPAddr)

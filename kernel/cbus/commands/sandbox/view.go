@@ -6,12 +6,21 @@ import (
 	"strings"
 
 	"the8020/kernel/sandbox/manager"
+	"the8020/kernel/sandbox/model"
 )
 
 // Reason returns the shortest stable explanation of why a sandbox exists.
 func Reason(inspection manager.Inspection) string {
 	if inspection.Spec.Lifecycle.Warm {
 		return "warm pool"
+	}
+	if inspection.Spec.WorkloadType == model.WorkloadService && len(inspection.Spec.ServiceIDs) > 0 {
+		values := append([]string(nil), inspection.Spec.ServiceIDs...)
+		sort.Strings(values)
+		for index := range values {
+			values[index] = "service:" + values[index]
+		}
+		return strings.Join(values, ", ")
 	}
 	owners := map[string]bool{}
 	for _, worker := range inspection.Workers {

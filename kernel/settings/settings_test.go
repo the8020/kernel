@@ -341,24 +341,13 @@ func TestGlobalPersistenceFailurePreservesState(t *testing.T) {
 	}
 }
 
-func TestLegacyGlobalOverrideMigratesFromNodeStore(t *testing.T) {
+func TestGlobalOverrideInNodeStoreFails(t *testing.T) {
 	paths := newPersistencePaths(t)
-	legacy := "[network]\nmain_port = 8083\nroot_alias = \"example/demo/shell/\"\n"
-	if err := os.WriteFile(paths.Node, []byte(legacy), 0o600); err != nil {
+	if err := os.WriteFile(paths.Node, []byte("[network]\nroot_alias = \"example/demo/shell/\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	manager, err := New(testDefinitions(), paths, nil, func(string) (string, bool) { return "", false })
-	if err != nil {
-		t.Fatal(err)
-	}
-	info, _ := manager.Get("network.root_alias")
-	if info.ConfiguredValue != "example/demo/shell/" || info.Source != "persisted" || info.Storage != StorageGlobal {
-		t.Fatalf("migrated global info: %#v", info)
-	}
-	node, _ := os.ReadFile(paths.Node)
-	global, _ := os.ReadFile(paths.Global)
-	if strings.Contains(string(node), "root_alias") || !strings.Contains(string(node), "main_port = 8083") || !strings.Contains(string(global), `root_alias = "example/demo/shell/"`) {
-		t.Fatalf("node=%q global=%q", node, global)
+	if _, err := New(testDefinitions(), paths, nil, func(string) (string, bool) { return "", false }); err == nil || !strings.Contains(err.Error(), "belongs in the global settings store") {
+		t.Fatalf("wrong-store error = %v", err)
 	}
 }
 
@@ -421,15 +410,28 @@ func TestConversionsAndCrossValidation(t *testing.T) {
 		t.Fatal("accepted file limit above total limit")
 	}
 	serviceDefaults := Values{
-		"services.default_replicas_minimum": int64(1), "services.default_replicas_maximum": int64(3),
-		"services.default_workers_per_replica_minimum": int64(1), "services.default_workers_per_replica_maximum": int64(4),
+		"services.default_minimum_workers": int64(1), "services.default_maximum_workers": int64(4),
 	}
 	if err := validateSnapshot(serviceDefaults); err != nil {
 		t.Fatalf("valid service defaults: %v", err)
 	}
-	serviceDefaults["services.default_workers_per_replica_minimum"] = int64(5)
-	if err := validateSnapshot(serviceDefaults); err == nil || !strings.Contains(err.Error(), "minimum <= maximum") {
+	serviceDefaults["services.default_minimum_workers"] = int64(5)
+	if err := validateSnapshot(serviceDefaults); err == nil || !strings.Contains(err.Error(), "greater than or equal") {
 		t.Fatalf("invalid service defaults error = %v", err)
+	}
+	serviceDefaults["services.default_maximum_workers"] = int64(0)
+	if err := validateSnapshot(serviceDefaults); err != nil {
+		t.Fatalf("unlimited service maximum rejected: %v", err)
+	}
+}
+
+func TestUnknownPersistedSettingIsRejected(t *testing.T) {
+	paths := newPersistencePaths(t)
+	if err := os.WriteFile(paths.Node, []byte("[unsupported]\nvalue = 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(testDefinitions(), paths, nil, func(string) (string, bool) { return "", false }); err == nil || !strings.Contains(err.Error(), `unknown node setting "unsupported.value"`) {
+		t.Fatalf("unknown-setting error = %v", err)
 	}
 }
 

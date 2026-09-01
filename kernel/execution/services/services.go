@@ -1,18 +1,16 @@
-// Package services owns service Worker pools, scaling, and HTTP exposure.
+// Package services owns sandbox-local service Worker pools and scaling.
 package services
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"math"
 	"net/http"
 	"os"
 	"slices"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -21,7 +19,6 @@ import (
 	"the8020/kernel/execution/records"
 	"the8020/kernel/execution/supervisor"
 	"the8020/kernel/execution/workers"
-	"the8020/kernel/ports"
 	"the8020/kernel/sandbox/manager"
 	"the8020/kernel/sandbox/model"
 )
@@ -39,94 +36,66 @@ type WorkerManager interface {
 	DispatchService(context.Context, string, string, *http.Request) (*http.Response, error)
 	ProxyServiceWebSocket(context.Context, string, string, http.ResponseWriter, *http.Request) error
 }
-type Router interface {
-	RegisterRoute(string, http.Handler) error
-	UnregisterRoute(string)
-}
-type PortManager interface {
-	ExposeHTTP(context.Context, ports.Request, http.Handler) (ports.Lease, error)
-	AttachHTTP(context.Context, string, http.Handler) (ports.Lease, error)
-	Close(string) error
-}
 type Policy struct {
-	Strategy          model.GroupingStrategy
-	Profile           model.RuntimeProfile
-	Resources         model.ResourceLimits
-	Lifecycle         model.LifecyclePolicy
-	MinimumWorkers    int
-	MaximumWorkers    int
-	MaximumInFlight   int
-	WorkerIdleTimeout time.Duration
-	RecycleRequests   int
-	ScaleDownCooldown time.Duration
-	WorkspaceMounts   executionprofile.MountPolicy
-	Logger            *slog.Logger
+	Strategy        model.GroupingStrategy
+	Profile         model.RuntimeProfile
+	Resources       model.ResourceLimits
+	Lifecycle       model.LifecyclePolicy
+	WorkspaceMounts executionprofile.MountPolicy
+	Logger          *slog.Logger
 }
 type Options struct {
-	GroupKey           string
-	Namespace          string
-	MinimumWorkers     int
-	MaximumWorkers     int
-	MaximumInFlight    int
-	PathPrefix         string
-	Ephemeral          bool
-	IdleTimeout        time.Duration
-	Permissions        *supervisor.WorkerPermissions
-	ReleaseID          string
-	Workspace          string
-	WorkspaceWritable  bool
-	LogicalServiceID   string
-	Generation         uint64
-	CanonicalBasePath  string
-	OpenAPI            supervisor.OpenAPIMetadata
-	ValidateEntrypoint bool
-	Instance           int
-	DependencyMode     model.DependencyMode
-	ExecutionMode      string
-	TargetUtilization  float64
-}
-type ExposeOptions struct {
-	PathPrefix        string
-	HostPort          int
-	AutomaticHostPort bool
-	BindAddress       string
-	Expiration        time.Time
+	GroupKey             string
+	Namespace            string
+	MinimumWorkers       int
+	MaximumWorkers       int
+	ConcurrencyPerWorker int
+	WorkerKeepAlive      time.Duration
+	Permissions          *supervisor.WorkerPermissions
+	ReleaseID            string
+	Workspace            string
+	WorkspaceWritable    bool
+	LogicalServiceID     string
+	Generation           uint64
+	CanonicalBasePath    string
+	OpenAPI              supervisor.OpenAPIMetadata
+	ValidateEntrypoint   bool
+	SandboxIndex         int
+	DependencyMode       model.DependencyMode
+	ExecutionMode        string
+	TargetUtilization    float64
+	PlacementWorkers     int
 }
 type Record struct {
-	ServiceID          string                       `json:"service_id"`
-	Entrypoint         string                       `json:"entrypoint"`
-	RuntimeGroupID     string                       `json:"runtime_group_id,omitempty"`
-	SandboxID          string                       `json:"sandbox_id,omitempty"`
-	SandboxIP          string                       `json:"sandbox_ip,omitempty"`
-	WorkerIDs          []string                     `json:"worker_ids"`
-	ReleaseID          string                       `json:"release_id"`
-	State              string                       `json:"state"`
-	MinimumWorkers     int                          `json:"minimum_workers"`
-	MaximumWorkers     int                          `json:"maximum_workers"`
-	MaximumInFlight    int                          `json:"maximum_in_flight"`
-	PathPrefix         string                       `json:"path_prefix,omitempty"`
-	PortLeaseID        string                       `json:"port_lease_id,omitempty"`
-	HostPort           int                          `json:"host_port,omitempty"`
-	Ephemeral          bool                         `json:"ephemeral"`
-	IdleTimeout        time.Duration                `json:"idle_timeout"`
-	StartedAt          time.Time                    `json:"started_at"`
-	Failure            string                       `json:"failure,omitempty"`
-	RuntimeUnavailable bool                         `json:"runtime_unavailable,omitempty"`
-	Permissions        supervisor.WorkerPermissions `json:"permissions"`
-	WorkerRequests     map[string]int               `json:"worker_requests,omitempty"`
-	LogicalServiceID   string                       `json:"logical_service_id,omitempty"`
-	Generation         uint64                       `json:"generation,omitempty"`
-	CanonicalBasePath  string                       `json:"canonical_base_path,omitempty"`
-	OpenAPI            supervisor.OpenAPIMetadata   `json:"openapi,omitempty"`
-	ValidateEntrypoint bool                         `json:"validate_entrypoint,omitempty"`
-	Instance           int                          `json:"instance"`
-	ExecutionMode      string                       `json:"execution_mode,omitempty"`
-	TargetUtilization  float64                      `json:"target_utilization,omitempty"`
-	OccupiedSlots      int                          `json:"-"`
-	CapacitySlots      int                          `json:"-"`
+	ServiceID            string                       `json:"service_id"`
+	Entrypoint           string                       `json:"entrypoint"`
+	RuntimeGroupID       string                       `json:"runtime_group_id,omitempty"`
+	SandboxID            string                       `json:"sandbox_id,omitempty"`
+	SandboxIP            string                       `json:"sandbox_ip,omitempty"`
+	WorkerIDs            []string                     `json:"worker_ids"`
+	ReleaseID            string                       `json:"release_id"`
+	State                string                       `json:"state"`
+	MinimumWorkers       int                          `json:"minimum_workers"`
+	MaximumWorkers       int                          `json:"maximum_workers"`
+	ConcurrencyPerWorker int                          `json:"concurrency_per_worker"`
+	WorkerKeepAlive      time.Duration                `json:"worker_keep_alive"`
+	StartedAt            time.Time                    `json:"started_at"`
+	Failure              string                       `json:"failure,omitempty"`
+	RuntimeUnavailable   bool                         `json:"runtime_unavailable,omitempty"`
+	Permissions          supervisor.WorkerPermissions `json:"permissions"`
+	LogicalServiceID     string                       `json:"logical_service_id,omitempty"`
+	Generation           uint64                       `json:"generation,omitempty"`
+	CanonicalBasePath    string                       `json:"canonical_base_path,omitempty"`
+	OpenAPI              supervisor.OpenAPIMetadata   `json:"openapi,omitempty"`
+	ValidateEntrypoint   bool                         `json:"validate_entrypoint,omitempty"`
+	SandboxIndex         int                          `json:"sandbox_index"`
+	ExecutionMode        string                       `json:"execution_mode,omitempty"`
+	TargetUtilization    float64                      `json:"target_utilization,omitempty"`
+	OccupiedSlots        int                          `json:"-"`
+	CapacitySlots        int                          `json:"-"`
 }
 
-var ErrReplicaCapacity = errors.New("service replica has no target capacity")
+var ErrSandboxCapacity = errors.New("service sandbox has no target capacity")
 
 var ErrInvalidServiceDefinition = errors.New("service definition was rejected by the runtime")
 
@@ -137,35 +106,31 @@ func (e *invalidServiceDefinitionError) Unwrap() []error {
 	return []error{ErrInvalidServiceDefinition, e.cause}
 }
 
-type ReplicaCapacityError struct {
+type SandboxCapacityError struct {
 	Occupied int
 	Slots    int
 	Reason   string
 }
 
-func (e *ReplicaCapacityError) Error() string {
+func (e *SandboxCapacityError) Error() string {
 	return fmt.Sprintf("%s: %d of %d execution slots occupied", e.Reason, e.Occupied, e.Slots)
 }
 
-func (e *ReplicaCapacityError) Unwrap() error { return ErrReplicaCapacity }
+func (e *SandboxCapacityError) Unwrap() error { return ErrSandboxCapacity }
 
 type Manager struct {
 	mu          sync.Mutex
 	coordinator GroupCoordinator
 	workers     WorkerManager
 	store       *records.Store
-	router      Router
-	ports       PortManager
 	policy      Policy
 	now         func() time.Time
-	timers      map[string]*time.Timer
-	underTarget map[string]time.Time
 	logger      *slog.Logger
 }
 
-func New(groupCoordinator GroupCoordinator, workerManager WorkerManager, store *records.Store, router Router, portManager PortManager, policy Policy) (*Manager, error) {
-	if groupCoordinator == nil || workerManager == nil || store == nil || router == nil {
-		return nil, errors.New("coordinator, Worker manager, service store, and router are required")
+func New(groupCoordinator GroupCoordinator, workerManager WorkerManager, store *records.Store, policy Policy) (*Manager, error) {
+	if groupCoordinator == nil || workerManager == nil || store == nil {
+		return nil, errors.New("coordinator, Worker manager, and service store are required")
 	}
 	if policy.Strategy == "" {
 		policy.Strategy = model.GroupingOwner
@@ -173,22 +138,7 @@ func New(groupCoordinator GroupCoordinator, workerManager WorkerManager, store *
 	if !policy.Strategy.Valid() {
 		return nil, errors.New("valid service grouping strategy is required")
 	}
-	if policy.MinimumWorkers < 0 {
-		policy.MinimumWorkers = 1
-	}
-	if policy.MaximumWorkers <= 0 {
-		policy.MaximumWorkers = 8
-	}
-	if policy.MinimumWorkers > policy.MaximumWorkers {
-		return nil, errors.New("service minimum Workers exceeds maximum")
-	}
-	if policy.MaximumInFlight <= 0 {
-		policy.MaximumInFlight = 32
-	}
-	if policy.ScaleDownCooldown <= 0 {
-		policy.ScaleDownCooldown = 30 * time.Second
-	}
-	return &Manager{coordinator: groupCoordinator, workers: workerManager, store: store, router: router, ports: portManager, policy: policy, now: func() time.Time { return time.Now().UTC() }, timers: map[string]*time.Timer{}, underTarget: map[string]time.Time{}, logger: policy.Logger}, nil
+	return &Manager{coordinator: groupCoordinator, workers: workerManager, store: store, policy: policy, now: func() time.Time { return time.Now().UTC() }, logger: policy.Logger}, nil
 }
 
 func (m *Manager) Start(ctx context.Context, serviceID, entrypoint string, options Options) (Record, error) {
@@ -197,14 +147,8 @@ func (m *Manager) Start(ctx context.Context, serviceID, entrypoint string, optio
 	if serviceID == "" || entrypoint == "" {
 		return Record{}, errors.New("service ID and entrypoint are required")
 	}
-	if options.ExecutionMode == "" {
-		options.ExecutionMode = "stateless"
-	}
 	if options.ExecutionMode != "stateless" && options.ExecutionMode != "persistent" {
 		return Record{}, errors.New("service execution mode must be stateless or persistent")
-	}
-	if options.TargetUtilization == 0 {
-		options.TargetUtilization = 0.7
 	}
 	if options.TargetUtilization <= 0 || options.TargetUtilization > 1 {
 		return Record{}, errors.New("service target utilization must be greater than zero and at most one")
@@ -225,28 +169,16 @@ func (m *Manager) Start(ctx context.Context, serviceID, entrypoint string, optio
 		m.quarantineInvalidRecord(serviceID, loadErr)
 	}
 	minimum := options.MinimumWorkers
-	if minimum == 0 && !options.Ephemeral {
-		minimum = m.policy.MinimumWorkers
-	}
 	maximum := options.MaximumWorkers
-	if maximum == 0 {
-		maximum = m.policy.MaximumWorkers
-	}
-	maxInFlight := options.MaximumInFlight
-	if maxInFlight == 0 {
-		maxInFlight = m.policy.MaximumInFlight
-	}
-	if minimum < 0 || maximum < 1 || minimum > maximum || maxInFlight < 1 {
+	concurrency := options.ConcurrencyPerWorker
+	placementWorkers := options.PlacementWorkers
+	if minimum < 0 || maximum < 1 || minimum > maximum || concurrency < 1 || placementWorkers < minimum || placementWorkers > maximum || options.WorkerKeepAlive <= 0 {
 		return Record{}, errors.New("invalid service Worker limits")
 	}
 	if options.ReleaseID == "" {
 		options.ReleaseID = "development"
 	}
-	idleTimeout := options.IdleTimeout
-	if idleTimeout <= 0 {
-		idleTimeout = m.policy.WorkerIdleTimeout
-	}
-	record := Record{ServiceID: serviceID, LogicalServiceID: options.LogicalServiceID, Generation: options.Generation, CanonicalBasePath: options.CanonicalBasePath, OpenAPI: options.OpenAPI, ValidateEntrypoint: options.ValidateEntrypoint, Instance: options.Instance, Entrypoint: entrypoint, ReleaseID: options.ReleaseID, State: "STARTING", MinimumWorkers: minimum, MaximumWorkers: maximum, MaximumInFlight: maxInFlight, Ephemeral: options.Ephemeral, IdleTimeout: idleTimeout, StartedAt: m.now(), WorkerRequests: map[string]int{}, ExecutionMode: options.ExecutionMode, TargetUtilization: options.TargetUtilization}
+	record := Record{ServiceID: serviceID, LogicalServiceID: options.LogicalServiceID, Generation: options.Generation, CanonicalBasePath: options.CanonicalBasePath, OpenAPI: options.OpenAPI, ValidateEntrypoint: options.ValidateEntrypoint, SandboxIndex: options.SandboxIndex, Entrypoint: entrypoint, ReleaseID: options.ReleaseID, State: "STARTING", MinimumWorkers: minimum, MaximumWorkers: maximum, ConcurrencyPerWorker: concurrency, WorkerKeepAlive: options.WorkerKeepAlive, StartedAt: m.now(), ExecutionMode: options.ExecutionMode, TargetUtilization: options.TargetUtilization}
 	if record.LogicalServiceID == "" {
 		record.LogicalServiceID = serviceID
 	}
@@ -258,7 +190,7 @@ func (m *Manager) Start(ctx context.Context, serviceID, entrypoint string, optio
 		return m.failUnowned(record, err)
 	}
 	placementGroup := options.GroupKey
-	group, err := m.coordinator.Ensure(ctx, coordinator.Request{WorkloadType: model.WorkloadService, OwnerID: serviceID, ExecutionID: executionID, Namespace: options.Namespace, PlacementGroup: &placementGroup, ReplicaServiceID: record.LogicalServiceID, Strategy: m.policy.Strategy, Profile: profile, ResourceLimits: m.policy.Resources, Lifecycle: m.policy.Lifecycle})
+	group, err := m.coordinator.Ensure(ctx, coordinator.Request{WorkloadType: model.WorkloadService, OwnerID: serviceID, ExecutionID: executionID, Namespace: options.Namespace, PlacementGroup: &placementGroup, LogicalServiceID: record.LogicalServiceID, RequestedWorkers: placementWorkers, Strategy: m.policy.Strategy, Profile: profile, ResourceLimits: m.policy.Resources, Lifecycle: m.policy.Lifecycle})
 	if err != nil {
 		return m.failUnowned(record, err)
 	}
@@ -275,23 +207,12 @@ func (m *Manager) Start(ctx context.Context, serviceID, entrypoint string, optio
 		}
 		record.WorkerIDs = append(record.WorkerIDs, workerID)
 	}
-	configureErr := m.workers.ConfigureService(ctx, record.RuntimeGroupID, serviceID, record.WorkerIDs, record.MaximumInFlight)
+	configureErr := m.workers.ConfigureService(ctx, record.RuntimeGroupID, serviceID, record.WorkerIDs, record.ConcurrencyPerWorker)
 	if configureErr != nil {
 		return m.failStart(record, configureErr)
 	}
-	record.State = "READY"
-	if options.PathPrefix != "" {
-		record.PathPrefix = canonicalPrefix(options.PathPrefix)
-		if err := m.router.RegisterRoute(record.PathPrefix, m.handler(record)); err != nil {
-			record.PathPrefix = ""
-			return m.failStart(record, err)
-		}
-	}
+	record.State = workerState(len(record.WorkerIDs))
 	if err := m.store.Save(serviceID, record); err != nil {
-		if record.PathPrefix != "" {
-			m.router.UnregisterRoute(record.PathPrefix)
-			record.PathPrefix = ""
-		}
 		return m.failStart(record, err)
 	}
 	return record, nil
@@ -323,10 +244,7 @@ func (m *Manager) scaleRecordLocked(ctx context.Context, record Record, count in
 	if err != nil {
 		return record, err
 	}
-	desiredState := "READY"
-	if count == 0 && record.Ephemeral {
-		desiredState = "IDLE"
-	}
+	desiredState := workerState(count)
 	if len(record.WorkerIDs) == count && record.State == desiredState && record.Failure == "" {
 		return record, cleanupErr
 	}
@@ -372,12 +290,7 @@ func (m *Manager) scaleRecordLocked(ctx context.Context, record Record, count in
 			}
 		}
 	}
-	for _, id := range removed {
-		if err := m.workers.StopInGroup(ctx, record.RuntimeGroupID, id, false); err != nil {
-			return record, errors.Join(cleanupErr, err)
-		}
-	}
-	if err := m.workers.ConfigureService(ctx, record.RuntimeGroupID, record.ServiceID, desiredWorkerIDs, record.MaximumInFlight); err != nil {
+	if err := m.workers.ConfigureService(ctx, record.RuntimeGroupID, record.ServiceID, desiredWorkerIDs, record.ConcurrencyPerWorker); err != nil {
 		for _, id := range record.WorkerIDs {
 			if !contains(previousWorkerIDs, id) {
 				_ = m.workers.StopInGroup(context.Background(), record.RuntimeGroupID, id, true)
@@ -386,21 +299,21 @@ func (m *Manager) scaleRecordLocked(ctx context.Context, record Record, count in
 		return record, errors.Join(cleanupErr, err)
 	}
 	record.WorkerIDs = desiredWorkerIDs
-	if len(removed) > 0 {
-		for _, id := range removed {
-			delete(record.WorkerRequests, id)
-		}
-		if err := m.store.Save(record.ServiceID, record); err != nil {
-			return record, errors.Join(cleanupErr, err)
-		}
-	}
 	record.State = desiredState
 	record.Failure = ""
-	if count > 0 {
-		m.stopIdleTimerLocked(record.ServiceID)
-	}
 	if err := m.store.Save(record.ServiceID, record); err != nil {
+		_ = m.workers.ConfigureService(context.Background(), record.RuntimeGroupID, record.ServiceID, previousWorkerIDs, record.ConcurrencyPerWorker)
+		for _, id := range desiredWorkerIDs {
+			if !contains(previousWorkerIDs, id) {
+				_ = m.workers.StopInGroup(context.Background(), record.RuntimeGroupID, id, true)
+			}
+		}
 		return record, errors.Join(cleanupErr, err)
+	}
+	for _, id := range removed {
+		if err := m.workers.StopInGroup(ctx, record.RuntimeGroupID, id, false); err != nil {
+			return record, errors.Join(cleanupErr, err)
+		}
 	}
 	return record, cleanupErr
 }
@@ -424,7 +337,6 @@ func (m *Manager) reconcileWorkerSetLocked(ctx context.Context, record Record, l
 			ready = append(ready, workerID)
 			continue
 		}
-		delete(record.WorkerRequests, workerID)
 		if exists {
 			toStop[workerID] = item
 		}
@@ -440,7 +352,7 @@ func (m *Manager) reconcileWorkerSetLocked(ctx context.Context, record Record, l
 	}
 	sort.Strings(ready)
 	if len(ready) != len(record.WorkerIDs) {
-		if err := m.workers.ConfigureService(ctx, record.RuntimeGroupID, record.ServiceID, ready, record.MaximumInFlight); err != nil {
+		if err := m.workers.ConfigureService(ctx, record.RuntimeGroupID, record.ServiceID, ready, record.ConcurrencyPerWorker); err != nil {
 			return record, nil, fmt.Errorf("exclude unavailable service Workers: %w", err)
 		}
 		record.WorkerIDs = ready
@@ -473,100 +385,23 @@ func contains(values []string, candidate string) bool {
 	return false
 }
 
-func (m *Manager) Close() error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for id, timer := range m.timers {
-		timer.Stop()
-		delete(m.timers, id)
-	}
-	return nil
-}
-
-func (m *Manager) Expose(ctx context.Context, serviceID string, options ExposeOptions) (Record, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	record, err := m.inspect(serviceID)
-	if err != nil {
-		return record, err
-	}
-	if record.PathPrefix != "" || record.PortLeaseID != "" {
-		return record, errors.New("service is already exposed")
-	}
-	prefix := options.PathPrefix
-	if prefix == "" {
-		prefix = "/services/" + serviceID
-	}
-	prefix = canonicalPrefix(prefix)
-	handler := m.handler(record)
-	if err := m.router.RegisterRoute(prefix, handler); err != nil {
-		return record, err
-	}
-	record.PathPrefix = prefix
-	if options.AutomaticHostPort || options.HostPort != 0 {
-		if m.ports == nil {
-			m.router.UnregisterRoute(prefix)
-			return record, errors.New("host-port manager is unavailable")
-		}
-		lease, leaseErr := m.ports.ExposeHTTP(ctx, ports.Request{SandboxID: record.SandboxID, OwnerID: record.ServiceID, SandboxIP: record.SandboxIP, InternalPort: 8000, BindAddress: options.BindAddress, HostPort: options.HostPort, Protocol: "http", Purpose: "service", ExpiresAt: options.Expiration}, handler)
-		if leaseErr != nil {
-			m.router.UnregisterRoute(prefix)
-			return record, leaseErr
-		}
-		record.PortLeaseID, record.HostPort = lease.LeaseID, lease.HostPort
-	}
-	if err := m.store.Save(serviceID, record); err != nil {
-		m.router.UnregisterRoute(prefix)
-		if record.PortLeaseID != "" {
-			_ = m.ports.Close(record.PortLeaseID)
-		}
-		return record, err
-	}
-	return record, nil
-}
-
-func (m *Manager) Unexpose(serviceID string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	record, err := m.inspect(serviceID)
-	if err != nil {
-		return err
-	}
-	if record.PathPrefix != "" {
-		m.router.UnregisterRoute(record.PathPrefix)
-	}
-	if record.PortLeaseID != "" && m.ports != nil {
-		if err := m.ports.Close(record.PortLeaseID); err != nil {
-			return err
-		}
-	}
-	record.PathPrefix = ""
-	record.PortLeaseID = ""
-	record.HostPort = 0
-	return m.store.Save(serviceID, record)
-}
 func (m *Manager) Stop(ctx context.Context, serviceID string) error {
-	if err := m.Unexpose(serviceID); err != nil {
-		return err
-	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.stopIdleTimerLocked(serviceID)
 	record, err := m.inspect(serviceID)
 	if err != nil {
 		return err
 	}
 	if record.State == "STOPPED" && len(record.WorkerIDs) == 0 {
-		return m.releaseReplica(ctx, record)
+		return m.releaseSandbox(ctx, record)
 	}
 	if record.State == "FAILED" && record.RuntimeUnavailable {
 		record.WorkerIDs = nil
-		record.WorkerRequests = map[string]int{}
 		record.State = "STOPPED"
 		if err := m.store.Save(serviceID, record); err != nil {
 			return err
 		}
-		return m.releaseReplica(ctx, record)
+		return m.releaseSandbox(ctx, record)
 	}
 	live, err := m.workers.List(ctx, record.RuntimeGroupID)
 	if err != nil {
@@ -577,13 +412,12 @@ func (m *Manager) Stop(ctx context.Context, serviceID string) error {
 		// sandbox. Startup may already have removed the inherited group, so
 		// retire this pool without requiring its vanished Workers to answer.
 		record.WorkerIDs = nil
-		record.WorkerRequests = map[string]int{}
 		record.State = "STOPPED"
 		record.Failure = ""
 		if err := m.store.Save(serviceID, record); err != nil {
 			return err
 		}
-		return m.releaseReplica(ctx, record)
+		return m.releaseSandbox(ctx, record)
 	}
 	liveIDs := make(map[string]bool, len(live))
 	for _, item := range live {
@@ -593,12 +427,10 @@ func (m *Manager) Stop(ctx context.Context, serviceID string) error {
 	for _, id := range record.WorkerIDs {
 		if liveIDs[id] {
 			remaining = append(remaining, id)
-		} else {
-			delete(record.WorkerRequests, id)
 		}
 	}
 	record.WorkerIDs = append([]string(nil), remaining...)
-	if err := m.workers.ConfigureService(ctx, record.RuntimeGroupID, serviceID, nil, record.MaximumInFlight); err != nil {
+	if err := m.workers.ConfigureService(ctx, record.RuntimeGroupID, serviceID, nil, record.ConcurrencyPerWorker); err != nil {
 		return err
 	}
 	record.State = "DRAINING"
@@ -614,7 +446,6 @@ func (m *Manager) Stop(ctx context.Context, serviceID string) error {
 		}
 		remaining = remove(remaining, id)
 		record.WorkerIDs = append([]string(nil), remaining...)
-		delete(record.WorkerRequests, id)
 		if saveErr := m.store.Save(serviceID, record); saveErr != nil {
 			joined = errors.Join(joined, saveErr)
 			break
@@ -631,7 +462,7 @@ func (m *Manager) Stop(ctx context.Context, serviceID string) error {
 	if err := m.store.Save(serviceID, record); err != nil {
 		return err
 	}
-	return m.releaseReplica(ctx, record)
+	return m.releaseSandbox(ctx, record)
 }
 
 // RemoveStopped deletes one fully retired pool record. It deliberately refuses
@@ -647,11 +478,10 @@ func (m *Manager) RemoveStopped(serviceID string) error {
 	if record.State != "STOPPED" || len(record.WorkerIDs) != 0 {
 		return fmt.Errorf("service %s is not fully stopped", serviceID)
 	}
-	m.stopIdleTimerLocked(serviceID)
 	return m.store.Delete(serviceID)
 }
 
-func (m *Manager) releaseReplica(ctx context.Context, record Record) error {
+func (m *Manager) releaseSandbox(ctx context.Context, record Record) error {
 	if record.RuntimeGroupID == "" {
 		return nil
 	}
@@ -724,7 +554,6 @@ func (m *Manager) FailGroup(runtimeGroupID, reason string) error {
 		if record.RuntimeGroupID != runtimeGroupID || (record.State != "STARTING" && record.State != "READY" && record.State != "IDLE") {
 			continue
 		}
-		m.stopIdleTimerLocked(record.ServiceID)
 		record.State = "FAILED"
 		record.Failure = reason
 		record.RuntimeUnavailable = true
@@ -746,23 +575,14 @@ func (m *Manager) RetireUnavailable(serviceID, reason string) error {
 	if record.State == "STOPPED" && len(record.WorkerIDs) == 0 {
 		return nil
 	}
-	m.stopIdleTimerLocked(record.ServiceID)
-	if record.PathPrefix != "" {
-		m.router.UnregisterRoute(record.PathPrefix)
-	}
 	record.WorkerIDs = nil
-	record.WorkerRequests = map[string]int{}
-	record.PathPrefix = ""
-	record.PortLeaseID = ""
-	record.HostPort = 0
 	record.State = "STOPPED"
 	record.Failure = reason
 	record.RuntimeUnavailable = true
 	return m.store.Save(record.ServiceID, record)
 }
 
-// Restore re-registers persisted routes and replaces restored raw service
-// listeners with Go-owned HTTP handlers after kernel restart.
+// Restore verifies that persisted pools still refer to ready supervisor Workers.
 func (m *Manager) Restore(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -787,32 +607,6 @@ func (m *Manager) Restore(ctx context.Context) error {
 				record.Failure = "restore runtime group: persisted Workers are unavailable"
 			}
 			m.persistRestoreFailure(record, nil)
-			continue
-		}
-		handler := m.handler(record)
-		if record.PathPrefix != "" {
-			if err := m.router.RegisterRoute(record.PathPrefix, handler); err != nil {
-				m.persistRestoreFailure(record, fmt.Errorf("restore route: %w", err))
-				continue
-			}
-		}
-		if record.PortLeaseID == "" {
-			continue
-		}
-		if m.ports == nil {
-			m.router.UnregisterRoute(record.PathPrefix)
-			m.persistRestoreFailure(record, errors.New("restore host port: manager is unavailable"))
-			continue
-		}
-		lease, err := m.ports.AttachHTTP(ctx, record.PortLeaseID, handler)
-		if err != nil {
-			m.router.UnregisterRoute(record.PathPrefix)
-			m.persistRestoreFailure(record, fmt.Errorf("restore host port: %w", err))
-			continue
-		}
-		if lease.LeaseID != record.PortLeaseID || lease.HostPort != record.HostPort {
-			m.router.UnregisterRoute(record.PathPrefix)
-			m.persistRestoreFailure(record, errors.New("restore host port changed durable lease identity"))
 			continue
 		}
 	}
@@ -845,8 +639,11 @@ func (m *Manager) inspect(serviceID string) (Record, error) {
 	if record.LogicalServiceID == "" {
 		return record, fmt.Errorf("service %q: logical service identity is missing", serviceID)
 	}
-	if record.WorkerRequests == nil {
-		record.WorkerRequests = map[string]int{}
+	if record.MinimumWorkers < 0 || record.MaximumWorkers < 1 || record.MinimumWorkers > record.MaximumWorkers || record.ConcurrencyPerWorker < 1 {
+		return record, fmt.Errorf("service %q: invalid persisted Worker limits", serviceID)
+	}
+	if record.TargetUtilization <= 0 || record.TargetUtilization > 1 || record.WorkerKeepAlive <= 0 {
+		return record, fmt.Errorf("service %q: invalid persisted scaling policy", serviceID)
 	}
 	return record, nil
 }
@@ -905,23 +702,6 @@ func (m *Manager) startWorker(ctx context.Context, record Record, permissions su
 	}
 	return started.Worker.WorkerID, nil
 }
-func (m *Manager) handler(record Record) http.Handler {
-	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		response, err := m.Dispatch(request.Context(), record.ServiceID, request)
-		if err != nil {
-			http.Error(writer, "service unavailable", http.StatusBadGateway)
-			return
-		}
-		defer response.Body.Close()
-		for key, values := range response.Header {
-			for _, value := range values {
-				writer.Header().Add(key, value)
-			}
-		}
-		writer.WriteHeader(response.StatusCode)
-		_, _ = io.Copy(writer, response.Body)
-	})
-}
 
 // Dispatch sends one streaming request through an existing service pool.
 func (m *Manager) Dispatch(ctx context.Context, serviceID string, request *http.Request) (*http.Response, error) {
@@ -930,8 +710,8 @@ func (m *Manager) Dispatch(ctx context.Context, serviceID string, request *http.
 	if request.Header.Get("X-80-20-Internal-Persistent-Existing") == "true" {
 		current, err = m.Inspect(serviceID)
 	} else {
-		current, err = m.EnsureCapacity(ctx, serviceID)
-		var capacity *ReplicaCapacityError
+		current, err = m.EnsureCapacity(ctx, serviceID, int(^uint(0)>>1), 0)
+		var capacity *SandboxCapacityError
 		if errors.As(err, &capacity) && capacity.Occupied < capacity.Slots {
 			err = nil
 		}
@@ -948,7 +728,6 @@ func (m *Manager) Dispatch(ctx context.Context, serviceID string, request *http.
 	if workerID != "" {
 		response.Header.Set("X-80-20-Internal-Selected-Worker-ID", workerID)
 	}
-	response.Body = &completionBody{ReadCloser: response.Body, complete: func() { m.completeRequest(serviceID, workerID) }}
 	return response, nil
 }
 
@@ -960,33 +739,24 @@ func (m *Manager) ProxyWebSocket(ctx context.Context, serviceID string, writer h
 		return err
 	}
 	if record.State != "READY" {
-		return errors.New("service instance is unavailable")
+		return errors.New("service sandbox pool is unavailable")
 	}
 	return m.workers.ProxyServiceWebSocket(ctx, record.RuntimeGroupID, record.ServiceID, writer, request)
 }
 
-// EnsureCapacity applies the per-replica portion of the scaling order. It
-// grows Workers first and reports ErrReplicaCapacity only when another replica
-// is required to preserve target headroom.
-func (m *Manager) EnsureCapacity(ctx context.Context, serviceID string) (Record, error) {
+// EnsureCapacity grows one sandbox-local pool up to the supplied allowance and
+// reports ErrSandboxCapacity when the kernel must place capacity elsewhere.
+func (m *Manager) EnsureCapacity(ctx context.Context, serviceID string, growthLimit, occupiedFloor int) (Record, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	record, err := m.inspect(serviceID)
 	if err != nil {
 		return record, err
 	}
-	if record.TargetUtilization <= 0 || record.TargetUtilization > 1 {
-		record.TargetUtilization = 0.7
+	if growthLimit < 0 || occupiedFloor < 0 {
+		return record, errors.New("service sandbox growth limit and occupied-slot floor cannot be negative")
 	}
-	if record.MaximumWorkers <= 0 {
-		record.MaximumWorkers = m.policy.MaximumWorkers
-	}
-	if record.MaximumInFlight <= 0 {
-		record.MaximumInFlight = m.policy.MaximumInFlight
-	}
-	if record.MinimumWorkers <= 0 && !record.Ephemeral {
-		record.MinimumWorkers = m.policy.MinimumWorkers
-	}
+	allowedMaximum := min(record.MaximumWorkers, max(growthLimit, len(record.WorkerIDs)))
 	live, err := m.workers.List(ctx, record.RuntimeGroupID)
 	if err != nil {
 		return record, err
@@ -1016,49 +786,54 @@ func (m *Manager) EnsureCapacity(ctx context.Context, serviceID string) (Record,
 			occupied += value
 		}
 	}
+	occupied = max(occupied, occupiedFloor)
 	if healthy == 0 {
-		if len(record.WorkerIDs) < record.MaximumWorkers {
-			result, scaleErr := m.scaleRecordLocked(ctx, record, max(record.MinimumWorkers, 1), live)
+		if len(record.WorkerIDs) < allowedMaximum {
+			result, scaleErr := m.scaleRecordLocked(ctx, record, min(allowedMaximum, max(record.MinimumWorkers, 1)), live)
 			return withCapacitySnapshot(result, occupied), scaleErr
 		}
-		return record, &ReplicaCapacityError{Occupied: 0, Slots: 0, Reason: "replica has no healthy Workers"}
+		return record, &SandboxCapacityError{Occupied: 0, Slots: 0, Reason: "sandbox allocation has no healthy Workers"}
 	}
-	requiredWorkers := int(math.Ceil(float64(occupied+1) / (float64(record.MaximumInFlight) * record.TargetUtilization)))
+	requiredWorkers := int(math.Ceil(float64(occupied+1) / (float64(record.ConcurrencyPerWorker) * record.TargetUtilization)))
 	requiredWorkers = max(requiredWorkers, record.MinimumWorkers)
-	if requiredWorkers > record.MaximumWorkers {
-		if len(record.WorkerIDs) < record.MaximumWorkers {
-			result, scaleErr := m.scaleRecordLocked(ctx, record, record.MaximumWorkers, live)
+	if requiredWorkers > allowedMaximum {
+		if len(record.WorkerIDs) < allowedMaximum {
+			result, scaleErr := m.scaleRecordLocked(ctx, record, allowedMaximum, live)
 			return withCapacitySnapshot(result, occupied), scaleErr
 		}
-		return record, &ReplicaCapacityError{Occupied: occupied, Slots: healthy * record.MaximumInFlight, Reason: fmt.Sprintf("target utilization requires %d Workers but replica maximum is %d", requiredWorkers, record.MaximumWorkers)}
+		return record, &SandboxCapacityError{Occupied: occupied, Slots: healthy * record.ConcurrencyPerWorker, Reason: fmt.Sprintf("target utilization requires %d Workers but current sandbox allowance is %d", requiredWorkers, allowedMaximum)}
 	}
 	if requiredWorkers > len(record.WorkerIDs) {
 		result, scaleErr := m.scaleRecordLocked(ctx, record, requiredWorkers, live)
+		if scaleErr != nil && occupied < healthy*record.ConcurrencyPerWorker {
+			return withCapacitySnapshot(result, occupied), &SandboxCapacityError{
+				Occupied: occupied,
+				Slots:    healthy * record.ConcurrencyPerWorker,
+				Reason:   "target-utilization growth failed: " + scaleErr.Error(),
+			}
+		}
 		return withCapacitySnapshot(result, occupied), scaleErr
 	}
 	return withCapacitySnapshot(record, occupied), nil
 }
 
-// ReconcileCapacity repairs a replica and applies kernel-owned scale-down
+// ReconcileCapacity repairs a sandbox-local pool and applies kernel-owned scale-down
 // hysteresis. Only idle Workers above the declared minimum are removable.
-func (m *Manager) ReconcileCapacity(ctx context.Context, serviceID string) (Record, error) {
+func (m *Manager) ReconcileCapacity(ctx context.Context, serviceID string, minimumWorkers int) (Record, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	record, err := m.inspect(serviceID)
 	if err != nil {
 		return record, err
 	}
-	if record.TargetUtilization <= 0 || record.TargetUtilization > 1 {
-		record.TargetUtilization = 0.7
+	if minimumWorkers < 0 || minimumWorkers > record.MaximumWorkers {
+		return record, fmt.Errorf("sandbox-local minimum Workers must be between 0 and %d", record.MaximumWorkers)
 	}
-	if record.MaximumInFlight <= 0 {
-		record.MaximumInFlight = m.policy.MaximumInFlight
-	}
-	if record.MaximumWorkers <= 0 {
-		record.MaximumWorkers = m.policy.MaximumWorkers
-	}
-	if record.MinimumWorkers <= 0 && !record.Ephemeral {
-		record.MinimumWorkers = m.policy.MinimumWorkers
+	if record.MinimumWorkers != minimumWorkers {
+		record.MinimumWorkers = minimumWorkers
+		if err := m.store.Save(record.ServiceID, record); err != nil {
+			return record, err
+		}
 	}
 	live, err := m.workers.List(ctx, record.RuntimeGroupID)
 	if err != nil {
@@ -1074,6 +849,9 @@ func (m *Manager) ReconcileCapacity(ctx context.Context, serviceID string) (Reco
 			return record, err
 		}
 	}
+	if len(record.WorkerIDs) < record.MinimumWorkers {
+		return m.scaleRecordLocked(ctx, record, record.MinimumWorkers, live)
+	}
 	occupied, healthy := 0, 0
 	for _, item := range live {
 		if item.Worker.State == "ready" && slices.Contains(record.WorkerIDs, item.Worker.WorkerID) {
@@ -1083,31 +861,88 @@ func (m *Manager) ReconcileCapacity(ctx context.Context, serviceID string) (Reco
 	}
 	utilization := 1.0
 	if healthy > 0 {
-		utilization = float64(occupied) / float64(healthy*record.MaximumInFlight)
+		utilization = float64(occupied) / float64(healthy*record.ConcurrencyPerWorker)
 	}
-	if len(record.WorkerIDs) <= record.MinimumWorkers || utilization >= record.TargetUtilization*0.5 {
-		delete(m.underTarget, serviceID)
+	if len(record.WorkerIDs) <= record.MinimumWorkers || utilization >= record.TargetUtilization {
 		return withCapacitySnapshot(record, occupied), nil
 	}
-	since, exists := m.underTarget[serviceID]
-	if !exists {
-		m.underTarget[serviceID] = m.now()
+	type idleWorker struct {
+		id    string
+		since time.Time
+	}
+	eligible := make([]idleWorker, 0, len(record.WorkerIDs)-record.MinimumWorkers)
+	now := m.now()
+	for _, item := range live {
+		worker := item.Worker
+		if !slices.Contains(record.WorkerIDs, worker.WorkerID) || worker.State != "ready" || worker.InFlight != 0 || worker.IdleSinceMS <= 0 {
+			continue
+		}
+		since := time.UnixMilli(worker.IdleSinceMS)
+		if !now.Before(since.Add(record.WorkerKeepAlive)) {
+			eligible = append(eligible, idleWorker{id: worker.WorkerID, since: since})
+		}
+	}
+	sort.Slice(eligible, func(i, j int) bool {
+		return eligible[i].since.Before(eligible[j].since) || (eligible[i].since.Equal(eligible[j].since) && eligible[i].id < eligible[j].id)
+	})
+	requiredWorkers := int(math.Ceil(float64(occupied) / (float64(record.ConcurrencyPerWorker) * record.TargetUtilization)))
+	requiredWorkers = max(requiredWorkers, record.MinimumWorkers)
+	maximumRemovals := max(len(record.WorkerIDs)-requiredWorkers, 0)
+	if len(eligible) > maximumRemovals {
+		eligible = eligible[:maximumRemovals]
+	}
+	if len(eligible) == 0 {
 		return withCapacitySnapshot(record, occupied), nil
 	}
-	if m.now().Sub(since) < m.policy.ScaleDownCooldown {
-		return withCapacitySnapshot(record, occupied), nil
+	removeIDs := make([]string, len(eligible))
+	for index := range eligible {
+		removeIDs[index] = eligible[index].id
 	}
-	result, err := m.scaleRecordLocked(ctx, record, len(record.WorkerIDs)-1, live)
-	if err == nil {
-		m.underTarget[serviceID] = m.now()
-	}
+	result, err := m.removeIdleWorkersLocked(ctx, record, removeIDs)
 	return withCapacitySnapshot(result, occupied), err
+}
+
+func (m *Manager) removeIdleWorkersLocked(ctx context.Context, record Record, removeIDs []string) (Record, error) {
+	removeSet := make(map[string]bool, len(removeIDs))
+	for _, workerID := range removeIDs {
+		removeSet[workerID] = true
+	}
+	previous := append([]string(nil), record.WorkerIDs...)
+	desired := make([]string, 0, len(previous)-len(removeSet))
+	for _, workerID := range previous {
+		if !removeSet[workerID] {
+			desired = append(desired, workerID)
+		}
+	}
+	if err := m.workers.ConfigureService(ctx, record.RuntimeGroupID, record.ServiceID, desired, record.ConcurrencyPerWorker); err != nil {
+		return record, err
+	}
+	record.WorkerIDs = desired
+	record.State = workerState(len(desired))
+	if err := m.store.Save(record.ServiceID, record); err != nil {
+		_ = m.workers.ConfigureService(context.Background(), record.RuntimeGroupID, record.ServiceID, previous, record.ConcurrencyPerWorker)
+		return record, err
+	}
+	var joined error
+	for _, workerID := range removeIDs {
+		if err := m.workers.StopInGroup(ctx, record.RuntimeGroupID, workerID, false); err != nil {
+			joined = errors.Join(joined, fmt.Errorf("stop idle Worker %s: %w", workerID, err))
+		}
+	}
+	return record, joined
 }
 
 func withCapacitySnapshot(record Record, occupied int) Record {
 	record.OccupiedSlots = occupied
-	record.CapacitySlots = len(record.WorkerIDs) * record.MaximumInFlight
+	record.CapacitySlots = len(record.WorkerIDs) * record.ConcurrencyPerWorker
 	return record
+}
+
+func workerState(count int) string {
+	if count == 0 {
+		return "IDLE"
+	}
+	return "READY"
 }
 
 func workerSetNeedsReconciliation(record Record, live []workers.Record) bool {
@@ -1131,98 +966,6 @@ func workerSetNeedsReconciliation(record Record, live []workers.Record) bool {
 	return false
 }
 
-func (m *Manager) completeRequest(serviceID, workerID string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	record, err := m.inspect(serviceID)
-	if err != nil || (record.State != "READY" && record.State != "IDLE") {
-		return
-	}
-	if record.WorkerRequests == nil {
-		record.WorkerRequests = map[string]int{}
-	}
-	if workerID != "" {
-		record.WorkerRequests[workerID]++
-	}
-	if workerID != "" && m.policy.RecycleRequests > 0 && record.WorkerRequests[workerID] >= m.policy.RecycleRequests {
-		permissions := record.Permissions
-		if len(permissions.Read)+len(permissions.Write)+len(permissions.Net)+len(permissions.Import)+len(permissions.Env)+len(permissions.Sys) == 0 {
-			permissions = permissionsFor(m.policy.Profile.Permissions)
-		}
-		replacement, startErr := m.startWorker(context.Background(), record, permissions)
-		if startErr == nil {
-			next := make([]string, 0, len(record.WorkerIDs))
-			for _, id := range record.WorkerIDs {
-				if id != workerID {
-					next = append(next, id)
-				}
-			}
-			next = append(next, replacement)
-			sort.Strings(next)
-			if configureErr := m.workers.ConfigureService(context.Background(), record.RuntimeGroupID, serviceID, next, record.MaximumInFlight); configureErr == nil {
-				_ = m.workers.StopInGroup(context.Background(), record.RuntimeGroupID, workerID, false)
-				record.WorkerIDs = next
-				delete(record.WorkerRequests, workerID)
-				record.WorkerRequests[replacement] = 0
-			} else {
-				_ = m.workers.StopInGroup(context.Background(), record.RuntimeGroupID, replacement, true)
-			}
-		}
-	}
-	_ = m.store.Save(serviceID, record)
-	if record.Ephemeral && record.MinimumWorkers == 0 && record.IdleTimeout > 0 {
-		m.stopIdleTimerLocked(serviceID)
-		m.timers[serviceID] = time.AfterFunc(record.IdleTimeout, func() { m.scaleIdle(serviceID) })
-	}
-}
-
-func (m *Manager) scaleIdle(serviceID string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	delete(m.timers, serviceID)
-	record, err := m.inspect(serviceID)
-	if err != nil || !record.Ephemeral || record.MinimumWorkers != 0 {
-		return
-	}
-	live, err := m.workers.List(context.Background(), record.RuntimeGroupID)
-	if err != nil {
-		return
-	}
-	for _, item := range live {
-		if item.Worker.InFlight > 0 {
-			m.timers[serviceID] = time.AfterFunc(record.IdleTimeout, func() { m.scaleIdle(serviceID) })
-			return
-		}
-	}
-	_, _ = m.scaleLocked(context.Background(), serviceID, 0)
-}
-
-func (m *Manager) stopIdleTimerLocked(serviceID string) {
-	if timer := m.timers[serviceID]; timer != nil {
-		timer.Stop()
-		delete(m.timers, serviceID)
-	}
-}
-
-type completionBody struct {
-	io.ReadCloser
-	once     sync.Once
-	complete func()
-}
-
-func (b *completionBody) Read(buffer []byte) (int, error) {
-	count, err := b.ReadCloser.Read(buffer)
-	if err == io.EOF {
-		b.once.Do(b.complete)
-	}
-	return count, err
-}
-
-func (b *completionBody) Close() error {
-	err := b.ReadCloser.Close()
-	b.once.Do(b.complete)
-	return err
-}
 func (m *Manager) fail(record Record, cause error) (Record, error) {
 	record.State = "FAILED"
 	record.Failure = cause.Error()
@@ -1242,7 +985,7 @@ func (m *Manager) failStart(record Record, cause error) (Record, error) {
 	}
 	record.WorkerIDs = remaining
 	if len(remaining) == 0 {
-		cleanupErr = errors.Join(cleanupErr, m.releaseReplica(context.Background(), record))
+		cleanupErr = errors.Join(cleanupErr, m.releaseSandbox(context.Background(), record))
 	}
 	joined := errors.Join(cause, cleanupErr)
 	record.State = "FAILED"
@@ -1267,16 +1010,6 @@ func (m *Manager) failUnowned(record Record, cause error) (Record, error) {
 	record.State = "FAILED"
 	record.Failure = cause.Error()
 	return record, errors.Join(cause, m.store.Delete(record.ServiceID))
-}
-func canonicalPrefix(value string) string {
-	if !strings.HasPrefix(value, "/") {
-		value = "/" + value
-	}
-	value = strings.TrimSuffix(value, "/")
-	if value == "" {
-		return "/"
-	}
-	return value
 }
 func permissionsFor(value model.Permissions) supervisor.WorkerPermissions {
 	sys := []string(nil)

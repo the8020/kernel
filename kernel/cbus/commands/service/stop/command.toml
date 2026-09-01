@@ -19,7 +19,7 @@ name = "detail"
 type = "boolean"
 option = "detail"
 required = false
-description = "Show complete effective configuration, instance identities, failures, and metrics."
+description = "Show complete effective configuration, sandbox identities, failures, and metrics."
 [[result]]
 name = "state"
 type = "string"

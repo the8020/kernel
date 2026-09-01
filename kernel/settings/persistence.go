@@ -27,7 +27,7 @@ func persist(path string, definitions map[string]Definition, sources map[string]
 
 func persistGlobalChange(ctx context.Context, path string, definitions map[string]Definition, sources map[string]sourceValues, changed string) error {
 	return withPersistenceLock(ctx, path, func() error {
-		values, _, err := loadPersisted(path, definitions, StorageGlobal, false)
+		values, err := loadPersisted(path, definitions, StorageGlobal)
 		if err != nil {
 			return err
 		}
@@ -39,24 +39,6 @@ func persistGlobalChange(ctx context.Context, path string, definitions map[strin
 		}
 		return persistValues(path, definitions, values, StorageGlobal)
 	})
-}
-
-func mergeGlobalPersisted(ctx context.Context, path string, definitions map[string]Definition, additions map[string]any) (map[string]any, error) {
-	var merged map[string]any
-	err := withPersistenceLock(ctx, path, func() error {
-		var err error
-		merged, _, err = loadPersisted(path, definitions, StorageGlobal, false)
-		if err != nil {
-			return err
-		}
-		for key, value := range additions {
-			if _, exists := merged[key]; !exists {
-				merged[key] = value
-			}
-		}
-		return persistValues(path, definitions, merged, StorageGlobal)
-	})
-	return merged, err
 }
 
 func withPersistenceLock(ctx context.Context, settingsPath string, operation func() error) (err error) {

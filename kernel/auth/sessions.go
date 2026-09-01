@@ -79,7 +79,7 @@ func NewSessionStore(config SessionStoreConfig) (*SessionStore, error) {
 func (s *SessionStore) Root() string { return s.root }
 
 func (s *SessionStore) Create(username string, authVersion uint64, duration time.Duration) (SessionRecord, string, error) {
-	if err := validateUsername(username); err != nil {
+	if err := ValidateUsername(username); err != nil {
 		return SessionRecord{}, "", err
 	}
 	if authVersion == 0 || duration <= 0 {
@@ -181,6 +181,9 @@ func (s *SessionStore) List() ([]SessionRecord, error) {
 				continue
 			}
 			record, err := s.Read(sessionID)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -279,7 +282,7 @@ func validateSessionRecord(record SessionRecord) error {
 	if record.Schema != authSchema || !validLowerHex(record.SessionID, 32) || record.AuthVersion == 0 {
 		return errors.New("invalid authentication session identity or schema")
 	}
-	if err := validateUsername(record.Username); err != nil {
+	if err := ValidateUsername(record.Username); err != nil {
 		return err
 	}
 	if !strings.HasPrefix(record.SecretHash, "sha256:") || !validLowerHex(strings.TrimPrefix(record.SecretHash, "sha256:"), 64) {

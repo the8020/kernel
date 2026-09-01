@@ -84,27 +84,6 @@ func TestInitializeIdentityIsStable(t *testing.T) {
 	}
 }
 
-func TestInitializeMigratesLegacyPackageDataWithoutCopying(t *testing.T) {
-	root := t.TempDir()
-	paths := NewPaths(root)
-	legacyFile := filepath.Join(paths.SharedState, "packages", "the8020", "uui", "sessions", "uis-test.json")
-	if err := os.MkdirAll(filepath.Dir(legacyFile), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(legacyFile, []byte("session"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Initialize(paths); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(paths.StatePackageData, "the8020", "uui", "sessions", "uis-test.json")); err != nil {
-		t.Fatalf("legacy package data was not renamed: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(paths.SharedState, "packages")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("legacy package-data root remains: %v", err)
-	}
-}
-
 func TestLayoutUsesExplicitSharedRoots(t *testing.T) {
 	root := t.TempDir()
 	shared := t.TempDir()

@@ -14,9 +14,10 @@
 
 - All workload types use the same sandbox manager, supervisor protocol, Worker bootstrap, runtime profile, permissions, mounts, resources, and debugging path.
 - A runtime group has exactly one workload type; shared owners share its process/security/resource/failure boundary.
-- Services own independent stateless or persistent Worker pools with hard
-  execution-slot limits, and jobs normally
-  own one Worker per execution behind a bounded durable FIFO admission queue.
+- Each service sandbox owns an independent internal stateless or persistent
+  Worker pool with hard per-Worker execution-slot limits. The kernel owns the
+  service-wide desired Worker count and sandbox placement; jobs normally own
+  one Worker per execution behind a bounded durable FIFO admission queue.
 - Newly generated runtime-group IDs are `rgp-` plus eight random lowercase
   alphanumeric characters; newly generated Worker IDs are the equivalent
   `wrk-` format.

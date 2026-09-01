@@ -84,6 +84,7 @@ type WorkerStatus struct {
 	Entrypoint   string     `json:"entrypoint"`
 	ReleaseID    string     `json:"release_id"`
 	InFlight     int        `json:"in_flight"`
+	IdleSinceMS  int64      `json:"idle_since_ms,omitempty"`
 	State        string     `json:"state"`
 	Failure      string     `json:"failure,omitempty"`
 	Logs         []LogEvent `json:"logs,omitempty"`
@@ -271,11 +272,11 @@ func (c *Client) RunJob(ctx context.Context, spec model.SandboxSpec, workerID st
 	return response, nil
 }
 
-func (c *Client) ConfigureService(ctx context.Context, spec model.SandboxSpec, serviceID string, workerIDs []string, maximumInFlight int) error {
+func (c *Client) ConfigureService(ctx context.Context, spec model.SandboxSpec, serviceID string, workerIDs []string, concurrencyPerWorker int) error {
 	body := struct {
-		WorkerIDs       []string `json:"worker_ids"`
-		MaximumInFlight int      `json:"maximum_in_flight"`
-	}{WorkerIDs: workerIDs, MaximumInFlight: maximumInFlight}
+		WorkerIDs            []string `json:"worker_ids"`
+		ConcurrencyPerWorker int      `json:"concurrency_per_worker"`
+	}{WorkerIDs: append([]string{}, workerIDs...), ConcurrencyPerWorker: concurrencyPerWorker}
 	return c.control(ctx, spec, "/v1/services/"+url.PathEscape(serviceID)+"/configure", protocol.MessageServicePoolConfiguration, body, protocol.MessageServicePoolConfiguration, nil)
 }
 

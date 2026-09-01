@@ -143,7 +143,7 @@ func TestSupervisorMediatedAuthenticationCallsRequireActiveRequestIdentity(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.AddUser(context.Background(), "Admin", "password"); err != nil {
+	if _, err := manager.AddUser(context.Background(), "admin", "password"); err != nil {
 		t.Fatal(err)
 	}
 	_, network, _ := net.ParseCIDR("10.88.0.0/16")
@@ -174,7 +174,7 @@ func TestSupervisorMediatedAuthenticationCallsRequireActiveRequestIdentity(t *te
 	if response := call("/v1/runtime/auth/bootstrap-login", protocol.MessageAuthBootstrapLogin, mismatched); response.Code != http.StatusConflict {
 		t.Fatalf("mismatched active request status=%d body=%q", response.Code, response.Body.String())
 	}
-	identity.Username, identity.Password = "Admin", "password"
+	identity.Username, identity.Password = "admin", "password"
 	loginResponse := call("/v1/runtime/auth/bootstrap-login", protocol.MessageAuthBootstrapLogin, identity)
 	if loginResponse.Code != http.StatusOK {
 		t.Fatalf("login status=%d body=%q", loginResponse.Code, loginResponse.Body.String())
@@ -257,7 +257,7 @@ func TestSupervisorMediatedAdminBusRequiresBootstrapAdministrator(t *testing.T) 
 		t.Fatalf("anonymous status=%d body=%q", response.Code, response.Body.String())
 	}
 	release()
-	release, err = manager.BeginRuntimeRequest(platformauth.RuntimeRequest{RequestID: identity.RequestID, ServiceID: identity.ServiceID, RuntimeGroupID: spec.RuntimeGroupID, SandboxID: spec.SandboxID, Auth: platformauth.AuthContext{Authenticated: true, Realm: "bootstrap-admin", UserID: "bootstrap-admin:Admin", Username: "Admin"}})
+	release, err = manager.BeginRuntimeRequest(platformauth.RuntimeRequest{RequestID: identity.RequestID, ServiceID: identity.ServiceID, RuntimeGroupID: spec.RuntimeGroupID, SandboxID: spec.SandboxID, Auth: platformauth.AuthContext{Authenticated: true, Realm: "bootstrap-admin", UserID: "bootstrap-admin:admin", Username: "admin"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +288,7 @@ func TestAuthenticatedServiceCanInvokeOneExactWorker(t *testing.T) {
 	active := platformauth.RuntimeRequest{
 		RequestID: "request-control", ServiceID: "example/admin/control",
 		RuntimeGroupID: spec.RuntimeGroupID, SandboxID: spec.SandboxID,
-		Auth: platformauth.AuthContext{Authenticated: true, UserID: "bootstrap-admin:Admin", Username: "Admin"},
+		Auth: platformauth.AuthContext{Authenticated: true, UserID: "bootstrap-admin:admin", Username: "admin"},
 	}
 	runtimeRequests := fixedRuntimeRequests{requests: map[string]platformauth.RuntimeRequest{active.RequestID: active}}
 	invoker := &recordingWorkerInvoker{result: nodes.WorkerInvocationResult{OK: true, Output: map[string]any{"state": "live"}}}

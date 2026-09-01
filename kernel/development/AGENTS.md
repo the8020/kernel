@@ -6,8 +6,8 @@
 # Ownership
 
 - Own development-workspace records and source trees under
-  `users/<username>/workspaces/`, per-user `home/` and image-qualified `system/`
-  roots, node-local runsc process metadata under
+  `users/<username>/workspaces/`, image-qualified `system/` roots, node-local
+  runsc process metadata under
   `node/kernel/runtime/development/`, the workspace-scoped activation endpoint,
   mount-profile resolution, development-image delegation, and Git publication
   into shared package roots.
@@ -16,9 +16,11 @@
 
 # Local Contracts
 
-- `/workspace/packages`, `/home/developer`, and the writable OCI root are direct
-  mounts/roots backed by owning durable storage below the authenticated user's
-  `users/<username>/` directory. Normal writes are durable immediately; stop,
+- `/workspace/packages` and the writable OCI root are backed directly by owning
+  durable storage below the authenticated user's `users/<username>/` directory.
+  Development sandboxes run as Linux root, use `/root` as their login home, and
+  persist it as part of the OCI system root; there is no `developer` Linux
+  account or separate home bind. Normal writes are durable immediately; stop,
   kill, restart, inherited-sandbox cleanup, kernel shutdown, and kernel startup
   inspect no file contents.
 - Development system-root storage must preserve native Linux ownership, mode
@@ -40,15 +42,15 @@
 - The authenticated user's default workspace ID is deterministic. SSH and other
   direct entrypoints ensure that one workspace by loading only its record, then
   creating or starting its sandbox as needed; this path never lists other
-  workspaces. Ordinary path-safe usernames remain the storage owner ID; other
-  valid external identities map to a stable hashed path-safe owner ID. Active
-  development sandbox IDs map directly back to their owning workspace for
-  console opens.
-- New development sandboxes use the same canonical `sbx-` plus eight-character
-  resource ID as every other sandbox. Exact current-manager ownership resolves
-  an `sbx-` ID as development without a filesystem or runsc probe; legacy `dev-`
-  IDs are accepted only while enumerating and deleting inherited runsc processes
-  and are never newly allocated.
+  workspaces. Authentication guarantees a 3-32 character lowercase
+  alphanumeric username, which is used unchanged as the storage owner and
+  sandbox suffix. Active development sandbox IDs map directly back to their
+  owning workspace for console opens.
+- New development sandboxes use deterministic `dev-<owner>` resource IDs,
+  distinct from generated `sbx-` service/job identities, with no normalization,
+  hashing, aliases, or compatibility IDs. Restart reuses the ID because one
+  durable default workspace exists per owner. Per-ID locking serializes exact
+  inherited cleanup with startup.
 - The shared package tree is copied once when source storage is first created or
   explicitly reset. Each image-qualified system root is copied once from its
   immutable image. Copying streams through `cp -a --reflink=auto`, is staged
@@ -71,11 +73,11 @@
   It pauses the sandbox only for a stable explicit operation and never recreates
   it. Conflict markers are written directly into the durable private source.
 - Source reset replaces only workspace source and recorded bases. Factory reset
-  additionally replaces developer home and all image-qualified system roots but
-  preserves unrelated data in the owning user directory. Both require explicit
-  confirmation.
+  additionally replaces all image-qualified system roots, including `/root`,
+  but preserves unrelated data in the owning user directory. Both require
+  explicit confirmation.
 - The direct runsc driver uses the selected rootful/rootless mode, a writable
-  private OCI root, direct writable source/home bind mounts, validated shared
+  private OCI root, a direct writable source bind mount, validated shared
   read-only mounts, ephemeral tmpfs mounts, and read-only mode-`0644` resolver
   files so package-manager service accounts retain DNS access. It configures no
   runsc overlay or rootfs-tar annotation; `--overlay2=none` is explicit because
@@ -101,19 +103,19 @@
 
 # Verification
 
-- Unit tests prove zero idle sandbox work, native source/home/system persistence
+- Unit tests prove zero idle sandbox work, native source/system and root-home persistence
   through process replacement, developer isolation, explicit-only Git scans,
   activation without sandbox recreation, persisted conflicts, independent
   repository inspection, non-blocking inherited cleanup/lazy identity
   normalization, reset boundaries, bounded diagnostics, and absence of runsc
-  overlay/tar flags, rootless package-account UID/GID mapping, canonical sandbox
-  IDs and legacy inherited cleanup, plus direct default-workspace
+  overlay/tar flags, rootless package-account UID/GID mapping, deterministic
+  development IDs and inherited cleanup, plus direct default-workspace
   ensure/reuse/restart.
 - The rootless and rootful real-gVisor E2E proves SSH password login and PTY
   control/resize behavior, a contextual prompt that follows `cd`, and a real
   `xterm` Nano full-screen session, native non-root UID/GID ownership, ordinary
   edits plus APT/dpkg installation survive restart natively, helper
-  preview/activation works, source reset retains home/system state, factory
+  preview/activation works, source reset retains root-home/system state, factory
   reset removes it, PID 1 remains `sleep`, deleted process logs do not
   accumulate, and no scanner executable exists in the image.
 

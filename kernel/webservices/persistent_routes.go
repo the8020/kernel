@@ -69,7 +69,7 @@ func newPersistentRouteRegistry(nodeID string, statePath ...string) *persistentR
 
 func (r *persistentRouteRegistry) create(serviceID, poolID, runtimeGroupID, sandboxID, userID string, keepAlive time.Duration, connected bool) (string, persistentRoute, error) {
 	if serviceID == "" || poolID == "" || runtimeGroupID == "" || sandboxID == "" || keepAlive <= 0 {
-		return "", persistentRoute{}, errors.New("persistent route requires service, replica, and positive keepalive")
+		return "", persistentRoute{}, errors.New("persistent route requires service, sandbox pool, and positive keepalive")
 	}
 	executionID, err := model.NewID("persistent")
 	if err != nil {

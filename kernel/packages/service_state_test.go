@@ -17,7 +17,7 @@ func TestFileServiceStateStoreCRUDListAndIdempotentDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	state := DesiredServiceState{Schema: 1, Enabled: true, Generation: 4}
+	state := DesiredServiceState{Schema: 2, Enabled: true, Generation: 4}
 	if err := store.Put("core/example/service", state); err != nil {
 		t.Fatal(err)
 	}
@@ -39,18 +39,18 @@ func TestFileServiceStateStoreCRUDListAndIdempotentDelete(t *testing.T) {
 
 func TestFirstDiscoveryFreezesPortableDefaults(t *testing.T) {
 	root := t.TempDir()
-	manifest := `schema = 1
+	manifest := `schema = 2
 description = "Frozen defaults"
 [lifecycle]
 default_enabled = true
-[execution]
-concurrency_per_worker = 16
 [scaling]
-replicas_min = 2
-replicas_max = 3
-workers_per_replica_min = 0
-workers_per_replica_max = 8
+minimum_workers = 0
+maximum_workers = 24
+concurrency_per_worker = 16
 target_utilization = 0.7
+[placement]
+minimum_sandboxes = 2
+workers_per_sandbox = 8
 `
 	writeFile(t, filepath.Join(root, "packages", "core", "example", "package.toml"), "schema = 1\n")
 	writeFile(t, filepath.Join(root, "packages", "core", "example", "services", "api", "service.toml"), manifest)
@@ -60,16 +60,28 @@ target_utilization = 0.7
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !first.StateExists || !first.State.Enabled || first.Effective.Scaling.ReplicasMinimum != 2 || first.Effective.Scaling.WorkersPerReplicaMinimum != 0 {
+	if !first.StateExists || !first.State.Enabled || first.Effective.Placement.MinimumSandboxes != 2 || first.Effective.Scaling.MinimumWorkers != 0 || first.Effective.Scaling.MaximumWorkers != 24 {
 		t.Fatalf("first=%#v", first)
 	}
-	writeFile(t, filepath.Join(root, "packages", "core", "example", "services", "api", "service.toml"), strings.Replace(manifest, "replicas_min = 2", "replicas_min = 3", 1))
+	writeFile(t, filepath.Join(root, "packages", "core", "example", "services", "api", "service.toml"), strings.Replace(manifest, "minimum_sandboxes = 2", "minimum_sandboxes = 3", 1))
 	second, err := store.ReadService("core/example/api")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.Effective.Scaling.ReplicasMinimum != 2 {
+	if second.Effective.Placement.MinimumSandboxes != 2 {
 		t.Fatalf("portable edit changed materialized desired state: %#v", second.Effective.Scaling)
+	}
+}
+
+func TestObsoleteDesiredStateSchemaIsRejected(t *testing.T) {
+	root := t.TempDir()
+	writeService(t, root, "core", "example", "api", "service.ts")
+	statePath := filepath.Join(root, "state", "services", "core", "example", "api", "state.toml")
+	writeFile(t, statePath, "schema = 1\nenabled = true\ngeneration = 7\n")
+	store := newTestStore(t, root)
+	_, exists, err := store.ReadState("core/example/api")
+	if err == nil || !exists || !strings.Contains(err.Error(), "schema must equal 2") {
+		t.Fatalf("error = %v", err)
 	}
 }
 

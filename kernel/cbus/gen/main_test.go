@@ -398,9 +398,10 @@ func TestRepositoryCatalogContainsEveryRequiredPlatformSetting(t *testing.T) {
 		"auth.bootstrap.cookie.name", "auth.bootstrap.cookie.secure", "auth.bootstrap.cookie.same_site",
 		"auth.bootstrap.argon2.memory", "auth.bootstrap.argon2.iterations", "auth.bootstrap.argon2.parallelism",
 		"services.reconcile_interval", "services.startup_timeout",
-		"services.default_request_timeout", "services.default_drain_timeout", "services.default_replicas_minimum",
-		"services.default_replicas_maximum", "services.default_workers_per_replica_minimum",
-		"services.default_workers_per_replica_maximum", "services.default_concurrency_per_worker", "services.default_persistent_keep_alive", "services.state_lock_timeout",
+		"services.default_request_timeout", "services.default_drain_timeout", "services.default_minimum_workers",
+		"services.default_maximum_workers", "services.default_concurrency_per_worker", "services.default_target_utilization_percent",
+		"services.default_worker_keep_alive", "services.default_workers_per_sandbox", "services.default_minimum_sandboxes", "services.default_session_keep_alive", "services.state_lock_timeout",
+		"runtime.sandbox.maximum_workers", "runtime.sandbox.target_cpu_utilization_percent", "runtime.sandbox.target_ram_utilization_percent",
 		"network.root_alias",
 	} {
 		if _, exists := found[key]; !exists {

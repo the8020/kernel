@@ -15,9 +15,9 @@
   ownership of program discovery, loading, and execution.
 - Derive package IDs, service IDs, canonical HTTP prefixes, and source paths
   exclusively from validated filesystem segments.
-- Parse and validate package, service execution/access policy, and desired-state
-  TOML; calculate effective configuration from framework defaults, portable
-  defaults, then state overrides.
+- Parse and validate package, canonical service lifecycle/scaling/placement and
+  access policy, and desired-state TOML; calculate effective configuration from
+  framework defaults, portable defaults, then state overrides.
 - Own `ServiceStateStore` and the `FileServiceStateStore` backend under
   `state/services/.../state.toml`, with per-service advisory locks, file flush,
   atomic rename, fixed-depth listing, and idempotent deletion.
@@ -48,13 +48,21 @@
 - First discovery creates generation-zero desired state using
   `lifecycle.default_enabled` and frozen effective defaults; ordinary services
   default disabled.
-- Omitted execution and access modes normalize to `stateless` and `public`;
-  explicit execution values are only `stateless` or `persistent`, independent of
-  HTTP/WebSocket transport. Persistent mode alone accepts positive `keep_alive`.
-- Service-level capacity is limited to concurrency per Worker, replica and
-  Worker-per-replica minimums/maximums, target utilization, and one free-text
-  sandbox group. Minimums cannot exceed maximums, utilization is in `(0,1]`, and
-  there is no dedicated flag, node/sandbox identity, or placement-tag list.
+- Omitted service and access types normalize to `stateless` and `public`;
+  explicit service types are only `stateless` or `session`, independent of
+  HTTP/WebSocket transport. Session keepalive remains editable and positive for
+  both types so switching type never loses its configured value.
+- Canonical scaling owns non-negative minimum/maximum Workers, positive
+  concurrency per Worker, target utilization in `(0,1]`, and positive Worker
+  keepalive. Maximum zero means unlimited only at the service level; otherwise
+  it cannot be below minimum. Canonical placement owns one trimmed optional
+  sandbox group, non-negative minimum sandboxes, and positive Workers per
+  sandbox. Defaults are zero/zero Workers, concurrency 32, target `0.7`, Worker
+  keepalive two minutes, zero warm sandboxes, four Workers per sandbox,
+  stateless type, and ten-minute session keepalive.
+- Service manifest and desired-state schema 2 are the only accepted format.
+  Older schemas and obsolete fields are rejected; development instances are
+  reinitialized instead of migrated.
 - Framework defaults are defined once by `DefaultFrameworkDefaults`; callers may
   supply setting-derived defaults through `Config`.
 - Package content inspection excludes `.git`, does not follow directory
@@ -83,7 +91,8 @@
 - Tests cover cheap fixed-depth package summaries, selected package
   service/program/file inspection without desired-state materialization,
   filesystem identity, descriptions, invalid and hidden names, symlink escape,
-  service entrypoints, TOML/default validation, frozen first-discovery state,
+  service entrypoints, schema-two defaults/validation and obsolete-schema
+  rejection, frozen first-discovery state,
   backend replacement, CRUD/list/delete behavior, monotonic atomic
   mutations, cross-process advisory locking, index validation and permissions,
   real HTTPS Git ref/version discovery, latest/tag synchronization, service-set

@@ -18,8 +18,8 @@ import (
 	"sync"
 	"time"
 
+	"the8020/kernel/auth"
 	"the8020/kernel/sandbox/backend"
-	"the8020/kernel/sandbox/model"
 )
 
 type Config struct {
@@ -43,6 +43,7 @@ type Manager struct {
 	driver         SandboxDriver
 	workspaceMu    sync.Map
 	workspaceOwner sync.Map
+	sandboxMu      sync.Map
 	imageMu        sync.RWMutex
 	repositoryMu   *sync.RWMutex
 	owned          sync.Map
@@ -52,6 +53,8 @@ type Manager struct {
 	cleanupCancel  context.CancelFunc
 	cleanupDone    chan struct{}
 }
+
+const workspaceSchema = 3
 
 func New(config Config) (*Manager, error) {
 	for name, path := range map[string]string{"root": config.Root, "packages": config.PackagesRoot, "config": config.ConfigRoot, "users": config.UsersRoot, "runtime": config.RuntimeRoot, "image": config.ImageRoot} {
@@ -133,13 +136,19 @@ func (m *Manager) destroyInheritedSandboxes(parent context.Context) {
 		return
 	}
 	for _, id := range ids {
-		_ = m.driver.Kill(ctx, id)
+		unlock := m.lockSandbox(id)
+		if _, owned := m.owned.Load(id); owned {
+			unlock()
+			continue
+		}
 		if err := m.driver.Delete(ctx, id); err != nil {
+			unlock()
 			if m.config.Logger != nil {
 				m.config.Logger.Error("development inherited sandbox cleanup failed", "sandbox_id", id, "error", err)
 			}
 			continue
 		}
+		unlock()
 	}
 }
 
@@ -190,8 +199,8 @@ func (m *Manager) Close(ctx context.Context) error {
 }
 
 func (m *Manager) Create(ctx context.Context, userID string) (Workspace, error) {
-	if !safeUserID(userID) {
-		return Workspace{}, errors.New("developer user ID must contain only letters, digits, dot, underscore, at, or hyphen")
+	if _, err := sandboxIDForUser(userID); err != nil {
+		return Workspace{}, err
 	}
 	id := workspaceID(userID)
 	unlock := m.lockWorkspace(id)
@@ -208,9 +217,8 @@ func (m *Manager) Create(ctx context.Context, userID string) (Workspace, error) 
 // development sandbox, creating or starting it only when necessary. Its
 // deterministic workspace lookup never enumerates other users' workspaces.
 func (m *Manager) EnsureDefaultSandbox(ctx context.Context, userID string) (string, error) {
-	userID = storageUserID(userID)
-	if userID == "" {
-		return "", errors.New("developer user identity is required")
+	if _, err := sandboxIDForUser(userID); err != nil {
+		return "", err
 	}
 	id := workspaceID(userID)
 	unlock := m.lockWorkspace(id)
@@ -236,7 +244,7 @@ func (m *Manager) createLocked(ctx context.Context, id, userID string) (Workspac
 	if err != nil {
 		return Workspace{}, err
 	}
-	workspace := Workspace{Schema: 2, WorkspaceID: id, OwnerUserID: userID, State: StateCreating, CreatedAt: now, UpdatedAt: now, Token: token, MountProfile: cloneMountProfile(m.config.MountProfile)}
+	workspace := Workspace{Schema: workspaceSchema, WorkspaceID: id, OwnerUserID: userID, State: StateCreating, CreatedAt: now, UpdatedAt: now, Token: token, MountProfile: cloneMountProfile(m.config.MountProfile)}
 	if err := m.preparePersistentMounts(&workspace); err != nil {
 		return Workspace{}, err
 	}
@@ -316,6 +324,7 @@ func (m *Manager) startLocked(ctx context.Context, workspace *Workspace) error {
 			return nil
 		}
 		_ = m.driver.Delete(ctx, workspace.ActiveSandboxID)
+		m.owned.Delete(workspace.ActiveSandboxID)
 		workspace.ActiveSandboxID = ""
 	}
 	var image ImageStatus
@@ -335,7 +344,7 @@ func (m *Manager) startLocked(ctx context.Context, workspace *Workspace) error {
 	if err != nil {
 		return err
 	}
-	sandboxID, err := model.NewSandboxID()
+	sandboxID, err := sandboxIDForUser(workspace.OwnerUserID)
 	if err != nil {
 		return err
 	}
@@ -348,7 +357,13 @@ func (m *Manager) startLocked(ctx context.Context, workspace *Workspace) error {
 	if err != nil {
 		return err
 	}
-	if err := m.driver.Start(ctx, SandboxStart{WorkspaceID: workspace.WorkspaceID, SandboxID: sandboxID, Packages: workspace.SourcePath, Home: workspace.PersistentHomePath, RootFS: workspace.SystemPath, Endpoint: m.endpoint, Token: workspace.Token, Mounts: mounts}); err != nil {
+	unlockSandbox := m.lockSandbox(sandboxID)
+	defer unlockSandbox()
+	if err := m.driver.Delete(ctx, sandboxID); err != nil {
+		workspace.ActiveSandboxID = ""
+		return fmt.Errorf("delete inherited development sandbox %s: %w", sandboxID, err)
+	}
+	if err := m.driver.Start(ctx, SandboxStart{WorkspaceID: workspace.WorkspaceID, SandboxID: sandboxID, Packages: workspace.SourcePath, RootFS: workspace.SystemPath, Endpoint: m.endpoint, Token: workspace.Token, Mounts: mounts}); err != nil {
 		workspace.ActiveSandboxID = ""
 		return err
 	}
@@ -495,7 +510,7 @@ func (m *Manager) Restart(ctx context.Context, id string) (Workspace, error) {
 	return workspace, nil
 }
 
-func (m *Manager) Delete(ctx context.Context, id string, deleteHome bool) error {
+func (m *Manager) Delete(ctx context.Context, id string, deleteUserData bool) error {
 	unlock := m.lockWorkspace(id)
 	defer unlock()
 	workspace, err := m.loadWorkspace(id)
@@ -512,7 +527,7 @@ func (m *Manager) Delete(ctx context.Context, id string, deleteHome bool) error 
 	if err := os.RemoveAll(m.workspaceRoot(workspace)); err != nil {
 		return err
 	}
-	if deleteHome {
+	if deleteUserData {
 		if err := os.RemoveAll(m.userRoot(workspace.OwnerUserID)); err != nil {
 			return err
 		}
@@ -572,13 +587,6 @@ func (m *Manager) OpenConsole(ctx context.Context, sandboxID string, options bac
 	return consoleDriver.OpenConsole(ctx, sandboxID, options)
 }
 
-// OwnsSandbox reports whether this manager currently owns the exact live
-// development sandbox. It performs no filesystem or runtime I/O.
-func (m *Manager) OwnsSandbox(sandboxID string) bool {
-	_, ok := m.owned.Load(sandboxID)
-	return ok
-}
-
 func (m *Manager) ResetSource(ctx context.Context, id string, confirmed bool) (Workspace, error) {
 	if !confirmed {
 		return Workspace{}, errors.New("source reset requires explicit confirmation")
@@ -627,7 +635,6 @@ func (m *Manager) FactoryReset(ctx context.Context, id string, confirmed bool) (
 	}
 	for _, path := range []string{
 		m.workspaceRoot(old),
-		filepath.Join(m.userRoot(old.OwnerUserID), "home"),
 		filepath.Join(m.userRoot(old.OwnerUserID), "system"),
 	} {
 		if err := os.RemoveAll(path); err != nil {
@@ -642,7 +649,7 @@ func (m *Manager) FactoryReset(ctx context.Context, id string, confirmed bool) (
 		return Workspace{}, err
 	}
 	now := time.Now().UTC()
-	workspace := Workspace{Schema: 2, WorkspaceID: id, OwnerUserID: old.OwnerUserID, State: StateResetting, CreatedAt: now, UpdatedAt: now, Token: token, MountProfile: cloneMountProfile(m.config.MountProfile)}
+	workspace := Workspace{Schema: workspaceSchema, WorkspaceID: id, OwnerUserID: old.OwnerUserID, State: StateResetting, CreatedAt: now, UpdatedAt: now, Token: token, MountProfile: cloneMountProfile(m.config.MountProfile)}
 	if err := m.preparePersistentMounts(&workspace); err != nil {
 		return Workspace{}, err
 	}
@@ -674,6 +681,13 @@ func (m *Manager) workspaceLock(id string) *sync.Mutex {
 
 func (m *Manager) lockWorkspace(id string) func() {
 	lock := m.workspaceLock(id)
+	lock.Lock()
+	return lock.Unlock
+}
+
+func (m *Manager) lockSandbox(id string) func() {
+	value, _ := m.sandboxMu.LoadOrStore(id, &sync.Mutex{})
+	lock := value.(*sync.Mutex)
 	lock.Lock()
 	return lock.Unlock
 }
@@ -727,6 +741,9 @@ func (m *Manager) loadWorkspaceForUser(id, userID string) (Workspace, error) {
 	if workspace.WorkspaceID != id || workspace.OwnerUserID != userID {
 		return Workspace{}, errors.New("development workspace identity mismatch")
 	}
+	if workspace.Schema != workspaceSchema {
+		return Workspace{}, fmt.Errorf("unsupported development workspace schema %d", workspace.Schema)
+	}
 	m.workspaceOwner.Store(id, userID)
 	if workspace.ActiveSandboxID != "" {
 		if _, owned := m.owned.Load(workspace.ActiveSandboxID); !owned {
@@ -738,14 +755,6 @@ func (m *Manager) loadWorkspaceForUser(id, userID string) (Workspace, error) {
 				return Workspace{}, err
 			}
 		}
-	}
-	legacyProfile := workspace.Schema < 2
-	for _, mount := range workspace.MountProfile {
-		legacyProfile = legacyProfile || mount.Behavior == MountBehavior("draft-source")
-	}
-	if legacyProfile || len(workspace.MountProfile) == 0 {
-		workspace.Schema = 2
-		workspace.MountProfile = cloneMountProfile(m.config.MountProfile)
 	}
 	if err := validateMountProfile(m.config, workspace.MountProfile); err != nil {
 		return Workspace{}, fmt.Errorf("validate persisted development mount profile: %w", err)
@@ -779,29 +788,15 @@ func workspaceID(userID string) string {
 	return "default-" + hex.EncodeToString(sum[:8])
 }
 
-// storageUserID preserves ordinary safe user names and gives every other valid
-// external identity a stable path-safe storage key.
-func storageUserID(value string) string {
-	if value == "" {
-		return ""
-	}
-	if safeUserID(value) {
-		return value
-	}
-	sum := sha256.Sum256([]byte(value))
-	return "identity-" + hex.EncodeToString(sum[:16])
+func safeUserID(value string) bool {
+	return auth.ValidateUsername(value) == nil
 }
 
-func safeUserID(value string) bool {
-	if value == "" || len(value) > 128 {
-		return false
+func sandboxIDForUser(userID string) (string, error) {
+	if err := auth.ValidateUsername(userID); err != nil {
+		return "", err
 	}
-	for _, character := range value {
-		if (character < 'a' || character > 'z') && (character < 'A' || character > 'Z') && (character < '0' || character > '9') && !strings.ContainsRune("._@-", character) {
-			return false
-		}
-	}
-	return true
+	return "dev-" + userID, nil
 }
 
 func randomHex(size int) (string, error) {

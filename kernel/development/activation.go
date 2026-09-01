@@ -457,11 +457,12 @@ func selectedChanges(requested []string, changes []packageChanges) (map[string]b
 
 func (m *Manager) activationAuthor(workspace Workspace, options ActivationOptions) (string, string) {
 	name, email := strings.TrimSpace(options.AuthorName), strings.TrimSpace(options.AuthorEmail)
+	rootHome := filepath.Join(workspace.SystemPath, "root")
 	if name == "" {
-		name, _ = gitOutputContext(context.Background(), workspace.PersistentHomePath, nil, "config", "--file", filepath.Join(workspace.PersistentHomePath, ".gitconfig"), "user.name")
+		name, _ = gitOutputContext(context.Background(), rootHome, nil, "config", "--file", filepath.Join(rootHome, ".gitconfig"), "user.name")
 	}
 	if email == "" {
-		email, _ = gitOutputContext(context.Background(), workspace.PersistentHomePath, nil, "config", "--file", filepath.Join(workspace.PersistentHomePath, ".gitconfig"), "user.email")
+		email, _ = gitOutputContext(context.Background(), rootHome, nil, "config", "--file", filepath.Join(rootHome, ".gitconfig"), "user.email")
 	}
 	if name == "" {
 		name = workspace.OwnerUserID

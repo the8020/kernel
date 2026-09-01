@@ -243,7 +243,7 @@ func TestTransportNeutralConsoleLeaseIsTracked(t *testing.T) {
 		t.Fatal(err)
 	}
 	lease, err := manager.OpenConsole(context.Background(), "development", "sbx-abc12345", backend.ConsoleOptions{
-		Arguments: []string{"/bin/bash", "-l"}, Environment: []string{"HOME=/home/developer"},
+		Arguments: []string{"/bin/bash", "-l"}, Environment: []string{"HOME=/root"},
 		WorkingDir: "/workspace", Size: backend.ConsoleSize{Columns: 80, Rows: 24},
 	})
 	if err != nil {

@@ -45,8 +45,8 @@ func TestUserStoreCreatesRestrictiveFileAndManagesVersions(t *testing.T) {
 	if _, err := store.Add(context.Background(), "admin", "other"); !errors.Is(err, ErrDuplicateUser) {
 		t.Fatalf("duplicate err=%v", err)
 	}
-	if _, err := store.Add(context.Background(), "Admin", "case-sensitive"); err != nil {
-		t.Fatal(err)
+	if _, err := store.Add(context.Background(), "Admin", "uppercase"); !errors.Is(err, ErrInvalidUsername) {
+		t.Fatalf("uppercase username err=%v", err)
 	}
 	if _, err := store.Authenticate("admin", "first-password"); err != nil {
 		t.Fatal(err)
@@ -93,6 +93,19 @@ func TestUserStoreCreatesRestrictiveFileAndManagesVersions(t *testing.T) {
 	}
 }
 
+func TestUsernameValidationMatchesLinuxIdentityContract(t *testing.T) {
+	for _, username := range []string{"abc", "alice", strings.Repeat("a", 32), "123"} {
+		if err := ValidateUsername(username); err != nil {
+			t.Errorf("valid username %q: %v", username, err)
+		}
+	}
+	for _, username := range []string{"", "ab", strings.Repeat("a", 33), "Alice", "alice1!", "alice-smith", "管理者"} {
+		if err := ValidateUsername(username); !errors.Is(err, ErrInvalidUsername) {
+			t.Errorf("invalid username %q: %v", username, err)
+		}
+	}
+}
+
 func TestUserStoreConcurrentReadersAndWritersSeeCompleteDocuments(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "bootstrap-users.toml")
 	store := newTestUserStore(t, path, time.Now)
@@ -102,7 +115,7 @@ func TestUserStoreConcurrentReadersAndWritersSeeCompleteDocuments(t *testing.T) 
 		wait.Add(2)
 		go func(index int) {
 			defer wait.Done()
-			_, err := store.Add(context.Background(), "user-"+string(rune('a'+index)), "password")
+			_, err := store.Add(context.Background(), "user"+string(rune('a'+index)), "password")
 			errorsChannel <- err
 		}(index)
 		go func() {
@@ -158,7 +171,7 @@ func TestUserStoreCrossProcessWritesUseAdvisoryLock(t *testing.T) {
 	}
 	outputs := make([]bytes.Buffer, len(commands))
 	for index, command := range commands {
-		command.Env = append(os.Environ(), "THE8020_AUTH_HELPER=1", "THE8020_AUTH_USERS_FILE="+path, "THE8020_AUTH_USERNAME=process-"+string(rune('a'+index)))
+		command.Env = append(os.Environ(), "THE8020_AUTH_HELPER=1", "THE8020_AUTH_USERS_FILE="+path, "THE8020_AUTH_USERNAME=process"+string(rune('a'+index)))
 		command.Stdout = &outputs[index]
 		command.Stderr = &outputs[index]
 		if err := command.Start(); err != nil {
@@ -182,7 +195,7 @@ func TestUserStoreProcessHelper(t *testing.T) {
 		t.Skip("helper process")
 	}
 	path, username := os.Getenv("THE8020_AUTH_USERS_FILE"), os.Getenv("THE8020_AUTH_USERNAME")
-	if path == "" || !strings.HasPrefix(username, "process-") {
+	if path == "" || !strings.HasPrefix(username, "process") {
 		t.Fatal("helper environment missing")
 	}
 	store := newTestUserStore(t, path, time.Now)

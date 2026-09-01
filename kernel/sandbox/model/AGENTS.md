@@ -25,8 +25,10 @@
   must exactly match its immutable runtime profile, and image identity must be a
   SHA-256 digest.
 - Service specs retain one exact placement-group value plus the logical service
-  IDs already present. The lists are used to prevent duplicate replicas in one
+  IDs already present. The lists are used to prevent duplicate allocations in one
   sandbox; an empty placement group remains a valid shared value.
+- `SandboxCapacityPolicy` validates the kernel-wide maximum Worker count and
+  CPU/RAM target utilization used by placement and exact Worker admission.
 
 # Lifecycle
 
@@ -55,7 +57,8 @@
 # Verification
 
 - Unit tests cover validation, deterministic hashing/canonicalization including
-  egress policy, workload isolation, generic IDs, compact runtime resource IDs,
-  strict sandbox-ID recognition, and every legal/illegal state transition.
+  egress policy, workload isolation, sandbox capacity policy, generic IDs,
+  compact runtime resource IDs, strict sandbox-ID recognition, and every
+  legal/illegal state transition.
 
 # Child DOX Index

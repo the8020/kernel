@@ -109,9 +109,9 @@ func SandboxDelete(s *services.Services) core.Handler {
 		if err != nil {
 			return nil, err
 		}
-		deleteHome := commandutil.Bool(request, "delete_home")
-		err = service.Delete(ctx, commandutil.String(request, "workspace_id"), deleteHome)
-		return core.Result{"deleted": err == nil, "developer_home_deleted": deleteHome}, operation(err)
+		deleteUserData := commandutil.Bool(request, "delete_user_data")
+		err = service.Delete(ctx, commandutil.String(request, "workspace_id"), deleteUserData)
+		return core.Result{"deleted": err == nil, "user_data_deleted": deleteUserData}, operation(err)
 	}
 }
 func SandboxShell(s *services.Services) core.Handler {

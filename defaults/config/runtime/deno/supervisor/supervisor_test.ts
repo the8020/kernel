@@ -188,6 +188,20 @@ Deno.test("supervisor tracks Workers, service pools, and drain", async () => {
     metadata: metadata("worker-a"),
     permissions: { read: [examples] },
   });
+  const retried = await supervisor.startWorker({
+    metadata: metadata("worker-a"),
+    permissions: { read: [examples] },
+  });
+  assertEquals(retried, second);
+  await assertRejects(
+    () =>
+      supervisor.startWorker({
+        metadata: metadata("worker-a"),
+        permissions: { read: [] },
+      }),
+    Error,
+    "different configuration",
+  );
   assertEquals(
     second.metadata.debuggerName,
     "service:owner:execution-worker-a:worker-a",
@@ -195,7 +209,7 @@ Deno.test("supervisor tracks Workers, service pools, and drain", async () => {
   supervisor.configureService("service-a", [
     first.metadata.workerId,
     second.metadata.workerId,
-  ]);
+  ], 32);
   assertEquals(
     supervisor.selectServiceWorker("service-a").metadata.workerId,
     "worker-a",
@@ -210,7 +224,7 @@ Deno.test("supervisor tracks Workers, service pools, and drain", async () => {
   const drainingResponse = await first.dispatchService(
     new Request("http://service/draining"),
   );
-  supervisor.configureService("service-a", [second.metadata.workerId]);
+  supervisor.configureService("service-a", [second.metadata.workerId], 32);
   const stopping = supervisor.stopWorker(first.metadata.workerId);
   await new Promise((resolve) => setTimeout(resolve, 10));
   assertEquals(
@@ -246,17 +260,67 @@ Deno.test("supervisor tracks Workers, service pools, and drain", async () => {
   assertEquals(await routed.text(), "POST:/routed:streamed:body");
   assertEquals(supervisor.status().worker_count, 1);
   await supervisor.drain();
+  await supervisor.stopWorker("already-absent");
   assertEquals(supervisor.status().worker_count, 0);
   assertEquals(supervisor.status().draining, true);
 });
 
+Deno.test("concurrent Worker lifecycle retries remain idempotent", async () => {
+  let releaseValidation!: () => void;
+  const validationGate = new Promise<void>((resolve) => {
+    releaseValidation = resolve;
+  });
+  let validationCalls = 0;
+  const supervisor = new Supervisor({
+    runtimeGroupId: "group-retry",
+    sandboxId: "sandbox-retry",
+    workloadType: "service",
+    token,
+    supervisorVersion: "test",
+    entrypointValidator: async () => {
+      validationCalls++;
+      await validationGate;
+    },
+  });
+  const validated = metadata("worker-retry");
+  validated.validateEntrypoint = true;
+  const options = {
+    metadata: validated,
+    permissions: { read: [examples] },
+  };
+  const firstStart = supervisor.startWorker(options);
+  await Promise.resolve();
+  const repeatedStart = supervisor.startWorker(options);
+  await assertRejects(
+    () =>
+      supervisor.startWorker({
+        metadata: validated,
+        permissions: { read: [] },
+      }),
+    Error,
+    "different configuration",
+  );
+  assertEquals(validationCalls, 1);
+  releaseValidation();
+  const [first, repeated] = await Promise.all([firstStart, repeatedStart]);
+  assertEquals(first, repeated);
+  assertEquals(supervisor.status().worker_count, 1);
+  await Promise.all([
+    supervisor.stopWorker(validated.workerId),
+    supervisor.stopWorker(validated.workerId),
+  ]);
+  assertEquals(supervisor.status().worker_count, 0);
+});
+
 Deno.test("persistent executions reserve hard slots and return to the same Worker", async () => {
+  const now = 1_000;
   const supervisor = new Supervisor({
     runtimeGroupId: "group-persistent",
     sandboxId: "sandbox-persistent",
     workloadType: "service",
     token,
     supervisorVersion: "test",
+    now: () => now,
   });
   const workerMetadata = [metadata("persistent-a"), metadata("persistent-b")];
   for (const item of workerMetadata) {
@@ -357,6 +421,55 @@ Deno.test("persistent executions reserve hard slots and return to the same Worke
   }
 });
 
+Deno.test("session reservation expiry starts an independent Worker idle clock", async () => {
+  let now = 1_000;
+  const supervisor = new Supervisor({
+    runtimeGroupId: "group-keepalive",
+    sandboxId: "sandbox-keepalive",
+    workloadType: "service",
+    token,
+    supervisorVersion: "test",
+    now: () => now,
+  });
+  const workerMetadata = metadata("keepalive-worker");
+  workerMetadata.service = {
+    serviceId: "service-a",
+    generation: 1,
+    canonicalBasePath: "/service-a",
+    executionMode: "persistent",
+  };
+  const worker = await supervisor.startWorker({
+    metadata: workerMetadata,
+    permissions: { read: [examples] },
+  });
+  supervisor.configureService("service-a", [worker.metadata.workerId], 1);
+  try {
+    assertEquals(supervisor.workers()[0]?.idle_since_ms, 1_000);
+    const response = await supervisor.handler(
+      new Request("http://runtime/v1/services/service-a/dispatch", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "x-80-20-method": "GET",
+          "x-80-20-url": "http://service/persistent",
+          "x-80-20-internal-persistent-execution-id": "session-one",
+          "x-80-20-internal-persistent-keep-alive-ms": "100",
+        },
+      }),
+    );
+    await response.body?.cancel();
+    assertEquals(supervisor.workers()[0]?.in_flight, 1);
+    assertEquals(supervisor.workers()[0]?.idle_since_ms, undefined);
+
+    now = 1_100;
+    const expired = supervisor.workers()[0];
+    assertEquals(expired?.in_flight, 0);
+    assertEquals(expired?.idle_since_ms, 1_100);
+  } finally {
+    await supervisor.stopWorker(worker.metadata.workerId, true);
+  }
+});
+
 Deno.test({
   name: "supervisor owns request-service WebSocket upgrades and message relay",
   sanitizeOps: false,
@@ -387,7 +500,7 @@ Deno.test({
         import: ["jsr.io:443"],
       },
     });
-    supervisor.configureService("service-a", [worker.metadata.workerId]);
+    supervisor.configureService("service-a", [worker.metadata.workerId], 32);
     let resolvePort!: (port: number) => void;
     const listening = new Promise<number>((resolve) => resolvePort = resolve);
     const server = Deno.serve({
@@ -493,7 +606,7 @@ Deno.test("supervisor converts only trusted internal authentication metadata", a
     metadata: authMetadata,
     permissions: { read: [examples] },
   });
-  supervisor.configureService("service-a", [worker.metadata.workerId]);
+  supervisor.configureService("service-a", [worker.metadata.workerId], 32);
   const response = await supervisor.handler(
     new Request("http://runtime/v1/services/service-a/dispatch", {
       method: "POST",

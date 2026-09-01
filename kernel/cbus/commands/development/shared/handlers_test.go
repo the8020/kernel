@@ -106,7 +106,7 @@ func TestEveryDevelopmentCommandHandlerDelegatesExactlyOnce(t *testing.T) {
 		{"sandbox.stop", SandboxStop(serviceSet), map[string]any{"workspace_id": "workspace-1"}},
 		{"sandbox.restart", SandboxRestart(serviceSet), map[string]any{"workspace_id": "workspace-1"}},
 		{"sandbox.kill", SandboxKill(serviceSet), map[string]any{"workspace_id": "workspace-1"}},
-		{"sandbox.delete", SandboxDelete(serviceSet), map[string]any{"workspace_id": "workspace-1", "delete_home": true}},
+		{"sandbox.delete", SandboxDelete(serviceSet), map[string]any{"workspace_id": "workspace-1", "delete_user_data": true}},
 		{"sandbox.shell", SandboxShell(serviceSet), map[string]any{"workspace_id": "workspace-1", "command": "pwd"}},
 		{"sandbox.reset-source", SandboxResetSource(serviceSet), map[string]any{"workspace_id": "workspace-1", "confirm": true}},
 		{"sandbox.factory-reset", SandboxFactoryReset(serviceSet), map[string]any{"workspace_id": "workspace-1", "confirm": true}},

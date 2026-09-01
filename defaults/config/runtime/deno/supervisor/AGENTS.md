@@ -34,7 +34,9 @@
 - Physical WebSockets are relayed with bounded buffers. The supervisor never
   decodes the application's text or binary protocol.
 - Status exposes bounded ready/failed Worker identity, load, and logs. A Worker
-  crash remains isolated and unschedulable.
+  crash remains isolated and unschedulable. Each Worker also reports its exact
+  idle-since timestamp so the kernel can apply Worker keepalive with a
+  deterministic clock.
 
 # Lifecycle
 
@@ -49,7 +51,9 @@
 # Concurrency
 
 - Main-isolate maps are authoritative; scheduling, binding, completion, queues,
-  and control invocation are serialized there.
+  and control invocation are serialized there. Concurrent duplicate start/stop
+  lifecycle requests share one pending operation; a same-ID start with a
+  different definition is rejected, and drain waits for pending starts.
 
 # Public API
 
@@ -64,7 +68,8 @@
 - Supervisor tests cover strict operation-specific kernel callback envelopes,
   authentication, lifecycle, stateless/persistent scheduling, exact reuse and
   completion, exact registered Worker invocation, streaming HTTP/WebSocket
-  relay, metadata, expiry, logs, drain, bounds, cancellation, and crash
+  relay, metadata, independent session expiry and Worker idle time, concurrent
+  idempotent lifecycle retries, logs, drain, bounds, cancellation, and crash
   isolation.
 
 # Child DOX Index

@@ -6,7 +6,7 @@
 # Ownership
 
 - Query aggregate ready/failed/active status and Workers with explicit failure
-  state plus bounded identity-associated logs, start and stop Workers, send
+  state, last-idle time, and bounded identity-associated logs; start and stop Workers; send
   exact registered-function invocations, return job results with structured
   logs, configure service pools, stream service requests with trusted
   selected-Worker identity, and request drain.
@@ -36,8 +36,9 @@
 
 # Work Guidance
 
-- Keep JSON control bodies small, cap error bodies, and return precise remote
-  status errors without exposing tokens.
+- Keep JSON control bodies small, cap error bodies, preserve Worker idle
+  timestamps exactly, and return precise remote status errors without exposing
+  tokens.
 
 # Verification
 

@@ -6,7 +6,7 @@
 
 - Own modular definitions, types, node/global storage routing, conversion,
   validation, precedence, configured/active state, persisted overrides, atomic
-  writes, migration, queries, and runtime-owner registration.
+  writes, queries, and runtime-owner registration.
 - Do not bind ports, open logs, parse admin commands, or contain owner-specific
   application logic.
 
@@ -25,9 +25,9 @@
 - Global mutations serialize through the shared `config/.settings.lock`, reload
   the current global file while locked, and merge only the requested key so
   stale writers cannot discard unrelated overrides from another node.
-- Startup migrates global-declared overrides from the legacy single node store
-  into the global store; an existing global override wins, and writing global
-  before removing legacy node data makes interrupted migration convergent.
+- Startup strictly rejects unknown keys and settings stored in the wrong node or
+  global file. Development instances are reinitialized after settings-schema
+  changes instead of being rewritten in place.
 - Runtime mutation is prepare → persist → commit → publish; failure discards
   preparation and preserves configured and active state.
 - Restart-required settings persist configured values without changing active
@@ -39,9 +39,12 @@
   same constraint validates defaults, environment/startup inputs, and persisted
   mutations before they become configured state.
 - Each sandbox resource profile keeps memory high at or below memory maximum,
-  and service minimum Workers never exceed maximum Workers.
-- Service replica and Worker-per-replica defaults each satisfy minimum <=
-  maximum. Runtime supervisor heartbeat timeout exceeds its interval.
+  and a nonzero service maximum Worker default is never below its minimum.
+- Canonical service defaults are zero minimum Workers, zero/unlimited maximum
+  Workers, concurrency 32, target utilization 70%, Worker keepalive two
+  minutes, zero minimum sandboxes, four Workers per sandbox, and session
+  keepalive ten minutes. Kernel sandbox-capacity defaults are 64 Workers and
+  80% CPU/RAM targets. Runtime supervisor heartbeat timeout exceeds its interval.
 - Byte-size definitions are positive by default; a definition with explicit
   `minimum = 0` may use `0B` as an owner-documented automatic-detection sentinel.
 - `github.com/pelletier/go-toml/v2` is used only to decode persisted TOML.
@@ -59,7 +62,7 @@
 
 - `settings_test.go` covers definitions/conversion, mandatory storage metadata,
   byte sizes, port/enum validation, all precedence layers, node/global
-  persistence/load/removal, legacy migration, stale multi-writer merging,
+  persistence/load/removal, obsolete-key rejection, stale multi-writer merging,
   wrong-store rejection, configured/active state, cross-validation,
   preparation/persistence rollback, permissions, and unknown persisted data.
 

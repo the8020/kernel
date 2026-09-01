@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -422,9 +421,6 @@ func verifyProbeMetadata(path string, uid, gid int, mode fs.FileMode) error {
 
 // Initialize creates missing runtime directories, settings, and stable identity.
 func Initialize(paths Paths) (string, error) {
-	if err := migrateLegacyPackageData(paths); err != nil {
-		return "", err
-	}
 	for _, dir := range []string{paths.Packages, paths.Config, paths.ConfigAuth, paths.SharedState, paths.StateAuth, paths.StateServices, paths.StatePackageIndex, paths.StatePackageData, paths.Users} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return "", fmt.Errorf("create workspace directory %s: %w", dir, err)
@@ -459,55 +455,6 @@ func Initialize(paths Paths) (string, error) {
 		return "", err
 	}
 	return ensureIdentity(paths.InstanceFile)
-}
-
-func migrateLegacyPackageData(paths Paths) error {
-	legacy := filepath.Join(paths.SharedState, "packages")
-	if _, err := os.Lstat(legacy); errors.Is(err, os.ErrNotExist) {
-		return nil
-	} else if err != nil {
-		return fmt.Errorf("inspect legacy package data: %w", err)
-	}
-	if info, err := os.Lstat(legacy); err != nil {
-		return fmt.Errorf("inspect legacy package data: %w", err)
-	} else if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("legacy package data is not a directory: %s", legacy)
-	}
-	if _, err := os.Lstat(paths.StatePackageData); errors.Is(err, os.ErrNotExist) {
-		if err := os.Rename(legacy, paths.StatePackageData); err != nil {
-			return fmt.Errorf("rename legacy package data: %w", err)
-		}
-		return nil
-	} else if err != nil {
-		return fmt.Errorf("inspect package data: %w", err)
-	}
-	empty, err := directoryEmpty(paths.StatePackageData)
-	if err != nil {
-		return fmt.Errorf("inspect package data: %w", err)
-	}
-	if !empty {
-		return errors.New("both state/packages and state/package-data contain package data")
-	}
-	if err := os.Remove(paths.StatePackageData); err != nil {
-		return fmt.Errorf("remove empty package-data directory: %w", err)
-	}
-	if err := os.Rename(legacy, paths.StatePackageData); err != nil {
-		return fmt.Errorf("rename legacy package data: %w", err)
-	}
-	return nil
-}
-
-func directoryEmpty(path string) (bool, error) {
-	directory, err := os.Open(path)
-	if err != nil {
-		return false, err
-	}
-	defer directory.Close()
-	_, err = directory.Readdirnames(1)
-	if errors.Is(err, io.EOF) {
-		return true, nil
-	}
-	return false, err
 }
 
 func ensureEmptyFile(path string) error {

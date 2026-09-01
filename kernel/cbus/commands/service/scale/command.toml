@@ -2,7 +2,7 @@ version = 1
 id = "service.scale"
 path = ["service", "scale"]
 summary = "Scale a filesystem service"
-description = "Updates replica/Worker bounds, hard per-Worker concurrency, target utilization, persistent keepalive, or sandbox group and reconciles the new generation."
+description = "Updates canonical Worker scaling, sandbox placement, and service lifecycle policy, then reconciles the new generation."
 mutates_state = true
 restart_behavior = "none"
 [handler]
@@ -15,29 +15,17 @@ position = 0
 required = true
 description = "Service ID."
 [[parameters]]
-name = "replicas_min"
+name = "minimum_workers"
 type = "integer"
-option = "replicas-min"
+option = "minimum-workers"
 required = false
-description = "Minimum ready service replicas."
+description = "Minimum ready Workers; zero allows scale to zero."
 [[parameters]]
-name = "replicas_max"
+name = "maximum_workers"
 type = "integer"
-option = "replicas-max"
+option = "maximum-workers"
 required = false
-description = "Maximum service replicas."
-[[parameters]]
-name = "workers_per_replica_min"
-type = "integer"
-option = "workers-per-replica-min"
-required = false
-description = "Minimum ready Workers per replica."
-[[parameters]]
-name = "workers_per_replica_max"
-type = "integer"
-option = "workers-per-replica-max"
-required = false
-description = "Maximum Workers per replica."
+description = "Maximum ready Workers; zero is unlimited subject to kernel capacity."
 [[parameters]]
 name = "concurrency_per_worker"
 type = "integer"
@@ -51,11 +39,17 @@ option = "target-utilization"
 required = false
 description = "Scale-out target as a decimal greater than zero and at most one."
 [[parameters]]
-name = "keep_alive"
+name = "worker_keep_alive"
 type = "string"
-option = "keep-alive"
+option = "worker-keep-alive"
 required = false
-description = "Persistent execution keepalive as a Go duration."
+description = "How long an excess idle Worker remains alive, as a Go duration."
+[[parameters]]
+name = "workers_per_sandbox"
+type = "integer"
+option = "workers-per-sandbox"
+required = false
+description = "Per-service Worker packing limit in one compatible sandbox."
 [[parameters]]
 name = "sandbox_group"
 type = "string"
@@ -63,13 +57,31 @@ option = "sandbox-group"
 required = false
 description = "Compatible sandbox-sharing group; empty uses the default shared group."
 [[parameters]]
+name = "minimum_sandboxes"
+type = "integer"
+option = "minimum-sandboxes"
+required = false
+description = "Minimum compatible warm sandboxes, independently of minimum Workers."
+[[parameters]]
+name = "service_type"
+type = "string"
+option = "service-type"
+required = false
+description = "Service lifecycle type: stateless or session."
+[[parameters]]
+name = "session_keep_alive"
+type = "string"
+option = "session-keep-alive"
+required = false
+description = "How long a session service retains its environment after activity ends, as a Go duration."
+[[parameters]]
 name = "detail"
 type = "boolean"
 option = "detail"
 required = false
-description = "Show complete effective configuration, instance identities, failures, and metrics."
+description = "Show complete effective configuration, sandbox identities, failures, and metrics."
 [[result]]
 name = "state"
 type = "string"
 [[examples]]
-command = "service scale the8020/demo/variables --replicas-min 2 --workers-per-replica-min 4"
+command = "service scale the8020/demo/variables --minimum-workers 2 --workers-per-sandbox 4"

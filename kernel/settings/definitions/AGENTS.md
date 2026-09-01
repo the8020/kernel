@@ -10,8 +10,9 @@
 - `network/` owns node-local main/SSH ports and the global root alias;
   `logging/` owns kernel logging; `sandbox/` owns backend, network, resources,
   history, startup/shutdown, and debugging; `runtime/` owns generic supervisor
-  timing and node admission budgets; `execution/`, `service/`, `services/`, and
-  `job/` own generic grouping, capacity, reconciliation, and job policy; and
+  timing, node admission budgets, and kernel-wide sandbox Worker/CPU/RAM
+  capacity; `execution/`, `service/`, `services/`, and `job/` own generic
+  grouping, canonical service defaults, reconciliation, and job policy; and
   `auth/` owns bootstrap authentication-session, cookie, and Argon2id settings.
 - No definition subtree or setting may describe an application protocol,
   application program, application state schema, or UUI behavior.

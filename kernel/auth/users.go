@@ -8,15 +8,17 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/pelletier/go-toml/v2"
 )
 
 const authSchema = 1
+
+const (
+	minimumUsernameLength = 3
+	maximumUsernameLength = 32
+)
 
 var (
 	ErrDuplicateUser      = errors.New("bootstrap administrator already exists")
@@ -149,7 +151,7 @@ func (s *UserStore) AuthenticateBytes(username string, password []byte) (UserRec
 }
 
 func (s *UserStore) Add(ctx context.Context, username, password string) (UserRecord, error) {
-	if err := validateUsername(username); err != nil {
+	if err := ValidateUsername(username); err != nil {
 		return UserRecord{}, err
 	}
 	passwordHash, err := s.hasher.Hash(password)
@@ -294,7 +296,7 @@ func validateUserDocument(document userDocument) error {
 	}
 	seen := make(map[string]bool, len(document.Users))
 	for _, user := range document.Users {
-		if err := validateUsername(user.Username); err != nil {
+		if err := ValidateUsername(user.Username); err != nil {
 			return err
 		}
 		if seen[user.Username] {
@@ -314,13 +316,15 @@ func validateUserDocument(document userDocument) error {
 	return nil
 }
 
-func validateUsername(username string) error {
-	if username == "" || len(username) > 128 || !utf8.ValidString(username) || strings.TrimSpace(username) != username {
-		return fmt.Errorf("%w: must be non-empty valid UTF-8, at most 128 bytes, and have no surrounding whitespace", ErrInvalidUsername)
+// ValidateUsername enforces the account name shared by authentication,
+// persistent user storage, and development sandbox IDs.
+func ValidateUsername(username string) error {
+	if len(username) < minimumUsernameLength || len(username) > maximumUsernameLength {
+		return fmt.Errorf("%w: must be between %d and %d characters", ErrInvalidUsername, minimumUsernameLength, maximumUsernameLength)
 	}
 	for _, character := range username {
-		if unicode.IsControl(character) {
-			return fmt.Errorf("%w: must not contain control characters", ErrInvalidUsername)
+		if (character < 'a' || character > 'z') && (character < '0' || character > '9') {
+			return fmt.Errorf("%w: must contain only lowercase letters and digits", ErrInvalidUsername)
 		}
 	}
 	return nil

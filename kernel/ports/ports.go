@@ -70,36 +70,6 @@ func (m *Manager) ExposeHTTP(ctx context.Context, request Request, handler http.
 	return m.expose(ctx, request, handler)
 }
 
-// AttachHTTP replaces a restored raw HTTP lease with a Go-owned HTTP handler
-// while preserving the durable lease identity and creation time.
-func (m *Manager) AttachHTTP(ctx context.Context, leaseID string, handler http.Handler) (Lease, error) {
-	if handler == nil {
-		return Lease{}, errors.New("HTTP handler is required")
-	}
-	m.mu.Lock()
-	prior, exists := m.leases[leaseID]
-	m.mu.Unlock()
-	if !exists {
-		return Lease{}, fmt.Errorf("port lease %q is unavailable", leaseID)
-	}
-	if prior.Protocol != "http" {
-		return Lease{}, fmt.Errorf("port lease %q is not HTTP", leaseID)
-	}
-	if err := m.Close(leaseID); err != nil {
-		return Lease{}, fmt.Errorf("close restored HTTP lease %s: %w", leaseID, err)
-	}
-	request := Request{SandboxID: prior.SandboxID, OwnerID: prior.OwnerID, SandboxIP: prior.SandboxIP, InternalPort: prior.InternalPort, TargetPort: prior.TargetPort, BindAddress: prior.BindAddress, HostPort: prior.HostPort, Protocol: "http", Purpose: prior.Purpose, ExpiresAt: prior.ExpiresAt}
-	lease, err := m.exposeIdentity(ctx, request, handler, prior.LeaseID, prior.CreatedAt)
-	if err == nil {
-		return lease, nil
-	}
-	_, rollbackErr := m.exposeIdentity(context.Background(), request, nil, prior.LeaseID, prior.CreatedAt)
-	if rollbackErr != nil {
-		return Lease{}, errors.Join(fmt.Errorf("attach HTTP handler to lease %s: %w", leaseID, err), fmt.Errorf("restore raw lease after attach failure: %w", rollbackErr))
-	}
-	return Lease{}, fmt.Errorf("attach HTTP handler to lease %s: %w", leaseID, err)
-}
-
 func New(root string, allowPublic bool, logger *slog.Logger) (*Manager, error) {
 	if root == "" {
 		return nil, errors.New("port lease state root is required")

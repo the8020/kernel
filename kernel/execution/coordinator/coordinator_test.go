@@ -160,27 +160,27 @@ func TestEnsureSharedExplicitKeyStillSeparatesWorkloadTypes(t *testing.T) {
 	}
 }
 
-func TestEnsureServiceReplicasUsePlacementGroupWithoutColocation(t *testing.T) {
+func TestEnsureServiceSandboxesUsePlacementGroupWithoutDuplicateAllocation(t *testing.T) {
 	backend := &fakeSandboxes{}
 	coordinator, _ := New(backend)
 	placement := "interactive"
 	firstRequest := testRequest(t, "pool-one", model.WorkloadService)
 	firstRequest.PlacementGroup = &placement
-	firstRequest.ReplicaServiceID = "example/chat/session"
+	firstRequest.LogicalServiceID = "example/chat/session"
 	first, err := coordinator.Ensure(context.Background(), firstRequest)
 	if err != nil {
 		t.Fatal(err)
 	}
 	otherRequest := testRequest(t, "pool-other", model.WorkloadService)
 	otherRequest.PlacementGroup = &placement
-	otherRequest.ReplicaServiceID = "example/chat/shell"
+	otherRequest.LogicalServiceID = "example/chat/shell"
 	other, err := coordinator.Ensure(context.Background(), otherRequest)
 	if err != nil {
 		t.Fatal(err)
 	}
 	secondRequest := testRequest(t, "pool-two", model.WorkloadService)
 	secondRequest.PlacementGroup = &placement
-	secondRequest.ReplicaServiceID = "example/chat/session"
+	secondRequest.LogicalServiceID = "example/chat/session"
 	second, err := coordinator.Ensure(context.Background(), secondRequest)
 	if err != nil {
 		t.Fatal(err)
@@ -189,7 +189,7 @@ func TestEnsureServiceReplicasUsePlacementGroupWithoutColocation(t *testing.T) {
 		t.Fatal("different services in the same placement group did not share")
 	}
 	if second.Spec.RuntimeGroupID == first.Spec.RuntimeGroupID {
-		t.Fatal("two replicas of one service were placed in one sandbox")
+		t.Fatal("two allocations of one service were placed in one sandbox")
 	}
 }
 

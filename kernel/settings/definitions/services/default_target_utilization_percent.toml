@@ -1,0 +1,10 @@
+key = "services.default_target_utilization_percent"
+type = "integer"
+storage = "node"
+default = 70
+environment = "KERNEL_SERVICES_DEFAULT_TARGET_UTILIZATION_PERCENT"
+minimum = 1
+maximum = 100
+runtime_mutable = false
+restart_required = true
+description = "Default service Worker scale-out target utilization percentage."

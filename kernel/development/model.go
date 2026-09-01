@@ -48,7 +48,6 @@ type Workspace struct {
 	DevelopmentImage     string            `toml:"development_image_digest,omitempty" json:"development_image_digest,omitempty"`
 	SourcePath           string            `toml:"source_path" json:"-"`
 	SystemPath           string            `toml:"system_path,omitempty" json:"-"`
-	PersistentHomePath   string            `toml:"persistent_home_path" json:"-"`
 	MountProfile         []MountDefinition `toml:"mounts" json:"mount_profile"`
 	State                State             `toml:"state" json:"state"`
 	WritesPaused         bool              `toml:"writes_paused" json:"writes_paused"`

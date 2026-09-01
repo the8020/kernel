@@ -1,0 +1,9 @@
+/.git
+/.development
+/.env
+/.DS_Store
+/config
+/node
+/packages
+/state
+/users

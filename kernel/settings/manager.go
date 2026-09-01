@@ -119,19 +119,13 @@ func New(definitions []Definition, files PersistencePaths, startup map[string]st
 			return nil, &OperationError{Kind: ErrorUnknown, Key: key, Err: fmt.Errorf("unknown setting %q", key)}
 		}
 	}
-	nodePersisted, legacyGlobal, err := loadPersisted(files.Node, manager.definitions, StorageNode, true)
+	nodePersisted, err := loadPersisted(files.Node, manager.definitions, StorageNode)
 	if err != nil {
 		return nil, err
 	}
-	globalPersisted, _, err := loadPersisted(files.Global, manager.definitions, StorageGlobal, false)
+	globalPersisted, err := loadPersisted(files.Global, manager.definitions, StorageGlobal)
 	if err != nil {
 		return nil, err
-	}
-	if len(legacyGlobal) > 0 {
-		globalPersisted, err = mergeGlobalPersisted(context.Background(), files.Global, manager.definitions, legacyGlobal)
-		if err != nil {
-			return nil, fmt.Errorf("migrate global settings: %w", err)
-		}
 	}
 	for _, key := range manager.ordered {
 		definition := manager.definitions[key]
@@ -163,11 +157,6 @@ func New(definitions []Definition, files PersistencePaths, startup map[string]st
 	}
 	if err := validateSnapshot(manager.configured); err != nil {
 		return nil, err
-	}
-	if len(legacyGlobal) > 0 {
-		if err := persist(files.Node, manager.definitions, manager.sources, StorageNode); err != nil {
-			return nil, fmt.Errorf("remove migrated global settings from node store: %w", err)
-		}
 	}
 	return manager, nil
 }
@@ -382,61 +371,48 @@ func validateSnapshot(values Values) error {
 			return fmt.Errorf("sandbox.resources.%s.memory_high must not exceed memory_maximum", workload)
 		}
 	}
-	minimumWorkers, minimumOK := values["service.default.minimum_workers"].(int64)
-	maximumWorkers, maximumOK := values["service.default.maximum_workers"].(int64)
-	if minimumOK && maximumOK && minimumWorkers > maximumWorkers {
-		return errors.New("service.default.minimum_workers must not exceed service.default.maximum_workers")
-	}
-	for _, capacity := range []string{"replicas", "workers_per_replica"} {
-		minimum, minimumOK := values["services.default_"+capacity+"_minimum"].(int64)
-		maximum, maximumOK := values["services.default_"+capacity+"_maximum"].(int64)
-		if minimumOK && maximumOK && minimum > maximum {
-			return fmt.Errorf("services.default_%s capacity must satisfy minimum <= maximum", capacity)
-		}
+	minimum, minimumOK := values["services.default_minimum_workers"].(int64)
+	maximum, maximumOK := values["services.default_maximum_workers"].(int64)
+	if minimumOK && maximumOK && maximum != 0 && minimum > maximum {
+		return errors.New("services.default_maximum_workers must be zero or greater than or equal to services.default_minimum_workers")
 	}
 	return nil
 }
 
-func loadPersisted(path string, definitions map[string]Definition, storage Storage, acceptLegacyGlobals bool) (map[string]any, map[string]any, error) {
+func loadPersisted(path string, definitions map[string]Definition, storage Storage) (map[string]any, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return map[string]any{}, map[string]any{}, nil
+		return map[string]any{}, nil
 	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("read %s settings: %w", storage, err)
+		return nil, fmt.Errorf("read %s settings: %w", storage, err)
 	}
 	if len(strings.TrimSpace(string(data))) == 0 {
-		return map[string]any{}, map[string]any{}, nil
+		return map[string]any{}, nil
 	}
 	var nested map[string]any
 	if err := toml.Unmarshal(data, &nested); err != nil {
-		return nil, nil, fmt.Errorf("parse %s settings: %w", storage, err)
+		return nil, fmt.Errorf("parse %s settings: %w", storage, err)
 	}
 	flat := map[string]any{}
 	if err := flatten("", nested, flat); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	legacyGlobal := map[string]any{}
 	for key, raw := range flat {
 		definition, ok := definitions[key]
 		if !ok {
-			return nil, nil, &OperationError{Kind: ErrorUnknown, Key: key, Err: fmt.Errorf("unknown %s setting %q", storage, key)}
+			return nil, &OperationError{Kind: ErrorUnknown, Key: key, Err: fmt.Errorf("unknown %s setting %q", storage, key)}
 		}
 		value, err := normalizeValue(definition, raw)
 		if err != nil {
-			return nil, nil, &OperationError{Kind: ErrorInvalid, Key: key, Err: fmt.Errorf("invalid %s setting %s: %w", storage, key, err)}
+			return nil, &OperationError{Kind: ErrorInvalid, Key: key, Err: fmt.Errorf("invalid %s setting %s: %w", storage, key, err)}
 		}
 		if definition.Storage != storage {
-			if acceptLegacyGlobals && storage == StorageNode && definition.Storage == StorageGlobal {
-				legacyGlobal[key] = value
-				delete(flat, key)
-				continue
-			}
-			return nil, nil, &OperationError{Kind: ErrorPersistence, Key: key, Err: fmt.Errorf("setting %s belongs in the %s settings store, not %s", key, definition.Storage, storage)}
+			return nil, &OperationError{Kind: ErrorPersistence, Key: key, Err: fmt.Errorf("setting %s belongs in the %s settings store, not %s", key, definition.Storage, storage)}
 		}
 		flat[key] = value
 	}
-	return flat, legacyGlobal, nil
+	return flat, nil
 }
 
 func flatten(prefix string, nested map[string]any, output map[string]any) error {

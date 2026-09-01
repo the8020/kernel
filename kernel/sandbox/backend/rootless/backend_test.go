@@ -180,9 +180,25 @@ func TestSandboxPIDsOnlyInspectsCurrentSubreaperChildren(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	for path, value := range map[string]string{
+		"200/task/200/schedstat": "1000000 0 0\n",
+		"200/task/203/schedstat": "2000000 0 0\n",
+		"201/task/201/schedstat": "4000000 0 0\n",
+	} {
+		path = filepath.Join(backend.procRoot, path)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	if got, want := backend.sandboxPIDs("sandbox-target"), []int{200, 201}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("sandbox PIDs=%v want=%v", got, want)
+	}
+	if usage, ok := backend.processCPUUsageMicros("sandbox-target"); !ok || usage != 7000 {
+		t.Fatalf("sandbox process CPU usage=%d available=%t", usage, ok)
 	}
 }
 

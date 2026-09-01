@@ -1,7 +1,8 @@
 # Purpose
 
-- Own shared application-server topology, capacity advertisement, replica-index
-  partitioning, and authenticated node-to-node service forwarding.
+- Own shared application-server topology, capacity advertisement,
+  service-allocation-index partitioning, and authenticated node-to-node service
+  forwarding.
 
 # Ownership
 
@@ -23,10 +24,10 @@
   dispatches directly to the registered local invoker, and returns structured
   opaque results without scanning nodes, sandboxes, or Workers.
 - The internal capacity endpoint reports memory/CPU/temp-storage reservations,
-  sandbox and Worker limits/counts, service replicas and health, and available
+  sandbox and Worker limits/counts, service sandboxes and health, and available
   versus occupied execution slots. Capacity queries are bounded and happen for
   administration or spillover, never on successful local dispatch.
-- Global replica indexes are partitioned round-robin over the sorted enabled
+- Global service-allocation indexes are partitioned round-robin over sorted enabled
   node IDs. An unconfigured local node is the single-node default; an explicitly
   disabled local node owns no indexes.
 - Spillover excludes nodes already present in the forwarding path, queries
@@ -37,12 +38,12 @@
 # Work Guidance
 
 - Keep topology generic; route-token state, manifests, application protocols,
-  and in-replica Worker selection remain in their owning subsystems.
+  and sandbox-local Worker selection remain in their owning subsystems.
 
 # Verification
 
 - Package tests cover deterministic shared persistence, validation,
   authentication, capacity-aware service forwarding, exact local/cross-node
-  Worker invocation and bounds, status collection, and replica partitioning.
+  Worker invocation and bounds, status collection, and allocation partitioning.
 
 # Child DOX Index

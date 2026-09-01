@@ -10,10 +10,10 @@
 # Local Contracts
 
 - Source and factory reset require explicit confirmation; delete explicitly
-  chooses whether developer home is retained. Shell execution remains inside
-  the selected gVisor sandbox.
-- Lifecycle commands never flush, scan, or snapshot content; source, home, and
-  system files are already native durable storage.
+  chooses whether per-user development system storage is retained. Shell
+  execution remains inside the selected gVisor sandbox.
+- Lifecycle commands never flush, scan, or snapshot content; source and system
+  files are already native durable storage.
 
 # Work Guidance
 

@@ -76,8 +76,8 @@ func (s *FileServiceStateStore) Get(serviceID string) (DesiredServiceState, bool
 	if err := decodeTOMLFile(path, &state); err != nil {
 		return DesiredServiceState{}, true, fmt.Errorf("service state %s: %w", path, err)
 	}
-	if state.Schema != manifestSchema {
-		return DesiredServiceState{}, true, fmt.Errorf("service state %s: schema must equal %d", path, manifestSchema)
+	if state.Schema != serviceStateSchema {
+		return DesiredServiceState{}, true, fmt.Errorf("service state %s: schema must equal %d", path, serviceStateSchema)
 	}
 	return state, true, nil
 }
@@ -87,8 +87,8 @@ func (s *FileServiceStateStore) Put(serviceID string, state DesiredServiceState)
 	if err != nil {
 		return err
 	}
-	if state.Schema != manifestSchema {
-		return fmt.Errorf("service state schema must equal %d", manifestSchema)
+	if state.Schema != serviceStateSchema {
+		return fmt.Errorf("service state schema must equal %d", serviceStateSchema)
 	}
 	directory, err := ensureServiceStateDirectory(s.root, identity)
 	if err != nil {

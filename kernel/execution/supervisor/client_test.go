@@ -39,7 +39,7 @@ func TestStatusWorkersAndControlRoutes(t *testing.T) {
 		case "/v1/status":
 			_, _ = io.WriteString(writer, `{"protocol_version":1,"supervisor_version":"test","deno_version":"2.9.4","runtime_group_id":"group","sandbox_id":"sandbox","workload_type":"job","worker_count":2,"ready_worker_count":1,"failed_worker_count":1,"active_requests":1,"active_execution_count":1,"recent_failures":[{"worker_id":"failed-worker","execution_id":"failed-execution","reason":"boom"}]}`)
 		case "/v1/workers":
-			_, _ = io.WriteString(writer, `{"workers":[{"worker_id":"worker","execution_id":"execution","workload_id":"job","owner_id":"owner","debugger_name":"job:execution","in_flight":0,"state":"failed","failure":"boom"}]}`)
+			_, _ = io.WriteString(writer, `{"workers":[{"worker_id":"worker","execution_id":"execution","workload_id":"job","owner_id":"owner","debugger_name":"job:execution","in_flight":0,"idle_since_ms":1700000000000,"state":"failed","failure":"boom"}]}`)
 		case "/v1/workers/start":
 			var body StartWorkerRequest
 			if err := json.Unmarshal(control.Payload, &body); err != nil || body.Metadata.WorkerID != "worker" {
@@ -52,6 +52,14 @@ func TestStatusWorkersAndControlRoutes(t *testing.T) {
 		case "/v1/workers/worker/invoke":
 			writeControlResponse(writer, control, protocol.MessageWorkerResult, map[string]any{"ok": true, "output": "reply"}, http.StatusOK)
 		case "/v1/services/service-a/configure":
+			var body struct {
+				WorkerIDs            []string `json:"worker_ids"`
+				ConcurrencyPerWorker int      `json:"concurrency_per_worker"`
+			}
+			if err := json.Unmarshal(control.Payload, &body); err != nil || body.WorkerIDs == nil || len(body.WorkerIDs) != 0 || body.ConcurrencyPerWorker != 2 {
+				http.Error(writer, "bad service configuration", http.StatusBadRequest)
+				return
+			}
 			writeControlResponse(writer, control, protocol.MessageServicePoolConfiguration, map[string]any{"configured": true}, http.StatusOK)
 		case "/v1/drain":
 			writeControlResponse(writer, control, protocol.MessageRuntimeDrain, map[string]any{"draining": true}, http.StatusOK)
@@ -67,7 +75,7 @@ func TestStatusWorkersAndControlRoutes(t *testing.T) {
 		t.Fatalf("status=%#v err=%v", status, err)
 	}
 	workers, err := client.Workers(context.Background(), spec)
-	if err != nil || len(workers) != 1 || workers[0].WorkerID != "worker" || workers[0].State != "failed" || workers[0].Failure != "boom" {
+	if err != nil || len(workers) != 1 || workers[0].WorkerID != "worker" || workers[0].IdleSinceMS != 1700000000000 || workers[0].State != "failed" || workers[0].Failure != "boom" {
 		t.Fatalf("workers=%#v err=%v", workers, err)
 	}
 	request := StartWorkerRequest{Metadata: ExecutionMetadata{WorkerID: "worker", ExecutionID: "execution", WorkloadType: model.WorkloadJob, OwnerID: "owner", WorkloadID: "job", Entrypoint: "file:///artifacts/job.ts", DebuggerName: "job:execution"}}
@@ -84,7 +92,7 @@ func TestStatusWorkersAndControlRoutes(t *testing.T) {
 	if output, err := client.InvokeWorker(context.Background(), spec, "worker", "example.inspect", map[string]any{"id": 1}); err != nil || !output.OK || output.Output != "reply" {
 		t.Fatalf("Worker invocation=%#v err=%v", output, err)
 	}
-	if err := client.ConfigureService(context.Background(), spec, "service-a", []string{"worker"}, 2); err != nil {
+	if err := client.ConfigureService(context.Background(), spec, "service-a", nil, 2); err != nil {
 		t.Fatal(err)
 	}
 	if err := client.Drain(context.Background(), spec); err != nil {

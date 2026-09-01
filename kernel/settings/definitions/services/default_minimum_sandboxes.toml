@@ -1,0 +1,10 @@
+key = "services.default_minimum_sandboxes"
+type = "integer"
+storage = "node"
+default = 0
+environment = "KERNEL_SERVICES_DEFAULT_MINIMUM_SANDBOXES"
+minimum = 0
+maximum = 100000
+runtime_mutable = false
+restart_required = true
+description = "Default minimum compatible warm sandbox count for a service."

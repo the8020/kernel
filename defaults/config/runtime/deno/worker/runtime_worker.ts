@@ -11,6 +11,8 @@ interface RuntimeWorkerOptions {
   metadata: ExecutionMetadata;
   permissions: WorkerPermissionSet;
   kernelCall?: KernelCall;
+  now?: () => number;
+  onCapacityChange?: () => void;
 }
 
 interface WorkerMessage {
@@ -76,13 +78,18 @@ export class RuntimeWorker {
   #draining = false;
   #failure?: string;
   #inFlight = 0;
+  #idleSinceMilliseconds: number | undefined;
   #logs: RuntimeLogEvent[] = [];
   #kernelCall?: KernelCall;
   #webSockets = new Map<string, ServiceWebSocketCallbacks>();
+  #now: () => number;
+  #onCapacityChange?: () => void;
 
   constructor(options: RuntimeWorkerOptions) {
     this.metadata = options.metadata;
     this.#kernelCall = options.kernelCall;
+    this.#now = options.now ?? Date.now;
+    this.#onCapacityChange = options.onCapacityChange;
     const channel = new MessageChannel();
     this.#port = channel.port1;
     const workerOptions: WorkerOptions & {
@@ -105,6 +112,8 @@ export class RuntimeWorker {
     this.#port.onmessage = (event: MessageEvent<WorkerMessage>) => {
       const message = event.data;
       if (message.type === "ready") {
+        this.#idleSinceMilliseconds = this.#now();
+        this.#onCapacityChange?.();
         readyResolve();
         return;
       }
@@ -239,6 +248,12 @@ export class RuntimeWorker {
 
   get inFlight(): number {
     return this.#inFlight;
+  }
+
+  get idleSinceMilliseconds(): number | undefined {
+    return this.#inFlight === 0 && !this.#closed
+      ? this.#idleSinceMilliseconds
+      : undefined;
   }
 
   get closed(): boolean {
@@ -460,6 +475,7 @@ export class RuntimeWorker {
       throw signal.reason ?? new DOMException("Aborted", "AbortError");
     }
     const correlationId = `${this.metadata.workerId}-${++this.#sequence}`;
+    this.#idleSinceMilliseconds = undefined;
     this.#inFlight++;
     let abort: (() => void) | undefined;
     const result = new Promise<unknown>((resolve, reject) => {
@@ -494,10 +510,14 @@ export class RuntimeWorker {
     }
     this.#pending.clear();
     this.#inFlight = 0;
+    this.#idleSinceMilliseconds = undefined;
+    this.#onCapacityChange?.();
   }
 
   #completeInFlight(): void {
     this.#inFlight = Math.max(0, this.#inFlight - 1);
+    if (this.#inFlight === 0) this.#idleSinceMilliseconds = this.#now();
+    this.#onCapacityChange?.();
   }
 
   #trackResponseBody(

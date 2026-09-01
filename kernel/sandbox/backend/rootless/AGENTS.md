@@ -4,7 +4,7 @@
 
 # Ownership
 
-- Own direct `runsc` OCI bundles, per-sandbox root overlays, instance-scoped runtime metadata, lifecycle commands, observation, labels, logs, and runsc metrics.
+- Own direct `runsc` OCI bundles, per-sandbox root overlays, instance-scoped runtime metadata, lifecycle commands, observation, labels, logs, and rootless metrics.
 - Do not claim CNI network isolation or hard cgroup enforcement; those guarantees belong to the full containerd backend.
 
 # Local Contracts
@@ -19,6 +19,10 @@
   placement group, and warm-assignment labels; runtime identity remains
   immutable.
 - Stop is TERM-then-KILL, delete is forced and idempotent, failed creation removes confirmed runtime state while retaining external logs, and the kernel acts as a child subreaper so cleanup does not depend on the outer container's PID 1. Reaping discovers only the kernel's task-owned children and never scans the host-wide `/proc` directory.
+- Rootless memory and PID observations come from runsc. CPU usage is summed
+  from `schedstat` for the same bounded set of kernel-owned sandbox/gofer tasks,
+  because direct runsc has no per-sandbox cgroup and exposes a shared CPU
+  counter that is unsuitable for placement.
 - Console exec validates instance ownership and live runsc state, then delegates
   either detached console-socket PTY transfer or attached byte-transparent
   streaming to the shared runsc console package; closure affects only that exec

@@ -23,7 +23,7 @@ func TestPackageIndexRemoteInspectionSynchronizationAndVersionSelection(t *testi
 	runTestGit(t, gitPath, working, "config", "user.name", "Package Test")
 	runTestGit(t, gitPath, working, "config", "user.email", "packages@example.test")
 	writeFile(t, filepath.Join(working, "package.toml"), "schema = 1\ndescription = \"Remote package\"\n")
-	writeFile(t, filepath.Join(working, "services", "old", "service.toml"), "schema = 1\ndescription = \"Old service\"\n")
+	writeFile(t, filepath.Join(working, "services", "old", "service.toml"), "schema = 2\ndescription = \"Old service\"\n")
 	writeFile(t, filepath.Join(working, "services", "old", "service.ts"), "export default {};\n")
 	runTestGit(t, gitPath, working, "add", ".")
 	runTestGit(t, gitPath, working, "commit", "-q", "-m", "first")
@@ -78,7 +78,7 @@ func TestPackageIndexRemoteInspectionSynchronizationAndVersionSelection(t *testi
 	if err := os.RemoveAll(filepath.Join(working, "services", "old")); err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, filepath.Join(working, "services", "new", "service.toml"), "schema = 1\ndescription = \"New service\"\n")
+	writeFile(t, filepath.Join(working, "services", "new", "service.toml"), "schema = 2\ndescription = \"New service\"\n")
 	writeFile(t, filepath.Join(working, "services", "new", "service.ts"), "export default {};\n")
 	runTestGit(t, gitPath, working, "add", "-A")
 	runTestGit(t, gitPath, working, "commit", "-q", "-m", "second")

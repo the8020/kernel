@@ -39,11 +39,16 @@
   pinned isolated image build after a digest miss. Normal startup has no
   host-side Deno or image-build process, and the Go kernel never invokes these
   scripts.
-- Portable construction materializes the pinned OCI base and declared packages
-  inside rootless gVisor without copying host executables, libraries, package
-  metadata, certificates, or terminal data. Full construction uses the same
-  staged generic runtime and pinned image definition through BuildKit when host
-  authority exists.
+- Portable construction materializes the pinned OCI base without copying host
+  executables, libraries, package metadata, certificates, or terminal data.
+  Declared packages install inside rootless gVisor on an ordinary host; during
+  construction of the enclosing Docker image they install through `chroot`
+  inside that existing isolated build sandbox, avoiding a forbidden nested
+  user namespace. Full construction uses the same staged generic runtime and
+  pinned image definition through BuildKit when host authority exists.
+- Portable installation publishes the complete pinned gVisor execution payload:
+  `runsc` and every release-provided `gvisor-bin/` companion remain adjacent
+  under `node/kernel/bin/` so runtime startup never downloads missing helpers.
 - The service image runs non-root and includes only pinned Deno, generic runtime
   modules/protocol, and explicitly required administrator debugging tools.
   `stage-service-runtime.sh` excludes tests, DOX files, examples, application
@@ -65,7 +70,10 @@
   exact registered Worker invocation, cancellation, permissions, and crashes.
 - Portable verification launches the staged rootfs as UID/GID 1993 through the
   pinned rootless runsc and imports the generic HTTP and kernel modules before
-  publishing image and smoke records. Full verification imports and launches
+  publishing image and smoke records. An enclosing Docker build verifies the
+  same modules as UID/GID 1993 inside its build sandbox, records that narrower
+  provenance, and the container entrypoint replaces it with a real pinned-runsc
+  smoke record before kernel startup. Full verification imports and launches
   the canonical image when host authority is available.
 
 # Child DOX Index

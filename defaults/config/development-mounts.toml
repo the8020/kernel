@@ -10,16 +10,6 @@ participates_activation = true
 workspace_owned = true
 
 [[mounts]]
-id = "home"
-source = "users/<user-id>/home"
-target = "/home/developer"
-behavior = "persistent-user"
-writable = true
-persistence = "persistent-user"
-participates_activation = false
-workspace_owned = false
-
-[[mounts]]
 id = "temporary"
 target = "/tmp"
 behavior = "ephemeral"

@@ -100,26 +100,34 @@ func runDevelopmentE2E(t *testing.T, rootless bool) {
 	if !strings.HasPrefix(workspace.SourcePath, filepath.Join(users, "developer")) || !strings.HasPrefix(workspace.SystemPath, filepath.Join(users, "developer")) {
 		t.Fatalf("workspace does not use native per-user storage: %#v", workspace)
 	}
+	if workspace.ActiveSandboxID != "dev-developer" {
+		t.Fatalf("development sandbox ID = %q", workspace.ActiveSandboxID)
+	}
 	proveInteractiveConsole(t, manager, workspace.ActiveSandboxID)
 	proveSSHConsole(t, root, manager)
-	shell(t, manager, workspace.WorkspaceID, "test \"$(cat /proc/1/comm)\" = sleep && test ! -e /opt/development/snapshot && codex --version && deno --version && git --version")
+	shell(t, manager, workspace.WorkspaceID, "test \"$(cat /proc/1/comm)\" = sleep && test \"$(id -u)\" = 0 && test \"$HOME:$USER:$LOGNAME\" = /root:root:root && ! getent passwd developer && test ! -e /home/developer && test ! -e /opt/development/snapshot && codex --version && deno --version && git --version")
+	shell(t, manager, workspace.WorkspaceID, "test \"$(stat -c %a /run/lock)\" = 1777 && test \"$(readlink /var/lock)\" = /run/lock && printf lock-ok > /var/lock/the8020-proof && rm /var/lock/the8020-proof && printf transient > /run/the8020-transient")
 	shell(t, manager, workspace.WorkspaceID, "install -o 42 -g 4 -m 0640 /dev/null /var/tmp/the8020-idmap-proof && test \"$(stat -c %u:%g /var/tmp/the8020-idmap-proof)\" = 42:4 && rm /var/tmp/the8020-idmap-proof")
-	shell(t, manager, workspace.WorkspaceID, "mkdir -p /tmp/the8020-proof/DEBIAN /tmp/the8020-proof/usr/local/bin /tmp/the8020-proof/usr/share/the8020-proof /home/developer/.codex && printf 'Package: the8020-proof\\nVersion: 1\\nArchitecture: all\\nMaintainer: 80|20 Test <test@example.test>\\nDescription: proof\\n' > /tmp/the8020-proof/DEBIAN/control && printf '#!/bin/sh\\necho system-ok\\n' > /tmp/the8020-proof/usr/local/bin/the8020-proof && printf 'directory-ok\\n' > /tmp/the8020-proof/usr/share/the8020-proof/value && chmod 755 /tmp/the8020-proof/usr/local/bin/the8020-proof && dpkg-deb --build /tmp/the8020-proof /tmp/the8020-proof.deb && /usr/bin/dpkg --unpack /tmp/the8020-proof.deb && /usr/bin/dpkg --configure the8020-proof && grep -F directory-ok /usr/share/the8020-proof/value && printf 'home-ok\\n' > /home/developer/.codex/proof && printf 'private\\n' > /workspace/packages/the8020/dev-core/src/message.ts")
+	shell(t, manager, workspace.WorkspaceID, "mkdir -p /tmp/the8020-proof/DEBIAN /tmp/the8020-proof/usr/local/bin /tmp/the8020-proof/usr/share/the8020-proof /root/.codex && printf 'Package: the8020-proof\\nVersion: 1\\nArchitecture: all\\nMaintainer: 80|20 Test <test@example.test>\\nDescription: proof\\n' > /tmp/the8020-proof/DEBIAN/control && printf '#!/bin/sh\\necho system-ok\\n' > /tmp/the8020-proof/usr/local/bin/the8020-proof && printf 'directory-ok\\n' > /tmp/the8020-proof/usr/share/the8020-proof/value && chmod 755 /tmp/the8020-proof/usr/local/bin/the8020-proof && dpkg-deb --build /tmp/the8020-proof /tmp/the8020-proof.deb && /usr/bin/dpkg --unpack /tmp/the8020-proof.deb && /usr/bin/dpkg --configure the8020-proof && grep -F directory-ok /usr/share/the8020-proof/value && printf 'home-ok\\n' > /root/.codex/proof && printf 'private\\n' > /workspace/packages/the8020/dev-core/src/message.ts")
 	if shared, _ := os.ReadFile(filepath.Join(packages, "the8020", "dev-core", "src", "message.ts")); strings.Contains(string(shared), "private") {
 		t.Fatal("private source changed shared repository before activation")
 	}
 	oldSandbox := workspace.ActiveSandboxID
+	oldLogMarker := filepath.Join(runtimeRoot, "logs", oldSandbox, "old-generation")
+	if err := os.WriteFile(oldLogMarker, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := manager.Restart(context.Background(), workspace.WorkspaceID); err != nil {
 		t.Fatal(err)
 	}
 	workspace, _ = manager.Inspect(workspace.WorkspaceID)
-	if workspace.ActiveSandboxID == oldSandbox {
-		t.Fatal("restart retained process identity")
+	if workspace.ActiveSandboxID != oldSandbox {
+		t.Fatal("restart changed the deterministic development sandbox identity")
 	}
-	if _, err := os.Stat(filepath.Join(runtimeRoot, "logs", oldSandbox)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("deleted sandbox retained disposable logs: %v", err)
+	if _, err := os.Stat(oldLogMarker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("restarted sandbox retained disposable logs: %v", err)
 	}
-	shell(t, manager, workspace.WorkspaceID, "grep -F private /workspace/packages/the8020/dev-core/src/message.ts && grep -F home-ok /home/developer/.codex/proof && test \"$(the8020-proof)\" = system-ok && dpkg-query -W the8020-proof")
+	shell(t, manager, workspace.WorkspaceID, "test ! -e /run/the8020-transient && grep -F private /workspace/packages/the8020/dev-core/src/message.ts && grep -F home-ok /root/.codex/proof && test \"$(the8020-proof)\" = system-ok && dpkg-query -W the8020-proof")
 
 	previewJSON := shell(t, manager, workspace.WorkspaceID, "activate --preview --message Preview")
 	var preview ActivationPreview
@@ -135,16 +143,16 @@ func runDevelopmentE2E(t *testing.T, rootless bool) {
 	if current.ActiveSandboxID != workspace.ActiveSandboxID {
 		t.Fatal("activation recreated the native-storage sandbox")
 	}
-	shell(t, manager, workspace.WorkspaceID, "grep -F private /workspace/packages/the8020/dev-core/src/message.ts && grep -F home-ok /home/developer/.codex/proof && test \"$(the8020-proof)\" = system-ok")
+	shell(t, manager, workspace.WorkspaceID, "grep -F private /workspace/packages/the8020/dev-core/src/message.ts && grep -F home-ok /root/.codex/proof && test \"$(the8020-proof)\" = system-ok")
 
 	if _, err := manager.ResetSource(context.Background(), workspace.WorkspaceID, true); err != nil {
 		t.Fatal(err)
 	}
-	shell(t, manager, workspace.WorkspaceID, "grep -F private /workspace/packages/the8020/dev-core/src/message.ts && grep -F home-ok /home/developer/.codex/proof && test \"$(the8020-proof)\" = system-ok")
+	shell(t, manager, workspace.WorkspaceID, "grep -F private /workspace/packages/the8020/dev-core/src/message.ts && grep -F home-ok /root/.codex/proof && test \"$(the8020-proof)\" = system-ok")
 	if _, err := manager.FactoryReset(context.Background(), workspace.WorkspaceID, true); err != nil {
 		t.Fatal(err)
 	}
-	shell(t, manager, workspace.WorkspaceID, "test ! -e /home/developer/.codex/proof && ! command -v the8020-proof && grep -F private /workspace/packages/the8020/dev-core/src/message.ts")
+	shell(t, manager, workspace.WorkspaceID, "test ! -e /root/.codex/proof && test ! -e /home/developer && ! getent passwd developer && ! command -v the8020-proof && grep -F private /workspace/packages/the8020/dev-core/src/message.ts")
 }
 
 func proveSSHConsole(t *testing.T, root string, developmentManager *Manager) {
@@ -206,7 +214,7 @@ func proveSSHConsole(t *testing.T, root string, developmentManager *Manager) {
 		t.Fatal(err)
 	}
 	promptTranscript := readSSHUntil(t, output, []byte("/workspace"))
-	if bytes.Contains(promptTranscript, []byte("bash-")) || !bytes.Contains(promptTranscript, []byte("root@")) ||
+	if bytes.Contains(promptTranscript, []byte("bash-")) || !bytes.Contains(promptTranscript, []byte("root@dev-developer")) ||
 		!bytes.Contains(promptTranscript, []byte("\x1b[1;32m")) || !bytes.Contains(promptTranscript, []byte("\x1b[1;34m")) {
 		t.Fatalf("initial SSH prompt is not contextual: %q", promptTranscript)
 	}
@@ -295,7 +303,7 @@ func proveInteractiveConsole(t *testing.T, manager *Manager, sandboxID string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	console, err := manager.OpenConsole(ctx, sandboxID, backend.ConsoleOptions{Arguments: []string{"/bin/bash", "-l"}, Environment: []string{"TERM=xterm-256color", "HOME=/home/developer", "PATH=" + developmentPath}, WorkingDir: "/workspace", Size: backend.ConsoleSize{Columns: 90, Rows: 27}})
+	console, err := manager.OpenConsole(ctx, sandboxID, backend.ConsoleOptions{Arguments: []string{"/bin/bash", "-l"}, Environment: []string{"TERM=xterm-256color", "HOME=/root", "USER=root", "LOGNAME=root", "PATH=" + developmentPath}, WorkingDir: "/workspace", Size: backend.ConsoleSize{Columns: 90, Rows: 27}})
 	if err != nil {
 		t.Fatal(err)
 	}

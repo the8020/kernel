@@ -23,7 +23,9 @@ import (
 )
 
 const (
-	manifestSchema              = 1
+	packageManifestSchema       = 1
+	serviceManifestSchema       = 2
+	serviceStateSchema          = 2
 	manifestLimit               = 1 << 20
 	packageInspectionEntryLimit = 5000
 )
@@ -53,7 +55,9 @@ type PackageManifest struct {
 }
 
 type LifecycleManifest struct {
-	DefaultEnabled bool `toml:"default_enabled" json:"default_enabled"`
+	DefaultEnabled   bool   `toml:"default_enabled" json:"default_enabled"`
+	ServiceType      string `toml:"service_type,omitempty" json:"service_type"`
+	SessionKeepAlive string `toml:"session_keep_alive,omitempty" json:"session_keep_alive,omitempty"`
 }
 
 type OpenAPIManifest struct {
@@ -63,33 +67,29 @@ type OpenAPIManifest struct {
 }
 
 const (
-	ExecutionModeStateless  = "stateless"
-	ExecutionModePersistent = "persistent"
+	ServiceTypeStateless    = "stateless"
+	ServiceTypeSession      = "session"
 	AccessModePublic        = "public"
 	AccessModeAuthenticated = "authenticated"
 	UnauthenticatedReject   = "reject"
 	UnauthenticatedRedirect = "redirect"
 )
 
-type ExecutionManifest struct {
-	Mode                 string `toml:"mode,omitempty" json:"mode"`
-	ConcurrencyPerWorker *int   `toml:"concurrency_per_worker,omitempty" json:"concurrency_per_worker,omitempty"`
-	KeepAlive            string `toml:"keep_alive,omitempty" json:"keep_alive,omitempty"`
-}
-
 // ScalingManifest is the complete service-owned scaling contract. Runtime
 // desired counts, cooldowns, and placement decisions are kernel policy rather
 // than portable service configuration.
 type ScalingManifest struct {
-	ReplicasMinimum          *int     `toml:"replicas_min,omitempty" json:"replicas_min,omitempty"`
-	ReplicasMaximum          *int     `toml:"replicas_max,omitempty" json:"replicas_max,omitempty"`
-	WorkersPerReplicaMinimum *int     `toml:"workers_per_replica_min,omitempty" json:"workers_per_replica_min,omitempty"`
-	WorkersPerReplicaMaximum *int     `toml:"workers_per_replica_max,omitempty" json:"workers_per_replica_max,omitempty"`
-	TargetUtilization        *float64 `toml:"target_utilization,omitempty" json:"target_utilization,omitempty"`
+	MinimumWorkers       *int     `toml:"minimum_workers,omitempty" json:"minimum_workers,omitempty"`
+	MaximumWorkers       *int     `toml:"maximum_workers,omitempty" json:"maximum_workers,omitempty"`
+	ConcurrencyPerWorker *int     `toml:"concurrency_per_worker,omitempty" json:"concurrency_per_worker,omitempty"`
+	TargetUtilization    *float64 `toml:"target_utilization,omitempty" json:"target_utilization,omitempty"`
+	WorkerKeepAlive      string   `toml:"worker_keep_alive,omitempty" json:"worker_keep_alive,omitempty"`
 }
 
 type PlacementManifest struct {
-	SandboxGroup string `toml:"sandbox_group,omitempty" json:"sandbox_group"`
+	SandboxGroup      string `toml:"sandbox_group,omitempty" json:"sandbox_group"`
+	MinimumSandboxes  *int   `toml:"minimum_sandboxes,omitempty" json:"minimum_sandboxes,omitempty"`
+	WorkersPerSandbox *int   `toml:"workers_per_sandbox,omitempty" json:"workers_per_sandbox,omitempty"`
 }
 
 type UnauthenticatedManifest struct {
@@ -111,27 +111,28 @@ type ServiceManifest struct {
 	Entrypoint  string            `toml:"entrypoint,omitempty" json:"entrypoint"`
 	Lifecycle   LifecycleManifest `toml:"lifecycle,omitempty" json:"lifecycle"`
 	OpenAPI     OpenAPIManifest   `toml:"openapi,omitempty" json:"openapi"`
-	Execution   ExecutionManifest `toml:"execution,omitempty" json:"execution"`
 	Scaling     ScalingManifest   `toml:"scaling,omitempty" json:"scaling"`
 	Placement   PlacementManifest `toml:"placement,omitempty" json:"placement"`
 	Access      AccessManifest    `toml:"access,omitempty" json:"access"`
 }
 
-type ExecutionOverrides struct {
-	ConcurrencyPerWorker *int    `toml:"concurrency_per_worker,omitempty" json:"concurrency_per_worker,omitempty"`
-	KeepAlive            *string `toml:"keep_alive,omitempty" json:"keep_alive,omitempty"`
+type LifecycleOverrides struct {
+	ServiceType      *string `toml:"service_type,omitempty" json:"service_type,omitempty"`
+	SessionKeepAlive *string `toml:"session_keep_alive,omitempty" json:"session_keep_alive,omitempty"`
 }
 
 type ScalingOverrides struct {
-	ReplicasMinimum          *int     `toml:"replicas_min,omitempty" json:"replicas_min,omitempty"`
-	ReplicasMaximum          *int     `toml:"replicas_max,omitempty" json:"replicas_max,omitempty"`
-	WorkersPerReplicaMinimum *int     `toml:"workers_per_replica_min,omitempty" json:"workers_per_replica_min,omitempty"`
-	WorkersPerReplicaMaximum *int     `toml:"workers_per_replica_max,omitempty" json:"workers_per_replica_max,omitempty"`
-	TargetUtilization        *float64 `toml:"target_utilization,omitempty" json:"target_utilization,omitempty"`
+	MinimumWorkers       *int     `toml:"minimum_workers,omitempty" json:"minimum_workers,omitempty"`
+	MaximumWorkers       *int     `toml:"maximum_workers,omitempty" json:"maximum_workers,omitempty"`
+	ConcurrencyPerWorker *int     `toml:"concurrency_per_worker,omitempty" json:"concurrency_per_worker,omitempty"`
+	TargetUtilization    *float64 `toml:"target_utilization,omitempty" json:"target_utilization,omitempty"`
+	WorkerKeepAlive      *string  `toml:"worker_keep_alive,omitempty" json:"worker_keep_alive,omitempty"`
 }
 
 type PlacementOverrides struct {
-	SandboxGroup *string `toml:"sandbox_group,omitempty" json:"sandbox_group,omitempty"`
+	SandboxGroup      *string `toml:"sandbox_group,omitempty" json:"sandbox_group,omitempty"`
+	MinimumSandboxes  *int    `toml:"minimum_sandboxes,omitempty" json:"minimum_sandboxes,omitempty"`
+	WorkersPerSandbox *int    `toml:"workers_per_sandbox,omitempty" json:"workers_per_sandbox,omitempty"`
 }
 
 // DesiredServiceState is shared desired state. Node-local process identity never
@@ -140,7 +141,7 @@ type DesiredServiceState struct {
 	Schema     int                `toml:"schema" json:"schema"`
 	Enabled    bool               `toml:"enabled" json:"enabled"`
 	Generation uint64             `toml:"generation" json:"generation"`
-	Execution  ExecutionOverrides `toml:"execution,omitempty" json:"execution"`
+	Lifecycle  LifecycleOverrides `toml:"lifecycle,omitempty" json:"lifecycle"`
 	Scaling    ScalingOverrides   `toml:"scaling,omitempty" json:"scaling"`
 	Placement  PlacementOverrides `toml:"placement,omitempty" json:"placement"`
 }
@@ -153,47 +154,48 @@ type TimeoutConfiguration struct {
 
 // FrameworkDefaults is the single source of initial service defaults.
 type FrameworkDefaults struct {
-	ConcurrencyPerWorker int                  `json:"concurrency_per_worker"`
-	PersistentKeepAlive  time.Duration        `json:"persistent_keep_alive"`
-	Scaling              ScalingConfiguration `json:"scaling"`
-	Timeouts             TimeoutConfiguration `json:"timeouts"`
-	DependencyMode       string               `json:"dependency_mode"`
+	SessionKeepAlive time.Duration          `json:"session_keep_alive"`
+	Scaling          ScalingConfiguration   `json:"scaling"`
+	Placement        PlacementConfiguration `json:"placement"`
+	Timeouts         TimeoutConfiguration   `json:"timeouts"`
+	DependencyMode   string                 `json:"dependency_mode"`
 }
 
 func DefaultFrameworkDefaults() FrameworkDefaults {
 	return FrameworkDefaults{
-		ConcurrencyPerWorker: 32,
-		PersistentKeepAlive:  2 * time.Minute,
+		SessionKeepAlive: 10 * time.Minute,
 		Scaling: ScalingConfiguration{
-			ReplicasMinimum: 1, ReplicasMaximum: 1,
-			WorkersPerReplicaMinimum: 1, WorkersPerReplicaMaximum: 4,
-			TargetUtilization: 0.7,
+			MinimumWorkers: 0, MaximumWorkers: 0,
+			ConcurrencyPerWorker: 32, TargetUtilization: 0.7,
+			WorkerKeepAlive: 2 * time.Minute,
 		},
+		Placement:      PlacementConfiguration{MinimumSandboxes: 0, WorkersPerSandbox: 4},
 		Timeouts:       TimeoutConfiguration{Request: 30 * time.Second, Drain: 30 * time.Second},
 		DependencyMode: "cached-only",
 	}
 }
 
-type ExecutionConfiguration struct {
-	Mode                 string        `json:"mode"`
-	ConcurrencyPerWorker int           `json:"concurrency_per_worker"`
-	KeepAlive            time.Duration `json:"keep_alive"`
+type LifecycleConfiguration struct {
+	ServiceType      string        `json:"service_type"`
+	SessionKeepAlive time.Duration `json:"session_keep_alive"`
 }
 
 type ScalingConfiguration struct {
-	ReplicasMinimum          int     `json:"replicas_min"`
-	ReplicasMaximum          int     `json:"replicas_max"`
-	WorkersPerReplicaMinimum int     `json:"workers_per_replica_min"`
-	WorkersPerReplicaMaximum int     `json:"workers_per_replica_max"`
-	TargetUtilization        float64 `json:"target_utilization"`
+	MinimumWorkers       int           `json:"minimum_workers"`
+	MaximumWorkers       int           `json:"maximum_workers"`
+	ConcurrencyPerWorker int           `json:"concurrency_per_worker"`
+	TargetUtilization    float64       `json:"target_utilization"`
+	WorkerKeepAlive      time.Duration `json:"worker_keep_alive"`
 }
 
 type PlacementConfiguration struct {
-	SandboxGroup string `json:"sandbox_group"`
+	SandboxGroup      string `json:"sandbox_group"`
+	MinimumSandboxes  int    `json:"minimum_sandboxes"`
+	WorkersPerSandbox int    `json:"workers_per_sandbox"`
 }
 
 type EffectiveConfiguration struct {
-	Execution      ExecutionConfiguration `json:"execution"`
+	Lifecycle      LifecycleConfiguration `json:"lifecycle"`
 	Scaling        ScalingConfiguration   `json:"scaling"`
 	Placement      PlacementConfiguration `json:"placement"`
 	Timeouts       TimeoutConfiguration   `json:"-"`
@@ -222,7 +224,7 @@ type PackageService struct {
 	ID               string   `json:"service_id"`
 	Path             string   `json:"path"`
 	Description      string   `json:"description,omitempty"`
-	ExecutionMode    string   `json:"execution_mode,omitempty"`
+	ServiceType      string   `json:"service_type,omitempty"`
 	AccessMode       string   `json:"access_mode,omitempty"`
 	Entrypoint       string   `json:"entrypoint,omitempty"`
 	Valid            bool     `json:"valid"`
@@ -263,7 +265,7 @@ type Service struct {
 	Path              string   `json:"path"`
 	CanonicalBasePath string   `json:"canonical_base_path"`
 	Description       string   `json:"description,omitempty"`
-	ExecutionMode     string   `json:"execution_mode,omitempty"`
+	ServiceType       string   `json:"service_type,omitempty"`
 	AccessMode        string   `json:"access_mode,omitempty"`
 	Entrypoint        string   `json:"entrypoint,omitempty"`
 	Enabled           bool     `json:"enabled"`
@@ -327,8 +329,8 @@ func New(config Config) (*Store, error) {
 		defaults = DefaultFrameworkDefaults()
 	}
 	if err := validateEffective(EffectiveConfiguration{
-		Execution: ExecutionConfiguration{Mode: ExecutionModeStateless, ConcurrencyPerWorker: defaults.ConcurrencyPerWorker, KeepAlive: defaults.PersistentKeepAlive},
-		Scaling:   defaults.Scaling, Timeouts: defaults.Timeouts, DependencyMode: defaults.DependencyMode,
+		Lifecycle: LifecycleConfiguration{ServiceType: ServiceTypeStateless, SessionKeepAlive: defaults.SessionKeepAlive},
+		Scaling:   defaults.Scaling, Placement: defaults.Placement, Timeouts: defaults.Timeouts, DependencyMode: defaults.DependencyMode,
 	}); err != nil {
 		return nil, fmt.Errorf("framework defaults: %w", err)
 	}
@@ -458,8 +460,8 @@ func (s *Store) inspectPackage(identity Identity) Package {
 		if err := decodeTOMLWithin(manifestPath, root, &manifest); err != nil {
 			result.ValidationErrors = append(result.ValidationErrors, fmt.Sprintf("%s: %v", manifestPath, err))
 		} else {
-			if manifest.Schema != manifestSchema {
-				result.ValidationErrors = append(result.ValidationErrors, fmt.Sprintf("%s: schema must equal %d", manifestPath, manifestSchema))
+			if manifest.Schema != packageManifestSchema {
+				result.ValidationErrors = append(result.ValidationErrors, fmt.Sprintf("%s: schema must equal %d", manifestPath, packageManifestSchema))
 			}
 			result.Description, result.DocumentationURL, result.License = manifest.Description, manifest.DocumentationURL, manifest.License
 		}
@@ -509,7 +511,7 @@ func (s *Store) inspectPackageServices(identity Identity, root string) ([]Packag
 			item.ValidationErrors = []string{definitionErr.Error()}
 		} else {
 			item.Description = definition.Service.Description
-			item.ExecutionMode = definition.Service.Execution.Mode
+			item.ServiceType = definition.Service.Lifecycle.ServiceType
 			item.AccessMode = definition.Service.Access.Mode
 			item.Entrypoint = filepath.ToSlash(filepath.Join(item.Path, definition.Service.Entrypoint))
 			item.Valid = true
@@ -563,8 +565,8 @@ func (s *Store) inspectPackagePrograms(identity Identity, root string) ([]Packag
 				if manifest.Discoverable != nil {
 					item.Discoverable = *manifest.Discoverable
 				}
-				if manifest.Schema != manifestSchema {
-					item.ValidationErrors = append(item.ValidationErrors, fmt.Sprintf("%s: schema must equal %d", manifestPath, manifestSchema))
+				if manifest.Schema != packageManifestSchema {
+					item.ValidationErrors = append(item.ValidationErrors, fmt.Sprintf("%s: schema must equal %d", manifestPath, packageManifestSchema))
 				}
 				if manifest.Description == "" {
 					item.ValidationErrors = append(item.ValidationErrors, fmt.Sprintf("%s: description is required", manifestPath))
@@ -696,7 +698,7 @@ func (s *Store) ListServices() ([]Service, error) {
 				service.ValidationErrors = []string{definitionErr.Error()}
 			} else {
 				service.Description, service.Entrypoint = definition.Service.Description, definition.EntrypointPath
-				service.ExecutionMode, service.AccessMode = definition.Service.Execution.Mode, definition.Service.Access.Mode
+				service.ServiceType, service.AccessMode = definition.Service.Lifecycle.ServiceType, definition.Service.Access.Mode
 				service.Enabled, service.DesiredGeneration, service.Valid = definition.State.Enabled, definition.State.Generation, true
 			}
 			result = append(result, service)
@@ -781,16 +783,16 @@ func (s *Store) readPortableService(identity Identity) (Definition, error) {
 	if err := decodeTOMLWithin(packageManifestPath, packagePath, &packageManifest); err != nil {
 		return Definition{}, fmt.Errorf("%s: %w", packageManifestPath, err)
 	}
-	if packageManifest.Schema != manifestSchema {
-		return Definition{}, fmt.Errorf("%s: schema must equal %d", packageManifestPath, manifestSchema)
+	if packageManifest.Schema != packageManifestSchema {
+		return Definition{}, fmt.Errorf("%s: schema must equal %d", packageManifestPath, packageManifestSchema)
 	}
-	var serviceManifest ServiceManifest
 	serviceManifestPath := filepath.Join(servicePath, "service.toml")
+	var serviceManifest ServiceManifest
 	if err := decodeTOMLWithin(serviceManifestPath, servicePath, &serviceManifest); err != nil {
 		return Definition{}, fmt.Errorf("%s: %w", serviceManifestPath, err)
 	}
-	if serviceManifest.Schema != manifestSchema {
-		return Definition{}, fmt.Errorf("%s: schema must equal %d", serviceManifestPath, manifestSchema)
+	if serviceManifest.Schema != serviceManifestSchema {
+		return Definition{}, fmt.Errorf("%s: schema must equal %d", serviceManifestPath, serviceManifestSchema)
 	}
 	if err := normalizeAndValidateServicePolicy(&serviceManifest); err != nil {
 		return Definition{}, fmt.Errorf("%s: %w", serviceManifestPath, err)
@@ -821,34 +823,39 @@ func (s *Store) readPortableService(identity Identity) (Definition, error) {
 }
 
 func normalizeAndValidateServicePolicy(manifest *ServiceManifest) error {
-	if manifest.Execution.Mode == "" {
-		manifest.Execution.Mode = ExecutionModeStateless
+	if manifest.Lifecycle.ServiceType == "" {
+		manifest.Lifecycle.ServiceType = ServiceTypeStateless
 	}
-	if manifest.Execution.Mode != ExecutionModeStateless && manifest.Execution.Mode != ExecutionModePersistent {
-		return errors.New("execution.mode must be stateless or persistent")
+	if manifest.Lifecycle.ServiceType != ServiceTypeStateless && manifest.Lifecycle.ServiceType != ServiceTypeSession {
+		return errors.New("lifecycle.service_type must be stateless or session")
 	}
-	if value := manifest.Execution.ConcurrencyPerWorker; value != nil && *value < 1 {
-		return errors.New("execution.concurrency_per_worker must be at least 1")
-	}
-	if value := manifest.Execution.KeepAlive; value != "" {
+	if value := manifest.Lifecycle.SessionKeepAlive; value != "" {
 		if parsed, err := time.ParseDuration(value); err != nil || parsed <= 0 {
-			return errors.New("execution.keep_alive must be a positive duration")
-		}
-		if manifest.Execution.Mode != ExecutionModePersistent {
-			return errors.New("execution.keep_alive is valid only for persistent services")
+			return errors.New("lifecycle.session_keep_alive must be a positive duration")
 		}
 	}
-	if err := validateOptionalBounds("scaling replicas", manifest.Scaling.ReplicasMinimum, manifest.Scaling.ReplicasMaximum); err != nil {
+	if err := validateWorkerBounds(manifest.Scaling.MinimumWorkers, manifest.Scaling.MaximumWorkers); err != nil {
 		return err
 	}
-	if err := validateOptionalBounds("scaling workers per replica", manifest.Scaling.WorkersPerReplicaMinimum, manifest.Scaling.WorkersPerReplicaMaximum); err != nil {
-		return err
+	if value := manifest.Scaling.ConcurrencyPerWorker; value != nil && *value < 1 {
+		return errors.New("scaling.concurrency_per_worker must be at least 1")
+	}
+	if value := manifest.Scaling.WorkerKeepAlive; value != "" {
+		if parsed, err := time.ParseDuration(value); err != nil || parsed <= 0 {
+			return errors.New("scaling.worker_keep_alive must be a positive duration")
+		}
 	}
 	if value := manifest.Scaling.TargetUtilization; value != nil && (*value <= 0 || *value > 1) {
 		return errors.New("scaling.target_utilization must be greater than 0 and at most 1")
 	}
 	if manifest.Placement.SandboxGroup != strings.TrimSpace(manifest.Placement.SandboxGroup) || strings.ContainsRune(manifest.Placement.SandboxGroup, '\x00') {
 		return errors.New("placement.sandbox_group must be trimmed and cannot contain a null byte")
+	}
+	if value := manifest.Placement.MinimumSandboxes; value != nil && *value < 0 {
+		return errors.New("placement.minimum_sandboxes cannot be negative")
+	}
+	if value := manifest.Placement.WorkersPerSandbox; value != nil && *value < 1 {
+		return errors.New("placement.workers_per_sandbox must be at least 1")
 	}
 	if manifest.Access.Mode == "" {
 		manifest.Access.Mode = AccessModePublic
@@ -893,31 +900,17 @@ func normalizeAndValidateServicePolicy(manifest *ServiceManifest) error {
 	return nil
 }
 
-func validateOptionalBounds(name string, minimum, maximum *int) error {
+func validateWorkerBounds(minimum, maximum *int) error {
 	if minimum != nil && *minimum < 0 {
-		return fmt.Errorf("%s minimum cannot be negative", name)
+		return errors.New("scaling.minimum_workers cannot be negative")
 	}
-	if maximum != nil && *maximum < 1 {
-		return fmt.Errorf("%s maximum must be at least 1", name)
+	if maximum != nil && *maximum < 0 {
+		return errors.New("scaling.maximum_workers cannot be negative")
 	}
-	if minimum != nil && maximum != nil && *minimum > *maximum {
-		return fmt.Errorf("%s must satisfy minimum <= maximum", name)
+	if minimum != nil && maximum != nil && *maximum != 0 && *minimum > *maximum {
+		return errors.New("scaling must satisfy minimum_workers <= maximum_workers when maximum_workers is nonzero")
 	}
 	return nil
-}
-
-func validAffinitySource(value string) bool {
-	switch value {
-	case "auth.user_id", "auth.username", "auth.realm":
-		return true
-	}
-	for _, prefix := range []string{"header.", "cookie."} {
-		if strings.HasPrefix(value, prefix) {
-			name := strings.TrimPrefix(value, prefix)
-			return namePattern.MatchString(name) && !strings.ContainsAny(name, "/\\\x00")
-		}
-	}
-	return false
 }
 
 // ParseByteSize parses the manifest's deliberately small decimal byte-size
@@ -985,7 +978,7 @@ func (s *Store) MutateState(ctx context.Context, serviceID string, mutate func(*
 			return DesiredServiceState{}, err
 		}
 	}
-	state.Schema = manifestSchema
+	state.Schema = serviceStateSchema
 	state.Generation++
 	definition, err := s.readServiceWithState(identity, state)
 	if err != nil {
@@ -1026,23 +1019,23 @@ func (s *Store) initializeState(identity Identity, manifest ServiceManifest) (De
 }
 
 func initialDesiredState(defaults FrameworkDefaults, manifest ServiceManifest, serviceID string) (DesiredServiceState, error) {
-	effective, err := calculateEffective(defaults, manifest, DesiredServiceState{Schema: manifestSchema})
+	effective, err := calculateEffective(defaults, manifest, DesiredServiceState{Schema: serviceStateSchema})
 	if err != nil {
 		return DesiredServiceState{}, err
 	}
-	concurrency, keepAlive := effective.Execution.ConcurrencyPerWorker, effective.Execution.KeepAlive.String()
-	replicasMinimum, replicasMaximum := effective.Scaling.ReplicasMinimum, effective.Scaling.ReplicasMaximum
-	workersMinimum, workersMaximum := effective.Scaling.WorkersPerReplicaMinimum, effective.Scaling.WorkersPerReplicaMaximum
-	targetUtilization, sandboxGroup := effective.Scaling.TargetUtilization, effective.Placement.SandboxGroup
+	serviceType, sessionKeepAlive := effective.Lifecycle.ServiceType, effective.Lifecycle.SessionKeepAlive.String()
+	minimumWorkers, maximumWorkers := effective.Scaling.MinimumWorkers, effective.Scaling.MaximumWorkers
+	concurrency, targetUtilization := effective.Scaling.ConcurrencyPerWorker, effective.Scaling.TargetUtilization
+	workerKeepAlive := effective.Scaling.WorkerKeepAlive.String()
+	sandboxGroup, minimumSandboxes, workersPerSandbox := effective.Placement.SandboxGroup, effective.Placement.MinimumSandboxes, effective.Placement.WorkersPerSandbox
 	return DesiredServiceState{
-		Schema: manifestSchema, Enabled: manifest.Lifecycle.DefaultEnabled,
-		Execution: ExecutionOverrides{ConcurrencyPerWorker: &concurrency, KeepAlive: &keepAlive},
+		Schema: serviceStateSchema, Enabled: manifest.Lifecycle.DefaultEnabled,
+		Lifecycle: LifecycleOverrides{ServiceType: &serviceType, SessionKeepAlive: &sessionKeepAlive},
 		Scaling: ScalingOverrides{
-			ReplicasMinimum: &replicasMinimum, ReplicasMaximum: &replicasMaximum,
-			WorkersPerReplicaMinimum: &workersMinimum, WorkersPerReplicaMaximum: &workersMaximum,
-			TargetUtilization: &targetUtilization,
+			MinimumWorkers: &minimumWorkers, MaximumWorkers: &maximumWorkers,
+			ConcurrencyPerWorker: &concurrency, TargetUtilization: &targetUtilization, WorkerKeepAlive: &workerKeepAlive,
 		},
-		Placement: PlacementOverrides{SandboxGroup: &sandboxGroup},
+		Placement: PlacementOverrides{SandboxGroup: &sandboxGroup, MinimumSandboxes: &minimumSandboxes, WorkersPerSandbox: &workersPerSandbox},
 	}, nil
 }
 
@@ -1094,87 +1087,107 @@ func ValidateName(value string) error {
 
 func calculateEffective(defaults FrameworkDefaults, manifest ServiceManifest, state DesiredServiceState) (EffectiveConfiguration, error) {
 	result := EffectiveConfiguration{
-		Execution:      ExecutionConfiguration{Mode: manifest.Execution.Mode, ConcurrencyPerWorker: defaults.ConcurrencyPerWorker, KeepAlive: defaults.PersistentKeepAlive},
+		Lifecycle:      LifecycleConfiguration{ServiceType: manifest.Lifecycle.ServiceType, SessionKeepAlive: defaults.SessionKeepAlive},
 		Scaling:        defaults.Scaling,
-		Placement:      PlacementConfiguration{SandboxGroup: manifest.Placement.SandboxGroup},
+		Placement:      defaults.Placement,
 		Timeouts:       defaults.Timeouts,
 		DependencyMode: defaults.DependencyMode,
 	}
-	if manifest.Execution.ConcurrencyPerWorker != nil {
-		result.Execution.ConcurrencyPerWorker = *manifest.Execution.ConcurrencyPerWorker
+	result.Placement.SandboxGroup = manifest.Placement.SandboxGroup
+	if manifest.Lifecycle.SessionKeepAlive != "" {
+		result.Lifecycle.SessionKeepAlive, _ = time.ParseDuration(manifest.Lifecycle.SessionKeepAlive)
 	}
-	if manifest.Execution.KeepAlive != "" {
-		result.Execution.KeepAlive, _ = time.ParseDuration(manifest.Execution.KeepAlive)
+	if manifest.Placement.MinimumSandboxes != nil {
+		result.Placement.MinimumSandboxes = *manifest.Placement.MinimumSandboxes
+	}
+	if manifest.Placement.WorkersPerSandbox != nil {
+		result.Placement.WorkersPerSandbox = *manifest.Placement.WorkersPerSandbox
 	}
 	applyScalingManifest(&result.Scaling, manifest.Scaling)
-	if state.Execution.ConcurrencyPerWorker != nil {
-		result.Execution.ConcurrencyPerWorker = *state.Execution.ConcurrencyPerWorker
+	if state.Lifecycle.ServiceType != nil {
+		result.Lifecycle.ServiceType = *state.Lifecycle.ServiceType
 	}
-	if state.Execution.KeepAlive != nil {
-		parsed, err := time.ParseDuration(*state.Execution.KeepAlive)
+	if state.Lifecycle.SessionKeepAlive != nil {
+		parsed, err := time.ParseDuration(*state.Lifecycle.SessionKeepAlive)
 		if err != nil {
-			return result, fmt.Errorf("execution.keep_alive: %w", err)
+			return result, fmt.Errorf("lifecycle.session_keep_alive: %w", err)
 		}
-		result.Execution.KeepAlive = parsed
+		result.Lifecycle.SessionKeepAlive = parsed
 	}
-	applyScalingOverrides(&result.Scaling, state.Scaling)
+	if err := applyScalingOverrides(&result.Scaling, state.Scaling); err != nil {
+		return result, err
+	}
 	if state.Placement.SandboxGroup != nil {
 		result.Placement.SandboxGroup = *state.Placement.SandboxGroup
+	}
+	if state.Placement.MinimumSandboxes != nil {
+		result.Placement.MinimumSandboxes = *state.Placement.MinimumSandboxes
+	}
+	if state.Placement.WorkersPerSandbox != nil {
+		result.Placement.WorkersPerSandbox = *state.Placement.WorkersPerSandbox
 	}
 	return result, validateEffective(result)
 }
 
 func applyScalingManifest(target *ScalingConfiguration, source ScalingManifest) {
-	if source.ReplicasMinimum != nil {
-		target.ReplicasMinimum = *source.ReplicasMinimum
+	if source.MinimumWorkers != nil {
+		target.MinimumWorkers = *source.MinimumWorkers
 	}
-	if source.ReplicasMaximum != nil {
-		target.ReplicasMaximum = *source.ReplicasMaximum
+	if source.MaximumWorkers != nil {
+		target.MaximumWorkers = *source.MaximumWorkers
 	}
-	if source.WorkersPerReplicaMinimum != nil {
-		target.WorkersPerReplicaMinimum = *source.WorkersPerReplicaMinimum
-	}
-	if source.WorkersPerReplicaMaximum != nil {
-		target.WorkersPerReplicaMaximum = *source.WorkersPerReplicaMaximum
+	if source.ConcurrencyPerWorker != nil {
+		target.ConcurrencyPerWorker = *source.ConcurrencyPerWorker
 	}
 	if source.TargetUtilization != nil {
 		target.TargetUtilization = *source.TargetUtilization
+	}
+	if source.WorkerKeepAlive != "" {
+		target.WorkerKeepAlive, _ = time.ParseDuration(source.WorkerKeepAlive)
 	}
 }
 
-func applyScalingOverrides(target *ScalingConfiguration, source ScalingOverrides) {
-	if source.ReplicasMinimum != nil {
-		target.ReplicasMinimum = *source.ReplicasMinimum
+func applyScalingOverrides(target *ScalingConfiguration, source ScalingOverrides) error {
+	if source.MinimumWorkers != nil {
+		target.MinimumWorkers = *source.MinimumWorkers
 	}
-	if source.ReplicasMaximum != nil {
-		target.ReplicasMaximum = *source.ReplicasMaximum
+	if source.MaximumWorkers != nil {
+		target.MaximumWorkers = *source.MaximumWorkers
 	}
-	if source.WorkersPerReplicaMinimum != nil {
-		target.WorkersPerReplicaMinimum = *source.WorkersPerReplicaMinimum
-	}
-	if source.WorkersPerReplicaMaximum != nil {
-		target.WorkersPerReplicaMaximum = *source.WorkersPerReplicaMaximum
+	if source.ConcurrencyPerWorker != nil {
+		target.ConcurrencyPerWorker = *source.ConcurrencyPerWorker
 	}
 	if source.TargetUtilization != nil {
 		target.TargetUtilization = *source.TargetUtilization
 	}
+	if source.WorkerKeepAlive != nil {
+		parsed, err := time.ParseDuration(*source.WorkerKeepAlive)
+		if err != nil {
+			return fmt.Errorf("scaling.worker_keep_alive: %w", err)
+		}
+		target.WorkerKeepAlive = parsed
+	}
+	return nil
 }
 
 func validateEffective(value EffectiveConfiguration) error {
-	if value.Execution.Mode != ExecutionModeStateless && value.Execution.Mode != ExecutionModePersistent {
-		return errors.New("execution.mode must be stateless or persistent")
+	if value.Lifecycle.ServiceType != ServiceTypeStateless && value.Lifecycle.ServiceType != ServiceTypeSession {
+		return errors.New("lifecycle.service_type must be stateless or session")
 	}
-	if value.Execution.ConcurrencyPerWorker < 1 || value.Execution.KeepAlive <= 0 {
-		return errors.New("execution requires concurrency_per_worker >= 1 and a positive keep_alive")
+	if value.Lifecycle.SessionKeepAlive <= 0 {
+		return errors.New("lifecycle.session_keep_alive must be positive")
 	}
-	if value.Scaling.ReplicasMinimum < 0 || value.Scaling.ReplicasMinimum > value.Scaling.ReplicasMaximum || value.Scaling.ReplicasMaximum < 1 {
-		return errors.New("scaling replicas must satisfy 0 <= replicas_min <= replicas_max and replicas_max >= 1")
+	if value.Scaling.MinimumWorkers < 0 || value.Scaling.MaximumWorkers < 0 || (value.Scaling.MaximumWorkers != 0 && value.Scaling.MinimumWorkers > value.Scaling.MaximumWorkers) {
+		return errors.New("scaling workers must satisfy minimum_workers >= 0 and maximum_workers = 0 or maximum_workers >= minimum_workers")
 	}
-	if value.Scaling.WorkersPerReplicaMinimum < 0 || value.Scaling.WorkersPerReplicaMinimum > value.Scaling.WorkersPerReplicaMaximum || value.Scaling.WorkersPerReplicaMaximum < 1 {
-		return errors.New("scaling workers must satisfy 0 <= workers_per_replica_min <= workers_per_replica_max and workers_per_replica_max >= 1")
+	if value.Scaling.ConcurrencyPerWorker < 1 {
+		return errors.New("scaling.concurrency_per_worker must be at least 1")
 	}
 	if value.Scaling.TargetUtilization <= 0 || value.Scaling.TargetUtilization > 1 {
 		return errors.New("scaling.target_utilization must be greater than 0 and at most 1")
+	}
+	if value.Scaling.WorkerKeepAlive <= 0 {
+		return errors.New("scaling.worker_keep_alive must be positive")
 	}
 	if value.Timeouts.Request <= 0 || value.Timeouts.Drain <= 0 || value.Timeouts.Idle < 0 {
 		return errors.New("request and drain timeouts must be positive and idle timeout cannot be negative")
@@ -1184,6 +1197,12 @@ func validateEffective(value EffectiveConfiguration) error {
 	}
 	if value.Placement.SandboxGroup != strings.TrimSpace(value.Placement.SandboxGroup) || strings.ContainsRune(value.Placement.SandboxGroup, '\x00') {
 		return errors.New("placement.sandbox_group must be trimmed and cannot contain a null byte")
+	}
+	if value.Placement.MinimumSandboxes < 0 {
+		return errors.New("placement.minimum_sandboxes cannot be negative")
+	}
+	if value.Placement.WorkersPerSandbox < 1 {
+		return errors.New("placement.workers_per_sandbox must be at least 1")
 	}
 	return nil
 }

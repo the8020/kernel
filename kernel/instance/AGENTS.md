@@ -31,9 +31,7 @@
   settings files when absent.
 - `state/package-index/` stores kernel-managed desired package documents.
   `state/package-data/` is generic application data: instance code creates and
-  mounts it but never enumerates or interprets package-owned contents. A legacy
-  `state/packages/` root is renamed once when the new destination is absent or
-  empty; two populated roots fail explicitly rather than merge.
+  mounts it but never enumerates or interprets package-owned contents.
 - An explicit instance root may be absent. Resolution canonicalizes its nearest
   existing ancestor without creating it before the initialization decision.
 - Private node/kernel directories are mode `0700`. The runtime attachments root
@@ -49,7 +47,7 @@
 # Verification
 
 - `instance_test.go` covers mapped roots, overlap and permission rejection,
-  empty package/user/index/data roots, legacy package-data rename,
+  empty package/user/index/data roots,
   image/runtime paths, settings files, identity, modes, locking, stale cleanup,
   and release.
 

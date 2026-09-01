@@ -17,6 +17,22 @@ case "$ROOTFS" in
   "$RUNTIME_ROOT/tmp/"*) ;;
   *) echo "image-build rootfs must be beneath $RUNTIME_ROOT/tmp" >&2; exit 2 ;;
 esac
+
+# A Docker/BuildKit RUN is already an isolated image-build execution. Avoid a
+# nested runsc launch there because ordinary builders intentionally block the
+# user-namespace re-exec that rootless gVisor requires. The final container
+# performs the real runsc smoke before starting the kernel.
+if [[ ${THE8020_OUTER_CONTAINER_BUILD:-false} == true ]]; then
+  echo "image build: installing inside the outer container build sandbox" >&2
+  chroot "$ROOTFS" /usr/bin/env \
+    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    HOME=/root \
+    DEBIAN_FRONTEND=noninteractive \
+    "$@"
+  rm -rf -- "$ROOTFS/usr/share/doc"
+  exit 0
+fi
+
 RUNSC="$RUNTIME_ROOT/gvisor/bin/runsc"
 STAGE=$(mktemp -d "$RUNTIME_ROOT/tmp/image-build.XXXXXX")
 ID="the8020-image-build-$$"

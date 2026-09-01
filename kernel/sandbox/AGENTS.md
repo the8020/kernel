@@ -11,8 +11,11 @@
 
 - One sandbox is one managed OCI runtime, one gVisor boundary, one runtime group, one workload type, and one Deno supervisor.
 - Every service sandbox has exactly one free-text placement-group value. It may
-  contain replicas of compatible different services but never two replicas of
-  the same logical service.
+  contain compatible allocations of different services but never two
+  allocations of the same logical service.
+- Kernel placement admits a new Worker only below the configured per-sandbox
+  Worker count and sampled CPU/RAM targets; the sandbox layer reports the exact
+  observations but does not own service scaling decisions.
 - Sandbox creation enforces node-wide sandbox-count, memory, CPU, and temporary
   storage reservation budgets before host mutation.
 - Full containerd namespace/labels and rootless metadata derive from the stable kernel instance UUID; foreign or unlabeled runtimes are never managed.

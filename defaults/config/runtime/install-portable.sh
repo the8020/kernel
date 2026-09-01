@@ -101,8 +101,14 @@ if [[ ! -x "$GVISOR_ROOT/runsc" ]] || ! verify_sha512 "$RUNSC_SHA" "$GVISOR_ROOT
   GVISOR_STAGE=""
 fi
 if [[ "$RUNSC_DESTINATION" != "$GVISOR_ROOT/runsc" ]]; then
-  install -d -m 0700 "$(dirname "$RUNSC_DESTINATION")"
+  RUNSC_DESTINATION_ROOT=$(dirname "$RUNSC_DESTINATION")
+  install -d -m 0700 "$RUNSC_DESTINATION_ROOT"
   install -m 0555 "$GVISOR_ROOT/runsc" "$RUNSC_DESTINATION"
+  rm -rf -- "$RUNSC_DESTINATION_ROOT/gvisor-bin"
+  if [[ -d "$GVISOR_ROOT/gvisor-bin" ]]; then
+    install -d -m 0700 "$RUNSC_DESTINATION_ROOT/gvisor-bin"
+    find "$GVISOR_ROOT/gvisor-bin" -maxdepth 1 -type f -exec install -m 0555 '{}' "$RUNSC_DESTINATION_ROOT/gvisor-bin/" \;
+  fi
 fi
 
 SOURCE_INPUT=$(
@@ -112,11 +118,15 @@ SOURCE_INPUT=$(
 )
 SOURCE_HASH="sha256:$(printf '%s' "$SOURCE_INPUT" | sha256sum | awk '{print $1}')"
 IMAGE_DIGEST="sha256:$(printf '%s\n%s\n' "$SOURCE_HASH" rootless-runtime-v3 | sha256sum | awk '{print $1}')"
+SMOKE_RUNTIME=runsc-rootless-systrap
+if [[ ${THE8020_OUTER_CONTAINER_BUILD:-false} == true ]]; then
+  SMOKE_RUNTIME=outer-container-build
+fi
 
 if [[ -f "$RECORD" && -f "$SMOKE_RECORD" && -x "$ROOTFS/usr/bin/deno" ]] &&
    grep -Fq "\"source_hash\": \"$SOURCE_HASH\"" "$RECORD" &&
    grep -Fq "\"image_digest\": \"$IMAGE_DIGEST\"" "$SMOKE_RECORD" &&
-   grep -Fq '"runtime": "runsc-rootless-systrap"' "$SMOKE_RECORD"; then
+   grep -Fq "\"runtime\": \"$SMOKE_RUNTIME\"" "$SMOKE_RECORD"; then
   echo "runtime image: unchanged input digest; reusing verified portable image" >&2
   exit 0
 fi
@@ -131,18 +141,30 @@ install -d -m 0755 "$ROOTFS_STAGE/artifacts" "$ROOTFS_STAGE/runtime-cache" "$ROO
 install -m 0555 "$RUNTIME_SOURCE/bundle-runtime.sh" "$ROOTFS_STAGE/opt/runtime/bundle-runtime.sh"
 install -m 0444 "$RUNTIME_DEFINITION" "$ROOTFS_STAGE/opt/runtime/deno.json"
 install -m 0444 "$PROTOCOL_SOURCE" "$ROOTFS_STAGE/opt/runtime/protocol.ts"
-echo "runtime image [2/4]: installing declared packages and bundling generic modules inside gVisor" >&2
+echo "runtime image [2/4]: installing declared packages and bundling generic modules" >&2
 "$RUNTIME_SOURCE/run-rootfs-build.sh" "$SOURCE_ROOT" "$RUNTIME_ROOT" "$ROOTFS_STAGE" /bin/sh -c \
   '/bin/bash /the8020-image-build.sh && /bin/bash /opt/runtime/bundle-runtime.sh /opt/runtime/http-source /opt/runtime/http && rm -rf /the8020-image-build.sh /opt/runtime/bundle-runtime.sh /opt/runtime/http-source'
 
-SMOKE_STAGE=$(mktemp -d "$TEMP_ROOT/rootless-smoke.XXXXXX")
-echo "runtime image [3/4]: smoke-testing portable gVisor launch" >&2
-SMOKE_ID="the8020-rootless-smoke-$$"
-SMOKE_RUNSC_ROOT="$SMOKE_STAGE/runsc"
-SMOKE_OVERLAY="$SMOKE_STAGE/overlay"
-SMOKE_BUNDLE="$SMOKE_STAGE/bundle"
-mkdir -p "$SMOKE_RUNSC_ROOT" "$SMOKE_OVERLAY" "$SMOKE_BUNDLE"
-cat > "$SMOKE_BUNDLE/config.json" <<EOF
+SMOKE_STAGE=""
+if [[ "$SMOKE_RUNTIME" == outer-container-build ]]; then
+  echo "runtime image [3/4]: smoke-testing bundled modules inside the outer container build sandbox" >&2
+  chroot --userspec=1993:1993 "$ROOTFS_STAGE" /usr/bin/env \
+    PATH=/usr/bin \
+    HOME=/tmp \
+    DENO_DIR=/tmp/deno-cache \
+    DENO_NO_UPDATE_CHECK=1 \
+    DENO_NO_PROMPT=1 \
+    /usr/bin/deno eval --config=/opt/runtime/deno.json --cached-only \
+    'await import("@the8020/http"); await import("@the8020/kernel"); console.log("the8020-outer-build-smoke")'
+else
+  SMOKE_STAGE=$(mktemp -d "$TEMP_ROOT/rootless-smoke.XXXXXX")
+  echo "runtime image [3/4]: smoke-testing portable gVisor launch" >&2
+  SMOKE_ID="the8020-rootless-smoke-$$"
+  SMOKE_RUNSC_ROOT="$SMOKE_STAGE/runsc"
+  SMOKE_OVERLAY="$SMOKE_STAGE/overlay"
+  SMOKE_BUNDLE="$SMOKE_STAGE/bundle"
+  mkdir -p "$SMOKE_RUNSC_ROOT" "$SMOKE_OVERLAY" "$SMOKE_BUNDLE"
+  cat > "$SMOKE_BUNDLE/config.json" <<EOF
 {
   "ociVersion": "1.0.2",
   "process": {
@@ -166,22 +188,23 @@ cat > "$SMOKE_BUNDLE/config.json" <<EOF
 }
 EOF
 
-SMOKE_OUTPUT="$SMOKE_STAGE/output.log"
-cleanup_smoke() {
-  "$GVISOR_ROOT/runsc" --root="$SMOKE_RUNSC_ROOT" --rootless=true --platform=systrap --network=none --overlay2="root:dir=$SMOKE_OVERLAY" delete --force "$SMOKE_ID" >/dev/null 2>&1 || true
-}
-trap 'cleanup_smoke; rm -rf -- "${GVISOR_STAGE:-}" "${ROOTFS_STAGE:-}" "${SMOKE_STAGE:-}"' EXIT
-if ! "$GVISOR_ROOT/runsc" \
-  --allow-rootfs-tar-annotation --root="$SMOKE_RUNSC_ROOT" --rootless=true --platform=systrap --directfs=false \
-  --file-access=exclusive --file-access-mounts=shared --network=none --overlay2="root:dir=$SMOKE_OVERLAY" \
-  --log="$SMOKE_STAGE/runsc.log" run --bundle="$SMOKE_BUNDLE" "$SMOKE_ID" >"$SMOKE_OUTPUT" 2>&1; then
-  echo "portable rootless gVisor smoke test failed" >&2
-  tail -80 "$SMOKE_OUTPUT" >&2 || true
-  tail -80 "$SMOKE_STAGE/runsc.log" >&2 || true
-  exit 1
+  SMOKE_OUTPUT="$SMOKE_STAGE/output.log"
+  cleanup_smoke() {
+    "$GVISOR_ROOT/runsc" --root="$SMOKE_RUNSC_ROOT" --rootless=true --platform=systrap --network=none --overlay2="root:dir=$SMOKE_OVERLAY" delete --force "$SMOKE_ID" >/dev/null 2>&1 || true
+  }
+  trap 'cleanup_smoke; rm -rf -- "${GVISOR_STAGE:-}" "${ROOTFS_STAGE:-}" "${SMOKE_STAGE:-}"' EXIT
+  if ! "$GVISOR_ROOT/runsc" \
+    --allow-rootfs-tar-annotation --root="$SMOKE_RUNSC_ROOT" --rootless=true --platform=systrap --directfs=false \
+    --file-access=exclusive --file-access-mounts=shared --network=none --overlay2="root:dir=$SMOKE_OVERLAY" \
+    --log="$SMOKE_STAGE/runsc.log" run --bundle="$SMOKE_BUNDLE" "$SMOKE_ID" >"$SMOKE_OUTPUT" 2>&1; then
+    echo "portable rootless gVisor smoke test failed" >&2
+    tail -80 "$SMOKE_OUTPUT" >&2 || true
+    tail -80 "$SMOKE_STAGE/runsc.log" >&2 || true
+    exit 1
+  fi
+  grep -Fq the8020-rootless-smoke "$SMOKE_OUTPUT"
+  cleanup_smoke
 fi
-grep -Fq the8020-rootless-smoke "$SMOKE_OUTPUT"
-cleanup_smoke
 
 BUILT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 echo "runtime image [4/4]: publishing verified image records" >&2
@@ -206,9 +229,11 @@ printf '{\n  "schema_version": 1,\n  "image_digest": "%s",\n  "deno_version": "%
 chmod 0600 "$TEMP_RECORD"
 mv -f -- "$TEMP_RECORD" "$RECORD"
 TEMP_SMOKE="$ROOTLESS_ROOT/.smoke.json.tmp"
-printf '{\n  "passed_at": "%s",\n  "image_digest": "%s",\n  "runtime": "runsc-rootless-systrap"\n}\n' "$BUILT_AT" "$IMAGE_DIGEST" > "$TEMP_SMOKE"
+printf '{\n  "passed_at": "%s",\n  "image_digest": "%s",\n  "runtime": "%s"\n}\n' "$BUILT_AT" "$IMAGE_DIGEST" "$SMOKE_RUNTIME" > "$TEMP_SMOKE"
 chmod 0600 "$TEMP_SMOKE"
 mv -f -- "$TEMP_SMOKE" "$SMOKE_RECORD"
-rm -rf -- "$SMOKE_STAGE"
-SMOKE_STAGE=""
+if [[ -n "$SMOKE_STAGE" ]]; then
+  rm -rf -- "$SMOKE_STAGE"
+  SMOKE_STAGE=""
+fi
 trap - EXIT

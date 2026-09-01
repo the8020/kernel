@@ -16,9 +16,9 @@ import (
 
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
+	"the8020/kernel/auth"
 	"the8020/kernel/sandbox/backend"
 	"the8020/kernel/sandbox/backend/runscconsole"
-	"the8020/kernel/sandbox/model"
 )
 
 type RunscConfig struct {
@@ -101,7 +101,7 @@ func (d *RunscDriver) List(ctx context.Context) ([]string, error) {
 	}
 	ids := make([]string, 0, len(states))
 	for _, state := range states {
-		if model.IsSandboxID(state.ID) || legacyDevelopmentSandboxID(state.ID) {
+		if validDevelopmentSandboxID(state.ID) {
 			ids = append(ids, state.ID)
 		}
 	}
@@ -113,7 +113,7 @@ func (d *RunscDriver) Start(ctx context.Context, start SandboxStart) error {
 	if err := d.validate(); err != nil {
 		return err
 	}
-	for name, path := range map[string]string{"packages": start.Packages, "home": start.Home, "rootfs": start.RootFS} {
+	for name, path := range map[string]string{"packages": start.Packages, "rootfs": start.RootFS} {
 		canonical, err := canonicalDirectory(path)
 		if err != nil {
 			return fmt.Errorf("development %s: %w", name, err)
@@ -121,8 +121,6 @@ func (d *RunscDriver) Start(ctx context.Context, start SandboxStart) error {
 		switch name {
 		case "packages":
 			start.Packages = canonical
-		case "home":
-			start.Home = canonical
 		case "rootfs":
 			start.RootFS = canonical
 		}
@@ -147,8 +145,8 @@ func (d *RunscDriver) Start(ctx context.Context, start SandboxStart) error {
 		}
 		mount.HostSource = canonical
 	}
-	if !model.IsSandboxID(start.SandboxID) {
-		return errors.New("development sandbox ID must use the sbx- resource format")
+	if !validDevelopmentSandboxID(start.SandboxID) {
+		return errors.New("development sandbox ID must use the dev-<user> resource format")
 	}
 	path := filepath.Join(d.config.SandboxRoot, start.SandboxID)
 	if _, err := os.Lstat(path); err == nil {
@@ -221,7 +219,7 @@ func developmentSpec(start SandboxStart, bundle string) specs.Spec {
 		{Destination: "/dev/pts", Type: "devpts", Source: "devpts", Options: []string{"nosuid", "noexec", "newinstance", "ptmxmode=0666", "mode=0620", "gid=5"}},
 		{Destination: "/dev/shm", Type: "tmpfs", Source: "shm", Options: []string{"nosuid", "nodev", "mode=1777", "size=65536k"}},
 		{Destination: "/sys", Type: "sysfs", Source: "sysfs", Options: []string{"nosuid", "noexec", "nodev", "ro"}},
-		{Destination: "/run", Type: "tmpfs", Source: "tmpfs", Options: []string{"nosuid", "nodev", "mode=755"}},
+		{Destination: "/run", Type: "tmpfs", Source: "tmpfs", Options: []string{"nosuid", "nodev", "mode=755", "size=65536k"}},
 		{Destination: "/etc/resolv.conf", Type: "bind", Source: filepath.Join(bundle, "resolv.conf"), Options: []string{"bind", "ro", "nosuid", "nodev", "noexec"}},
 		{Destination: "/etc/hosts", Type: "bind", Source: filepath.Join(bundle, "hosts"), Options: []string{"bind", "ro", "nosuid", "nodev", "noexec"}},
 	}
@@ -242,8 +240,8 @@ func developmentSpec(start SandboxStart, bundle string) specs.Spec {
 	}
 	capabilities := append([]string(nil), developmentRootCapabilities...)
 	spec := specs.Spec{Version: specs.Version, Process: &specs.Process{
-		Terminal: false, User: specs.User{UID: 0, GID: 0}, Args: []string{"/bin/bash", "/opt/development/keepalive.sh"},
-		Env: []string{"PATH=" + developmentPath, "HOME=/home/developer", "DENO_DIR=/home/developer/.cache/deno", "DENO_NO_UPDATE_CHECK=1", "DENO_NO_PROMPT=1", "DEVELOPMENT_WORKSPACE_ID=" + start.WorkspaceID, "DEVELOPMENT_ACTIVATION_ENDPOINT=" + start.Endpoint, "DEVELOPMENT_ACTIVATION_TOKEN=" + start.Token},
+		Terminal: false, User: specs.User{UID: 0, GID: 0}, Args: []string{"/bin/bash", "/opt/development/sandbox.sh"},
+		Env: []string{"PATH=" + developmentPath, "HOME=/root", "USER=root", "LOGNAME=root", "DENO_DIR=/root/.cache/deno", "DENO_NO_UPDATE_CHECK=1", "DENO_NO_PROMPT=1", "DEVELOPMENT_WORKSPACE_ID=" + start.WorkspaceID, "DEVELOPMENT_ACTIVATION_ENDPOINT=" + start.Endpoint, "DEVELOPMENT_ACTIVATION_TOKEN=" + start.Token},
 		Cwd: "/workspace", Capabilities: &specs.LinuxCapabilities{Bounding: capabilities, Effective: capabilities, Permitted: capabilities}, NoNewPrivileges: true,
 	}, Root: &specs.Root{Path: start.RootFS, Readonly: false}, Hostname: start.SandboxID, Mounts: mounts,
 		Linux: &specs.Linux{Namespaces: []specs.LinuxNamespace{{Type: specs.PIDNamespace}, {Type: specs.IPCNamespace}, {Type: specs.UTSNamespace}, {Type: specs.MountNamespace}}, MaskedPaths: []string{"/proc/acpi", "/proc/kcore", "/proc/keys", "/proc/timer_list", "/sys/firmware"}, ReadonlyPaths: []string{"/proc/bus", "/proc/fs", "/proc/irq", "/proc/sys", "/proc/sysrq-trigger"}},
@@ -255,7 +253,7 @@ func (d *RunscDriver) Exec(ctx context.Context, sandboxID, commandText string) (
 	if strings.TrimSpace(commandText) == "" {
 		commandText = "exec /bin/bash"
 	}
-	args := append(d.flags(sandboxID, "exec"), "--cwd=/workspace", "--env=HOME=/home/developer", "--env=PATH="+developmentPath, sandboxID, "/bin/bash", "-lc", commandText)
+	args := append(d.flags(sandboxID, "exec"), "--cwd=/workspace", "--env=HOME=/root", "--env=USER=root", "--env=LOGNAME=root", "--env=PATH="+developmentPath, sandboxID, "/bin/bash", "-lc", commandText)
 	command := d.commandContext(ctx, args...)
 	output := &boundedBuffer{limit: commandOutputLimit}
 	command.Stdout, command.Stderr = output, output
@@ -269,7 +267,7 @@ func (d *RunscDriver) OpenConsole(ctx context.Context, sandboxID string, options
 	if err := d.validate(); err != nil {
 		return nil, err
 	}
-	if !developmentSandboxID(sandboxID) {
+	if !validDevelopmentSandboxID(sandboxID) {
 		return nil, errors.New("safe development sandbox ID is required")
 	}
 	if err := backend.ValidateConsoleOptions(options); err != nil {
@@ -317,7 +315,7 @@ func (d *RunscDriver) Stop(ctx context.Context, id string) error {
 }
 func (d *RunscDriver) Kill(ctx context.Context, id string) error { return d.signal(ctx, id, "KILL") }
 func (d *RunscDriver) Delete(ctx context.Context, id string) error {
-	if !developmentSandboxID(id) {
+	if !validDevelopmentSandboxID(id) {
 		return errors.New("safe development sandbox ID is required")
 	}
 	args := append(d.flags(id, "delete"), "--force", id)
@@ -331,7 +329,7 @@ func (d *RunscDriver) Delete(ctx context.Context, id string) error {
 	)
 }
 func (d *RunscDriver) Running(ctx context.Context, id string) (bool, error) {
-	if !developmentSandboxID(id) {
+	if !validDevelopmentSandboxID(id) {
 		return false, errors.New("safe development sandbox ID is required")
 	}
 	args := append(d.flags(id, "state"), id)
@@ -440,18 +438,7 @@ func safeRuntimeID(value string) bool {
 	return true
 }
 
-func developmentSandboxID(value string) bool {
-	return model.IsSandboxID(value) || legacyDevelopmentSandboxID(value)
-}
-
-func legacyDevelopmentSandboxID(value string) bool {
-	if len(value) != len("dev-")+8 || !strings.HasPrefix(value, "dev-") {
-		return false
-	}
-	for _, character := range value[len("dev-"):] {
-		if (character < 'a' || character > 'z') && (character < '0' || character > '9') {
-			return false
-		}
-	}
-	return true
+func validDevelopmentSandboxID(value string) bool {
+	username, found := strings.CutPrefix(value, "dev-")
+	return found && auth.ValidateUsername(username) == nil
 }

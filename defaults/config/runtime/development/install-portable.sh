@@ -57,7 +57,7 @@ echo "development image [2/3]: installing declared packages inside gVisor" >&2
 
 install -d -m 0755 "$STAGE/opt/development" "$STAGE/usr/local/bin"
 cp -a "$RUNTIME_SOURCE/development/image/files/." "$STAGE/opt/development/"
-chmod 0555 "$STAGE/opt/development/keepalive.sh"
+chmod 0555 "$STAGE/opt/development/sandbox.sh"
 install -m 0555 "$RUNTIME_SOURCE/development/image/files/activate" "$STAGE/usr/local/bin/activate"
 install -m 0444 "$RUNTIME_SOURCE/development/image/files/profile" "$STAGE/etc/profile"
 

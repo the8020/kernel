@@ -2,7 +2,7 @@ version = 1
 id = "development.sandbox.start"
 path = ["development", "sandbox", "start"]
 summary = "Start a developer sandbox"
-description = "Starts the sandbox directly on its durable private source, home, and system filesystem."
+description = "Starts the sandbox directly on its durable private source and image-qualified system filesystem."
 mutates_state = true
 restart_behavior = "none"
 [handler]

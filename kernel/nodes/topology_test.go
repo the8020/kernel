@@ -57,7 +57,7 @@ func TestTopologyPersistsAndReloadsSharedNodes(t *testing.T) {
 	}
 }
 
-func TestReplicaIndexesArePartitionedAcrossEnabledNodes(t *testing.T) {
+func TestIndexesArePartitionedAcrossEnabledNodes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nodes.toml")
 	manager, err := New(path, "node-b")
 	if err != nil {
@@ -69,7 +69,7 @@ func TestReplicaIndexesArePartitionedAcrossEnabledNodes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	indexes := manager.LocalReplicaIndexes(8)
+	indexes := manager.LocalIndexes(8)
 	if len(indexes) != 3 || indexes[0] != 1 || indexes[1] != 4 || indexes[2] != 7 {
 		t.Fatalf("indexes=%#v", indexes)
 	}
@@ -78,7 +78,7 @@ func TestReplicaIndexesArePartitionedAcrossEnabledNodes(t *testing.T) {
 	if _, err := manager.Set(context.Background(), configured); err != nil {
 		t.Fatal(err)
 	}
-	if indexes := manager.LocalReplicaIndexes(8); len(indexes) != 0 {
+	if indexes := manager.LocalIndexes(8); len(indexes) != 0 {
 		t.Fatalf("disabled local indexes=%#v", indexes)
 	}
 }

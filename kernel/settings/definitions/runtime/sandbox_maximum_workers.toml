@@ -1,0 +1,10 @@
+key = "runtime.sandbox.maximum_workers"
+type = "integer"
+storage = "node"
+default = 64
+environment = "KERNEL_RUNTIME_SANDBOX_MAXIMUM_WORKERS"
+minimum = 1
+maximum = 1000000
+runtime_mutable = false
+restart_required = true
+description = "Maximum total Workers admitted into one sandbox across all services."

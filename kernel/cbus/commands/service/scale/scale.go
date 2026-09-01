@@ -25,17 +25,19 @@ func New(serviceSet *services.Services) core.Handler {
 			return nil, core.NewError(core.CodeInvalidArguments, parseErr.Error())
 		}
 		options := webservices.ScaleOptions{
-			ReplicasMinimum:          intOption(request, "replicas_min"),
-			ReplicasMaximum:          intOption(request, "replicas_max"),
-			WorkersPerReplicaMinimum: intOption(request, "workers_per_replica_min"),
-			WorkersPerReplicaMaximum: intOption(request, "workers_per_replica_max"),
-			ConcurrencyPerWorker:     intOption(request, "concurrency_per_worker"),
-			TargetUtilization:        targetUtilization,
-			KeepAlive:                stringOption(request, "keep_alive"),
-			SandboxGroup:             stringOption(request, "sandbox_group"),
+			MinimumWorkers:       intOption(request, "minimum_workers"),
+			MaximumWorkers:       intOption(request, "maximum_workers"),
+			ConcurrencyPerWorker: intOption(request, "concurrency_per_worker"),
+			TargetUtilization:    targetUtilization,
+			WorkerKeepAlive:      stringOption(request, "worker_keep_alive"),
+			WorkersPerSandbox:    intOption(request, "workers_per_sandbox"),
+			SandboxGroup:         stringOption(request, "sandbox_group"),
+			MinimumSandboxes:     intOption(request, "minimum_sandboxes"),
+			ServiceType:          stringOption(request, "service_type"),
+			SessionKeepAlive:     stringOption(request, "session_keep_alive"),
 		}
 		if options == (webservices.ScaleOptions{}) {
-			return nil, core.NewError(core.CodeInvalidArguments, "service scale requires at least one capacity option")
+			return nil, core.NewError(core.CodeInvalidArguments, "service scale requires at least one scaling, placement, or lifecycle option")
 		}
 		item, err := runtimeServices.Services.Scale(ctx, commandutil.String(request, "service_id"), options)
 		if err != nil {

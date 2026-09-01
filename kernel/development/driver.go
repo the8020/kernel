@@ -6,7 +6,6 @@ type SandboxStart struct {
 	WorkspaceID string
 	SandboxID   string
 	Packages    string
-	Home        string
 	RootFS      string
 	Endpoint    string
 	Token       string

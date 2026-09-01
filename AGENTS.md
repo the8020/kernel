@@ -126,6 +126,17 @@ relevant child AGENTS.md
   roots. Both validate Unix permission support and keep node-local settings,
   locks, sockets, logs, images, and runtime data under `node/`. Runtime
   instances never use the source repository's `.development/` tree as state.
+- The root `Dockerfile` builds a Debian slim image, runs the ordinary default
+  installation in `/8020`, synchronizes first-party packages, and materializes
+  both rootless service and development sandbox images before publishing only
+  the runtime binaries and complete instance. It exposes HTTP 80 and SSH 22,
+  retains `/8020` as persistent instance data, and selects rootless gVisor;
+  ordinary `docker build` uses its existing build sandbox rather than nesting
+  gVisor, while Docker runs require an unconfined outer seccomp profile and
+  complete the pinned runsc smoke before kernel startup. The entrypoint creates
+  exactly one first-boot bootstrap administrator from `USERNAME` and `PASSWORD`,
+  defaulting both to `admin`, records completion under `node/kernel/`, and never
+  reapplies those environment values later.
 
 - Interactive kernel shutdown must acknowledge `Ctrl-C` immediately and emit
   one ordinary line whenever the graceful-shutdown stage or completed-stage
@@ -145,20 +156,29 @@ relevant child AGENTS.md
   overrides belong in shared `config/settings.toml`. Both stores use the same
   typed settings commands. Application-specific configuration is not a kernel
   setting and is never injected into generic request metadata.
-- Filesystem services declare only `stateless` or `persistent` execution,
-  concurrency per Worker, persistent keep-alive, replica and Worker minimums and
-  maximums, target utilization, and one free-text sandbox group. HTTP,
-  streaming, SSE, and WebSocket transports are available in either mode.
-  Persistent routing is a generic kernel/supervisor capability: an opaque
-  `X-80-20-Route` maps to the exact node, sandbox, replica, Worker, and logical
-  execution, survives disconnect for keep-alive, and never encodes UUI protocol
-  semantics. Browser WebSockets obtain the same token through an HTTP
+- Filesystem-service schema 2 declares `stateless` or `session` lifecycle,
+  positive session keepalive, minimum/maximum Workers, concurrency and target
+  utilization per Worker, positive Worker keepalive, optional sandbox group,
+  minimum warm sandboxes, and positive Workers per sandbox. Minimum and maximum
+  Workers default to zero; zero minimum permits scale-to-zero and zero maximum
+  is service-unlimited while kernel capacity still applies. Worker and session
+  keepalive default to two and ten minutes respectively. Known complete
+  schema-one manifests/state map exactly into this model; incomplete persisted
+  state is rejected rather than guessed, and all new writes use schema 2.
+- HTTP, streaming, SSE, and WebSocket transports are available to both service
+  types. Session routing remains a generic kernel/supervisor capability: an
+  opaque `X-80-20-Route` maps to the exact node, sandbox, Worker, and logical
+  execution, survives disconnect for session keepalive, and never encodes UUI
+  protocol semantics. Browser WebSockets obtain the same token through an HTTP
   establishment response and reuse it as the `route` query parameter.
-- One sandbox has exactly one placement-group value and at most one replica of a
-  logical service; compatible different services may share it. Scaling adds
-  Workers before replicas, removes only idle Workers/replicas after kernel-owned
-  hysteresis, and destroys ownerless sandboxes. Global replica indexes are
-  partitioned across enabled application-server nodes. Nodes enforce and
+- One sandbox has exactly one placement-group value and at most one allocation
+  of a logical service; compatible different services may share it. Scaling
+  packs Workers up to the service Workers-per-sandbox limit before adding a
+  sandbox, removes only excess idle Workers after Worker keepalive, retains
+  configured warm sandboxes independently, and destroys ownerless sandboxes.
+  Global allocation indexes are partitioned across enabled application-server
+  nodes. Kernel policy defaults to 64 total Workers per sandbox and rejects new
+  placement when the sandbox is at its CPU or RAM target. Nodes also enforce and
   advertise sandbox, Worker, memory, CPU, and temporary-storage budgets;
   insufficient capacity retains desired state, reports `PENDING_CAPACITY` or
   `DEGRADED`, and may spill new work through authenticated node forwarding.
@@ -194,12 +214,16 @@ relevant child AGENTS.md
   adapter, or session restoration subsystem; authentication sessions, UUI
   application sessions, SSH connections, and the admin socket are distinct.
 - Node-local service and job records are recoverable runtime artifacts, never a global
-  startup gate. Known legacy shapes migrate one record at a time; unreadable or
-  incompatible records move out of the live registry for diagnosis; and one
-  workload's decode, restore, route, Worker, or port failure must not prevent
-  unrelated services or the filesystem-service router from starting. A fully
+  startup gate. Only current record shapes are accepted; unreadable or obsolete
+  records move out of the live registry for diagnosis, and one workload's
+  decode, restore, or Worker failure must not prevent unrelated services or the
+  filesystem-service router from starting. A fully
   retired service-pool record must be removed so an absent inherited sandbox
   cannot create an endless reconciliation failure after restart.
+- Kernel development uses destructive schema evolution. Do not add compatibility
+  adapters, persisted-data migrations, deprecated aliases, or dual sources of
+  truth for old kernels; discard and initialize a fresh instance when a schema,
+  settings key, runtime record, or node layout changes.
 - Filesystem-service catalog discovery is fixed-depth and runs once at kernel
   startup or on explicit full reconciliation. The maintenance timer touches
   only services with live runtime capacity or pending-capacity retries; service
@@ -213,15 +237,17 @@ relevant child AGENTS.md
   remain private.
 - Development workspaces must expose the complete package tree as an ordinary
   writable gVisor-private filesystem backed directly by durable workspace disk.
-  Source, developer home, and image-qualified writable system roots remain
-  native host-backed storage across sandbox and kernel restart; lifecycle must
-  never scan, serialize, snapshot, reconcile, or periodically poll them.
+  Source and image-qualified writable system roots remain native host-backed
+  storage across sandbox and kernel restart; root's home is part of that system
+  root rather than a separate bind mount. Lifecycle must never scan, serialize,
+  snapshot, reconcile, or periodically poll them.
   Package content is scanned only by Git during an explicit activation preview
   or activation run, and publication creates package-level commits without
   pushing remotes or recreating the sandbox.
 - Development images keep Deno installed for developer commands but run no
-  background runtime or filesystem scanner. Their Bash keepalive replaces
-  itself with `sleep`; persistence is a kernel-owned mount/storage property.
+  background runtime or filesystem scanner. Their `sandbox.sh` initializes the
+  fresh runtime filesystem and replaces itself with `sleep`; persistence is a
+  kernel-owned mount/storage property.
 - Sandbox images and portable root filesystems must be materialized from pinned
   image manifests and must install their declared packages inside isolated
   image-build execution. Never copy host executables, libraries, package
@@ -376,7 +402,7 @@ relevant child AGENTS.md
   activation is the only path that commits changes into shared package roots.
   Git scans those copies only for explicit preview/run, creates one commit per
   selected changed package, synchronizes activated private package directories
-  in place, retains developer home and installed system changes, and never
+  in place, retains root's home and installed system changes, and never
   pushes configured remotes.
 - The sibling `uui` repository owns the default Home and Program terminated programs
   selected by static `ui-config.json`; the UUI handler loads them through the

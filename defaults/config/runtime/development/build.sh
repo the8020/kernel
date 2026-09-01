@@ -12,7 +12,4 @@ TERM=xterm-256color clear >/dev/null
 apt-get clean
 rm -rf /var/lib/apt/lists/*
 rm -rf /var/cache/apt/archives/partial
-useradd --create-home --home-dir /home/developer --shell /bin/bash developer
-mkdir -p /workspace/packages
-chown developer:developer /home/developer /workspace /workspace/packages
-chmod 0755 /home/developer
+install -d -o root -g root -m 0755 /workspace /workspace/packages

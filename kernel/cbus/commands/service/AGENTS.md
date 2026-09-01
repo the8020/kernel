@@ -9,11 +9,15 @@
 # Local Contracts
 
 - Service IDs and canonical prefixes are filesystem-derived; commands cannot supply entrypoints, route prefixes, package IDs, or source mounts.
-- `service list` exposes only service identity, description, canonical path, state, enabled status, and local instance/Worker counts; `service inspect` owns generations, instance identities, effective configuration, failures, and metrics.
+- `service list` exposes only service identity, description, canonical path,
+  state, enabled status, and local sandbox/Worker counts; `service inspect` owns
+  generations, sandbox identities, effective configuration, failures, and metrics.
 - Lifecycle commands return generation/capacity summaries by default and expose complete status only through `--detail`.
-- `service scale` mutates replica and Worker-per-replica bounds, concurrency per
-  Worker, target utilization, persistent keep-alive, and sandbox group through
-  validated desired state.
+- `service scale` mutates the canonical service type, minimum/maximum Workers,
+  per-Worker concurrency and target utilization, Worker/session keepalives,
+  sandbox group, minimum sandboxes, and Workers-per-sandbox through validated
+  desired state. Zero minimum permits scale-to-zero; zero maximum is unlimited
+  only at the service-policy layer.
 - `service request` uses the ordinary canonical kernel boundary and never invokes a handler directly.
 
 # Work Guidance

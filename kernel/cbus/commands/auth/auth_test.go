@@ -48,7 +48,7 @@ func TestAuthenticationCommandHandlersAndNonDisclosure(t *testing.T) {
 	}
 	serviceSet := &services.Services{Auth: manager}
 
-	added := invoke(t, bootstrapadd.New(serviceSet), map[string]any{"username": "Admin", "password": "initial-password"})
+	added := invoke(t, bootstrapadd.New(serviceSet), map[string]any{"username": "admin", "password": "initial-password"})
 	listed := invoke(t, bootstraplist.New(serviceSet), nil)
 	encoded, err := json.Marshal([]any{added, listed})
 	if err != nil {
@@ -60,7 +60,7 @@ func TestAuthenticationCommandHandlersAndNonDisclosure(t *testing.T) {
 		}
 	}
 
-	login, err := manager.BootstrapLogin(context.Background(), "Admin", "initial-password", false)
+	login, err := manager.BootstrapLogin(context.Background(), "admin", "initial-password", false)
 	if err != nil || !login.Authenticated {
 		t.Fatalf("login = %#v, error = %v", login, err)
 	}
@@ -76,16 +76,16 @@ func TestAuthenticationCommandHandlersAndNonDisclosure(t *testing.T) {
 	invoke(t, sessionrevoke.New(serviceSet), map[string]any{"session_id": summaries[0].SessionID})
 
 	for index := 0; index < 2; index++ {
-		if result, loginErr := manager.BootstrapLogin(context.Background(), "Admin", "initial-password", false); loginErr != nil || !result.Authenticated {
+		if result, loginErr := manager.BootstrapLogin(context.Background(), "admin", "initial-password", false); loginErr != nil || !result.Authenticated {
 			t.Fatalf("login %d = %#v, error = %v", index, result, loginErr)
 		}
 	}
-	revoked := invoke(t, sessionrevokeuser.New(serviceSet), map[string]any{"username": "Admin"})
+	revoked := invoke(t, sessionrevokeuser.New(serviceSet), map[string]any{"username": "admin"})
 	if revoked["revoked_count"] != 2 {
 		t.Fatalf("revoked user sessions = %#v", revoked)
 	}
 
-	login, err = manager.BootstrapLogin(context.Background(), "Admin", "initial-password", false)
+	login, err = manager.BootstrapLogin(context.Background(), "admin", "initial-password", false)
 	if err != nil || !login.Authenticated {
 		t.Fatalf("cleanup login = %#v, error = %v", login, err)
 	}
@@ -95,11 +95,11 @@ func TestAuthenticationCommandHandlersAndNonDisclosure(t *testing.T) {
 		t.Fatalf("cleanup result = %#v", cleaned)
 	}
 
-	invoke(t, bootstrapdisable.New(serviceSet), map[string]any{"username": "Admin"})
-	invoke(t, bootstrapenable.New(serviceSet), map[string]any{"username": "Admin"})
-	invoke(t, bootstrapsetpassword.New(serviceSet), map[string]any{"username": "Admin", "password": "replacement-password"})
-	invoke(t, bootstrapinvalidate.New(serviceSet), map[string]any{"username": "Admin"})
-	invoke(t, bootstrapremove.New(serviceSet), map[string]any{"username": "Admin"})
+	invoke(t, bootstrapdisable.New(serviceSet), map[string]any{"username": "admin"})
+	invoke(t, bootstrapenable.New(serviceSet), map[string]any{"username": "admin"})
+	invoke(t, bootstrapsetpassword.New(serviceSet), map[string]any{"username": "admin", "password": "replacement-password"})
+	invoke(t, bootstrapinvalidate.New(serviceSet), map[string]any{"username": "admin"})
+	invoke(t, bootstrapremove.New(serviceSet), map[string]any{"username": "admin"})
 
 	_, err = bootstrapadd.New(serviceSet)(context.Background(), request(map[string]any{"username": "bad\nname", "password": "password"}))
 	var commandError *core.Error

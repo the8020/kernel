@@ -39,7 +39,8 @@
 - Applications, databases, broader remote administration, TLS termination,
   checkpoint/restore, and the final virtual filesystem remain outside the
   current kernel scope; initial application-server topology, capacity
-  advertisement, replica partitioning, and service forwarding are kernel-owned.
+  advertisement, allocation-index partitioning, and service forwarding are
+  kernel-owned.
 
 # Local Contracts
 
@@ -73,10 +74,15 @@
 - One runtime group is one gVisor sandbox with exactly one workload type—service
   or job—and one infrastructure Deno supervisor; application code runs only in
   Workers. There is no generic user-session workload.
-- Services use one generic stateless/persistent execution model independent of
-  HTTP or WebSocket transport. Persistent executions reserve exact Worker
-  slots through opaque kernel-owned routes; the supervisor never interprets
-  UUI messages.
+- Filesystem services persist one canonical worker-based schema: lifecycle type
+  is `stateless` or `session`; scaling owns minimum/maximum Workers, per-Worker
+  concurrency and target utilization, and Worker keepalive; placement owns
+  sandbox group, minimum warm sandboxes, and Workers per sandbox. The kernel
+  owns desired Worker allocation, sandbox placement, global Worker/CPU/RAM
+  admission, and scale-down; Deno owns only exact local Worker lifecycle and
+  utilization observation. Internal persistent execution binding implements
+  session services independently of HTTP or WebSocket transport and never
+  interprets UUI messages.
 - UUI sessions are ordinary persistent service executions. UUI establishment,
   replay, heartbeats, reconnect, and program recovery live in the UUI service
   handler and do not introduce a UUI-specific sandbox or supervisor category.
@@ -127,8 +133,8 @@
   node-local state. Startup loads and validates `config/runtime/versions.toml`
   plus already materialized records beneath `node/kernel/runtime/images/`; it
   never runs Deno, shell image builders, package builds, or source staging.
-- Runtime-record recovery is isolated by workload. Compatible legacy records
-  normalize in place, malformed records are quarantined, and per-workload
+- Runtime-record recovery is isolated by workload. Only current records are
+  restored, malformed or obsolete records are quarantined, and per-workload
   restoration failures remain visible without aborting unrelated service
   routing or runtime composition. Terminal service-pool records are removed
   after owner release so missing inherited sandboxes do not remain retry gates.
@@ -205,5 +211,5 @@
   authenticated local WebSocket relay.
 - `ssh/AGENTS.md`: authenticated SSH listener, fixed target-selector grammar,
   persistent host key, and sandbox PTY relay.
-- `nodes/AGENTS.md`: shared node topology, capacity advertisement, replica-index
-  partitioning, and authenticated HTTP/WebSocket forwarding.
+- `nodes/AGENTS.md`: shared node topology, capacity advertisement,
+  allocation-index partitioning, and authenticated HTTP/WebSocket forwarding.

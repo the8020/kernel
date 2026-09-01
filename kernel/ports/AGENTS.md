@@ -9,9 +9,8 @@
 
 # Local Contracts
 
-- Public API: `New`, `Manager.Expose`, `ExposeHTTP`, `AttachHTTP`, `List`, `Close`, `CloseForSandbox`, `CloseAll`, `Restore`, `RestoreFor`, and lease/request types carrying owner, declared internal port, optional selected-backend target port, and active-state metadata.
+- Public API: `New`, `Manager.Expose`, `ExposeHTTP`, `List`, `Close`, `CloseForSandbox`, `CloseAll`, `Restore`, `RestoreFor`, and lease/request types carrying owner, declared internal port, optional selected-backend target port, and active-state metadata.
 - Public binds require explicit manager policy; automatic ports bind through Go `net.Listen`; occupied ports fail without changing lease state.
-- Attaching a Go HTTP handler to a restored HTTP lease preserves its lease ID, host port, creation time, expiration, and persisted identity; a failed attach restores the raw lease when possible.
 - Debug leases are intentionally discarded on restart because their authentication token and Go proxy handler are memory-only.
 - Filtered restart restoration rebinds only leases approved against reconciled runtime/workload state and deletes rejected records so stale listeners cannot revive later.
 - Sandbox-scoped cleanup closes only matching listeners, removes their records, and is idempotent so lifecycle failure/stop/delete paths can revoke host ingress safely.
@@ -23,6 +22,6 @@
 
 # Verification
 
-- Unit tests cover automatic/explicit allocation, occupied rejection, TCP/HTTP streaming, individual/sandbox-scoped release, persistence/filtered restore, stale-record removal, HTTP handler attachment with stable identity, public-bind denial, and expiration.
+- Unit tests cover automatic/explicit allocation, occupied rejection, TCP/HTTP streaming, individual/sandbox-scoped release, persistence/filtered restore, stale-record removal, public-bind denial, and expiration.
 
 # Child DOX Index

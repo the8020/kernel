@@ -59,7 +59,6 @@ type runtimeCleanup struct {
 	backend       io.Closer
 	callback      *callback.Server
 	pool          *pool.Controller
-	services      *executionservices.Manager
 	webservices   *webservices.Manager
 	jobs          *jobs.Manager
 	policy        manager.ShutdownPolicy
@@ -111,9 +110,6 @@ func (c *runtimeCleanup) Close(ctx context.Context, report shutdownProgressFunc)
 		var controllerTasks []func() error
 		if c.webservices != nil {
 			controllerTasks = append(controllerTasks, c.webservices.Close)
-		}
-		if c.services != nil {
-			controllerTasks = append(controllerTasks, c.services.Close)
 		}
 		if c.jobs != nil {
 			controllerTasks = append(controllerTasks, c.jobs.Close)
@@ -327,6 +323,11 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		return runtimeServices, closeRuntime
 	}
 	nodeLimits := runtimeNodeLimits(settingManager, paths.Runtime)
+	sandboxCapacity := model.SandboxCapacityPolicy{
+		MaximumWorkers:       activeInt(settingManager, "runtime.sandbox.maximum_workers", 64),
+		TargetCPUUtilization: float64(activeInt(settingManager, "runtime.sandbox.target_cpu_utilization_percent", 80)) / 100,
+		TargetRAMUtilization: float64(activeInt(settingManager, "runtime.sandbox.target_ram_utilization_percent", 80)) / 100,
+	}
 	sandboxManager, err := manager.New(manager.Config{
 		InstanceUUID: instanceUUID, StartupTimeout: activeDuration(settingManager, "runtime.sandbox.startup_timeout", 30*time.Second),
 		StopGrace: activeDuration(settingManager, "runtime.sandbox.stop_grace_period", 10*time.Second), Store: stateStore,
@@ -356,7 +357,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		consoleManager.SetRuntime(sandboxManager)
 		cleanup.console = consoleManager
 	}
-	workerManager, err := workers.New(sandboxManager, supervisorClient, nodeLimits.MaximumWorkers)
+	workerManager, err := workers.NewWithCapacity(sandboxManager, supervisorClient, nodeLimits.MaximumWorkers, sandboxCapacity)
 	if err != nil {
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
@@ -397,7 +398,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		runtimeServices.Failure = "initialize warm pool: " + err.Error()
 		return runtimeServices, closeRuntime
 	}
-	groupCoordinator, err := coordinator.New(sandboxManager, warmController)
+	groupCoordinator, err := coordinator.NewWithCapacity(sandboxManager, sandboxCapacity, warmController)
 	if err != nil {
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
@@ -413,19 +414,14 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
 	}
-	serviceManager, err := executionservices.New(groupCoordinator, workerManager, serviceStore, router, portManager, executionservices.Policy{
+	serviceManager, err := executionservices.New(groupCoordinator, workerManager, serviceStore, executionservices.Policy{
 		Strategy: grouping(settingManager, "execution.grouping.service"), Profile: serviceProfile, Resources: serviceResources, Lifecycle: lifecycle,
-		MinimumWorkers: activeInt(settingManager, "service.default.minimum_workers", 1), MaximumWorkers: activeInt(settingManager, "service.default.maximum_workers", 8),
-		MaximumInFlight: activeInt(settingManager, "service.default.maximum_in_flight", 32), WorkerIdleTimeout: activeDuration(settingManager, "service.worker.idle_timeout", 5*time.Minute),
-		RecycleRequests:   activeInt(settingManager, "service.worker.recycle_request_count", 10000),
-		ScaleDownCooldown: 30 * time.Second,
-		WorkspaceMounts:   workspaceMounts, Logger: logger,
+		WorkspaceMounts: workspaceMounts, Logger: logger,
 	})
 	if err != nil {
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
 	}
-	cleanup.services = serviceManager
 	jobManager, err := jobs.New(groupCoordinator, workerManager, jobStore, jobs.Policy{
 		Strategy: grouping(settingManager, "execution.grouping.job"), Profile: jobProfile, Resources: jobResources, Lifecycle: lifecycle,
 		MaximumParallel: activeInt(settingManager, "job.default.maximum_parallel_workers", 4), QueuedExecutionLimit: activeInt(settingManager, "job.default.queued_execution_limit", 1024),
@@ -452,7 +448,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
 	}
-	runtimeServices.ServicePools, runtimeServices.Jobs = serviceManager, jobManager
+	runtimeServices.Jobs = jobManager
 	runtimeServices.AdminRun, runtimeServices.Debugging = adminManager, debugManager
 	if err := restoreRuntimeWorkloads(ctx, sandboxManager, serviceManager, jobManager, portManager, startupReport.Terminated, logger); err != nil {
 		runtimeServices.Failure = err.Error()
@@ -537,18 +533,18 @@ func (p *runtimeNodeCapacityProvider) NodeCapacity(ctx context.Context) (nodes.C
 			item = &nodes.ServiceCapacity{ServiceID: serviceID}
 			byService[serviceID] = item
 		}
-		item.ReplicaCount++
-		item.HealthyReplicas++
+		item.SandboxCount++
+		item.HealthySandboxes++
 		item.WorkerCount += len(record.WorkerIDs)
-		item.ExecutionSlots += len(record.WorkerIDs) * record.MaximumInFlight
+		item.ExecutionSlots += len(record.WorkerIDs) * record.ConcurrencyPerWorker
 		for _, workerID := range record.WorkerIDs {
 			item.OccupiedSlots += inFlight[workerID]
 		}
 	}
 	for _, item := range byService {
 		capacity.Services = append(capacity.Services, *item)
-		capacity.RunningServiceReplicas += item.ReplicaCount
-		capacity.HealthyServiceReplicas += item.HealthyReplicas
+		capacity.RunningServiceSandboxes += item.SandboxCount
+		capacity.HealthyServiceSandboxes += item.HealthySandboxes
 		capacity.ExecutionSlots += item.ExecutionSlots
 		capacity.OccupiedExecutionSlots += item.OccupiedSlots
 	}
@@ -574,14 +570,17 @@ func remainingInt(limit, used int) int {
 
 func serviceFrameworkDefaults(manager *settings.Manager) workspacepackages.FrameworkDefaults {
 	return workspacepackages.FrameworkDefaults{
-		ConcurrencyPerWorker: activeInt(manager, "services.default_concurrency_per_worker", 32),
-		PersistentKeepAlive:  activeDuration(manager, "services.default_persistent_keep_alive", 2*time.Minute),
+		SessionKeepAlive: activeDuration(manager, "services.default_session_keep_alive", 10*time.Minute),
 		Scaling: workspacepackages.ScalingConfiguration{
-			ReplicasMinimum:          activeInt(manager, "services.default_replicas_minimum", 1),
-			ReplicasMaximum:          activeInt(manager, "services.default_replicas_maximum", 1),
-			WorkersPerReplicaMinimum: activeInt(manager, "services.default_workers_per_replica_minimum", 1),
-			WorkersPerReplicaMaximum: activeInt(manager, "services.default_workers_per_replica_maximum", 4),
-			TargetUtilization:        0.70,
+			MinimumWorkers:       activeInt(manager, "services.default_minimum_workers", 0),
+			MaximumWorkers:       activeInt(manager, "services.default_maximum_workers", 0),
+			ConcurrencyPerWorker: activeInt(manager, "services.default_concurrency_per_worker", 32),
+			TargetUtilization:    float64(activeInt(manager, "services.default_target_utilization_percent", 70)) / 100,
+			WorkerKeepAlive:      activeDuration(manager, "services.default_worker_keep_alive", 2*time.Minute),
+		},
+		Placement: workspacepackages.PlacementConfiguration{
+			MinimumSandboxes:  activeInt(manager, "services.default_minimum_sandboxes", 0),
+			WorkersPerSandbox: activeInt(manager, "services.default_workers_per_sandbox", 4),
 		},
 		Timeouts: workspacepackages.TimeoutConfiguration{
 			Request: activeDuration(manager, "services.default_request_timeout", 30*time.Second),
@@ -623,12 +622,6 @@ type unavailableServiceSink interface {
 	RetireUnavailable(string, string) error
 }
 
-type serviceLeaseIdentity struct {
-	serviceID string
-	sandboxID string
-	hostPort  int
-}
-
 func restoreRuntimeWorkloads(ctx context.Context, sandboxManager *manager.Manager, serviceManager *executionservices.Manager, jobManager *jobs.Manager, portManager *ports.Manager, terminated []manager.HealthFailure, logger *slog.Logger) error {
 	var terminationErr error
 	for _, failure := range terminated {
@@ -656,21 +649,8 @@ func restoreRuntimeWorkloads(ctx context.Context, sandboxManager *manager.Manage
 	if err := failUnavailableServicePools(serviceRecords, healthySandboxes, serviceManager); err != nil {
 		logRuntimeRecoveryError(logger, "fail services with unavailable runtime groups", err)
 	}
-	serviceLeases := make(map[string]serviceLeaseIdentity)
-	for _, record := range serviceRecords {
-		if (record.State == "READY" || record.State == "IDLE") && record.PortLeaseID != "" && healthySandboxes[record.SandboxID] {
-			serviceLeases[record.PortLeaseID] = serviceLeaseIdentity{serviceID: record.ServiceID, sandboxID: record.SandboxID, hostPort: record.HostPort}
-		}
-	}
 	if _, err := portManager.RestoreFor(ctx, func(lease ports.Lease) bool {
-		if !healthySandboxes[lease.SandboxID] {
-			return false
-		}
-		if lease.Purpose != "service" {
-			return true
-		}
-		expected, exists := serviceLeases[lease.LeaseID]
-		return exists && lease.OwnerID == expected.serviceID && lease.SandboxID == expected.sandboxID && lease.HostPort == expected.hostPort
+		return healthySandboxes[lease.SandboxID]
 	}); err != nil {
 		logRuntimeRecoveryError(logger, "restore host ports", err)
 	}

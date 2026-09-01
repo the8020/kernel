@@ -10,12 +10,11 @@ import (
 
 const mountProfileSchema = 1
 
-// DefaultMountProfile returns the Phase 1E package, home, and temporary mount
+// DefaultMountProfile returns the package and temporary mount
 // profile. Callers may instead provide an operator-authored TOML profile.
 func DefaultMountProfile() []MountDefinition {
 	return []MountDefinition{
 		{ID: "packages", Target: "/workspace/packages", Behavior: MountWorkspaceSource, Writable: true, Persistence: "workspace", ParticipatesActivate: true, WorkspaceOwned: true},
-		{ID: "home", Source: "users/<user-id>/home", Target: "/home/developer", Behavior: MountPersistent, Writable: true, Persistence: "persistent-user"},
 		{ID: "temporary", Target: "/tmp", Behavior: MountEphemeral, Writable: true, Persistence: "sandbox"},
 	}
 }
@@ -66,7 +65,7 @@ func loadMountProfile(config Config) ([]MountDefinition, error) {
 
 func validateMountProfile(config Config, profile []MountDefinition) error {
 	ids, targets := map[string]bool{}, map[string]bool{}
-	sourceCount, homeCount := 0, 0
+	sourceCount := 0
 	for _, mount := range profile {
 		if !safeMountID(mount.ID) || ids[mount.ID] {
 			return fmt.Errorf("development mount ID %q is invalid or duplicated", mount.ID)
@@ -101,9 +100,6 @@ func validateMountProfile(config Config, profile []MountDefinition) error {
 			if !mount.Writable || mount.ParticipatesActivate || mount.WorkspaceOwned || mount.Persistence != "persistent-user" || !validPersistentSource(mount.Source) {
 				return fmt.Errorf("persistent user mount %s has incompatible source or behavior flags", mount.ID)
 			}
-			if mount.Target == "/home/developer" {
-				homeCount++
-			}
 		case MountEphemeral:
 			if mount.Source != "" || !mount.Writable || mount.ParticipatesActivate || mount.WorkspaceOwned || mount.Persistence != "sandbox" {
 				return fmt.Errorf("ephemeral mount %s has incompatible source or behavior flags", mount.ID)
@@ -114,9 +110,6 @@ func validateMountProfile(config Config, profile []MountDefinition) error {
 	}
 	if sourceCount != 1 {
 		return errors.New("development mount profile requires exactly one workspace source")
-	}
-	if homeCount != 1 {
-		return errors.New("development mount profile requires exactly one persistent /home/developer mount")
 	}
 	return nil
 }
@@ -142,7 +135,7 @@ func safeSandboxMountTarget(value string) bool {
 			return false
 		}
 	}
-	return value == "/tmp" || strings.HasPrefix(value, "/tmp/") || value == "/workspace" || strings.HasPrefix(value, "/workspace/") || value == "/home/developer" || strings.HasPrefix(value, "/home/developer/")
+	return value == "/tmp" || strings.HasPrefix(value, "/tmp/") || value == "/workspace" || strings.HasPrefix(value, "/workspace/")
 }
 
 func validPersistentSource(value string) bool {
@@ -202,21 +195,14 @@ func (m *Manager) persistentMountSource(userID, template string, create bool) (s
 }
 
 func (m *Manager) preparePersistentMounts(workspace *Workspace) error {
-	workspace.PersistentHomePath = ""
 	for _, mount := range workspace.MountProfile {
 		if mount.Behavior != MountPersistent {
 			continue
 		}
-		source, err := m.persistentMountSource(workspace.OwnerUserID, mount.Source, true)
+		_, err := m.persistentMountSource(workspace.OwnerUserID, mount.Source, true)
 		if err != nil {
 			return fmt.Errorf("prepare persistent mount %s: %w", mount.ID, err)
 		}
-		if mount.Target == "/home/developer" {
-			workspace.PersistentHomePath = source
-		}
-	}
-	if workspace.PersistentHomePath == "" {
-		return errors.New("development workspace has no persistent home mount")
 	}
 	return nil
 }

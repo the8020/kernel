@@ -17,6 +17,10 @@
   explicit and no broader than the sandbox envelope.
 - Service in-flight ownership lasts through complete response-stream consumption
   or cancellation so graceful stop cannot truncate a dispatch.
+- A service Worker becomes idle after readiness and again only after its final
+  in-flight request completes; new activity clears that timestamp. The
+  supervisor reports the timestamp but does not decide when kernel policy should
+  remove the Worker.
 - Request metadata carries trusted authentication and current generic execution
   identity without cookies, route tokens, or application settings.
 - The kernel bridge retains one request context for an HTTP stream or WebSocket

@@ -155,7 +155,7 @@ func WebServiceStatus(status webservices.Status, detail bool) core.Result {
 		"enabled":            status.Enabled,
 		"desired_generation": status.DesiredGeneration,
 		"loaded_generation":  status.LoadedGeneration,
-		"instance_count":     status.InstanceCount,
+		"sandbox_count":      status.SandboxCount,
 		"worker_count":       status.WorkerCount,
 	}
 }

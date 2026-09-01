@@ -351,6 +351,8 @@ func TestSandboxAdmissionEnforcesNodeBudgets(t *testing.T) {
 
 func TestMetricsReadsSandboxCgroupAndPersistsSnapshot(t *testing.T) {
 	manager, store, _, _, _ := testManager(t)
+	now := time.Unix(1_700_000_000, 0).UTC()
+	manager.now = func() time.Time { return now }
 	manager.cgroupRoot = t.TempDir()
 	spec := testSandboxSpec(t, "group-metrics", "sandbox-metrics")
 	if _, err := manager.Create(context.Background(), spec); err != nil {
@@ -367,11 +369,22 @@ func TestMetricsReadsSandboxCgroupAndPersistsSnapshot(t *testing.T) {
 		}
 	}
 	metrics, err := manager.Metrics(spec.SandboxID)
-	if err != nil || metrics.MemoryPeak != 12 || metrics.CPUUsageMicros != 33 {
+	if err != nil || metrics.MemoryPeak != 12 || metrics.CPUUsageMicros != 33 || metrics.MemoryUtilization != 10.0/256.0 {
 		t.Fatalf("metrics=%#v err=%v", metrics, err)
 	}
+	now = now.Add(time.Second)
+	if err := os.WriteFile(filepath.Join(directory, "memory.current"), []byte("200\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "cpu.stat"), []byte("usage_usec 500033\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	metrics, err = manager.Metrics(spec.SandboxID)
+	if err != nil || metrics.CPUUtilization != 1 || metrics.MemoryUtilization != 200.0/256.0 || !metrics.SampledAt.Equal(now) {
+		t.Fatalf("derived metrics=%#v err=%v", metrics, err)
+	}
 	_, status, err := store.Load(spec.RuntimeGroupID)
-	if err != nil || status.Metrics.MemoryCurrent != 10 {
+	if err != nil || status.Metrics.MemoryCurrent != 200 || status.Metrics.CPUUtilization != 1 {
 		t.Fatalf("status=%#v err=%v", status, err)
 	}
 }

@@ -52,12 +52,6 @@ func (d *fakeDevelopment) EnsureDefaultSandbox(_ context.Context, username strin
 	return d.sandbox, d.failure
 }
 
-func (d *fakeDevelopment) OwnsSandbox(sandboxID string) bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return sandboxID == d.sandbox
-}
-
 type openedConsole struct {
 	kind      string
 	sandboxID string
@@ -125,7 +119,7 @@ func (c *fakeConsole) finish() { c.finishOnce.Do(func() { _ = c.writer.Close() }
 func TestSSHPasswordTTYAndRouting(t *testing.T) {
 	authentication, usersFile := testAuthentication(t)
 	observedAuthentication := &observingAuthentication{manager: authentication}
-	development := &fakeDevelopment{sandbox: "sbx-abc12345"}
+	development := &fakeDevelopment{sandbox: "dev-alice"}
 	consoles := &fakeConsoles{opened: make(chan openedConsole, 8)}
 	manager, err := New(Config{
 		Port: 0, HostKeyPath: filepath.Join(t.TempDir(), "ssh", "host_ed25519"),
@@ -171,14 +165,14 @@ func TestSSHPasswordTTYAndRouting(t *testing.T) {
 		t.Fatal(err)
 	}
 	opened := receiveOpened(t, consoles.opened)
-	if opened.kind != "development" || opened.sandboxID != "sbx-abc12345" {
+	if opened.kind != "development" || opened.sandboxID != "dev-alice" {
 		t.Fatalf("default route = %s %s", opened.kind, opened.sandboxID)
 	}
 	if opened.options.Size != (backend.ConsoleSize{Columns: 90, Rows: 27}) || opened.options.WorkingDir != "/workspace" ||
 		!equalStrings(opened.options.Arguments, []string{"/bin/bash", "-l"}) ||
 		!containsString(opened.options.Environment, "TERM=xterm-256color") || !containsString(opened.options.Environment, "HOME=/untrusted") ||
-		!containsString(opened.options.Environment, "SHELL=/bin/bash") || !containsString(opened.options.Environment, "USER=alice") ||
-		!containsString(opened.options.Environment, "LOGNAME=alice") || !containsString(opened.options.Environment, "WARP_CLIENT_VERSION=test-version") {
+		!containsString(opened.options.Environment, "SHELL=/bin/bash") || !containsString(opened.options.Environment, "USER=root") ||
+		!containsString(opened.options.Environment, "LOGNAME=root") || !containsString(opened.options.Environment, "WARP_CLIENT_VERSION=test-version") {
 		t.Fatalf("development console options = %#v", opened.options)
 	}
 	development.mu.Lock()
@@ -238,6 +232,22 @@ func TestSSHPasswordTTYAndRouting(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	selectedDevelopment, err := client.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := selectedDevelopment.Start("the8020 sandbox-id=dev-alice"); err != nil {
+		t.Fatal(err)
+	}
+	selectedDevelopmentOpen := receiveOpened(t, consoles.opened)
+	if selectedDevelopmentOpen.kind != "development" || selectedDevelopmentOpen.sandboxID != "dev-alice" || selectedDevelopmentOpen.options.WorkingDir != "/workspace" {
+		t.Fatalf("selected development route = %#v", selectedDevelopmentOpen)
+	}
+	selectedDevelopmentOpen.terminal.finish()
+	if err := selectedDevelopment.Wait(); err != nil {
+		t.Fatal(err)
+	}
+
 	command, err := client.NewSession()
 	if err != nil {
 		t.Fatal(err)
@@ -250,7 +260,7 @@ func TestSSHPasswordTTYAndRouting(t *testing.T) {
 		t.Fatal(err)
 	}
 	commandOpen := receiveOpened(t, consoles.opened)
-	if commandOpen.kind != "development" || commandOpen.sandboxID != "sbx-abc12345" ||
+	if commandOpen.kind != "development" || commandOpen.sandboxID != "dev-alice" ||
 		commandOpen.options.Terminal || !equalStrings(commandOpen.options.Arguments, []string{"/bin/bash", "-c", "printf 'hello' && uname -a"}) {
 		t.Fatalf("command route = %#v", commandOpen)
 	}
@@ -338,6 +348,7 @@ func TestExecGrammar(t *testing.T) {
 		"the8020":                               "",
 		"the8020 sandbox-id=sbx-ax9thsl3":       "sbx-ax9thsl3",
 		"  the8020   sandbox-id=sbx-1234abcd  ": "sbx-1234abcd",
+		"the8020 sandbox-id=dev-alice":          "dev-alice",
 	}
 	for command, want := range valid {
 		selected, err := parseExec(command)
@@ -352,7 +363,9 @@ func TestExecGrammar(t *testing.T) {
 	}
 	for _, command := range []string{
 		"", "the8020 whoami=yes", "the8020 sandbox-id=sbx-short",
-		"the8020 sandbox-id=dev-1234abcd",
+		"the8020 sandbox-id=dev-ab",
+		"the8020 sandbox-id=dev-Alice",
+		"the8020 sandbox-id=dev-alice-",
 		"the8020 sandbox-id=sbx-ax9thsl3 sandbox-id=sbx-bbbbbbbb",
 		"the8020 sandbox-id=sbx-ax9thsl3;uname",
 	} {

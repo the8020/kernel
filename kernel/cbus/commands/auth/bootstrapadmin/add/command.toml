@@ -14,7 +14,7 @@ type = "string"
 position = 0
 required = true
 prompt = "Username: "
-description = "Case-sensitive bootstrap administrator username."
+description = "Bootstrap administrator username: 3-32 lowercase letters or digits."
 [[parameters]]
 name = "password"
 type = "string"

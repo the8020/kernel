@@ -13,7 +13,7 @@ name = "username"
 type = "string"
 position = 0
 required = true
-description = "Case-sensitive bootstrap administrator username."
+description = "Bootstrap administrator username: 3-32 lowercase letters or digits."
 [[result]]
 name = "removed"
 type = "boolean"

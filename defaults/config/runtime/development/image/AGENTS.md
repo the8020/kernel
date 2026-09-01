@@ -11,7 +11,8 @@
 
 - The development image payload is separate from the service image under
   `config/runtime/`, contains no credentials or package source, and
-  starts `keepalive.sh`, which becomes one inert `sleep` process. Deno remains
+  starts `sandbox.sh`, which restores Debian's standard lock directory in the
+  fresh `/run` tmpfs and becomes one inert `sleep` process. Deno remains
   available only for developer commands.
 - The image-owned `/etc/profile` sources Debian's interactive Bash defaults and
   sets a restrained colorized `user@host:working-directory` prompt, with a
@@ -40,7 +41,8 @@
   sandbox tests verify tools, both supported xterm definitions, a contextual
   prompt that tracks the working directory, a real Nano full-screen SSH
   session, a native dpkg transaction plus new-directory
-  installation, a Deno-free `sleep` idle process, absence of a scanner, shell
-  editing, preview, activation, and native restart persistence.
+  installation, a usable Debian lock directory, ephemeral `/run`, a Deno-free
+  `sleep` idle process, absence of a scanner, shell editing, preview,
+  activation, and native restart persistence.
 
 # Child DOX Index

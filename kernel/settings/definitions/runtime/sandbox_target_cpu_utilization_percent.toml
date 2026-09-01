@@ -1,0 +1,10 @@
+key = "runtime.sandbox.target_cpu_utilization_percent"
+type = "integer"
+storage = "node"
+default = 80
+environment = "KERNEL_RUNTIME_SANDBOX_TARGET_CPU_UTILIZATION_PERCENT"
+minimum = 1
+maximum = 100
+runtime_mutable = false
+restart_required = true
+description = "CPU utilization percentage at or above which a sandbox receives no additional Workers."

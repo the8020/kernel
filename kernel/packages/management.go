@@ -462,7 +462,7 @@ func (s *Store) CreateLocalPackage(ctx context.Context, author, repository, desc
 		return LocalPackage{}, err
 	}
 	defer os.RemoveAll(stage)
-	manifest := PackageManifest{Schema: manifestSchema, Description: strings.TrimSpace(description)}
+	manifest := PackageManifest{Schema: packageManifestSchema, Description: strings.TrimSpace(description)}
 	if manifest.Description == "" {
 		manifest.Description = "Local 80|20 package " + entry.PackageID
 	}
@@ -722,8 +722,8 @@ func validateStagedPackage(root string) error {
 	if err := decodeTOMLFile(filepath.Join(root, "package.toml"), &manifest); err != nil {
 		return fmt.Errorf("validate synchronized package manifest: %w", err)
 	}
-	if manifest.Schema != manifestSchema {
-		return fmt.Errorf("synchronized package manifest schema must equal %d", manifestSchema)
+	if manifest.Schema != packageManifestSchema {
+		return fmt.Errorf("synchronized package manifest schema must equal %d", packageManifestSchema)
 	}
 	if strings.TrimSpace(manifest.Description) == "" {
 		return errors.New("synchronized package manifest description is required")

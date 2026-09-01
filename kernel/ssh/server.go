@@ -41,7 +41,6 @@ type Authenticator interface {
 
 type Development interface {
 	EnsureDefaultSandbox(context.Context, string) (string, error)
-	OwnsSandbox(string) bool
 }
 
 type Consoles interface {
@@ -317,9 +316,9 @@ func (m *Manager) launch(ctx context.Context, username string, selected selector
 		reply(start, false)
 		return
 	}
-	home, workingDirectory := "/tmp", "/"
+	home, workingDirectory, loginName := "/tmp", "/", username
 	if kind == "development" {
-		home, workingDirectory = "/home/developer", "/workspace"
+		home, workingDirectory, loginName = "/root", "/workspace", "root"
 	}
 	arguments := []string{"/bin/bash", "-l"}
 	if selected.command != "" {
@@ -327,7 +326,7 @@ func (m *Manager) launch(ctx context.Context, username string, selected selector
 	}
 	forwarded := map[string]string{
 		"TERM": configuration.name, "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-		"HOME": home, "SHELL": "/bin/bash", "USER": username, "LOGNAME": username,
+		"HOME": home, "SHELL": "/bin/bash", "USER": loginName, "LOGNAME": loginName,
 	}
 	for name, value := range environment {
 		forwarded[name] = value
@@ -484,18 +483,18 @@ func (m *Manager) resolveTarget(ctx context.Context, username string, selected s
 		if err != nil {
 			return "", "", fmt.Errorf("prepare default development sandbox: %w", err)
 		}
-		if !model.IsSandboxID(sandboxID) {
+		if !validDevelopmentSandboxID(sandboxID) {
 			return "", "", errors.New("default development sandbox identity is invalid")
 		}
 		return "development", sandboxID, nil
 	}
-	if !model.IsSandboxID(selected.sandboxID) {
-		return "", "", errors.New("selected sandbox ID is invalid")
-	}
-	if m.development.OwnsSandbox(selected.sandboxID) {
+	if validDevelopmentSandboxID(selected.sandboxID) {
 		return "development", selected.sandboxID, nil
 	}
-	return "runtime", selected.sandboxID, nil
+	if model.IsSandboxID(selected.sandboxID) {
+		return "runtime", selected.sandboxID, nil
+	}
+	return "", "", errors.New("selected sandbox ID is invalid")
 }
 
 func parseExec(command string) (selector, error) {
@@ -518,12 +517,21 @@ func parseExec(command string) (selector, error) {
 		if selected.sandboxID != "" {
 			return selector{}, errors.New("sandbox-id may be specified only once")
 		}
-		if !model.IsSandboxID(value) {
-			return selector{}, errors.New("sandbox-id must be sbx- followed by eight lowercase alphanumeric characters")
+		if !validSelectorSandboxID(value) {
+			return selector{}, errors.New("sandbox-id must be a canonical sbx- ID or dev-<username>")
 		}
 		selected.sandboxID = value
 	}
 	return selected, nil
+}
+
+func validSelectorSandboxID(value string) bool {
+	return model.IsSandboxID(value) || validDevelopmentSandboxID(value)
+}
+
+func validDevelopmentSandboxID(value string) bool {
+	username, found := strings.CutPrefix(value, "dev-")
+	return found && auth.ValidateUsername(username) == nil
 }
 
 func terminalFromRequest(request ptyRequest) (terminal, error) {

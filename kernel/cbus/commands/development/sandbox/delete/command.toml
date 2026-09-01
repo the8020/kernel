@@ -2,7 +2,7 @@ version = 1
 id = "development.sandbox.delete"
 path = ["development", "sandbox", "delete"]
 summary = "Delete a development workspace"
-description = "Deletes the workspace and durable private source; user home and system storage are retained unless --delete-home is supplied."
+description = "Deletes the workspace and durable private source; image-qualified system storage is retained unless --delete-user-data is supplied."
 mutates_state = true
 restart_behavior = "none"
 [handler]
@@ -15,16 +15,16 @@ position = 0
 required = true
 description = "Development workspace ID."
 [[parameters]]
-name = "delete_home"
+name = "delete_user_data"
 type = "boolean"
-option = "delete-home"
+option = "delete-user-data"
 required = false
-description = "Also delete the persistent developer home."
+description = "Also delete all development storage owned by this user, including image-qualified system roots."
 [[result]]
 name = "deleted"
 type = "boolean"
 [[result]]
-name = "developer_home_deleted"
+name = "user_data_deleted"
 type = "boolean"
 [[examples]]
 command = "development sandbox delete default-0123456789abcdef"
