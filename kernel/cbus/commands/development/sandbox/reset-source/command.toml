@@ -1,27 +1,27 @@
 version = 1
 id = "development.sandbox.reset_source"
 path = ["development", "sandbox", "reset-source"]
-summary = "Discard private source changes"
-description = "Replaces the durable private source with current shared package contents while preserving system customization, including root's home."
+summary = "Discard private package changes"
+description = "Discards private package-overlay checkpoints and restarts on current shared packages while preserving system customization, including root's home."
 mutates_state = true
 restart_behavior = "none"
 [handler]
 file = "kernel/cbus/commands/development/sandbox/reset-source/reset_source.go"
 symbol = "New"
 [[parameters]]
-name = "workspace_id"
+name = "user_id"
 type = "string"
 position = 0
 required = true
-description = "Development workspace ID."
+description = "Developer user ID."
 [[parameters]]
 name = "confirm"
 type = "boolean"
 option = "confirm"
 required = true
-description = "Confirm irreversible loss of unpublished source."
+description = "Confirm irreversible loss of unpublished private package changes."
 [[result]]
-name = "workspace"
+name = "sandbox"
 type = "object"
 [[examples]]
-command = "development sandbox reset-source default-0123456789abcdef --confirm"
+command = "development sandbox reset-source alice --confirm"

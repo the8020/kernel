@@ -10,6 +10,8 @@
 - `config/runtime/` owns platform-maintained runtime versions, protocol source,
   Deno supervisor/Worker source, generic SDKs, and service/development image
   construction.
+- `scripts/` owns platform-maintained helper scripts mounted read-only and
+  executable into development sandboxes.
 - `node/kernel/` owns the initial node-local settings template.
 - `state/package-index/` owns the first-party desired package entries copied
   only when an instance's mapped package index has no entries.
@@ -21,6 +23,9 @@
 - `install.sh`, not kernel startup, installs defaults. It atomically replaces
   the complete platform-owned `config/runtime/` tree so existing instances use
   current inputs and deleted runtime files cannot survive.
+- Installation likewise atomically replaces the complete instance `scripts/`
+  tree, preserving source-declared executable bits; users cannot customize that
+  platform-owned helper mount in place.
 - Non-runtime shared configuration and node settings are created only when
   absent and are never overwritten on an existing instance.
 - Package-index defaults declare public Git sources without credentials or

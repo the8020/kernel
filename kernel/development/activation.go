@@ -4,37 +4,49 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
 
 type packageChanges struct {
-	PackageID string
-	Base      string
-	Shared    string
-	Tree      string
-	Files     []ActivationFile
+	PackageID   string
+	Base        string
+	Shared      string
+	Files       []ActivationFile
+	AddedRows   int
+	RemovedRows int
+	PatchPath   string
 }
 
 type preparedActivation struct {
-	changes  packageChanges
-	result   ActivationPackageResult
-	current  string
-	commit   string
-	worktree string
+	changes   packageChanges
+	result    ActivationPackageResult
+	current   string
+	commit    string
+	worktrees []string
+	stage     string
 }
 
-func (m *Manager) Preview(ctx context.Context, id string, options ActivationOptions) (ActivationPreview, error) {
-	unlock := m.lockWorkspace(id)
+type deferredOverlayResetKey struct{}
+
+func deferOverlayReset(ctx context.Context) bool {
+	value, _ := ctx.Value(deferredOverlayResetKey{}).(bool)
+	return value
+}
+
+func (m *Manager) Preview(ctx context.Context, userID string, options ActivationOptions) (ActivationPreview, error) {
+	unlock := m.lockUser(userID)
 	defer unlock()
-	workspace, err := m.loadWorkspace(id)
+	sandbox, err := m.loadSandbox(userID)
 	if err != nil {
 		return ActivationPreview{}, err
 	}
-	changes, err := m.scanChanges(ctx, workspace)
+	changes, err := m.scanChanges(ctx, sandbox)
 	if err != nil {
 		return ActivationPreview{}, err
 	}
@@ -42,7 +54,7 @@ func (m *Manager) Preview(ctx context.Context, id string, options ActivationOpti
 	if err != nil {
 		return ActivationPreview{}, err
 	}
-	preview := ActivationPreview{WorkspaceID: id}
+	preview := ActivationPreview{Packages: []ActivationPackagePreview{}}
 	for _, change := range changes {
 		m.repositoryMu.RLock()
 		repository, inspectErr := m.inspectRepository(change.PackageID)
@@ -59,53 +71,55 @@ func (m *Manager) Preview(ctx context.Context, id string, options ActivationOpti
 			ActivationReady: repository.ActivationReady && repository.Clean,
 			RemoteName:      repository.RemoteName,
 			RemoteURL:       repository.RemoteURL,
+			ChangedFiles:    len(change.Files),
+			AddedRows:       change.AddedRows,
+			RemovedRows:     change.RemovedRows,
 			Files:           change.Files,
 		})
 	}
-	m.log("development activation preview", workspace, "package_count", len(preview.Packages), "result_state", "previewed")
+	m.log("development activation preview", sandbox, "package_count", len(preview.Packages), "result_state", "previewed")
 	return preview, nil
 }
 
-func (m *Manager) Activate(ctx context.Context, id string, options ActivationOptions) (result ActivationResult, returnErr error) {
-	unlock := m.lockWorkspace(id)
+func (m *Manager) Activate(ctx context.Context, userID string, options ActivationOptions) (result ActivationResult, returnErr error) {
+	unlock := m.lockUser(userID)
 	defer unlock()
-	workspace, err := m.loadWorkspace(id)
+	sandbox, err := m.loadSandbox(userID)
 	if err != nil {
 		return ActivationResult{}, err
 	}
-	result = ActivationResult{WorkspaceID: id, Status: "failed"}
+	result = ActivationResult{Status: "failed", Packages: []ActivationPackageResult{}}
 	defer func() {
-		workspace.LastActivationResult = &result
-		workspace.LastActivationStatus = result.Status
-		workspace.LastActivationAt = time.Now().UTC()
-		workspace.UpdatedAt = workspace.LastActivationAt
-		if saveErr := m.saveWorkspace(workspace); saveErr != nil {
+		sandbox.LastActivationResult = &result
+		sandbox.LastActivationStatus = result.Status
+		sandbox.LastActivationAt = time.Now().UTC()
+		sandbox.UpdatedAt = sandbox.LastActivationAt
+		if saveErr := m.saveSandbox(sandbox); saveErr != nil {
 			returnErr = errors.Join(returnErr, saveErr)
 		}
 	}()
 	if strings.TrimSpace(options.Description) == "" {
 		return result, errors.New("activation description is required")
 	}
-	if workspace.ActiveSandboxID != "" {
-		if err := m.driver.Pause(ctx, workspace.ActiveSandboxID); err != nil {
-			return result, err
-		}
-		workspace.WritesPaused = true
+	if _, active := m.owned.Load(sandbox.SandboxID); !active {
+		return result, errors.New("development sandbox is not running")
 	}
-	workspace.State, workspace.ActivationActive = StateActivating, true
-	workspace.UpdatedAt = time.Now().UTC()
-	_ = m.saveWorkspace(workspace)
+	sandbox.State, sandbox.ActivationActive = StateActivating, true
+	sandbox.UpdatedAt = time.Now().UTC()
+	_ = m.saveSandbox(sandbox)
 	defer func() {
-		workspace.ActivationActive, workspace.WritesPaused = false, false
-		if workspace.ActiveSandboxID != "" {
-			_ = m.driver.Resume(context.Background(), workspace.ActiveSandboxID)
-		}
-		if workspace.State == StateActivating {
-			workspace.State = StateReady
+		sandbox.ActivationActive, sandbox.WritesPaused = false, false
+		if sandbox.State == StateActivating {
+			sandbox.State = StateReady
 		}
 	}()
 
-	changes, err := m.scanChanges(ctx, workspace)
+	activationRoot, err := os.MkdirTemp(m.config.RuntimeRoot, "activation-")
+	if err != nil {
+		return result, err
+	}
+	defer os.RemoveAll(activationRoot)
+	changes, err := m.captureChanges(ctx, sandbox, filepath.Join(activationRoot, "captured"))
 	if err != nil {
 		return result, err
 	}
@@ -114,27 +128,28 @@ func (m *Manager) Activate(ctx context.Context, id string, options ActivationOpt
 		return result, err
 	}
 	if len(changes) == 0 {
-		result.Success, result.Status = true, "not-committed"
+		result.Success, result.Status, result.OverlayReset = true, "not-committed", true
 		return result, nil
 	}
-
-	authorName, authorEmail := m.activationAuthor(workspace, options)
-	activationRoot := filepath.Join(m.config.RuntimeRoot, "activation")
-	if err := os.MkdirAll(activationRoot, 0o700); err != nil {
-		return result, err
+	if err := m.driver.Pause(ctx, sandbox.SandboxID); err != nil {
+		return result, fmt.Errorf("pause development sandbox for activation: %w", err)
 	}
+	paused := true
+	sandbox.WritesPaused = true
+	_ = m.saveSandbox(sandbox)
+	defer func() {
+		if paused {
+			_ = m.driver.Resume(context.Background(), sandbox.SandboxID)
+		}
+	}()
+
+	authorName, authorEmail := m.activationAuthor(sandbox, options)
 	m.repositoryMu.Lock()
 	defer m.repositoryMu.Unlock()
 	prepared := []preparedActivation{}
 	defer func() {
 		for _, item := range prepared {
-			if item.worktree == "" {
-				continue
-			}
-			shared, _ := m.packageRoot(item.changes.PackageID)
-			_, _ = gitCommand(context.Background(), shared, nil, "worktree", "remove", "--force", item.worktree)
-			_, _ = gitCommand(context.Background(), shared, nil, "worktree", "prune")
-			_ = os.RemoveAll(filepath.Dir(item.worktree))
+			m.cleanupPreparedActivation(item)
 		}
 	}()
 
@@ -148,7 +163,7 @@ func (m *Manager) Activate(ctx context.Context, id string, options ActivationOpt
 			result.Packages = append(result.Packages, ActivationPackageResult{PackageID: change.PackageID, Status: "not-committed", CommitMessage: message})
 			continue
 		}
-		item, prepareErr := m.preparePackage(ctx, workspace, change, message, authorName, authorEmail, options.Metadata, activationRoot)
+		item, prepareErr := m.preparePackage(ctx, sandbox, change, message, authorName, authorEmail, options.Metadata, activationRoot)
 		prepared = append(prepared, item)
 		result.Packages = append(result.Packages, item.result)
 		if prepareErr != nil {
@@ -157,32 +172,24 @@ func (m *Manager) Activate(ctx context.Context, id string, options ActivationOpt
 		}
 	}
 	if conflicted || failed {
-		workspace.ConflictedPackages = nil
+		sandbox.ConflictedPackages = nil
 		for _, item := range result.Packages {
 			if item.Status == "conflicted" {
-				workspace.ConflictedPackages = append(workspace.ConflictedPackages, item.PackageID)
+				sandbox.ConflictedPackages = append(sandbox.ConflictedPackages, item.PackageID)
 			}
 		}
-		sort.Strings(workspace.ConflictedPackages)
+		sort.Strings(sandbox.ConflictedPackages)
 		if conflicted {
-			workspace.State, result.Status = StateConflicted, "conflicted"
+			sandbox.State, result.Status = StateConflicted, "conflicted"
 			return result, errors.New("activation has Git conflicts")
 		}
 		result.Status = "failed"
 		return result, errors.New("one or more packages failed activation")
 	}
 
-	bases, err := readBases(filepath.Join(m.workspaceRoot(workspace), "bases.toml"))
-	if err != nil {
-		return result, err
-	}
 	byID := map[string]ActivationPackageResult{}
 	for index := range prepared {
 		item := &prepared[index]
-		if item.result.Status == "not-committed-clean" {
-			byID[item.changes.PackageID] = item.result
-			continue
-		}
 		shared, _ := m.packageRoot(item.changes.PackageID)
 		head, headErr := m.repositoryHead(item.changes.PackageID)
 		repository, inspectErr := m.inspectRepository(item.changes.PackageID)
@@ -199,12 +206,6 @@ func (m *Manager) Activate(ctx context.Context, id string, options ActivationOpt
 			continue
 		}
 		item.result.Status, item.result.ResultingHead = "committed", item.commit
-		if err := m.synchronizePrivatePackage(ctx, workspace, item.changes.PackageID, item.commit); err != nil {
-			item.result.Status, item.result.Error = "failed", err.Error()
-			failed = true
-		} else {
-			bases.Packages[item.changes.PackageID] = baseDocument{BaseCommit: item.commit}
-		}
 		byID[item.changes.PackageID] = item.result
 	}
 	for index := range result.Packages {
@@ -212,67 +213,108 @@ func (m *Manager) Activate(ctx context.Context, id string, options ActivationOpt
 			result.Packages[index] = item
 		}
 	}
-	if err := writeBases(filepath.Join(m.workspaceRoot(workspace), "bases.toml"), bases); err != nil {
-		return result, err
-	}
-	workspace.ConflictedPackages = nil
-	result.Success, result.Status = !failed, "committed"
 	if failed {
 		result.Status = "failed"
 		return result, errors.New("one or more packages failed activation")
 	}
+
+	remaining := make([]packageChanges, 0, len(changes))
+	for _, change := range changes {
+		if !selected[change.PackageID] {
+			remaining = append(remaining, change)
+		}
+	}
+	if err := m.persistCapturedOverlay(sandbox, remaining); err != nil {
+		result.Status = "failed"
+		return result, fmt.Errorf("preserve unselected development changes: %w", err)
+	}
+	sandbox.ConflictedPackages = nil
+	result.Success, result.Status = true, "committed"
+	if deferOverlayReset(ctx) {
+		result.OverlayResetPending = true
+		return result, nil
+	}
+	if err := m.resetOverlayLocked(ctx, &sandbox); err != nil {
+		result.Success, result.Status = false, "committed-reset-failed"
+		return result, fmt.Errorf("activated packages but failed to reset development overlay: %w", err)
+	}
+	paused = false
+	result.OverlayReset = true
 	return result, nil
 }
 
-func (m *Manager) scanChanges(ctx context.Context, workspace Workspace) ([]packageChanges, error) {
-	bases, err := readBases(filepath.Join(m.workspaceRoot(workspace), "bases.toml"))
+func (m *Manager) scanChanges(ctx context.Context, sandbox Sandbox) ([]packageChanges, error) {
+	if _, active := m.owned.Load(sandbox.SandboxID); !active {
+		return nil, errors.New("development sandbox is not running")
+	}
+	result := []packageChanges{}
+	for _, id := range packageDirectories(m.config.PackagesRoot) {
+		m.repositoryMu.RLock()
+		repository, inspectErr := m.inspectRepository(id)
+		m.repositoryMu.RUnlock()
+		if inspectErr != nil || repository.Head == "" {
+			continue
+		}
+		status, err := m.driver.Exec(ctx, sandbox.SandboxID, sandboxIndexCommand(id, repository.Head, "diff", "--cached", "--name-status", "-z", "--find-renames", repository.Head))
+		if err != nil {
+			return nil, fmt.Errorf("inspect development package %s: %w", id, err)
+		}
+		files := parseNameStatus(string(status))
+		if len(files) == 0 {
+			continue
+		}
+		numstat, err := m.driver.Exec(ctx, sandbox.SandboxID, sandboxIndexCommand(id, repository.Head, "diff", "--cached", "--numstat", "-z", repository.Head))
+		if err != nil {
+			return nil, fmt.Errorf("measure development package %s: %w", id, err)
+		}
+		added, removed := parseNumstat(string(numstat))
+		result = append(result, packageChanges{PackageID: id, Base: repository.Head, Shared: repository.Head, Files: files, AddedRows: added, RemovedRows: removed})
+	}
+	return result, nil
+}
+
+func (m *Manager) captureChanges(ctx context.Context, sandbox Sandbox, root string) ([]packageChanges, error) {
+	changes, err := m.scanChanges(ctx, sandbox)
 	if err != nil {
 		return nil, err
 	}
-	result := []packageChanges{}
-	for _, id := range sortedBaseIDs(bases) {
-		base := bases.Packages[id]
-		private, err := m.privatePackageRoot(workspace, id)
+	for index := range changes {
+		change := &changes[index]
+		change.PatchPath = filepath.Join(root, "patches", filepath.FromSlash(change.PackageID)+".patch")
+		if err := os.MkdirAll(filepath.Dir(change.PatchPath), 0o700); err != nil {
+			return nil, err
+		}
+		patch, err := os.OpenFile(change.PatchPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err != nil {
 			return nil, err
 		}
-		index, err := os.CreateTemp(filepath.Join(m.workspaceRoot(workspace), "runtime"), ".activation-index-*")
-		if err != nil {
-			return nil, err
+		command := sandboxIndexCommand(change.PackageID, change.Base, "diff", "--cached", "--binary", "--full-index", "--no-ext-diff", change.Base)
+		exportErr := m.driver.ExecStream(ctx, sandbox.SandboxID, command, nil, patch)
+		closeErr := patch.Close()
+		if exportErr != nil || closeErr != nil {
+			return nil, errors.Join(exportErr, closeErr)
 		}
-		indexPath := index.Name()
-		_ = index.Close()
-		_ = os.Remove(indexPath)
-		environment := []string{"GIT_INDEX_FILE=" + indexPath}
-		if output, commandErr := gitCommand(ctx, private, environment, "read-tree", base.BaseCommit); commandErr != nil {
-			_ = os.Remove(indexPath)
-			return nil, fmt.Errorf("read development package base %s: %w: %s", id, commandErr, output)
-		}
-		if output, commandErr := gitCommand(ctx, private, environment, "add", "-A", "-f", "--", "."); commandErr != nil {
-			_ = os.Remove(indexPath)
-			return nil, fmt.Errorf("scan development package %s: %w: %s", id, commandErr, output)
-		}
-		status, commandErr := gitCommand(ctx, private, environment, "diff", "--cached", "--name-status", "-z", "--find-renames", base.BaseCommit)
-		if commandErr != nil {
-			_ = os.Remove(indexPath)
-			return nil, fmt.Errorf("inspect development package %s: %w: %s", id, commandErr, status)
-		}
-		files := parseNameStatus(status)
-		if len(files) == 0 {
-			_ = os.Remove(indexPath)
-			continue
-		}
-		tree, commandErr := gitOutputContext(ctx, private, environment, "write-tree")
-		_ = os.Remove(indexPath)
-		if commandErr != nil {
-			return nil, fmt.Errorf("write development package tree %s: %w", id, commandErr)
-		}
-		m.repositoryMu.RLock()
-		shared, _ := m.repositoryHead(id)
-		m.repositoryMu.RUnlock()
-		result = append(result, packageChanges{PackageID: id, Base: base.BaseCommit, Shared: shared, Tree: tree, Files: files})
 	}
-	return result, nil
+	return changes, nil
+}
+
+func sandboxIndexCommand(id, base string, arguments ...string) string {
+	repository := "/workspace/packages/" + id
+	parts := []string{"git", "-C", shellQuote(repository)}
+	for _, argument := range arguments {
+		parts = append(parts, shellQuote(argument))
+	}
+	return "set -eu\n" +
+		"index=$(mktemp /tmp/.the8020-activation-index.XXXXXX)\n" +
+		"trap 'rm -f \"$index\"' EXIT\n" +
+		"export GIT_INDEX_FILE=\"$index\"\n" +
+		"git -C " + shellQuote(repository) + " read-tree " + shellQuote(base) + "\n" +
+		"git -C " + shellQuote(repository) + " add -A -f -- .\n" +
+		strings.Join(parts, " ")
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func parseNameStatus(value string) []ActivationFile {
@@ -281,7 +323,7 @@ func parseNameStatus(value string) []ActivationFile {
 	for index := 0; index < len(fields) && fields[index] != ""; {
 		status := fields[index]
 		index++
-		if index >= len(fields) {
+		if status == "" || index >= len(fields) {
 			break
 		}
 		path := fields[index]
@@ -306,7 +348,24 @@ func parseNameStatus(value string) []ActivationFile {
 	return result
 }
 
-func (m *Manager) preparePackage(ctx context.Context, workspace Workspace, changes packageChanges, message, authorName, authorEmail string, metadata map[string]string, activationRoot string) (preparedActivation, error) {
+func parseNumstat(value string) (int, int) {
+	added, removed := 0, 0
+	for _, record := range strings.Split(value, "\x00") {
+		fields := strings.SplitN(record, "\t", 3)
+		if len(fields) < 2 {
+			continue
+		}
+		if count, err := strconv.Atoi(fields[0]); err == nil {
+			added += count
+		}
+		if count, err := strconv.Atoi(fields[1]); err == nil {
+			removed += count
+		}
+	}
+	return added, removed
+}
+
+func (m *Manager) preparePackage(ctx context.Context, sandbox Sandbox, changes packageChanges, message, authorName, authorEmail string, metadata map[string]string, activationRoot string) (preparedActivation, error) {
 	result := ActivationPackageResult{PackageID: changes.PackageID, Status: "failed", CommitMessage: message}
 	repository, err := m.inspectRepository(changes.PackageID)
 	if err != nil || !repository.ActivationReady || !repository.Clean {
@@ -317,121 +376,72 @@ func (m *Manager) preparePackage(ctx context.Context, workspace Workspace, chang
 		return preparedActivation{changes: changes, result: result}, err
 	}
 	result.PreviousHead = repository.Head
-	private, err := m.privatePackageRoot(workspace, changes.PackageID)
-	if err != nil {
-		result.Error = err.Error()
-		return preparedActivation{changes: changes, result: result}, err
-	}
-	commitMessage := activationCommitMessage(message, workspace.WorkspaceID, metadata)
-	messageFile, err := os.CreateTemp(filepath.Join(m.workspaceRoot(workspace), "runtime"), ".activation-message-*")
-	if err != nil {
-		return preparedActivation{changes: changes, result: result}, err
-	}
-	messagePath := messageFile.Name()
-	defer os.Remove(messagePath)
-	if _, err := messageFile.WriteString(commitMessage); err != nil {
-		_ = messageFile.Close()
-		return preparedActivation{changes: changes, result: result}, err
-	}
-	if err := messageFile.Close(); err != nil {
-		return preparedActivation{changes: changes, result: result}, err
-	}
-	identity := gitIdentity(authorName, authorEmail)
-	privateCommit, err := gitOutputContext(ctx, private, identity, "commit-tree", changes.Tree, "-p", changes.Base, "-F", messagePath)
-	if err != nil {
-		result.Error = err.Error()
-		return preparedActivation{changes: changes, result: result}, err
-	}
 	shared, _ := m.packageRoot(changes.PackageID)
-	if output, fetchErr := gitCommand(ctx, shared, nil, "fetch", "--no-tags", filepath.Join(private, ".git"), privateCommit); fetchErr != nil {
-		result.Error = output
-		return preparedActivation{changes: changes, result: result}, fetchErr
-	}
 	stage, err := os.MkdirTemp(activationRoot, "package-")
 	if err != nil {
 		return preparedActivation{changes: changes, result: result}, err
 	}
-	worktree := filepath.Join(stage, "merge")
-	if output, worktreeErr := gitCommand(ctx, shared, nil, "worktree", "add", "--detach", worktree, repository.Head); worktreeErr != nil {
-		_ = os.RemoveAll(stage)
-		result.Error = output
-		return preparedActivation{changes: changes, result: result}, worktreeErr
+	item := preparedActivation{changes: changes, result: result, current: repository.Head, stage: stage}
+	baseWorktree := filepath.Join(stage, "base")
+	if output, worktreeErr := gitCommand(ctx, shared, nil, "worktree", "add", "--detach", baseWorktree, changes.Base); worktreeErr != nil {
+		item.result.Error = output
+		return item, worktreeErr
 	}
-	if output, cherryErr := gitCommand(ctx, worktree, identity, "cherry-pick", privateCommit); cherryErr != nil {
-		conflictsText, _ := gitOutputContext(ctx, worktree, nil, "diff", "--name-only", "--diff-filter=U")
+	item.worktrees = append(item.worktrees, baseWorktree)
+	if output, applyErr := gitCommand(ctx, baseWorktree, nil, "apply", "--index", "--binary", "--whitespace=nowarn", changes.PatchPath); applyErr != nil {
+		item.result.Error = output
+		return item, applyErr
+	}
+	messagePath := filepath.Join(stage, "message.txt")
+	if err := os.WriteFile(messagePath, []byte(activationCommitMessage(message, sandbox.SandboxID, metadata)), 0o600); err != nil {
+		item.result.Error = err.Error()
+		return item, err
+	}
+	identity := gitIdentity(authorName, authorEmail)
+	if output, commitErr := gitCommand(ctx, baseWorktree, identity, "commit", "--no-gpg-sign", "--file", messagePath); commitErr != nil {
+		item.result.Error = output
+		return item, commitErr
+	}
+	privateCommit, err := gitOutputContext(ctx, baseWorktree, nil, "rev-parse", "HEAD")
+	if err != nil {
+		item.result.Error = err.Error()
+		return item, err
+	}
+	if repository.Head == changes.Base {
+		item.commit, item.result.Status = privateCommit, "prepared"
+		return item, nil
+	}
+	mergeWorktree := filepath.Join(stage, "merge")
+	if output, worktreeErr := gitCommand(ctx, shared, nil, "worktree", "add", "--detach", mergeWorktree, repository.Head); worktreeErr != nil {
+		item.result.Error = output
+		return item, worktreeErr
+	}
+	item.worktrees = append(item.worktrees, mergeWorktree)
+	if output, cherryErr := gitCommand(ctx, mergeWorktree, identity, "cherry-pick", privateCommit); cherryErr != nil {
+		conflictsText, _ := gitOutputContext(ctx, mergeWorktree, nil, "diff", "--name-only", "--diff-filter=U")
 		conflicts := strings.Fields(conflictsText)
 		if len(conflicts) == 0 {
 			conflicts = []string{"Git merge conflict"}
 		}
-		result.Status, result.Conflicts, result.Error = "conflicted", conflicts, output
-		if preserveErr := m.preserveConflict(ctx, workspace, changes.PackageID, repository.Head, worktree); preserveErr != nil {
-			result.Error += "; preserve conflict: " + preserveErr.Error()
-		}
-		return preparedActivation{changes: changes, result: result, current: repository.Head, worktree: worktree}, cherryErr
+		item.result.Status, item.result.Conflicts, item.result.Error = "conflicted", conflicts, output
+		return item, cherryErr
 	}
-	commit, err := gitOutputContext(ctx, worktree, nil, "rev-parse", "HEAD")
+	item.commit, err = gitOutputContext(ctx, mergeWorktree, nil, "rev-parse", "HEAD")
 	if err != nil {
-		result.Error = err.Error()
-		return preparedActivation{changes: changes, result: result, current: repository.Head, worktree: worktree}, err
+		item.result.Error = err.Error()
+		return item, err
 	}
-	result.Status = "prepared"
-	return preparedActivation{changes: changes, result: result, current: repository.Head, commit: commit, worktree: worktree}, nil
+	item.result.Status = "prepared"
+	return item, nil
 }
 
-func (m *Manager) preserveConflict(ctx context.Context, workspace Workspace, id, sharedHead, worktree string) error {
-	private, err := m.privatePackageRoot(workspace, id)
-	if err != nil {
-		return err
+func (m *Manager) cleanupPreparedActivation(item preparedActivation) {
+	shared, _ := m.packageRoot(item.changes.PackageID)
+	for index := len(item.worktrees) - 1; index >= 0; index-- {
+		_, _ = gitCommand(context.Background(), shared, nil, "worktree", "remove", "--force", item.worktrees[index])
 	}
-	shared, _ := m.packageRoot(id)
-	if output, err := gitCommand(ctx, private, nil, "fetch", "--no-tags", shared, sharedHead); err != nil {
-		return fmt.Errorf("fetch conflict base: %w: %s", err, output)
-	}
-	if output, err := gitCommand(ctx, private, nil, "reset", "--mixed", "FETCH_HEAD"); err != nil {
-		return fmt.Errorf("reset conflict base: %w: %s", err, output)
-	}
-	if err := replaceWorktree(ctx, worktree, private); err != nil {
-		return err
-	}
-	bases, err := readBases(filepath.Join(m.workspaceRoot(workspace), "bases.toml"))
-	if err != nil {
-		return err
-	}
-	bases.Packages[id] = baseDocument{BaseCommit: sharedHead, Conflicted: true}
-	return writeBases(filepath.Join(m.workspaceRoot(workspace), "bases.toml"), bases)
-}
-
-func (m *Manager) synchronizePrivatePackage(ctx context.Context, workspace Workspace, id, commit string) error {
-	private, err := m.privatePackageRoot(workspace, id)
-	if err != nil {
-		return err
-	}
-	shared, _ := m.packageRoot(id)
-	if output, err := gitCommand(ctx, private, nil, "fetch", "--no-tags", shared, commit); err != nil {
-		return fmt.Errorf("fetch activated package: %w: %s", err, output)
-	}
-	if output, err := gitCommand(ctx, private, nil, "reset", "--hard", "FETCH_HEAD"); err != nil {
-		return fmt.Errorf("reset activated package: %w: %s", err, output)
-	}
-	if output, err := gitCommand(ctx, private, nil, "clean", "-fdx"); err != nil {
-		return fmt.Errorf("clean activated package: %w: %s", err, output)
-	}
-	return nil
-}
-
-func (m *Manager) privatePackageRoot(workspace Workspace, id string) (string, error) {
-	parts := strings.Split(id, "/")
-	if len(parts) != 2 || !safePackageSegment(parts[0]) || !safePackageSegment(parts[1]) {
-		return "", errors.New("package ID must be <namespace>/<repository>")
-	}
-	root, err := canonicalDirectory(filepath.Join(workspace.SourcePath, filepath.FromSlash(id)))
-	if err != nil {
-		return "", err
-	}
-	if !beneath(root, workspace.SourcePath) {
-		return "", errors.New("private package escaped workspace source")
-	}
-	return root, nil
+	_, _ = gitCommand(context.Background(), shared, nil, "worktree", "prune")
+	_ = os.RemoveAll(item.stage)
 }
 
 func selectedChanges(requested []string, changes []packageChanges) (map[string]bool, error) {
@@ -455,35 +465,36 @@ func selectedChanges(requested []string, changes []packageChanges) (map[string]b
 	return selected, nil
 }
 
-func (m *Manager) activationAuthor(workspace Workspace, options ActivationOptions) (string, string) {
+func (m *Manager) activationAuthor(sandbox Sandbox, options ActivationOptions) (string, string) {
 	name, email := strings.TrimSpace(options.AuthorName), strings.TrimSpace(options.AuthorEmail)
-	rootHome := filepath.Join(workspace.SystemPath, "root")
 	if name == "" {
-		name, _ = gitOutputContext(context.Background(), rootHome, nil, "config", "--file", filepath.Join(rootHome, ".gitconfig"), "user.name")
+		name = sandbox.UserID
 	}
 	if email == "" {
-		email, _ = gitOutputContext(context.Background(), rootHome, nil, "config", "--file", filepath.Join(rootHome, ".gitconfig"), "user.email")
-	}
-	if name == "" {
-		name = workspace.OwnerUserID
-	}
-	if email == "" {
-		email = workspace.OwnerUserID + "@development.local"
+		email = sandbox.UserID + "@development.local"
 	}
 	return name, email
 }
 
-func activationCommitMessage(message, workspaceID string, metadata map[string]string) string {
-	value := message + "\n\nThe8020-Workspace: " + workspaceID
-	keys := make([]string, 0, len(metadata))
-	for key := range metadata {
+func activationCommitMessage(message, sandboxID string, metadata map[string]string) string {
+	values := map[string]string{"sandbox": sandboxID}
+	for key, value := range metadata {
+		values["metadata_"+sanitizeFooterKey(key)] = strings.ReplaceAll(value, "\n", " ")
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
+	var appendix strings.Builder
+	appendix.WriteString("# 80|20 activation metadata\n[the8020.activation]\n")
 	for _, key := range keys {
-		value += "\nThe8020-" + sanitizeFooterKey(key) + ": " + strings.ReplaceAll(metadata[key], "\n", " ")
+		appendix.WriteString(strconv.Quote(key))
+		appendix.WriteString(" = ")
+		appendix.WriteString(strconv.Quote(values[key]))
+		appendix.WriteByte('\n')
 	}
-	return value + "\n"
+	return strings.TrimSpace(message) + "\n\n" + appendix.String()
 }
 
 func sanitizeFooterKey(value string) string {
@@ -491,7 +502,24 @@ func sanitizeFooterKey(value string) string {
 		return (character < 'a' || character > 'z') && (character < 'A' || character > 'Z') && (character < '0' || character > '9')
 	})
 	if len(parts) == 0 {
-		return "Metadata"
+		return "metadata"
 	}
-	return strings.Join(parts, "-")
+	return strings.ToLower(strings.Join(parts, "_"))
+}
+
+func copyPatch(destination string, source string) error {
+	input, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+		return err
+	}
+	output, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(output, input)
+	return errors.Join(copyErr, output.Close())
 }

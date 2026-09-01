@@ -241,15 +241,16 @@ relevant child AGENTS.md
 - The kernel main HTTP listener binds all IPv4 interfaces so Docker and host
   port publication can reach it; administrative and internal runtime listeners
   remain private.
-- Development workspaces must expose the complete package tree as an ordinary
-  writable gVisor-private filesystem backed directly by durable workspace disk.
-  Source and image-qualified writable system roots remain native host-backed
-  storage across sandbox and kernel restart; root's home is part of that system
-  root rather than a separate bind mount. Lifecycle must never scan, serialize,
-  snapshot, reconcile, or periodically poll them.
-  Package content is scanned only by Git during an explicit activation preview
-  or activation run, and publication creates package-level commits without
-  pushing remotes or recreating the sandbox.
+- A user's single development sandbox exposes the complete package tree as a
+  writable gVisor-private overlay over shared packages. Explicit lifecycle
+  boundaries checkpoint package deltas beneath
+  `users/<username>/dev-sandbox/`; image-qualified writable system roots and
+  root's home live beneath the same durable root. Lifecycle must never
+  periodically poll or run a background filesystem scanner.
+  Package content is scanned only by Git at an explicit lifecycle checkpoint,
+  activation preview, or activation run. Publication creates package-level
+  commits without pushing remotes, then recreates the process under the same
+  deterministic sandbox identity to clear its private overlay.
 - Development images keep Deno installed for developer commands but run no
   background runtime or filesystem scanner. Their `sandbox.sh` initializes the
   fresh runtime filesystem and replaces itself with `sleep`; persistence is a
@@ -264,10 +265,13 @@ relevant child AGENTS.md
   sandbox. Every authenticated user is an administrator for this console until
   the full permission system replaces that temporary policy; do not add
   per-target restrictions or port forwarding in the interim.
-- The Go kernel must expose password-authenticated SSH on the restart-required
-  node-local `network.ssh_port`. It authenticates actual enabled 80|20 users,
-  never persists or logs presented password bytes, and defaults to creating or
-  starting that user's development sandbox. Ordinary remote commands execute
+- The Go kernel must expose password and authorized-public-key SSH on the
+  restart-required node-local `network.ssh_port`. It authenticates actual
+  enabled 80|20 users, never persists or logs presented credentials, and
+  defaults to creating or starting that user's development sandbox only after
+  authentication. Public-key authentication reads the existing sandbox's
+  bounded `/root/.ssh/authorized_keys` directly from its confined durable
+  system root without creating or starting the sandbox. Ordinary remote commands execute
   through that sandbox's Bash login environment; commands beginning with the
   reserved `the8020 [sandbox-id=<dev-or-runtime-sandbox>]` grammar select a
   terminal target instead of executing. SSH uses the generic direct sandbox PTY
@@ -363,7 +367,8 @@ relevant child AGENTS.md
   checksum-verified project-local Go toolchain and node-local gVisor, generates
   the generic protocol, builds exactly `kernel` and `admin`, initializes the
   selected instance layout when absent, atomically refreshes platform-owned
-  `config/runtime/`, and materializes verified service and development images
+  `config/runtime/` and read-only development helper scripts, and materializes
+  verified service and development images
   under `node/kernel/runtime/images/`. Complete generic image-input digests
   make unchanged installs fast; required packages and Deno bundling execute
   inside the pinned gVisor image build. The default verification gate runs Go
@@ -403,13 +408,19 @@ relevant child AGENTS.md
   service/program/file inspection and independent Git repository inspection, and
   links contained services into the shared service detail program.
 - Every mapped `packages/<namespace>/<repository>/` root is an independent Git
-  repository; there is no master source repository. Developers edit private
-  durable copies under `users/<username>/workspaces/`, and typed
-  activation is the only path that commits changes into shared package roots.
-  Git scans those copies only for explicit preview/run, creates one commit per
-  selected changed package, synchronizes activated private package directories
-  in place, retains root's home and installed system changes, and never
-  pushes configured remotes.
+  repository; there is no master source repository. Developers edit a private
+  sandbox overlay whose durable state is confined to
+  `users/<username>/dev-sandbox/`, and typed activation is the only path that
+  commits changes into shared package roots. Activation creates one commit per
+  selected changed package, retains root's home and installed system changes,
+  and never pushes configured remotes.
+- The platform-owned instance `scripts/` tree is mounted read-only and
+  executable at `/workspace/scripts` in development sandboxes. Its `activate`
+  helper calls the same typed activation path as UUI, requires a commit message
+  for publication, and defaults Git author identity to the authenticated
+  username. Every commit ends with valid TOML activation metadata. The
+  development UUI previews changed packages plus file/add/remove counts and
+  activates all ready changes together.
 - The sibling `uui` repository owns the default Home and Program terminated programs
   selected by static `ui-config.json`; the UUI handler loads them through the
   ordinary validated program path without kernel configuration. Home derives
@@ -417,7 +428,7 @@ relevant child AGENTS.md
   manifests in the mounted package tree before each render and on its explicit
   Refresh action; program IDs are never hardcoded into Home.
 - The sibling `dev-core` repository's `programs/development-test` controls the authenticated
-  user's development workspace and selects any running local sandbox for the
+  user's development sandbox and selects it for the
   generic browser Bash console. Development sandboxes include APT/dpkg with
   official Debian or Ubuntu repositories in both portable and rootful modes;
   bounded container-root capabilities and an image-qualified native durable

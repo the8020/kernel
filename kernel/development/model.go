@@ -1,5 +1,5 @@
-// Package development owns durable developer workspaces and package-level Git
-// activation.
+// Package development owns each user's durable development sandbox and
+// package-level Git activation.
 package development
 
 import "time"
@@ -23,32 +23,28 @@ const (
 type MountBehavior string
 
 const (
-	MountWorkspaceSource MountBehavior = "workspace-source"
-	MountReadOnly        MountBehavior = "read-only-shared"
-	MountPersistent      MountBehavior = "persistent-user"
-	MountEphemeral       MountBehavior = "ephemeral"
+	MountSandboxSource MountBehavior = "sandbox-source"
+	MountReadOnly      MountBehavior = "read-only-shared"
+	MountPersistent    MountBehavior = "persistent-user"
+	MountEphemeral     MountBehavior = "ephemeral"
 )
 
 type MountDefinition struct {
-	ID                   string        `toml:"id" json:"mount_id"`
-	Source               string        `toml:"source" json:"source"`
-	Target               string        `toml:"target" json:"target"`
-	Behavior             MountBehavior `toml:"behavior" json:"behavior"`
-	Writable             bool          `toml:"writable" json:"writable"`
-	Persistence          string        `toml:"persistence" json:"persistence"`
-	ParticipatesActivate bool          `toml:"participates_activation" json:"participates_activation"`
-	WorkspaceOwned       bool          `toml:"workspace_owned" json:"workspace_owned"`
+	ID         string        `toml:"id" json:"mount_id"`
+	Source     string        `toml:"source" json:"source"`
+	Target     string        `toml:"target" json:"target"`
+	Behavior   MountBehavior `toml:"behavior" json:"behavior"`
+	Writable   bool          `toml:"writable" json:"writable"`
+	Executable bool          `toml:"executable,omitempty" json:"executable"`
 }
 
-type Workspace struct {
+type Sandbox struct {
 	Schema               int               `toml:"schema" json:"schema"`
-	WorkspaceID          string            `toml:"workspace_id" json:"workspace_id"`
-	OwnerUserID          string            `toml:"owner_user_id" json:"owner_user_id"`
-	ActiveSandboxID      string            `toml:"active_sandbox_id,omitempty" json:"active_sandbox_id,omitempty"`
+	UserID               string            `toml:"user_id" json:"user_id"`
+	SandboxID            string            `toml:"sandbox_id" json:"sandbox_id"`
 	DevelopmentImage     string            `toml:"development_image_digest,omitempty" json:"development_image_digest,omitempty"`
 	SourcePath           string            `toml:"source_path" json:"-"`
 	SystemPath           string            `toml:"system_path,omitempty" json:"-"`
-	MountProfile         []MountDefinition `toml:"mounts" json:"mount_profile"`
 	State                State             `toml:"state" json:"state"`
 	WritesPaused         bool              `toml:"writes_paused" json:"writes_paused"`
 	ActivationActive     bool              `toml:"activation_active" json:"activation_active"`
@@ -59,7 +55,7 @@ type Workspace struct {
 	LastActivationResult *ActivationResult `toml:"last_activation_result,omitempty" json:"last_activation_result,omitempty"`
 	CreatedAt            time.Time         `toml:"created_at" json:"created_at"`
 	UpdatedAt            time.Time         `toml:"updated_at" json:"updated_at"`
-	Token                string            `toml:"workspace_token" json:"-"`
+	Token                string            `toml:"sandbox_token" json:"-"`
 }
 
 type Repository struct {
@@ -104,12 +100,14 @@ type ActivationPackagePreview struct {
 	ActivationReady bool             `json:"activation_ready"`
 	RemoteName      string           `json:"remote_name,omitempty"`
 	RemoteURL       string           `json:"remote_url,omitempty"`
+	ChangedFiles    int              `json:"changed_files"`
+	AddedRows       int              `json:"added_rows"`
+	RemovedRows     int              `json:"removed_rows"`
 	Files           []ActivationFile `json:"files"`
 }
 
 type ActivationPreview struct {
-	WorkspaceID string                     `json:"workspace_id"`
-	Packages    []ActivationPackagePreview `json:"packages"`
+	Packages []ActivationPackagePreview `json:"packages"`
 }
 
 type ActivationPackageResult struct {
@@ -123,10 +121,11 @@ type ActivationPackageResult struct {
 }
 
 type ActivationResult struct {
-	WorkspaceID string                    `json:"workspace_id"`
-	Success     bool                      `json:"success"`
-	Status      string                    `json:"status"`
-	Packages    []ActivationPackageResult `json:"packages"`
+	Success             bool                      `json:"success"`
+	Status              string                    `json:"status"`
+	OverlayReset        bool                      `json:"overlay_reset"`
+	OverlayResetPending bool                      `json:"overlay_reset_pending,omitempty"`
+	Packages            []ActivationPackageResult `json:"packages"`
 }
 
 // MountProfileDocument is the shared, operator-editable development mount
@@ -137,8 +136,8 @@ type MountProfileDocument struct {
 }
 
 type ShellResult struct {
-	WorkspaceID string `json:"workspace_id"`
-	SandboxID   string `json:"sandbox_id"`
-	Command     string `json:"command"`
-	Output      string `json:"output"`
+	UserID    string `json:"user_id"`
+	SandboxID string `json:"sandbox_id"`
+	Command   string `json:"command"`
+	Output    string `json:"output"`
 }

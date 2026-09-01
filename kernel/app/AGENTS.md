@@ -8,7 +8,7 @@
   bootstrap-authentication composition and cleanup lifecycle,
   full-versus-rootless runtime selection, degraded diagnostics,
   mapped package/state-store composition, service-package mounts, and
-  filesystem-service reconciliation, plus development-workspace composition and
+  filesystem-service reconciliation, plus development-sandbox composition and
   shutdown, generic sandbox-console broker and SSH-server composition, and shared node
   topology/capacity-forwarding composition.
 - Do not own command behavior, domain validation, transport parsing, or
@@ -73,19 +73,19 @@
 - Runtime-host failures retain both full and rootless diagnostics and
   command-bus availability without a native-Deno fallback; `auto` prefers full
   mode and selects rootless only when full host authority is unavailable.
-- Development workspaces select direct runsc consistently with the configured
+- Development sandboxes select direct runsc consistently with the configured
   full/rootless runtime mode. They use their separate development-image
   materialization and state roots and remain administrable independently of
   asynchronous service-runtime initialization.
 - Process composition creates one registry before the development manager,
-  supplies it to the workspace-scoped activation gateway, then registers the
-  generated handlers before any administrative command can create a workspace.
+  supplies it to the sandbox activation gateway, then registers the
+  generated handlers before any administrative command can create a sandbox.
   The shared `config/development-mounts.toml` profile is the production mount
   input; its absence falls back to the equivalent built-in profile.
 - Development-manager initialization starts inherited development-sandbox
   deletion asynchronously without restoring process state or scanning all
-  workspace records; native durable source and system roots remain
-  available for explicit workspace start.
+  sandbox records; durable overlay and system state remain available for an
+  explicit user sandbox start.
 - The console broker registers `/_the8020/console` on the loopback main
   listener after authentication and development composition, receives the
   ordinary runtime sandbox manager only after asynchronous runtime startup,
@@ -98,7 +98,7 @@
   selected pinned runtime before sandbox composition proceeds; the configured
   containerd runtime name applies only to full mode.
 - Runtime composition supplies an instance-root-bounded mount policy for explicit
-  development workspaces; mounting the instance root itself is rejected because
+  job/Worker workspaces; mounting the instance root itself is rejected because
   it would expose protected `node/kernel` data.
 - Runtime composition supplies the already registered command bus to the
   authenticated supervisor callback; it does not construct a second
@@ -139,8 +139,9 @@
   lock, `Main` exec-replaces the current process from its invoked executable
   path with the original arguments and environment. This preserves the PID,
   loads a newly materialized binary, and does not depend on a parent wrapper.
-- Development sandbox process destruction runs during kernel shutdown before
-  logging and instance-lock release; durable workspace files require no flush.
+- Development manager shutdown checkpoints private package deltas before it
+  destroys owned sandbox processes, then completes before logging and
+  instance-lock release.
 - Filesystem-service maintenance never polls the complete package catalog.
   Startup discovers once; explicit service actions and cold requests reconcile
   directly, while the timer touches only live or capacity-pending services.

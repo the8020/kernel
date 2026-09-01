@@ -2,18 +2,18 @@ version = 1
 id = "development.activate.preview"
 path = ["development", "activate", "preview"]
 summary = "Preview package activation"
-description = "Scans the durable source once and previews changed files, package bases, shared heads, merges, remotes, readiness, and selection without modifying shared repositories."
+description = "Scans the live private package overlay once and reports changed files, row statistics, shared Git state, readiness, and selection without modifying shared repositories."
 mutates_state = false
 restart_behavior = "none"
 [handler]
 file = "kernel/cbus/commands/development/activate/preview/preview.go"
 symbol = "New"
 [[parameters]]
-name = "workspace_id"
+name = "user_id"
 type = "string"
 position = 0
 required = true
-description = "Development workspace ID."
+description = "Developer user ID."
 [[parameters]]
 name = "message"
 type = "string"
@@ -54,4 +54,4 @@ description = "JSON object of activation metadata."
 name = "preview"
 type = "object"
 [[examples]]
-command = "development activate preview default-0123456789abcdef --packages the8020/dev-core"
+command = "development activate preview alice --packages the8020/dev-core"

@@ -1,6 +1,6 @@
 # Purpose
 
-- Expose development-workspace sandbox lifecycle, shell, and reset operations.
+- Expose per-user development sandbox lifecycle, shell, and reset operations.
 
 # Ownership
 
@@ -9,11 +9,12 @@
 
 # Local Contracts
 
-- Source and factory reset require explicit confirmation; delete explicitly
-  chooses whether per-user development system storage is retained. Shell
-  execution remains inside the selected gVisor sandbox.
-- Lifecycle commands never flush, scan, or snapshot content; source and system
-  files are already native durable storage.
+- Every command addresses the one sandbox by `user_id`. Source and factory
+  reset require explicit confirmation; delete removes exactly that user's
+  `dev-sandbox` root. Shell execution remains inside the selected gVisor
+  sandbox.
+- Lifecycle commands delegate checkpoint and storage behavior to the
+  development manager.
 
 # Work Guidance
 

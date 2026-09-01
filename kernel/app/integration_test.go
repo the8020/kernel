@@ -75,6 +75,9 @@ func availablePort(t *testing.T) int {
 }
 func startKernel(t *testing.T, root string, startupPort int) <-chan error {
 	t.Helper()
+	if err := os.MkdirAll(filepath.Join(root, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := instance.WriteLayout(root, instance.Layout{
 		Packages: filepath.Join(root, "packages"), Config: filepath.Join(root, "config"),
 		State: filepath.Join(root, "state"), Users: filepath.Join(root, "users"),

@@ -1,6 +1,7 @@
 package development
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -8,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -17,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"the8020/kernel/auth"
 	"the8020/kernel/sandbox/backend"
@@ -39,22 +43,23 @@ type Config struct {
 }
 
 type Manager struct {
-	config         Config
-	driver         SandboxDriver
-	workspaceMu    sync.Map
-	workspaceOwner sync.Map
-	sandboxMu      sync.Map
-	imageMu        sync.RWMutex
-	repositoryMu   *sync.RWMutex
-	owned          sync.Map
-	server         *http.Server
-	listener       net.Listener
-	endpoint       string
-	cleanupCancel  context.CancelFunc
-	cleanupDone    chan struct{}
+	config        Config
+	driver        SandboxDriver
+	userMu        sync.Map
+	sandboxMu     sync.Map
+	imageMu       sync.RWMutex
+	repositoryMu  *sync.RWMutex
+	owned         sync.Map
+	server        *http.Server
+	listener      net.Listener
+	endpoint      string
+	cleanupCancel context.CancelFunc
+	cleanupDone   chan struct{}
 }
 
-const workspaceSchema = 3
+const sandboxSchema = 1
+
+const authorizedKeysLimit = 64 << 10
 
 func New(config Config) (*Manager, error) {
 	for name, path := range map[string]string{"root": config.Root, "packages": config.PackagesRoot, "config": config.ConfigRoot, "users": config.UsersRoot, "runtime": config.RuntimeRoot, "image": config.ImageRoot} {
@@ -108,10 +113,10 @@ func New(config Config) (*Manager, error) {
 	m := &Manager{config: config, driver: config.Driver, repositoryMu: repositoryMu, cleanupDone: make(chan struct{})}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return nil, fmt.Errorf("listen for workspace-scoped development API: %w", err)
+		return nil, fmt.Errorf("listen for development sandbox API: %w", err)
 	}
 	m.listener, m.endpoint = listener, "http://"+listener.Addr().String()
-	m.server = &http.Server{Handler: http.HandlerFunc(m.serveWorkspace), ReadHeaderTimeout: 5 * time.Second}
+	m.server = &http.Server{Handler: http.HandlerFunc(m.serveSandbox), ReadHeaderTimeout: 5 * time.Second}
 	go func() { _ = m.server.Serve(listener) }()
 	cleanupContext, cleanupCancel := context.WithCancel(context.Background())
 	m.cleanupCancel = cleanupCancel
@@ -148,6 +153,7 @@ func (m *Manager) destroyInheritedSandboxes(parent context.Context) {
 			}
 			continue
 		}
+		_ = removeDevelopmentFilestore(m.config.PackagesRoot, id)
 		unlock()
 	}
 }
@@ -164,32 +170,34 @@ func (m *Manager) Close(ctx context.Context) error {
 		}
 	}
 	var joined error
-	type activeWorkspace struct{ sandboxID, workspaceID string }
-	active := []activeWorkspace{}
+	type activeSandbox struct{ sandboxID, userID string }
+	active := []activeSandbox{}
 	m.owned.Range(func(key, value any) bool {
 		sandboxID, sandboxOK := key.(string)
-		workspaceID, workspaceOK := value.(string)
-		if sandboxOK && workspaceOK {
-			active = append(active, activeWorkspace{sandboxID: sandboxID, workspaceID: workspaceID})
+		userID, userOK := value.(string)
+		if sandboxOK && userOK {
+			active = append(active, activeSandbox{sandboxID: sandboxID, userID: userID})
 		}
 		return true
 	})
 	for _, item := range active {
-		unlock := m.lockWorkspace(item.workspaceID)
-		workspace, err := m.loadWorkspace(item.workspaceID)
-		if err != nil || workspace.ActiveSandboxID != item.sandboxID {
+		unlock := m.lockUser(item.userID)
+		sandbox, err := m.loadSandbox(item.userID)
+		if err != nil || sandbox.SandboxID != item.sandboxID {
 			joined = errors.Join(joined, err)
 			unlock()
 			continue
 		}
+		checkpointErr := m.checkpointOverlayLocked(ctx, sandbox)
 		stopErr := m.driver.Stop(ctx, item.sandboxID)
 		deleteErr := m.driver.Delete(ctx, item.sandboxID)
+		_ = removeDevelopmentFilestore(m.config.PackagesRoot, item.sandboxID)
 		m.owned.Delete(item.sandboxID)
-		joined = errors.Join(joined, stopErr, deleteErr)
-		workspace.State, workspace.ActiveSandboxID = StateStopped, ""
-		workspace.ActivationActive, workspace.WritesPaused = false, false
-		workspace.UpdatedAt = time.Now().UTC()
-		joined = errors.Join(joined, m.saveWorkspace(workspace))
+		joined = errors.Join(joined, checkpointErr, stopErr, deleteErr)
+		sandbox.State = StateStopped
+		sandbox.ActivationActive, sandbox.WritesPaused = false, false
+		sandbox.UpdatedAt = time.Now().UTC()
+		joined = errors.Join(joined, m.saveSandbox(sandbox))
 		unlock()
 	}
 	if m.server != nil {
@@ -198,134 +206,181 @@ func (m *Manager) Close(ctx context.Context) error {
 	return joined
 }
 
-func (m *Manager) Create(ctx context.Context, userID string) (Workspace, error) {
-	if _, err := sandboxIDForUser(userID); err != nil {
-		return Workspace{}, err
+func (m *Manager) Create(ctx context.Context, userID string) (Sandbox, error) {
+	if err := auth.ValidateUsername(userID); err != nil {
+		return Sandbox{}, err
 	}
-	id := workspaceID(userID)
-	unlock := m.lockWorkspace(id)
+	unlock := m.lockUser(userID)
 	defer unlock()
-	if existing, err := m.loadWorkspaceForUser(id, userID); err == nil {
-		return existing, fmt.Errorf("default development workspace already exists for user %s", userID)
+	if existing, err := m.loadSandbox(userID); err == nil {
+		return existing, fmt.Errorf("development sandbox already exists for user %s", userID)
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return Workspace{}, err
+		return Sandbox{}, err
 	}
-	return m.createLocked(ctx, id, userID)
+	return m.createLocked(ctx, userID)
 }
 
-// EnsureDefaultSandbox returns the authenticated user's running default
-// development sandbox, creating or starting it only when necessary. Its
-// deterministic workspace lookup never enumerates other users' workspaces.
-func (m *Manager) EnsureDefaultSandbox(ctx context.Context, userID string) (string, error) {
-	if _, err := sandboxIDForUser(userID); err != nil {
+// EnsureSandbox returns the authenticated user's development sandbox, creating
+// or starting it only when necessary.
+func (m *Manager) EnsureSandbox(ctx context.Context, userID string) (string, error) {
+	if err := auth.ValidateUsername(userID); err != nil {
 		return "", err
 	}
-	id := workspaceID(userID)
-	unlock := m.lockWorkspace(id)
+	unlock := m.lockUser(userID)
 	defer unlock()
-	workspace, err := m.loadWorkspaceForUser(id, userID)
+	sandbox, err := m.loadSandbox(userID)
 	if errors.Is(err, os.ErrNotExist) {
-		workspace, err = m.createLocked(ctx, id, userID)
+		sandbox, err = m.createLocked(ctx, userID)
 	} else if err == nil {
-		err = m.startLocked(ctx, &workspace)
+		err = m.startLocked(ctx, &sandbox)
 	}
 	if err != nil {
 		return "", err
 	}
-	return workspace.ActiveSandboxID, nil
+	return sandbox.SandboxID, nil
 }
 
-func (m *Manager) createLocked(ctx context.Context, id, userID string) (Workspace, error) {
-	if err := os.MkdirAll(filepath.Join(m.workspaceRootFor(userID, id), "runtime"), 0o700); err != nil {
-		return Workspace{}, err
+// AuthorizedKeys reads the existing sandbox's root authorized-keys file
+// directly from durable storage without creating, starting, or mutating the
+// sandbox. Every traversed component must remain beneath the recorded canonical
+// system root and must not be a symlink.
+func (m *Manager) AuthorizedKeys(userID string) ([]byte, error) {
+	if err := auth.ValidateUsername(userID); err != nil {
+		return nil, err
 	}
-	now := time.Now().UTC()
+	var sandbox Sandbox
+	if err := readTOML(filepath.Join(m.sandboxRootForUser(userID), "sandbox.toml"), &sandbox); err != nil {
+		return nil, err
+	}
+	expectedID, _ := sandboxIDForUser(userID)
+	if sandbox.Schema != sandboxSchema || sandbox.UserID != userID || sandbox.SandboxID != expectedID || sandbox.DevelopmentImage == "" || sandbox.SystemPath == "" {
+		return nil, errors.New("development sandbox storage is unavailable")
+	}
+	expectedRoot, err := m.systemRootPath(userID, sandbox.DevelopmentImage)
+	if err != nil || filepath.Clean(sandbox.SystemPath) != expectedRoot {
+		return nil, errors.New("development sandbox system root is invalid")
+	}
+	canonicalRoot, err := canonicalDirectory(expectedRoot)
+	if err != nil || canonicalRoot != expectedRoot {
+		return nil, errors.New("development sandbox system root is unsafe")
+	}
+	root, err := unix.Open(canonicalRoot, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, errors.New("development sandbox system root is unavailable")
+	}
+	defer unix.Close(root)
+	fileDescriptor, err := unix.Openat2(root, "root/.ssh/authorized_keys", &unix.OpenHow{
+		Flags:   unix.O_RDONLY | unix.O_NONBLOCK | unix.O_CLOEXEC | unix.O_NOFOLLOW,
+		Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS,
+	})
+	if err != nil {
+		return nil, errors.New("development sandbox authorized keys are unavailable")
+	}
+	file := os.NewFile(uintptr(fileDescriptor), "authorized_keys")
+	if file == nil {
+		_ = unix.Close(fileDescriptor)
+		return nil, errors.New("development sandbox authorized keys are unavailable")
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() > authorizedKeysLimit {
+		return nil, errors.New("development sandbox authorized keys are invalid")
+	}
+	var content bytes.Buffer
+	if _, err := io.CopyN(&content, file, authorizedKeysLimit+1); err != nil && !errors.Is(err, io.EOF) {
+		return nil, errors.New("read development sandbox authorized keys")
+	}
+	if content.Len() > authorizedKeysLimit {
+		return nil, errors.New("development sandbox authorized keys are too large")
+	}
+	return content.Bytes(), nil
+}
+
+func (m *Manager) createLocked(ctx context.Context, userID string) (Sandbox, error) {
+	if err := os.MkdirAll(filepath.Join(m.sandboxRootForUser(userID), "runtime"), 0o700); err != nil {
+		return Sandbox{}, err
+	}
 	token, err := randomHex(32)
 	if err != nil {
-		return Workspace{}, err
+		return Sandbox{}, err
 	}
-	workspace := Workspace{Schema: workspaceSchema, WorkspaceID: id, OwnerUserID: userID, State: StateCreating, CreatedAt: now, UpdatedAt: now, Token: token, MountProfile: cloneMountProfile(m.config.MountProfile)}
-	if err := m.preparePersistentMounts(&workspace); err != nil {
-		return Workspace{}, err
+	sandboxID, _ := sandboxIDForUser(userID)
+	now := time.Now().UTC()
+	sandbox := Sandbox{Schema: sandboxSchema, UserID: userID, SandboxID: sandboxID, State: StateCreating, CreatedAt: now, UpdatedAt: now, Token: token}
+	if err := m.preparePersistentMounts(userID); err != nil {
+		return Sandbox{}, err
 	}
-	if err := m.saveWorkspace(workspace); err != nil {
-		return Workspace{}, err
+	if err := m.saveSandbox(sandbox); err != nil {
+		return Sandbox{}, err
 	}
-	if err := m.startLocked(ctx, &workspace); err != nil {
-		workspace.State, workspace.ActiveSandboxID = StateFailed, ""
-		workspace.UpdatedAt = time.Now().UTC()
-		_ = m.saveWorkspace(workspace)
-		return workspace, err
+	if err := m.startLocked(ctx, &sandbox); err != nil {
+		sandbox.State = StateFailed
+		sandbox.UpdatedAt = time.Now().UTC()
+		_ = m.saveSandbox(sandbox)
+		return sandbox, err
 	}
-	m.log("development workspace created", workspace, "result_state", workspace.State)
-	return workspace, nil
+	m.log("development sandbox created", sandbox, "result_state", sandbox.State)
+	return sandbox, nil
 }
 
-func (m *Manager) List() ([]Workspace, error) {
+func (m *Manager) List() ([]Sandbox, error) {
 	return m.listLocked()
 }
 
-func (m *Manager) Inspect(id string) (Workspace, error) {
-	return m.loadWorkspace(id)
+func (m *Manager) Inspect(userID string) (Sandbox, error) {
+	return m.loadSandbox(userID)
 }
 
-func (m *Manager) listLocked() ([]Workspace, error) {
+func (m *Manager) listLocked() ([]Sandbox, error) {
 	users, err := os.ReadDir(m.config.UsersRoot)
 	if err != nil {
 		return nil, err
 	}
-	result := []Workspace{}
+	result := []Sandbox{}
 	for _, user := range users {
 		if !user.IsDir() || !safeUserID(user.Name()) {
 			continue
 		}
-		entries, readErr := os.ReadDir(filepath.Join(m.userRoot(user.Name()), "workspaces"))
-		if errors.Is(readErr, os.ErrNotExist) {
+		if _, err := os.Stat(filepath.Join(m.sandboxRootForUser(user.Name()), "sandbox.toml")); errors.Is(err, os.ErrNotExist) {
 			continue
+		} else if err != nil {
+			return nil, err
 		}
-		if readErr != nil {
-			return nil, readErr
+		item, err := m.loadSandbox(user.Name())
+		if err != nil {
+			return nil, err
 		}
-		for _, entry := range entries {
-			if !entry.IsDir() || !safeRuntimeID(entry.Name()) {
-				continue
-			}
-			item, loadErr := m.loadWorkspaceForUser(entry.Name(), user.Name())
-			if loadErr != nil {
-				return nil, loadErr
-			}
-			result = append(result, item)
-		}
+		result = append(result, item)
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].WorkspaceID < result[j].WorkspaceID })
+	sort.Slice(result, func(i, j int) bool { return result[i].UserID < result[j].UserID })
 	return result, nil
 }
 
-func (m *Manager) Start(ctx context.Context, id string) (Workspace, error) {
-	unlock := m.lockWorkspace(id)
+func (m *Manager) Start(ctx context.Context, userID string) (Sandbox, error) {
+	unlock := m.lockUser(userID)
 	defer unlock()
-	workspace, err := m.loadWorkspace(id)
+	sandbox, err := m.loadSandbox(userID)
 	if err != nil {
-		return Workspace{}, err
+		return Sandbox{}, err
 	}
-	if err := m.startLocked(ctx, &workspace); err != nil {
-		return workspace, err
+	if err := m.startLocked(ctx, &sandbox); err != nil {
+		return sandbox, err
 	}
-	return workspace, nil
+	return sandbox, nil
 }
 
-func (m *Manager) startLocked(ctx context.Context, workspace *Workspace) error {
+func (m *Manager) startLocked(ctx context.Context, sandbox *Sandbox) error {
 	if m.driver == nil {
 		return errors.New("development sandbox driver is unavailable")
 	}
-	if workspace.ActiveSandboxID != "" {
-		running, err := m.driver.Running(ctx, workspace.ActiveSandboxID)
+	if _, active := m.owned.Load(sandbox.SandboxID); active {
+		running, err := m.driver.Running(ctx, sandbox.SandboxID)
 		if err == nil && running {
 			return nil
 		}
-		_ = m.driver.Delete(ctx, workspace.ActiveSandboxID)
-		m.owned.Delete(workspace.ActiveSandboxID)
-		workspace.ActiveSandboxID = ""
+		_ = m.driver.Delete(ctx, sandbox.SandboxID)
+		_ = removeDevelopmentFilestore(m.config.PackagesRoot, sandbox.SandboxID)
+		m.owned.Delete(sandbox.SandboxID)
 	}
 	var image ImageStatus
 	err := func() error {
@@ -339,67 +394,53 @@ func (m *Manager) startLocked(ctx context.Context, workspace *Workspace) error {
 		if image.Digest == "" {
 			return errors.New("development image is not built")
 		}
-		return m.prepareWorkspaceStorage(ctx, workspace, image.Digest)
+		return m.prepareSandboxStorage(ctx, sandbox, image.Digest)
 	}()
 	if err != nil {
 		return err
 	}
-	sandboxID, err := sandboxIDForUser(workspace.OwnerUserID)
+	sandbox.State, sandbox.DevelopmentImage = StateStarting, image.Digest
+	sandbox.UpdatedAt = time.Now().UTC()
+	if err := m.saveSandbox(*sandbox); err != nil {
+		return err
+	}
+	mounts, err := m.resolveMounts(*sandbox)
 	if err != nil {
 		return err
 	}
-	workspace.State, workspace.ActiveSandboxID, workspace.DevelopmentImage = StateStarting, sandboxID, image.Digest
-	workspace.UpdatedAt = time.Now().UTC()
-	if err := m.saveWorkspace(*workspace); err != nil {
-		return err
-	}
-	mounts, err := m.resolveMounts(*workspace)
-	if err != nil {
-		return err
-	}
-	unlockSandbox := m.lockSandbox(sandboxID)
+	unlockSandbox := m.lockSandbox(sandbox.SandboxID)
 	defer unlockSandbox()
-	if err := m.driver.Delete(ctx, sandboxID); err != nil {
-		workspace.ActiveSandboxID = ""
-		return fmt.Errorf("delete inherited development sandbox %s: %w", sandboxID, err)
+	if err := m.driver.Delete(ctx, sandbox.SandboxID); err != nil {
+		return fmt.Errorf("delete inherited development sandbox %s: %w", sandbox.SandboxID, err)
 	}
-	if err := m.driver.Start(ctx, SandboxStart{WorkspaceID: workspace.WorkspaceID, SandboxID: sandboxID, Packages: workspace.SourcePath, RootFS: workspace.SystemPath, Endpoint: m.endpoint, Token: workspace.Token, Mounts: mounts}); err != nil {
-		workspace.ActiveSandboxID = ""
+	_ = removeDevelopmentFilestore(m.config.PackagesRoot, sandbox.SandboxID)
+	if err := m.driver.Start(ctx, SandboxStart{UserID: sandbox.UserID, SandboxID: sandbox.SandboxID, Packages: sandbox.SourcePath, RootFS: sandbox.SystemPath, Endpoint: m.endpoint, Token: sandbox.Token, Mounts: mounts}); err != nil {
 		return err
 	}
-	m.owned.Store(sandboxID, workspace.WorkspaceID)
-	workspace.State = StateReady
-	workspace.UpdatedAt = time.Now().UTC()
-	workspace.CanSafelyReset = canSafelyReset(workspace)
-	if err := m.saveWorkspace(*workspace); err != nil {
+	m.owned.Store(sandbox.SandboxID, sandbox.UserID)
+	if err := m.restoreOverlayLocked(ctx, sandbox); err != nil {
+		_ = m.driver.Kill(context.Background(), sandbox.SandboxID)
+		_ = m.driver.Delete(context.Background(), sandbox.SandboxID)
+		_ = removeDevelopmentFilestore(m.config.PackagesRoot, sandbox.SandboxID)
+		m.owned.Delete(sandbox.SandboxID)
 		return err
 	}
-	m.log("development sandbox started", *workspace, "sandbox_id", sandboxID, "result_state", workspace.State)
+	sandbox.State = StateReady
+	sandbox.UpdatedAt = time.Now().UTC()
+	sandbox.CanSafelyReset = canSafelyReset(sandbox)
+	if err := m.saveSandbox(*sandbox); err != nil {
+		return err
+	}
+	m.log("development sandbox started", *sandbox, "result_state", sandbox.State)
 	return nil
 }
 
-func (m *Manager) prepareWorkspaceStorage(ctx context.Context, workspace *Workspace, imageDigest string) error {
-	if err := m.preparePersistentMounts(workspace); err != nil {
+func (m *Manager) prepareSandboxStorage(ctx context.Context, sandbox *Sandbox, imageDigest string) error {
+	if err := m.preparePersistentMounts(sandbox.UserID); err != nil {
 		return err
 	}
-	source := filepath.Join(m.workspaceDataRoot(*workspace), "source", "packages")
-	if _, err := os.Stat(source); errors.Is(err, os.ErrNotExist) {
-		if err := copyDirectory(ctx, m.config.PackagesRoot, source); err != nil {
-			return fmt.Errorf("initialize durable development source: %w", err)
-		}
-		if err := m.initializeBases(ctx, *workspace, source); err != nil {
-			_ = os.RemoveAll(m.workspaceDataRoot(*workspace))
-			return err
-		}
-	} else if err != nil {
-		return err
-	}
-	canonicalSource, err := canonicalDirectory(source)
-	if err != nil {
-		return err
-	}
-	workspace.SourcePath = canonicalSource
-	systemRoot, err := m.systemRootPath(workspace.OwnerUserID, imageDigest)
+	sandbox.SourcePath = m.config.PackagesRoot
+	systemRoot, err := m.systemRootPath(sandbox.UserID, imageDigest)
 	if err != nil {
 		return err
 	}
@@ -410,24 +451,8 @@ func (m *Manager) prepareWorkspaceStorage(ctx context.Context, workspace *Worksp
 	} else if err != nil {
 		return err
 	}
-	workspace.SystemPath, err = canonicalDirectory(systemRoot)
+	sandbox.SystemPath, err = canonicalDirectory(systemRoot)
 	return err
-}
-
-func (m *Manager) initializeBases(ctx context.Context, workspace Workspace, source string) error {
-	document := basesDocument{Schema: 1, Packages: map[string]baseDocument{}}
-	for _, id := range packageDirectories(source) {
-		root := filepath.Join(source, filepath.FromSlash(id))
-		if info, err := os.Stat(filepath.Join(root, ".git")); err != nil || !info.IsDir() {
-			continue
-		}
-		head, err := gitOutputContext(ctx, root, nil, "rev-parse", "HEAD")
-		if err != nil || head == "" {
-			continue
-		}
-		document.Packages[id] = baseDocument{BaseCommit: head}
-	}
-	return writeBases(filepath.Join(m.workspaceRoot(workspace), "bases.toml"), document)
 }
 
 func packageDirectories(root string) []string {
@@ -448,121 +473,117 @@ func packageDirectories(root string) []string {
 	return result
 }
 
-func (m *Manager) Stop(ctx context.Context, id string) (Workspace, error) {
-	return m.stop(ctx, id, false)
+func (m *Manager) Stop(ctx context.Context, userID string) (Sandbox, error) {
+	return m.stop(ctx, userID, false)
 }
 
-func (m *Manager) Kill(ctx context.Context, id string) (Workspace, error) {
-	return m.stop(ctx, id, true)
+func (m *Manager) Kill(ctx context.Context, userID string) (Sandbox, error) {
+	return m.stop(ctx, userID, true)
 }
 
-func (m *Manager) stop(ctx context.Context, id string, kill bool) (Workspace, error) {
-	unlock := m.lockWorkspace(id)
+func (m *Manager) stop(ctx context.Context, userID string, kill bool) (Sandbox, error) {
+	unlock := m.lockUser(userID)
 	defer unlock()
-	workspace, err := m.loadWorkspace(id)
+	sandbox, err := m.loadSandbox(userID)
 	if err != nil {
-		return Workspace{}, err
+		return Sandbox{}, err
 	}
-	if workspace.ActiveSandboxID == "" {
-		return workspace, nil
+	if _, active := m.owned.Load(sandbox.SandboxID); !active {
+		return sandbox, nil
 	}
-	workspace.State = StateStopping
-	workspace.UpdatedAt = time.Now().UTC()
-	_ = m.saveWorkspace(workspace)
+	if err := m.checkpointOverlayLocked(ctx, sandbox); err != nil {
+		return sandbox, fmt.Errorf("checkpoint development overlay before stop: %w", err)
+	}
+	sandbox.State, sandbox.UpdatedAt = StateStopping, time.Now().UTC()
+	_ = m.saveSandbox(sandbox)
 	if kill {
-		err = m.driver.Kill(ctx, workspace.ActiveSandboxID)
+		err = m.driver.Kill(ctx, sandbox.SandboxID)
 	} else {
-		err = m.driver.Stop(ctx, workspace.ActiveSandboxID)
+		err = m.driver.Stop(ctx, sandbox.SandboxID)
 	}
 	if err != nil {
-		return workspace, err
+		return sandbox, err
 	}
-	if err := m.driver.Delete(ctx, workspace.ActiveSandboxID); err != nil {
-		return workspace, err
+	if err := m.driver.Delete(ctx, sandbox.SandboxID); err != nil {
+		return sandbox, err
 	}
-	oldSandbox := workspace.ActiveSandboxID
-	m.owned.Delete(oldSandbox)
-	workspace.ActiveSandboxID, workspace.State = "", StateStopped
-	workspace.UpdatedAt = time.Now().UTC()
-	err = m.saveWorkspace(workspace)
-	m.log("development sandbox stopped", workspace, "sandbox_id", oldSandbox, "result_state", workspace.State)
-	return workspace, err
+	_ = removeDevelopmentFilestore(m.config.PackagesRoot, sandbox.SandboxID)
+	m.owned.Delete(sandbox.SandboxID)
+	sandbox.State, sandbox.UpdatedAt = StateStopped, time.Now().UTC()
+	err = m.saveSandbox(sandbox)
+	m.log("development sandbox stopped", sandbox, "result_state", sandbox.State)
+	return sandbox, err
 }
 
-func (m *Manager) Restart(ctx context.Context, id string) (Workspace, error) {
-	unlock := m.lockWorkspace(id)
+func (m *Manager) Restart(ctx context.Context, userID string) (Sandbox, error) {
+	unlock := m.lockUser(userID)
 	defer unlock()
-	workspace, err := m.loadWorkspace(id)
+	sandbox, err := m.loadSandbox(userID)
 	if err != nil {
-		return Workspace{}, err
+		return Sandbox{}, err
 	}
-	if workspace.ActiveSandboxID != "" {
-		_ = m.driver.Stop(ctx, workspace.ActiveSandboxID)
-		if err := m.driver.Delete(ctx, workspace.ActiveSandboxID); err != nil {
-			return workspace, err
+	if _, active := m.owned.Load(sandbox.SandboxID); active {
+		if err := m.checkpointOverlayLocked(ctx, sandbox); err != nil {
+			return sandbox, fmt.Errorf("checkpoint development overlay before restart: %w", err)
 		}
-		m.owned.Delete(workspace.ActiveSandboxID)
-		workspace.ActiveSandboxID = ""
+		_ = m.driver.Stop(ctx, sandbox.SandboxID)
+		if err := m.driver.Delete(ctx, sandbox.SandboxID); err != nil {
+			return sandbox, err
+		}
+		_ = removeDevelopmentFilestore(m.config.PackagesRoot, sandbox.SandboxID)
+		m.owned.Delete(sandbox.SandboxID)
 	}
-	if err := m.startLocked(ctx, &workspace); err != nil {
-		return workspace, err
+	if err := m.startLocked(ctx, &sandbox); err != nil {
+		return sandbox, err
 	}
-	return workspace, nil
+	return sandbox, nil
 }
 
-func (m *Manager) Delete(ctx context.Context, id string, deleteUserData bool) error {
-	unlock := m.lockWorkspace(id)
+func (m *Manager) Delete(ctx context.Context, userID string) error {
+	unlock := m.lockUser(userID)
 	defer unlock()
-	workspace, err := m.loadWorkspace(id)
+	sandbox, err := m.loadSandbox(userID)
 	if err != nil {
 		return err
 	}
-	if workspace.ActiveSandboxID != "" {
-		_ = m.driver.Kill(ctx, workspace.ActiveSandboxID)
-		if err := m.driver.Delete(ctx, workspace.ActiveSandboxID); err != nil {
+	if _, active := m.owned.Load(sandbox.SandboxID); active {
+		_ = m.driver.Kill(ctx, sandbox.SandboxID)
+		if err := m.driver.Delete(ctx, sandbox.SandboxID); err != nil {
 			return err
 		}
-		m.owned.Delete(workspace.ActiveSandboxID)
+		_ = removeDevelopmentFilestore(m.config.PackagesRoot, sandbox.SandboxID)
+		m.owned.Delete(sandbox.SandboxID)
 	}
-	if err := os.RemoveAll(m.workspaceRoot(workspace)); err != nil {
-		return err
-	}
-	if deleteUserData {
-		if err := os.RemoveAll(m.userRoot(workspace.OwnerUserID)); err != nil {
-			return err
-		}
-	}
-	return nil
+	return os.RemoveAll(m.sandboxRoot(sandbox))
 }
 
-func (m *Manager) Shell(ctx context.Context, id, command string) (ShellResult, error) {
-	lock := m.workspaceLock(id)
+func (m *Manager) Shell(ctx context.Context, userID, command string) (ShellResult, error) {
+	lock := m.userLock(userID)
 	lock.Lock()
-	workspace, err := m.loadWorkspace(id)
+	sandbox, err := m.loadSandbox(userID)
 	if err != nil {
 		lock.Unlock()
 		return ShellResult{}, err
 	}
-	if workspace.ActiveSandboxID == "" {
+	if _, active := m.owned.Load(sandbox.SandboxID); !active {
 		lock.Unlock()
 		return ShellResult{}, errors.New("development sandbox is not running")
 	}
-	sandboxID := workspace.ActiveSandboxID
-	workspace.State, workspace.UpdatedAt = StateBusy, time.Now().UTC()
-	if err := m.saveWorkspace(workspace); err != nil {
+	sandbox.State, sandbox.UpdatedAt = StateBusy, time.Now().UTC()
+	if err := m.saveSandbox(sandbox); err != nil {
 		lock.Unlock()
 		return ShellResult{}, err
 	}
 	lock.Unlock()
-	output, err := m.driver.Exec(ctx, sandboxID, command)
+	output, err := m.driver.Exec(ctx, sandbox.SandboxID, command)
 	lock.Lock()
-	current, loadErr := m.loadWorkspace(id)
-	if loadErr == nil && current.ActiveSandboxID == sandboxID && current.State == StateBusy {
+	current, loadErr := m.loadSandbox(userID)
+	if loadErr == nil && current.State == StateBusy {
 		current.State, current.UpdatedAt = StateReady, time.Now().UTC()
-		_ = m.saveWorkspace(current)
+		_ = m.saveSandbox(current)
 	}
 	lock.Unlock()
-	return ShellResult{WorkspaceID: id, SandboxID: sandboxID, Command: command, Output: string(output)}, err
+	return ShellResult{UserID: userID, SandboxID: sandbox.SandboxID, Command: command, Output: string(output)}, err
 }
 
 func (m *Manager) OpenConsole(ctx context.Context, sandboxID string, options backend.ConsoleOptions) (backend.Console, error) {
@@ -570,12 +591,12 @@ func (m *Manager) OpenConsole(ctx context.Context, sandboxID string, options bac
 	if !ok {
 		return nil, errors.New("development sandbox is not ready")
 	}
-	workspaceID, ok := owned.(string)
+	userID, ok := owned.(string)
 	if !ok {
 		return nil, errors.New("development sandbox ownership is unavailable")
 	}
-	workspace, err := m.loadWorkspace(workspaceID)
-	if err != nil || workspace.ActiveSandboxID != sandboxID || (workspace.State != StateReady && workspace.State != StateConflicted) {
+	sandbox, err := m.loadSandbox(userID)
+	if err != nil || sandbox.SandboxID != sandboxID || (sandbox.State != StateReady && sandbox.State != StateConflicted) {
 		return nil, errors.New("development sandbox is not ready")
 	}
 	consoleDriver, ok := m.driver.(interface {
@@ -587,100 +608,73 @@ func (m *Manager) OpenConsole(ctx context.Context, sandboxID string, options bac
 	return consoleDriver.OpenConsole(ctx, sandboxID, options)
 }
 
-func (m *Manager) ResetSource(ctx context.Context, id string, confirmed bool) (Workspace, error) {
+func (m *Manager) ResetSource(ctx context.Context, userID string, confirmed bool) (Sandbox, error) {
 	if !confirmed {
-		return Workspace{}, errors.New("source reset requires explicit confirmation")
+		return Sandbox{}, errors.New("source reset requires explicit confirmation")
 	}
-	unlock := m.lockWorkspace(id)
+	unlock := m.lockUser(userID)
 	defer unlock()
-	workspace, err := m.loadWorkspace(id)
+	sandbox, err := m.loadSandbox(userID)
 	if err != nil {
-		return Workspace{}, err
+		return Sandbox{}, err
 	}
-	if workspace.ActiveSandboxID != "" {
-		_ = m.driver.Kill(ctx, workspace.ActiveSandboxID)
-		if err := m.driver.Delete(ctx, workspace.ActiveSandboxID); err != nil {
-			return workspace, err
+	if _, active := m.owned.Load(sandbox.SandboxID); active {
+		_ = m.driver.Kill(ctx, sandbox.SandboxID)
+		if err := m.driver.Delete(ctx, sandbox.SandboxID); err != nil {
+			return sandbox, err
 		}
-		m.owned.Delete(workspace.ActiveSandboxID)
-		workspace.ActiveSandboxID = ""
+		_ = removeDevelopmentFilestore(m.config.PackagesRoot, sandbox.SandboxID)
+		m.owned.Delete(sandbox.SandboxID)
 	}
-	if err := os.RemoveAll(filepath.Join(m.workspaceDataRoot(workspace), "source")); err != nil {
-		return workspace, err
+	if err := os.RemoveAll(m.overlayRoot(sandbox)); err != nil {
+		return sandbox, err
 	}
-	_ = os.Remove(filepath.Join(m.workspaceRoot(workspace), "bases.toml"))
-	workspace.SourcePath, workspace.ConflictedPackages, workspace.State = "", nil, StateResetting
-	if err := m.startLocked(ctx, &workspace); err != nil {
-		return workspace, err
+	sandbox.SourcePath, sandbox.ConflictedPackages, sandbox.State = "", nil, StateResetting
+	if err := m.startLocked(ctx, &sandbox); err != nil {
+		return sandbox, err
 	}
-	return workspace, nil
+	return sandbox, nil
 }
 
-func (m *Manager) FactoryReset(ctx context.Context, id string, confirmed bool) (Workspace, error) {
+func (m *Manager) FactoryReset(ctx context.Context, userID string, confirmed bool) (Sandbox, error) {
 	if !confirmed {
-		return Workspace{}, errors.New("factory reset requires explicit confirmation")
+		return Sandbox{}, errors.New("factory reset requires explicit confirmation")
 	}
-	unlock := m.lockWorkspace(id)
+	unlock := m.lockUser(userID)
 	defer unlock()
-	old, err := m.loadWorkspace(id)
+	old, err := m.loadSandbox(userID)
 	if err != nil {
-		return Workspace{}, err
+		return Sandbox{}, err
 	}
-	if old.ActiveSandboxID != "" {
-		_ = m.driver.Kill(ctx, old.ActiveSandboxID)
-		if err := m.driver.Delete(ctx, old.ActiveSandboxID); err != nil {
-			return Workspace{}, err
+	if _, active := m.owned.Load(old.SandboxID); active {
+		_ = m.driver.Kill(ctx, old.SandboxID)
+		if err := m.driver.Delete(ctx, old.SandboxID); err != nil {
+			return Sandbox{}, err
 		}
-		m.owned.Delete(old.ActiveSandboxID)
+		_ = removeDevelopmentFilestore(m.config.PackagesRoot, old.SandboxID)
+		m.owned.Delete(old.SandboxID)
 	}
-	for _, path := range []string{
-		m.workspaceRoot(old),
-		filepath.Join(m.userRoot(old.OwnerUserID), "system"),
-	} {
-		if err := os.RemoveAll(path); err != nil {
-			return Workspace{}, err
-		}
+	if err := os.RemoveAll(m.sandboxRoot(old)); err != nil {
+		return Sandbox{}, err
 	}
-	if err := os.MkdirAll(filepath.Join(m.workspaceRootFor(old.OwnerUserID, id), "runtime"), 0o700); err != nil {
-		return Workspace{}, err
-	}
-	token, err := randomHex(32)
-	if err != nil {
-		return Workspace{}, err
-	}
-	now := time.Now().UTC()
-	workspace := Workspace{Schema: workspaceSchema, WorkspaceID: id, OwnerUserID: old.OwnerUserID, State: StateResetting, CreatedAt: now, UpdatedAt: now, Token: token, MountProfile: cloneMountProfile(m.config.MountProfile)}
-	if err := m.preparePersistentMounts(&workspace); err != nil {
-		return Workspace{}, err
-	}
-	if err := m.saveWorkspace(workspace); err != nil {
-		return Workspace{}, err
-	}
-	if err := m.startLocked(ctx, &workspace); err != nil {
-		return workspace, err
-	}
-	return workspace, nil
+	return m.createLocked(ctx, userID)
 }
 
-func (m *Manager) workspaceRootFor(userID, id string) string {
-	return filepath.Join(m.userRoot(userID), "workspaces", id)
+func (m *Manager) sandboxRootForUser(userID string) string {
+	return filepath.Join(m.userRoot(userID), "dev-sandbox")
 }
 
-func (m *Manager) workspaceRoot(workspace Workspace) string {
-	return m.workspaceRootFor(workspace.OwnerUserID, workspace.WorkspaceID)
+func (m *Manager) sandboxRoot(sandbox Sandbox) string {
+	return m.sandboxRootForUser(sandbox.UserID)
 }
 
-func (m *Manager) workspaceDataRoot(workspace Workspace) string {
-	return m.workspaceRoot(workspace)
-}
-
-func (m *Manager) workspaceLock(id string) *sync.Mutex {
-	value, _ := m.workspaceMu.LoadOrStore(id, &sync.Mutex{})
+func (m *Manager) userLock(userID string) *sync.Mutex {
+	value, _ := m.userMu.LoadOrStore(userID, &sync.Mutex{})
 	return value.(*sync.Mutex)
 }
 
-func (m *Manager) lockWorkspace(id string) func() {
-	lock := m.workspaceLock(id)
+func (m *Manager) lockUser(userID string) func() {
+	lock := m.userLock(userID)
 	lock.Lock()
 	return lock.Unlock
 }
@@ -697,95 +691,54 @@ func (m *Manager) systemRootPath(userID, imageDigest string) (string, error) {
 		return "", errors.New("development system storage requires a user and image digest")
 	}
 	digest := sha256.Sum256([]byte(imageDigest))
-	return filepath.Join(m.userRoot(userID), "system", hex.EncodeToString(digest[:]), "rootfs"), nil
+	return filepath.Join(m.sandboxRootForUser(userID), "system", hex.EncodeToString(digest[:]), "rootfs"), nil
 }
 
-func (m *Manager) loadWorkspace(id string) (Workspace, error) {
-	if !safeRuntimeID(id) {
-		return Workspace{}, errors.New("invalid development workspace ID")
+func (m *Manager) loadSandbox(userID string) (Sandbox, error) {
+	if !safeUserID(userID) {
+		return Sandbox{}, errors.New("invalid development sandbox user")
 	}
-	if owner, ok := m.workspaceOwner.Load(id); ok {
-		if userID, valid := owner.(string); valid {
-			workspace, err := m.loadWorkspaceForUser(id, userID)
-			if err == nil || !errors.Is(err, os.ErrNotExist) {
-				return workspace, err
-			}
-			m.workspaceOwner.Delete(id)
+	var sandbox Sandbox
+	if err := readTOML(filepath.Join(m.sandboxRootForUser(userID), "sandbox.toml"), &sandbox); err != nil {
+		return Sandbox{}, err
+	}
+	expectedID, _ := sandboxIDForUser(userID)
+	if sandbox.UserID != userID || sandbox.SandboxID != expectedID {
+		return Sandbox{}, errors.New("development sandbox identity mismatch")
+	}
+	if sandbox.Schema != sandboxSchema {
+		return Sandbox{}, fmt.Errorf("unsupported development sandbox schema %d", sandbox.Schema)
+	}
+	if _, owned := m.owned.Load(sandbox.SandboxID); !owned && sandbox.State != StateStopped && sandbox.State != StateFailed {
+		sandbox.State = StateStopped
+		sandbox.ActivationActive, sandbox.WritesPaused = false, false
+		sandbox.UpdatedAt = time.Now().UTC()
+		if err := m.saveSandbox(sandbox); err != nil {
+			return Sandbox{}, err
 		}
 	}
-	users, err := os.ReadDir(m.config.UsersRoot)
-	if err != nil {
-		return Workspace{}, err
-	}
-	for _, user := range users {
-		if !user.IsDir() || !safeUserID(user.Name()) {
-			continue
-		}
-		if _, err := os.Stat(filepath.Join(m.workspaceRootFor(user.Name(), id), "workspace.toml")); err == nil {
-			return m.loadWorkspaceForUser(id, user.Name())
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return Workspace{}, err
-		}
-	}
-	return Workspace{}, os.ErrNotExist
+	sandbox.CanSafelyReset = canSafelyReset(&sandbox)
+	return sandbox, nil
 }
 
-func (m *Manager) loadWorkspaceForUser(id, userID string) (Workspace, error) {
-	if !safeRuntimeID(id) || !safeUserID(userID) {
-		return Workspace{}, errors.New("invalid development workspace identity")
+func (m *Manager) saveSandbox(sandbox Sandbox) error {
+	expectedID, err := sandboxIDForUser(sandbox.UserID)
+	if err != nil || sandbox.SandboxID != expectedID {
+		return errors.New("invalid development sandbox identity")
 	}
-	var workspace Workspace
-	if err := readTOML(filepath.Join(m.workspaceRootFor(userID, id), "workspace.toml"), &workspace); err != nil {
-		return Workspace{}, err
-	}
-	if workspace.WorkspaceID != id || workspace.OwnerUserID != userID {
-		return Workspace{}, errors.New("development workspace identity mismatch")
-	}
-	if workspace.Schema != workspaceSchema {
-		return Workspace{}, fmt.Errorf("unsupported development workspace schema %d", workspace.Schema)
-	}
-	m.workspaceOwner.Store(id, userID)
-	if workspace.ActiveSandboxID != "" {
-		if _, owned := m.owned.Load(workspace.ActiveSandboxID); !owned {
-			workspace.ActiveSandboxID = ""
-			workspace.State = StateStopped
-			workspace.ActivationActive, workspace.WritesPaused = false, false
-			workspace.UpdatedAt = time.Now().UTC()
-			if err := m.saveWorkspace(workspace); err != nil {
-				return Workspace{}, err
-			}
-		}
-	}
-	if err := validateMountProfile(m.config, workspace.MountProfile); err != nil {
-		return Workspace{}, fmt.Errorf("validate persisted development mount profile: %w", err)
-	}
-	workspace.CanSafelyReset = canSafelyReset(&workspace)
-	return workspace, nil
+	return writeTOML(filepath.Join(m.sandboxRoot(sandbox), "sandbox.toml"), sandbox, 0o600)
 }
 
-func (m *Manager) saveWorkspace(workspace Workspace) error {
-	if !safeRuntimeID(workspace.WorkspaceID) || !safeUserID(workspace.OwnerUserID) {
-		return errors.New("invalid development workspace identity")
-	}
-	m.workspaceOwner.Store(workspace.WorkspaceID, workspace.OwnerUserID)
-	return writeTOML(filepath.Join(m.workspaceRoot(workspace), "workspace.toml"), workspace, 0o600)
-}
-
-func canSafelyReset(workspace *Workspace) bool {
-	if workspace == nil || workspace.ActivationActive || workspace.WritesPaused {
+func canSafelyReset(sandbox *Sandbox) bool {
+	if sandbox == nil || sandbox.ActivationActive || sandbox.WritesPaused {
 		return false
 	}
-	switch workspace.State {
+	switch sandbox.State {
 	case StateReady, StateConflicted, StateStopped, StateFailed:
 		return true
 	default:
 		return false
 	}
-}
-
-func workspaceID(userID string) string {
-	sum := sha256.Sum256([]byte(userID))
-	return "default-" + hex.EncodeToString(sum[:8])
 }
 
 func safeUserID(value string) bool {
@@ -824,11 +777,11 @@ func safePackageSegment(value string) bool {
 	return true
 }
 
-func (m *Manager) log(message string, workspace Workspace, values ...any) {
+func (m *Manager) log(message string, sandbox Sandbox, values ...any) {
 	if m.config.Logger == nil {
 		return
 	}
-	fields := []any{"developer_user_id", workspace.OwnerUserID, "workspace_id", workspace.WorkspaceID}
+	fields := []any{"developer_user_id", sandbox.UserID, "sandbox_id", sandbox.SandboxID}
 	m.config.Logger.Info(message, append(fields, values...)...)
 }
 
@@ -858,23 +811,23 @@ func (m *Manager) imageStatusLocked() (ImageStatus, error) {
 	return ImageStatus{Digest: digest, BuiltAt: record.BuiltAt, DenoVersion: record.DenoVersion, BuildStatus: "ready"}, nil
 }
 
-func (m *Manager) serveWorkspace(response http.ResponseWriter, request *http.Request) {
+func (m *Manager) serveSandbox(response http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
 		http.Error(response, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	parts := strings.Split(strings.Trim(request.URL.Path, "/"), "/")
-	if len(parts) != 5 || parts[0] != "v1" || parts[1] != "development" || parts[2] != "workspaces" {
+	if len(parts) != 5 || parts[0] != "v1" || parts[1] != "development" || parts[2] != "sandboxes" {
 		http.NotFound(response, request)
 		return
 	}
-	id, operation := parts[3], parts[4]
-	workspace, err := m.loadWorkspace(id)
+	userID, operation := parts[3], parts[4]
+	sandbox, err := m.loadSandbox(userID)
 	if err != nil {
-		http.Error(response, "workspace not found", http.StatusNotFound)
+		http.Error(response, "sandbox not found", http.StatusNotFound)
 		return
 	}
-	if request.Header.Get("Authorization") != "Bearer "+workspace.Token {
+	if request.Header.Get("Authorization") != "Bearer "+sandbox.Token {
 		http.Error(response, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -897,18 +850,25 @@ func (m *Manager) serveWorkspace(response http.ResponseWriter, request *http.Req
 	response.Header().Set("Content-Type", "application/json")
 	switch operation {
 	case "preview":
-		result, err := m.config.ActivationGateway.Preview(request.Context(), id, options)
+		result, err := m.config.ActivationGateway.Preview(request.Context(), userID, options)
 		if err != nil {
 			http.Error(response, err.Error(), http.StatusConflict)
 			return
 		}
 		_ = json.NewEncoder(response).Encode(result)
 	case "activate":
-		result, err := m.config.ActivationGateway.Activate(request.Context(), id, options)
+		activationContext := context.WithValue(request.Context(), deferredOverlayResetKey{}, true)
+		result, err := m.config.ActivationGateway.Activate(activationContext, userID, options)
 		if err != nil || !result.Success {
 			response.WriteHeader(http.StatusConflict)
 		}
 		_ = json.NewEncoder(response).Encode(result)
+		if result.Success && result.OverlayResetPending {
+			if flusher, ok := response.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			go m.resetOverlayAfterHelper(userID)
+		}
 	default:
 		http.NotFound(response, request)
 	}

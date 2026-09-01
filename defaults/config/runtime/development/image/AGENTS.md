@@ -4,8 +4,7 @@
 
 # Ownership
 
-- Own files installed beneath `/opt/development`, `/usr/local/bin`, and the
-  image's `/etc/profile`.
+- Own files installed beneath `/opt/development` and the image's `/etc/profile`.
 
 # Local Contracts
 
@@ -24,11 +23,10 @@
 - APT and shell package operations invoke Debian's native `/usr/bin/dpkg`
   directly. The image contains no dpkg wrapper or filesystem-metadata
   compatibility layer.
-- The image contains no filesystem scanner, draft applier, persistence helper,
-  or Go compiler. Native durable workspace storage is entirely kernel-owned.
-- The `activate` wrapper grants only injected workspace variables and loopback
-  networking to `activate.ts`; it calls the authenticated workspace endpoint,
-  which dispatches the ordinary typed activation command.
+- The image contains no filesystem scanner, draft applier, activation helper,
+  persistence helper, or Go compiler. Durable system storage, private package
+  overlay checkpoints, and the separate `/workspace/scripts` helper mount are
+  entirely kernel-owned.
 
 # Work Guidance
 

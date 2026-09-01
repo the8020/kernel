@@ -2,20 +2,20 @@ version = 1
 id = "development.sandbox.kill"
 path = ["development", "sandbox", "kill"]
 summary = "Kill a developer sandbox"
-description = "Immediately kills and deletes the active sandbox process; native durable workspace filesystems remain recoverable."
+description = "Checkpoints private package deltas, force-kills and deletes the active process, and retains the sandbox's durable files."
 mutates_state = true
 restart_behavior = "none"
 [handler]
 file = "kernel/cbus/commands/development/sandbox/kill/kill.go"
 symbol = "New"
 [[parameters]]
-name = "workspace_id"
+name = "user_id"
 type = "string"
 position = 0
 required = true
-description = "Development workspace ID."
+description = "Developer user ID."
 [[result]]
-name = "workspace"
+name = "sandbox"
 type = "object"
 [[examples]]
-command = "development sandbox kill default-0123456789abcdef"
+command = "development sandbox kill alice"

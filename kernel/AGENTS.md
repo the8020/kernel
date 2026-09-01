@@ -11,7 +11,7 @@
   Phase 1D adds bootstrap authentication, access-controlled
   stateless/persistent services, and the UUI application protocol on that same
   runtime. Phase 1E adds
-  private development sandboxes, native durable storage, independent package Git
+  private development sandboxes, persistent private overlays, independent package Git
   repositories, typed activation and synchronization, and kernel-authenticated
   SSH terminal access.
 
@@ -26,8 +26,8 @@
   execution, port, routing, resource, and debugging behavior while all program
   code remains inside Deno Workers; full containerd mode is preferred and direct
   rootless gVisor is the automatic reduced fallback.
-- The kernel additionally owns development-image/workspace lifecycle, native
-  durable workspace storage, workspace-scoped activation ingress, package-index
+- The kernel additionally owns development-image/sandbox lifecycle, durable
+  per-user sandbox storage, sandbox-scoped activation ingress, package-index
   persistence, Git source/version inspection, and package synchronization, plus
   the generic authenticated local console broker and
   backend PTY exec boundary. It owns the SSH listener and protocol adapter while
@@ -154,8 +154,9 @@
 - Development sandboxes use the same selected rootful or rootless runsc mode as
   workload isolation but a distinct editable image and lifecycle. Their writable
   package view never grants direct publication into shared package repositories;
-  native durable source/system/home storage and Git activation remain
-  separately owned. Sandbox lifecycle performs no filesystem content scan.
+  checkpointed private deltas, native durable system/home storage, and Git
+  activation remain separately owned. Sandbox lifecycle scans package content
+  only at explicit checkpoint boundaries and never polls it.
 
 # Work Guidance
 
@@ -206,8 +207,8 @@
   lifecycle, administration, and node-local status.
 - `auth/AGENTS.md`: bootstrap administrators, Argon2id passwords, opaque shared
   authentication sessions, and kernel-generated cookies.
-- `development/AGENTS.md`: development images, private native-disk workspaces,
-  package Git repositories, activation, and reset behavior.
+- `development/AGENTS.md`: the per-user development sandbox, private package
+  overlay checkpoints, package Git activation, and reset behavior.
 - `console/AGENTS.md`: transport-neutral sandbox PTY leases and the
   authenticated local WebSocket relay.
 - `ssh/AGENTS.md`: authenticated SSH listener, fixed target-selector grammar,

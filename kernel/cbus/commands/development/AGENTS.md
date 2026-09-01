@@ -1,6 +1,6 @@
 # Purpose
 
-- Expose development images, native durable workspaces, and activation through the
+- Expose development images, persistent user sandboxes, and activation through the
   existing declarative command bus.
 
 # Ownership
@@ -13,7 +13,8 @@
 # Local Contracts
 
 - Every command delegates to `services.Development`; no command implements a
-  second workspace, Git, or activation path.
+  second sandbox, Git, or activation path. Sandbox lifecycle and activation
+  commands address the one sandbox by `user_id`.
 - Destructive source and factory operations require an explicit `--confirm`.
 - `development sandbox shell --command` executes through the kernel-owned
   sandbox driver and therefore remains a typed command-bus operation.
@@ -33,5 +34,5 @@
 
 - `shared/`: shared thin-handler argument and result shaping.
 - `image/`: read-only development image status.
-- `sandbox/`: workspace sandbox lifecycle, shell, and reset commands.
+- `sandbox/`: development sandbox lifecycle, shell, and reset commands.
 - `activate/`: activation preview and execution commands.

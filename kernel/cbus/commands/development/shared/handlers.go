@@ -13,7 +13,7 @@ import (
 
 func service(serviceSet *services.Services) (services.DevelopmentService, error) {
 	if serviceSet == nil || serviceSet.Development == nil {
-		return nil, core.NewError(core.CodeRuntimeUnavailable, "development workspace manager is unavailable")
+		return nil, core.NewError(core.CodeRuntimeUnavailable, "development sandbox manager is unavailable")
 	}
 	return serviceSet.Development, nil
 }
@@ -45,7 +45,7 @@ func SandboxCreate(s *services.Services) core.Handler {
 			return nil, err
 		}
 		result, err := service.Create(ctx, commandutil.String(request, "user_id"))
-		return core.Result{"workspace": result}, operation(err)
+		return core.Result{"sandbox": result}, operation(err)
 	}
 }
 func SandboxList(s *services.Services) core.Handler {
@@ -55,52 +55,52 @@ func SandboxList(s *services.Services) core.Handler {
 			return nil, err
 		}
 		result, err := service.List()
-		return core.Result{"workspaces": result}, operation(err)
+		return core.Result{"sandboxes": result}, operation(err)
 	}
 }
 func SandboxInspect(s *services.Services) core.Handler {
-	return workspaceOne(s, func(ctx context.Context, service services.DevelopmentService, id string, _ core.Request) (development.Workspace, error) {
-		return service.Inspect(id)
+	return sandboxOne(s, func(ctx context.Context, service services.DevelopmentService, userID string, _ core.Request) (development.Sandbox, error) {
+		return service.Inspect(userID)
 	})
 }
 func SandboxStart(s *services.Services) core.Handler {
-	return workspaceOne(s, func(ctx context.Context, service services.DevelopmentService, id string, _ core.Request) (development.Workspace, error) {
-		return service.Start(ctx, id)
+	return sandboxOne(s, func(ctx context.Context, service services.DevelopmentService, userID string, _ core.Request) (development.Sandbox, error) {
+		return service.Start(ctx, userID)
 	})
 }
 func SandboxStop(s *services.Services) core.Handler {
-	return workspaceOne(s, func(ctx context.Context, service services.DevelopmentService, id string, _ core.Request) (development.Workspace, error) {
-		return service.Stop(ctx, id)
+	return sandboxOne(s, func(ctx context.Context, service services.DevelopmentService, userID string, _ core.Request) (development.Sandbox, error) {
+		return service.Stop(ctx, userID)
 	})
 }
 func SandboxRestart(s *services.Services) core.Handler {
-	return workspaceOne(s, func(ctx context.Context, service services.DevelopmentService, id string, _ core.Request) (development.Workspace, error) {
-		return service.Restart(ctx, id)
+	return sandboxOne(s, func(ctx context.Context, service services.DevelopmentService, userID string, _ core.Request) (development.Sandbox, error) {
+		return service.Restart(ctx, userID)
 	})
 }
 func SandboxKill(s *services.Services) core.Handler {
-	return workspaceOne(s, func(ctx context.Context, service services.DevelopmentService, id string, _ core.Request) (development.Workspace, error) {
-		return service.Kill(ctx, id)
+	return sandboxOne(s, func(ctx context.Context, service services.DevelopmentService, userID string, _ core.Request) (development.Sandbox, error) {
+		return service.Kill(ctx, userID)
 	})
 }
 func SandboxResetSource(s *services.Services) core.Handler {
-	return workspaceOne(s, func(ctx context.Context, service services.DevelopmentService, id string, request core.Request) (development.Workspace, error) {
-		return service.ResetSource(ctx, id, commandutil.Bool(request, "confirm"))
+	return sandboxOne(s, func(ctx context.Context, service services.DevelopmentService, userID string, request core.Request) (development.Sandbox, error) {
+		return service.ResetSource(ctx, userID, commandutil.Bool(request, "confirm"))
 	})
 }
 func SandboxFactoryReset(s *services.Services) core.Handler {
-	return workspaceOne(s, func(ctx context.Context, service services.DevelopmentService, id string, request core.Request) (development.Workspace, error) {
-		return service.FactoryReset(ctx, id, commandutil.Bool(request, "confirm"))
+	return sandboxOne(s, func(ctx context.Context, service services.DevelopmentService, userID string, request core.Request) (development.Sandbox, error) {
+		return service.FactoryReset(ctx, userID, commandutil.Bool(request, "confirm"))
 	})
 }
-func workspaceOne(s *services.Services, call func(context.Context, services.DevelopmentService, string, core.Request) (development.Workspace, error)) core.Handler {
+func sandboxOne(s *services.Services, call func(context.Context, services.DevelopmentService, string, core.Request) (development.Sandbox, error)) core.Handler {
 	return func(ctx context.Context, request core.Request) (core.Result, error) {
 		service, err := service(s)
 		if err != nil {
 			return nil, err
 		}
-		result, err := call(ctx, service, commandutil.String(request, "workspace_id"), request)
-		return core.Result{"workspace": result}, operation(err)
+		result, err := call(ctx, service, commandutil.String(request, "user_id"), request)
+		return core.Result{"sandbox": result}, operation(err)
 	}
 }
 func SandboxDelete(s *services.Services) core.Handler {
@@ -109,9 +109,8 @@ func SandboxDelete(s *services.Services) core.Handler {
 		if err != nil {
 			return nil, err
 		}
-		deleteUserData := commandutil.Bool(request, "delete_user_data")
-		err = service.Delete(ctx, commandutil.String(request, "workspace_id"), deleteUserData)
-		return core.Result{"deleted": err == nil, "user_data_deleted": deleteUserData}, operation(err)
+		err = service.Delete(ctx, commandutil.String(request, "user_id"))
+		return core.Result{"deleted": err == nil}, operation(err)
 	}
 }
 func SandboxShell(s *services.Services) core.Handler {
@@ -124,7 +123,7 @@ func SandboxShell(s *services.Services) core.Handler {
 		if command == "" {
 			command = "pwd"
 		}
-		result, err := service.Shell(ctx, commandutil.String(request, "workspace_id"), command)
+		result, err := service.Shell(ctx, commandutil.String(request, "user_id"), command)
 		return core.Result{"shell": result}, operation(err)
 	}
 }
@@ -138,7 +137,7 @@ func ActivatePreview(s *services.Services) core.Handler {
 		if err != nil {
 			return nil, err
 		}
-		result, err := service.Preview(ctx, commandutil.String(request, "workspace_id"), options)
+		result, err := service.Preview(ctx, commandutil.String(request, "user_id"), options)
 		return core.Result{"preview": result}, operation(err)
 	}
 }
@@ -152,8 +151,8 @@ func ActivateRun(s *services.Services) core.Handler {
 		if err != nil {
 			return nil, err
 		}
-		result, activationErr := service.Activate(ctx, commandutil.String(request, "workspace_id"), options)
-		if result.WorkspaceID != "" {
+		result, activationErr := service.Activate(ctx, commandutil.String(request, "user_id"), options)
+		if result.Status != "" {
 			return core.Result{"activation": result}, nil
 		}
 		return nil, operation(activationErr)

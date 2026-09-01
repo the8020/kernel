@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -48,6 +49,9 @@ func registerControlPlaneCommands(registry *core.Registry, serviceSet *services.
 
 func TestAdministrativeSocketPrecedesRuntimeInitialization(t *testing.T) {
 	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := instance.WriteLayout(root, instance.Layout{
 		Packages: filepath.Join(root, "packages"), Config: filepath.Join(root, "config"),
 		State: filepath.Join(root, "state"), Users: filepath.Join(root, "users"),

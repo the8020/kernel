@@ -13,10 +13,12 @@
 - Usernames are the shared Linux/storage/sandbox identity: 3-32 lowercase ASCII
   letters or digits, with no normalization, aliases, or path-safe conversion.
 - Passwords use Argon2id with per-password random salts and encoded PHC parameters; unknown users follow the same Argon2 verification path as wrong passwords.
-- Browser login may create an opaque authentication session; SSH password
+- Browser login may create an opaque authentication session. SSH password
   verification returns only trusted user context, accepts mutable password
   bytes without creating an immutable copy, and never retains or persists the
-  presented secret.
+  presented secret. SSH public-key verification may resolve the same trusted
+  context only for an existing enabled user after the protocol adapter verifies
+  the separate key factor.
 - Authentication cookies are opaque `v1.<id>.<secret>` values; files contain only SHA-256 secret hashes and are published atomically without overwriting collisions.
 - User mutations use one advisory lock and restrictive atomic replacement. Password changes, disable operations, and explicit invalidation increment `auth_version`.
 - Ordinary validation is read-only except idempotent lazy deletion of expired records; every node may run cleanup concurrently without a global lock.
@@ -33,6 +35,7 @@
   mutable transport-secret verification, atomic and cross-process user
   mutation, corruption handling, opaque session creation and cross-node
   validation, revocation, expiration, cleanup concurrency, cookie headers,
-  disabled/version-invalid users, and secret non-disclosure.
+  disabled/version-invalid users, password and public-key identity resolution,
+  and secret non-disclosure.
 
 # Child DOX Index

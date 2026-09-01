@@ -5,7 +5,7 @@
 
 # Ownership
 
-- Own typed service lookup, workspace result helpers, activation-option JSON and
+- Own typed service lookup, sandbox result helpers, activation-option JSON and
   CSV conversion, and standard operation-error mapping.
 - Do not own development behavior, persistence, Git, or command metadata.
 
@@ -22,7 +22,7 @@
 
 # Verification
 
-- `handlers_test.go` invokes all 21 development and package-repository command
+- `handlers_test.go` invokes all 19 development and package-repository command
   handlers, proves one service delegation per operation, and checks structured
   activation conversion; generated-handler compilation verifies every leaf
   binding.

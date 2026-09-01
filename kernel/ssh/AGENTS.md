@@ -4,10 +4,10 @@
 
 # Ownership
 
-- Own the SSH listener, persistent node host key, password-authentication
-  adapter, fixed remote selector grammar, SSH session-channel protocol, and PTY
+- Own the SSH listener, persistent node host key, password/public-key
+  authentication adapters, fixed remote selector grammar, SSH session-channel protocol, and PTY
   byte/resize/signal relay.
-- Do not own users, authorization roles, development-workspace lifecycle,
+- Do not own users, authorization roles, development-sandbox lifecycle,
   sandbox lifecycle, shell command interpretation, or PTY creation.
 
 # Local Contracts
@@ -15,10 +15,13 @@
 - `network.ssh_port` is the restart-required node-local listener port. The
   Ed25519 host key lives only at `node/kernel/ssh/host_ed25519`, mode `0600`
   below a mode-`0700` directory, and is generated once from `crypto/rand`.
-- SSH accepts only password authentication against real enabled 80|20 users.
-  Presented password bytes are never persisted or logged and are cleared after
-  verification. Connections, sessions, authentication attempts, handshakes,
-  selector payloads, and terminal geometry are bounded.
+- SSH accepts password authentication and public keys listed in an existing
+  development sandbox's `/root/.ssh/authorized_keys`, always against a real
+  enabled 80|20 user. Public-key lookup does not create or start a sandbox;
+  password remains the fallback. Presented password bytes are never persisted
+  or logged and are cleared after verification; key material and authorized-key
+  content are never logged. Connections, sessions, authentication attempts,
+  handshakes, key-file parsing, selector payloads, and terminal geometry are bounded.
 - Session diagnostics log authenticated identity, request/stage, target, and
   command byte length, but never passwords or remote command contents.
 - Bounded standard `env` requests forward every valid client variable unchanged
@@ -26,11 +29,11 @@
   `USER`, and `LOGNAME` apply only when the client does not provide them; the
   default `PATH` includes the standard administrative `sbin` directories.
   Development targets default to the sandbox's real root identity and `/root`;
-  the authenticated 80|20 username still selects and authorizes its workspace.
-- A shell request opens the authenticated user's deterministic default
-  development workspace, creating or starting its sandbox when needed.
+  the authenticated 80|20 username still selects and authorizes its sandbox.
+- A shell request opens the authenticated user's deterministic development
+  sandbox, creating or starting it when needed.
 - An ordinary exec request runs through `[/bin/bash, -lc, <command>]` inside the
-  authenticated user's default development sandbox. Commands beginning with
+  authenticated user's development sandbox. Commands beginning with
   reserved `the8020` use the structured `the8020 [sandbox-id=<id>]` selector
   grammar instead; its optional parameter accepts a canonical generated `sbx-`
   ID or deterministic `dev-<username>` ID. The prefix selects the provider
@@ -61,12 +64,13 @@
 
 # Verification
 
-- Package tests cover persistent host-key safety, real SSH password handshakes,
+- Package tests cover persistent host-key safety, real SSH password and
+  public-key handshakes, enabled identity checks, authorized-key parsing,
   default and selected routing, bounded environment forwarding, ordinary sandbox
   commands and exit statuses, streamed exec stdin and EOF, rejected channels,
   PTY geometry and resizing, exact control/escape-byte relay, and shutdown.
 - The real rootless development E2E exercises SSH through the actual
-  authentication, development-workspace, console-broker, and runsc PTY path,
+  authentication, development-sandbox, console-broker, and runsc PTY path,
   including a contextual working-directory prompt and a plain-`xterm` Nano
   full-screen session.
 

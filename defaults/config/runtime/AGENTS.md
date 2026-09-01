@@ -18,7 +18,7 @@
 # Local Contracts
 
 - Generic application workloads are exactly `service` and `job`. Development
-  workspaces use a separate image with `sleep` as init and do not host the
+  sandboxes use a separate image with `sleep` as init and do not host the
   supervisor.
 - Every service sandbox has one infrastructure supervisor and zero or more
   Workers. Entrypoints load only inside Workers; Worker permissions cannot

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,7 +38,7 @@ type RootlessConfig = RunscConfig
 type RunscDriver struct{ config RunscConfig }
 type RootlessDriver = RunscDriver
 
-const developmentPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+const developmentPath = "/workspace/scripts:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 // A conventional OCI user namespace maps 65536 IDs. Mapping that complete
 // identity range lets native package managers preserve service-user ownership
@@ -213,6 +214,7 @@ func (d *RunscDriver) Start(ctx context.Context, start SandboxStart) error {
 }
 
 func developmentSpec(start SandboxStart, bundle string) specs.Spec {
+	annotations := map[string]string{}
 	mounts := []specs.Mount{
 		{Destination: "/proc", Type: "proc", Source: "proc", Options: []string{"nosuid", "noexec", "nodev"}},
 		{Destination: "/dev", Type: "tmpfs", Source: "tmpfs", Options: []string{"nosuid", "mode=755", "size=65536k"}},
@@ -233,34 +235,49 @@ func developmentSpec(start SandboxStart, bundle string) specs.Spec {
 			mode = "rw"
 		}
 		options := []string{"rbind", mode, "nosuid", "nodev", "rprivate"}
-		if !mount.Writable {
+		if !mount.Writable && !mount.Executable {
 			options = append(options, "noexec")
 		}
 		mounts = append(mounts, specs.Mount{Destination: mount.Target, Type: "bind", Source: mount.HostSource, Options: options})
+		if mount.Behavior == MountSandboxSource {
+			prefix := "dev.gvisor.spec.mount." + mount.ID + "."
+			annotations[prefix+"source"] = mount.HostSource
+			annotations[prefix+"type"] = "bind"
+			annotations[prefix+"share"] = "container"
+			annotations[prefix+"options"] = strings.Join(options, ",")
+		}
 	}
 	capabilities := append([]string(nil), developmentRootCapabilities...)
 	spec := specs.Spec{Version: specs.Version, Process: &specs.Process{
 		Terminal: false, User: specs.User{UID: 0, GID: 0}, Args: []string{"/bin/bash", "/opt/development/sandbox.sh"},
-		Env: []string{"PATH=" + developmentPath, "HOME=/root", "USER=root", "LOGNAME=root", "DENO_DIR=/root/.cache/deno", "DENO_NO_UPDATE_CHECK=1", "DENO_NO_PROMPT=1", "DEVELOPMENT_WORKSPACE_ID=" + start.WorkspaceID, "DEVELOPMENT_ACTIVATION_ENDPOINT=" + start.Endpoint, "DEVELOPMENT_ACTIVATION_TOKEN=" + start.Token},
+		Env: []string{"PATH=" + developmentPath, "HOME=/root", "USER=root", "LOGNAME=root", "DENO_DIR=/root/.cache/deno", "DENO_NO_UPDATE_CHECK=1", "DENO_NO_PROMPT=1", "DEVELOPMENT_USER_ID=" + start.UserID, "DEVELOPMENT_ACTIVATION_ENDPOINT=" + start.Endpoint, "DEVELOPMENT_ACTIVATION_TOKEN=" + start.Token},
 		Cwd: "/workspace", Capabilities: &specs.LinuxCapabilities{Bounding: capabilities, Effective: capabilities, Permitted: capabilities}, NoNewPrivileges: true,
-	}, Root: &specs.Root{Path: start.RootFS, Readonly: false}, Hostname: start.SandboxID, Mounts: mounts,
+	}, Root: &specs.Root{Path: start.RootFS, Readonly: false}, Hostname: start.SandboxID, Mounts: mounts, Annotations: annotations,
 		Linux: &specs.Linux{Namespaces: []specs.LinuxNamespace{{Type: specs.PIDNamespace}, {Type: specs.IPCNamespace}, {Type: specs.UTSNamespace}, {Type: specs.MountNamespace}}, MaskedPaths: []string{"/proc/acpi", "/proc/kcore", "/proc/keys", "/proc/timer_list", "/sys/firmware"}, ReadonlyPaths: []string{"/proc/bus", "/proc/fs", "/proc/irq", "/proc/sys", "/proc/sysrq-trigger"}},
 	}
 	return spec
 }
 
 func (d *RunscDriver) Exec(ctx context.Context, sandboxID, commandText string) ([]byte, error) {
+	output := &boundedBuffer{limit: commandOutputLimit}
+	if err := d.ExecStream(ctx, sandboxID, commandText, nil, output); err != nil {
+		return []byte(output.String()), err
+	}
+	return []byte(output.RawString()), nil
+}
+
+func (d *RunscDriver) ExecStream(ctx context.Context, sandboxID, commandText string, input io.Reader, output io.Writer) error {
 	if strings.TrimSpace(commandText) == "" {
 		commandText = "exec /bin/bash"
 	}
 	args := append(d.flags(sandboxID, "exec"), "--cwd=/workspace", "--env=HOME=/root", "--env=USER=root", "--env=LOGNAME=root", "--env=PATH="+developmentPath, sandboxID, "/bin/bash", "-lc", commandText)
 	command := d.commandContext(ctx, args...)
-	output := &boundedBuffer{limit: commandOutputLimit}
-	command.Stdout, command.Stderr = output, output
+	diagnostics := &boundedBuffer{limit: commandOutputLimit}
+	command.Stdin, command.Stdout, command.Stderr = input, output, diagnostics
 	if err := command.Run(); err != nil {
-		return []byte(output.String()), fmt.Errorf("development sandbox exec: %w: %s", err, output.String())
+		return fmt.Errorf("development sandbox exec: %w: %s", err, diagnostics.String())
 	}
-	return []byte(output.RawString()), nil
+	return nil
 }
 
 func (d *RunscDriver) OpenConsole(ctx context.Context, sandboxID string, options backend.ConsoleOptions) (backend.Console, error) {

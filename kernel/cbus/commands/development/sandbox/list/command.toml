@@ -2,14 +2,14 @@ version = 1
 id = "development.sandbox.list"
 path = ["development", "sandbox", "list"]
 summary = "List developer sandboxes"
-description = "Lists stable development workspaces and their current sandbox and lifecycle state."
+description = "Lists users' persistent development sandboxes and lifecycle state."
 mutates_state = false
 restart_behavior = "none"
 [handler]
 file = "kernel/cbus/commands/development/sandbox/list/list.go"
 symbol = "New"
 [[result]]
-name = "workspaces"
+name = "sandboxes"
 type = "array"
 [[examples]]
 command = "development sandbox list"

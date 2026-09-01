@@ -202,6 +202,62 @@ while IFS= read -r -d '' source; do
   fi
 done < <(find "$SOURCE_ROOT/defaults/node" -type f -print0)
 
+# Development helper scripts are platform-owned and mounted read-only into
+# every development sandbox. Refresh the complete tree so removed helpers do
+# not survive an upgrade and retain only the executable bit declared by source.
+SCRIPTS_SOURCE="$SOURCE_ROOT/defaults/scripts"
+SCRIPTS_ROOT="$INSTANCE_ROOT/scripts"
+SCRIPTS_STAGE=$(mktemp -d "$INSTANCE_ROOT/.scripts-install.XXXXXX")
+SCRIPTS_PREVIOUS=""
+cleanup_scripts_refresh() {
+  if [[ -n "$SCRIPTS_STAGE" && -e "$SCRIPTS_STAGE" ]]; then
+    rm -rf -- "$SCRIPTS_STAGE"
+  fi
+  if [[ -n "$SCRIPTS_PREVIOUS" && -e "$SCRIPTS_PREVIOUS" && ! -e "$SCRIPTS_ROOT" ]]; then
+    mv -- "$SCRIPTS_PREVIOUS" "$SCRIPTS_ROOT"
+  fi
+}
+trap cleanup_scripts_refresh EXIT
+chmod 0755 "$SCRIPTS_STAGE"
+while IFS= read -r -d '' directory; do
+  relative=${directory#"$SCRIPTS_SOURCE"/}
+  [[ "$directory" == "$SCRIPTS_SOURCE" ]] && relative=""
+  install -d -m 0755 "$SCRIPTS_STAGE/$relative"
+done < <(find "$SCRIPTS_SOURCE" -type d -print0)
+while IFS= read -r -d '' source; do
+  relative=${source#"$SCRIPTS_SOURCE"/}
+  if source_mode=$(stat -c '%a' -- "$source" 2>/dev/null); then
+    :
+  elif source_mode=$(stat -f '%Lp' "$source" 2>/dev/null); then
+    :
+  else
+    echo "cannot inspect helper-script mode: $source" >&2
+    exit 1
+  fi
+  if [[ ! "$source_mode" =~ ^[0-7]{3,4}$ ]]; then
+    echo "invalid helper-script mode $source_mode: $source" >&2
+    exit 1
+  fi
+  mode=0444
+  (( (8#$source_mode & 8#111) != 0 )) && mode=0555
+  install -m "$mode" "$source" "$SCRIPTS_STAGE/$relative"
+done < <(find "$SCRIPTS_SOURCE" -type f -print0)
+if [[ -e "$SCRIPTS_ROOT" ]]; then
+  SCRIPTS_PREVIOUS="$INSTANCE_ROOT/.scripts-previous.$$"
+  if [[ -e "$SCRIPTS_PREVIOUS" ]]; then
+    echo "script backup path already exists: $SCRIPTS_PREVIOUS" >&2
+    exit 1
+  fi
+  mv -- "$SCRIPTS_ROOT" "$SCRIPTS_PREVIOUS"
+fi
+mv -- "$SCRIPTS_STAGE" "$SCRIPTS_ROOT"
+SCRIPTS_STAGE=""
+if [[ -n "$SCRIPTS_PREVIOUS" ]]; then
+  rm -rf -- "$SCRIPTS_PREVIOUS"
+  SCRIPTS_PREVIOUS=""
+fi
+trap - EXIT
+
 # Package defaults establish desired state only for an empty index. Once any
 # package has been declared, the shared index is entirely operator-owned.
 PACKAGE_INDEX_ROOT="$STATE_ROOT/package-index"
@@ -347,9 +403,10 @@ if [[ "$RUN_VERIFICATION" == true ]]; then
   fi
   export DENO_DIR="$NODE_RUNTIME/verification-deno-cache"
   (cd "$RUNTIME_SOURCE/deno" && "$DENO_CMD" task check && "$DENO_CMD" task test)
-  "$DENO_CMD" fmt --check "$RUNTIME_SOURCE/development/image/files"
-  "$DENO_CMD" lint "$RUNTIME_SOURCE/development/image/files"
-  "$DENO_CMD" check "$RUNTIME_SOURCE/development/image/files/activate.ts"
+  sh -n "$SOURCE_ROOT/defaults/scripts/activate"
+  "$DENO_CMD" fmt --check "$SOURCE_ROOT/defaults/scripts/activate.ts"
+  "$DENO_CMD" lint "$SOURCE_ROOT/defaults/scripts/activate.ts"
+  "$DENO_CMD" check "$SOURCE_ROOT/defaults/scripts/activate.ts"
 else
   echo "platform verification gates skipped; required binaries and images are current" >&2
 fi

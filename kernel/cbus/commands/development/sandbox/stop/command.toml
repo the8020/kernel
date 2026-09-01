@@ -2,20 +2,20 @@ version = 1
 id = "development.sandbox.stop"
 path = ["development", "sandbox", "stop"]
 summary = "Stop a developer sandbox"
-description = "Stops and deletes only the running sandbox process while retaining its native durable filesystems."
+description = "Checkpoints private package deltas, stops the process, and retains the user's dev-sandbox state."
 mutates_state = true
 restart_behavior = "none"
 [handler]
 file = "kernel/cbus/commands/development/sandbox/stop/stop.go"
 symbol = "New"
 [[parameters]]
-name = "workspace_id"
+name = "user_id"
 type = "string"
 position = 0
 required = true
-description = "Development workspace ID."
+description = "Developer user ID."
 [[result]]
-name = "workspace"
+name = "sandbox"
 type = "object"
 [[examples]]
-command = "development sandbox stop default-0123456789abcdef"
+command = "development sandbox stop alice"

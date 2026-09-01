@@ -361,7 +361,7 @@ func Run(parent context.Context, config Config) error {
 		Logger: logger.With("node_id", uuid),
 	})
 	if err != nil {
-		return fmt.Errorf("initialize development workspaces: %w", err)
+		return fmt.Errorf("initialize development sandboxes: %w", err)
 	}
 	portValue, ok := settingManager.Active("network.main_port")
 	if !ok {
@@ -496,7 +496,7 @@ func Run(parent context.Context, config Config) error {
 		if err := developmentManager.Close(shutdownContext); err != nil {
 			shutdownError = errors.Join(shutdownError, err)
 		}
-		progress(false, "runtime_initialization", "runtime initialization", "runtime and development workspace cleanup joined")
+		progress(false, "runtime_initialization", "runtime initialization", "runtime and development sandbox cleanup joined")
 	case <-shutdownContext.Done():
 		progress(false, "runtime_initialization", "runtime initialization", "runtime initialization exceeded the shutdown deadline")
 		shutdownError = errors.Join(shutdownError, errors.New("runtime initialization did not stop before shutdown deadline"))

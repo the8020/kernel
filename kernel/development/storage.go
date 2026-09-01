@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
@@ -143,7 +142,7 @@ func copyDirectory(ctx context.Context, source, destination string) error {
 	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
 		return err
 	}
-	stage, err := os.MkdirTemp(filepath.Dir(destination), ".workspace-copy-*")
+	stage, err := os.MkdirTemp(filepath.Dir(destination), ".development-copy-*")
 	if err != nil {
 		return err
 	}
@@ -209,73 +208,4 @@ func copySystemRoot(ctx context.Context, source, destination string) error {
 		return err
 	}
 	return nil
-}
-
-// replaceWorktree copies ordinary working-tree entries while retaining the
-// destination repository's private .git directory.
-func replaceWorktree(ctx context.Context, source, destination string) error {
-	entries, err := os.ReadDir(destination)
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		if entry.Name() == ".git" {
-			continue
-		}
-		if err := os.RemoveAll(filepath.Join(destination, entry.Name())); err != nil {
-			return err
-		}
-	}
-	entries, err = os.ReadDir(source)
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		if entry.Name() == ".git" {
-			continue
-		}
-		output, copyErr := commandOutput(ctx, "cp", "-a", "--reflink=auto", filepath.Join(source, entry.Name()), destination)
-		if copyErr != nil {
-			return fmt.Errorf("copy development package entry %s: %w: %s", entry.Name(), copyErr, output)
-		}
-	}
-	return nil
-}
-
-type basesDocument struct {
-	Schema   int                     `toml:"schema"`
-	Packages map[string]baseDocument `toml:"packages"`
-}
-
-type baseDocument struct {
-	BaseCommit string `toml:"base_commit"`
-	Conflicted bool   `toml:"conflicted,omitempty"`
-}
-
-func readBases(path string) (basesDocument, error) {
-	document := basesDocument{}
-	if err := readTOML(path, &document); err != nil {
-		return basesDocument{}, err
-	}
-	if document.Schema != 1 || document.Packages == nil {
-		return basesDocument{}, errors.New("invalid development source base record")
-	}
-	return document, nil
-}
-
-func writeBases(path string, document basesDocument) error {
-	if document.Packages == nil {
-		document.Packages = map[string]baseDocument{}
-	}
-	document.Schema = 1
-	return writeTOML(path, document, 0o600)
-}
-
-func sortedBaseIDs(document basesDocument) []string {
-	ids := make([]string, 0, len(document.Packages))
-	for id := range document.Packages {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	return ids
 }

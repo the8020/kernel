@@ -1,0 +1,5 @@
+#!/bin/sh
+exec /usr/bin/deno run \
+  --allow-env=DEVELOPMENT_USER_ID,DEVELOPMENT_ACTIVATION_ENDPOINT,DEVELOPMENT_ACTIVATION_TOKEN \
+  --allow-net=127.0.0.1 \
+  /workspace/scripts/activate.ts "$@"

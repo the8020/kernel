@@ -118,21 +118,21 @@ type PackageManagementService interface {
 	CreateLocalPackage(context.Context, string, string, string) (workspacepackages.LocalPackage, error)
 }
 
-// DevelopmentService is the handler-facing durable developer workspace,
+// DevelopmentService is the handler-facing durable development sandbox,
 // activation, image, and independent package-repository contract.
 type DevelopmentService interface {
 	ImageStatus() (development.ImageStatus, error)
-	Create(context.Context, string) (development.Workspace, error)
-	List() ([]development.Workspace, error)
-	Inspect(string) (development.Workspace, error)
-	Start(context.Context, string) (development.Workspace, error)
-	Stop(context.Context, string) (development.Workspace, error)
-	Restart(context.Context, string) (development.Workspace, error)
-	Kill(context.Context, string) (development.Workspace, error)
-	Delete(context.Context, string, bool) error
+	Create(context.Context, string) (development.Sandbox, error)
+	List() ([]development.Sandbox, error)
+	Inspect(string) (development.Sandbox, error)
+	Start(context.Context, string) (development.Sandbox, error)
+	Stop(context.Context, string) (development.Sandbox, error)
+	Restart(context.Context, string) (development.Sandbox, error)
+	Kill(context.Context, string) (development.Sandbox, error)
+	Delete(context.Context, string) error
 	Shell(context.Context, string, string) (development.ShellResult, error)
-	ResetSource(context.Context, string, bool) (development.Workspace, error)
-	FactoryReset(context.Context, string, bool) (development.Workspace, error)
+	ResetSource(context.Context, string, bool) (development.Sandbox, error)
+	FactoryReset(context.Context, string, bool) (development.Sandbox, error)
 	Preview(context.Context, string, development.ActivationOptions) (development.ActivationPreview, error)
 	Activate(context.Context, string, development.ActivationOptions) (development.ActivationResult, error)
 	ListRepositories() ([]development.Repository, error)

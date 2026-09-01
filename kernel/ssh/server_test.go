@@ -3,6 +3,8 @@ package sshserver
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
 	"io"
 	"net"
@@ -32,6 +34,10 @@ func (a *observingAuthentication) AuthenticatePassword(username string, password
 	return a.manager.AuthenticatePassword(username, password)
 }
 
+func (a *observingAuthentication) AuthenticateUser(username string) (auth.AuthContext, error) {
+	return a.manager.AuthenticateUser(username)
+}
+
 func (a *observingAuthentication) cleared() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -43,13 +49,21 @@ type fakeDevelopment struct {
 	users   []string
 	sandbox string
 	failure error
+	keys    map[string][]byte
+	keyErr  error
 }
 
-func (d *fakeDevelopment) EnsureDefaultSandbox(_ context.Context, username string) (string, error) {
+func (d *fakeDevelopment) EnsureSandbox(_ context.Context, username string) (string, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.users = append(d.users, username)
 	return d.sandbox, d.failure
+}
+
+func (d *fakeDevelopment) AuthorizedKeys(username string) ([]byte, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]byte(nil), d.keys[username]...), d.keyErr
 }
 
 type openedConsole struct {
@@ -301,6 +315,76 @@ func TestSSHPasswordTTYAndRouting(t *testing.T) {
 	}
 }
 
+func TestSSHPublicKeyAuthenticationAndRejections(t *testing.T) {
+	authentication, _ := testAuthentication(t)
+	if _, err := authentication.AddUser(context.Background(), "disabled", "unused password"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authentication.DisableUser(context.Background(), "disabled"); err != nil {
+		t.Fatal(err)
+	}
+	matching := testSigner(t)
+	nonmatching := testSigner(t)
+	authorized := append([]byte("restrict "), gossh.MarshalAuthorizedKey(matching.PublicKey())...)
+	authorized = append(bytes.TrimSpace(authorized), []byte(" alice@test\n")...)
+	development := &fakeDevelopment{sandbox: "dev-alice", keys: map[string][]byte{"alice": authorized}}
+	consoles := &fakeConsoles{opened: make(chan openedConsole, 2)}
+	manager, err := New(Config{
+		Port: 0, HostKeyPath: filepath.Join(t.TempDir(), "host_ed25519"), Authentication: authentication,
+		Development: development, Consoles: consoles,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+	address := "127.0.0.1:" + stringPort(manager.Port())
+	for name, signer := range map[string]gossh.Signer{"alice": nonmatching, "unknown": matching, "disabled": matching} {
+		if client, dialErr := gossh.Dial("tcp", address, publicKeyClientConfig(name, signer)); dialErr == nil {
+			_ = client.Close()
+			t.Fatalf("public key was accepted for %s", name)
+		}
+	}
+	development.mu.Lock()
+	if len(development.users) != 0 {
+		t.Fatalf("rejected authentication started development sandboxes: %v", development.users)
+	}
+	development.mu.Unlock()
+
+	client, err := gossh.Dial("tcp", address, publicKeyClientConfig("alice", matching))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	session, err := client.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Shell(); err != nil {
+		t.Fatal(err)
+	}
+	opened := receiveOpened(t, consoles.opened)
+	if opened.kind != "development" || opened.sandboxID != "dev-alice" || !containsString(opened.options.Environment, "USER=root") || !containsString(opened.options.Environment, "HOME=/root") {
+		t.Fatalf("public-key console route = %#v", opened)
+	}
+	opened.terminal.finish()
+	if err := session.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	development.mu.Lock()
+	defer development.mu.Unlock()
+	if !equalStrings(development.users, []string{"alice"}) {
+		t.Fatalf("public-key sandbox users = %v", development.users)
+	}
+}
+
+func TestAuthorizedKeyParserRejectsMalformedFile(t *testing.T) {
+	signer := testSigner(t)
+	valid := gossh.MarshalAuthorizedKey(signer.PublicKey())
+	if authorizedKeyMatches(append(valid, []byte("not an authorized key\n")...), signer.PublicKey()) {
+		t.Fatal("matching key in malformed file was accepted")
+	}
+}
+
 func TestHostKeyPersistsAndRejectsNonRegularFile(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "ssh", "host_ed25519")
@@ -442,6 +526,26 @@ func testAuthentication(t *testing.T) (*auth.Manager, string) {
 func clientConfig(username, password string) *gossh.ClientConfig {
 	return &gossh.ClientConfig{
 		User: username, Auth: []gossh.AuthMethod{gossh.Password(password)},
+		HostKeyCallback: gossh.InsecureIgnoreHostKey(), Timeout: 2 * time.Second,
+	}
+}
+
+func testSigner(t *testing.T) gossh.Signer {
+	t.Helper()
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := gossh.NewSignerFromKey(private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signer
+}
+
+func publicKeyClientConfig(username string, signer gossh.Signer) *gossh.ClientConfig {
+	return &gossh.ClientConfig{
+		User: username, Auth: []gossh.AuthMethod{gossh.PublicKeys(signer)},
 		HostKeyCallback: gossh.InsecureIgnoreHostKey(), Timeout: 2 * time.Second,
 	}
 }

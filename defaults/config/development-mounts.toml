@@ -3,17 +3,19 @@ schema = 1
 [[mounts]]
 id = "packages"
 target = "/workspace/packages"
-behavior = "workspace-source"
+behavior = "sandbox-source"
 writable = true
-persistence = "workspace"
-participates_activation = true
-workspace_owned = true
+
+[[mounts]]
+id = "scripts"
+source = "scripts"
+target = "/workspace/scripts"
+behavior = "read-only-shared"
+writable = false
+executable = true
 
 [[mounts]]
 id = "temporary"
 target = "/tmp"
 behavior = "ephemeral"
 writable = true
-persistence = "sandbox"
-participates_activation = false
-workspace_owned = false

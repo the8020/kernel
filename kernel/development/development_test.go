@@ -1,10 +1,14 @@
 package development
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -17,9 +21,10 @@ import (
 )
 
 type fakeView struct {
-	start   SandboxStart
-	paused  bool
-	running bool
+	start    SandboxStart
+	packages string
+	paused   bool
+	running  bool
 }
 
 type fakeDriver struct {
@@ -51,18 +56,33 @@ func (d *fakeDriver) List(ctx context.Context) ([]string, error) {
 	return ids, nil
 }
 
-func (d *fakeDriver) Start(_ context.Context, start SandboxStart) error {
+func (d *fakeDriver) Start(ctx context.Context, start SandboxStart) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.startErr != nil {
 		return d.startErr
 	}
+	private, err := os.MkdirTemp(filepath.Dir(start.RootFS), ".fake-packages-")
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(private); err != nil {
+		return err
+	}
+	if err := copyDirectory(ctx, start.Packages, private); err != nil {
+		return err
+	}
 	d.starts++
-	d.views[start.SandboxID] = &fakeView{start: start, running: true}
+	d.views[start.SandboxID] = &fakeView{start: start, packages: private, running: true}
 	return nil
 }
 
 func (d *fakeDriver) Exec(_ context.Context, id, command string) ([]byte, error) {
+	if strings.Contains(command, "/workspace/packages") || strings.HasPrefix(command, "git ") || strings.HasPrefix(command, "set ") {
+		output := &boundedBuffer{limit: commandOutputLimit}
+		err := d.ExecStream(context.Background(), id, command, nil, output)
+		return []byte(output.RawString()), err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.execs++
@@ -77,7 +97,7 @@ func (d *fakeDriver) Exec(_ context.Context, id, command string) ([]byte, error)
 	resolve := func(value string) string {
 		switch {
 		case strings.HasPrefix(value, "packages/"):
-			return filepath.Join(view.start.Packages, filepath.FromSlash(strings.TrimPrefix(value, "packages/")))
+			return filepath.Join(view.packages, filepath.FromSlash(strings.TrimPrefix(value, "packages/")))
 		case strings.HasPrefix(value, "home/"):
 			return filepath.Join(view.start.RootFS, "root", filepath.FromSlash(strings.TrimPrefix(value, "home/")))
 		case strings.HasPrefix(value, "system/"):
@@ -117,6 +137,35 @@ func (d *fakeDriver) Exec(_ context.Context, id, command string) ([]byte, error)
 	}
 }
 
+func (d *fakeDriver) ExecStream(ctx context.Context, id, command string, input io.Reader, output io.Writer) error {
+	d.mu.Lock()
+	d.execs++
+	view := d.views[id]
+	if view == nil || !view.running || view.paused {
+		d.mu.Unlock()
+		return errors.New("sandbox is not available")
+	}
+	packages := view.packages
+	sharedPackages := view.start.Packages
+	d.mu.Unlock()
+	for _, packageID := range packageDirectories(sharedPackages) {
+		shared := filepath.Join(sharedPackages, filepath.FromSlash(packageID))
+		private := filepath.Join(packages, filepath.FromSlash(packageID))
+		head, err := gitOutput(shared, "rev-parse", "HEAD")
+		if err == nil {
+			_, _ = gitCommand(ctx, private, nil, "fetch", "--no-tags", shared, head)
+		}
+	}
+	command = strings.ReplaceAll(command, "/workspace/packages", packages)
+	process := exec.CommandContext(ctx, "/bin/bash", "-lc", command)
+	diagnostics := &boundedBuffer{limit: commandOutputLimit}
+	process.Stdin, process.Stdout, process.Stderr = input, output, diagnostics
+	if err := process.Run(); err != nil {
+		return fmt.Errorf("fake sandbox exec: %w: %s", err, diagnostics.String())
+	}
+	return nil
+}
+
 func (d *fakeDriver) Pause(_ context.Context, id string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -151,6 +200,9 @@ func (d *fakeDriver) Kill(ctx context.Context, id string) error { return d.Stop(
 func (d *fakeDriver) Delete(_ context.Context, id string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if view := d.views[id]; view != nil && view.packages != "" {
+		_ = os.RemoveAll(view.packages)
+	}
 	delete(d.views, id)
 	return nil
 }
@@ -176,11 +228,12 @@ func newTestPlatform(t *testing.T) testPlatform {
 	runtimeRoot := filepath.Join(root, "node", "kernel", "runtime", "development")
 	image := filepath.Join(root, "node", "images", "development", "rootfs")
 	record := filepath.Join(root, "node", "images", "development", "image.json")
-	for _, directory := range []string{packages, users, runtimeRoot, image, filepath.Dir(record)} {
+	for _, directory := range []string{packages, users, runtimeRoot, image, filepath.Dir(record), filepath.Join(root, "scripts")} {
 		if err := os.MkdirAll(directory, 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
+	writeTestFile(t, filepath.Join(root, "scripts", "activate"), "#!/bin/sh\n")
 	writeTestFile(t, filepath.Join(image, "usr", "bin", "base-tool"), "image-default\n")
 	for _, id := range []string{"the8020/dev-core", "the8020/demo"} {
 		packageRoot := filepath.Join(packages, filepath.FromSlash(id))
@@ -224,13 +277,13 @@ func registerTestActivationCommands(t *testing.T, registry *core.Registry, manag
 		return options
 	}
 	if err := registry.Register(commands[0], func(ctx context.Context, request core.Request) (core.Result, error) {
-		result, err := manager.Preview(ctx, request.Arguments["workspace_id"].(string), decode(request))
+		result, err := manager.Preview(ctx, request.Arguments["user_id"].(string), decode(request))
 		return core.Result{"preview": result}, err
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := registry.Register(commands[1], func(ctx context.Context, request core.Request) (core.Result, error) {
-		result, err := manager.Activate(ctx, request.Arguments["workspace_id"].(string), decode(request))
+		result, err := manager.Activate(ctx, request.Arguments["user_id"].(string), decode(request))
 		return core.Result{"activation": result}, err
 	}); err != nil {
 		t.Fatal(err)
@@ -239,7 +292,7 @@ func registerTestActivationCommands(t *testing.T, registry *core.Registry, manag
 
 func testActivationCommands() []core.Command {
 	parameters := []core.Parameter{
-		{Name: "workspace_id", Type: "string", Position: 0, Required: true},
+		{Name: "user_id", Type: "string", Position: 0, Required: true},
 		{Name: "message", Type: "string", Option: "message"},
 		{Name: "packages", Type: "string", Option: "packages"},
 		{Name: "package_messages", Type: "string", Option: "package-messages"},
@@ -265,11 +318,11 @@ func writeTestFile(t *testing.T, path, value string) {
 	}
 }
 
-func shell(t *testing.T, manager *Manager, workspace, command string) string {
+func shell(t *testing.T, manager *Manager, userID, command string) string {
 	t.Helper()
-	result, err := manager.Shell(context.Background(), workspace, command)
+	result, err := manager.Shell(context.Background(), userID, command)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("development sandbox command %q: %v", command, err)
 	}
 	return result.Output
 }
@@ -283,27 +336,27 @@ func packageResult(result ActivationResult, id string) ActivationPackageResult {
 	return ActivationPackageResult{}
 }
 
-func TestEnsureDefaultSandboxCreatesAndRestartsDirectly(t *testing.T) {
+func TestEnsureSandboxCreatesAndRestartsDirectly(t *testing.T) {
 	platform := newTestPlatform(t)
-	first, err := platform.manager.EnsureDefaultSandbox(context.Background(), "sshuser")
+	first, err := platform.manager.EnsureSandbox(context.Background(), "sshuser")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if first != "dev-sshuser" || platform.driver.starts != 1 {
 		t.Fatalf("first default sandbox = %q, starts=%d", first, platform.driver.starts)
 	}
-	second, err := platform.manager.EnsureDefaultSandbox(context.Background(), "sshuser")
+	second, err := platform.manager.EnsureSandbox(context.Background(), "sshuser")
 	if err != nil || second != first || platform.driver.starts != 1 {
 		t.Fatalf("reused default sandbox = %q, starts=%d, err=%v", second, platform.driver.starts, err)
 	}
-	workspace, err := platform.manager.Inspect(workspaceID("sshuser"))
+	sandbox, err := platform.manager.Inspect("sshuser")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := platform.manager.Stop(context.Background(), workspace.WorkspaceID); err != nil {
+	if _, err := platform.manager.Stop(context.Background(), sandbox.UserID); err != nil {
 		t.Fatal(err)
 	}
-	restarted, err := platform.manager.EnsureDefaultSandbox(context.Background(), "sshuser")
+	restarted, err := platform.manager.EnsureSandbox(context.Background(), "sshuser")
 	if err != nil || restarted != first || platform.driver.starts != 2 {
 		t.Fatalf("restarted default sandbox = %q, starts=%d, err=%v", restarted, platform.driver.starts, err)
 	}
@@ -313,13 +366,136 @@ func TestEnsureDefaultSandboxCreatesAndRestartsDirectly(t *testing.T) {
 		}
 	}
 	for _, owner := range []string{"ab", "Alice", "alice@example", strings.Repeat("a", 33), "Unicode User/管理"} {
-		if _, err := platform.manager.EnsureDefaultSandbox(context.Background(), owner); err == nil {
+		if _, err := platform.manager.EnsureSandbox(context.Background(), owner); err == nil {
 			t.Errorf("unsupported development username %q was accepted", owner)
 		}
 	}
 }
 
-func TestNativeStoragePersistsWithoutBackgroundWork(t *testing.T) {
+func TestAuthorizedKeysReadsExistingSandboxWithoutLifecycleMutation(t *testing.T) {
+	platform := newTestPlatform(t)
+	if _, err := platform.manager.AuthorizedKeys("alice"); err == nil {
+		t.Fatal("authorized keys were read without an initialized sandbox")
+	}
+	if platform.driver.starts != 0 {
+		t.Fatalf("authorized-key lookup started %d sandboxes", platform.driver.starts)
+	}
+	if _, err := platform.manager.EnsureSandbox(context.Background(), "alice"); err != nil {
+		t.Fatal(err)
+	}
+	sandbox, err := platform.manager.Inspect("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	starts := platform.driver.starts
+	if _, err := platform.manager.AuthorizedKeys("alice"); err == nil {
+		t.Fatal("missing authorized-keys file was accepted")
+	}
+	if platform.driver.starts != starts {
+		t.Fatalf("missing authorized-key lookup changed sandbox starts from %d to %d", starts, platform.driver.starts)
+	}
+	authorized := []byte("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKey alice@test\n")
+	writeTestFile(t, filepath.Join(sandbox.SystemPath, "root", ".ssh", "authorized_keys"), string(authorized))
+	content, err := platform.manager.AuthorizedKeys("alice")
+	if err != nil || !bytes.Equal(content, authorized) {
+		t.Fatalf("authorized keys = %q, err=%v", content, err)
+	}
+	if platform.driver.starts != starts {
+		t.Fatalf("authorized-key lookup changed sandbox starts from %d to %d", starts, platform.driver.starts)
+	}
+}
+
+func TestAuthorizedKeysRejectsUnsafeAndOversizedFiles(t *testing.T) {
+	platform := newTestPlatform(t)
+	if _, err := platform.manager.EnsureSandbox(context.Background(), "alice"); err != nil {
+		t.Fatal(err)
+	}
+	sandbox, err := platform.manager.Inspect("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sshDirectory := filepath.Join(sandbox.SystemPath, "root", ".ssh")
+	outsideDirectory := filepath.Join(platform.root, "outside")
+	writeTestFile(t, filepath.Join(outsideDirectory, "authorized_keys"), "outside\n")
+	if err := os.MkdirAll(filepath.Dir(sshDirectory), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideDirectory, sshDirectory); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := platform.manager.AuthorizedKeys("alice"); err == nil {
+		t.Fatal("authorized keys escaped through a symlinked .ssh directory")
+	}
+	if err := os.Remove(sshDirectory); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(sshDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fifo := filepath.Join(sshDirectory, "authorized_keys")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	read := make(chan error, 1)
+	go func() {
+		_, err := platform.manager.AuthorizedKeys("alice")
+		read <- err
+	}()
+	select {
+	case err := <-read:
+		if err == nil {
+			t.Fatal("FIFO authorized keys were accepted")
+		}
+	case <-time.After(time.Second):
+		writer, _ := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0)
+		if writer != nil {
+			_ = writer.Close()
+		}
+		<-read
+		t.Fatal("FIFO authorized keys blocked authentication")
+	}
+	if err := os.Remove(fifo); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(sshDirectory, "authorized_keys"), strings.Repeat("x", authorizedKeysLimit+1))
+	if _, err := platform.manager.AuthorizedKeys("alice"); err == nil {
+		t.Fatal("oversized authorized keys were accepted")
+	}
+	sandbox.SystemPath = outsideDirectory
+	if err := platform.manager.saveSandbox(sandbox); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := platform.manager.AuthorizedKeys("alice"); err == nil {
+		t.Fatal("malformed recorded system root was accepted")
+	}
+}
+
+func TestSandboxPersistenceUsesOneDevSandboxDirectory(t *testing.T) {
+	platform := newTestPlatform(t)
+	sandbox, err := platform.manager.Create(context.Background(), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shell(t, platform.manager, sandbox.UserID, "write packages/the8020/dev-core/src/message.ts private")
+	if _, err := platform.manager.Stop(context.Background(), sandbox.UserID); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(filepath.Join(platform.users, "alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "dev-sandbox" || !entries[0].IsDir() {
+		t.Fatalf("user sandbox storage = %#v, want only dev-sandbox", entries)
+	}
+	root := filepath.Join(platform.users, "alice", "dev-sandbox")
+	for _, relative := range []string{"sandbox.toml", filepath.Join("runtime", "overlay", "state.toml"), "system"} {
+		if _, err := os.Stat(filepath.Join(root, relative)); err != nil {
+			t.Errorf("missing persisted sandbox path %s: %v", relative, err)
+		}
+	}
+}
+
+func TestSandboxOverlayUsesSharedLowerAndPersistsCheckpoints(t *testing.T) {
 	platform := newTestPlatform(t)
 	a, err := platform.manager.Create(context.Background(), "developera")
 	if err != nil {
@@ -329,17 +505,17 @@ func TestNativeStoragePersistsWithoutBackgroundWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.SourcePath == b.SourcePath || !strings.Contains(a.SourcePath, filepath.Join("workspaces", a.WorkspaceID, "source", "packages")) {
-		t.Fatalf("workspace source paths are not private durable storage: %q %q", a.SourcePath, b.SourcePath)
+	if a.SourcePath != b.SourcePath || a.SourcePath != filepath.Join(platform.root, "packages") {
+		t.Fatalf("sandbox overlay lowers are not the shared package root: %q %q", a.SourcePath, b.SourcePath)
 	}
-	if !strings.Contains(a.SystemPath, filepath.Join("users", "developera", "system")) {
+	if !strings.Contains(a.SystemPath, filepath.Join("users", "developera", "dev-sandbox", "system")) {
 		t.Fatalf("system path is not user-owned durable storage: %q", a.SystemPath)
 	}
-	shell(t, platform.manager, a.WorkspaceID, "write packages/the8020/dev-core/src/message.ts private-a")
-	shell(t, platform.manager, a.WorkspaceID, "write home/.config/editor/config.toml model=test")
-	shell(t, platform.manager, a.WorkspaceID, "write system/usr/local/bin/private-tool tool")
-	if got := shell(t, platform.manager, b.WorkspaceID, "read packages/the8020/dev-core/src/message.ts"); strings.Contains(got, "private-a") {
-		t.Fatal("workspace B observed workspace A's source")
+	shell(t, platform.manager, a.UserID, "write packages/the8020/dev-core/src/message.ts private-a")
+	shell(t, platform.manager, a.UserID, "write home/.config/editor/config.toml model=test")
+	shell(t, platform.manager, a.UserID, "write system/usr/local/bin/private-tool tool")
+	if got := shell(t, platform.manager, b.UserID, "read packages/the8020/dev-core/src/message.ts"); strings.Contains(got, "private-a") {
+		t.Fatal("sandbox B observed sandbox A's source")
 	}
 	shared, _ := os.ReadFile(filepath.Join(platform.root, "packages", "the8020", "dev-core", "src", "message.ts"))
 	if strings.Contains(string(shared), "private-a") {
@@ -348,13 +524,13 @@ func TestNativeStoragePersistsWithoutBackgroundWork(t *testing.T) {
 	execs := platform.driver.execs
 	time.Sleep(1200 * time.Millisecond)
 	if platform.driver.execs != execs {
-		t.Fatalf("idle workspace performed background sandbox work: %d -> %d", execs, platform.driver.execs)
+		t.Fatalf("idle sandbox performed background work: %d -> %d", execs, platform.driver.execs)
 	}
 	starts := platform.driver.starts
-	if _, err := platform.manager.Stop(context.Background(), a.WorkspaceID); err != nil {
+	if _, err := platform.manager.Stop(context.Background(), a.UserID); err != nil {
 		t.Fatal(err)
 	}
-	a, err = platform.manager.Start(context.Background(), a.WorkspaceID)
+	a, err = platform.manager.Start(context.Background(), a.UserID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,43 +542,57 @@ func TestNativeStoragePersistsWithoutBackgroundWork(t *testing.T) {
 		{"read home/.config/editor/config.toml", "model=test"},
 		{"read system/usr/local/bin/private-tool", "tool"},
 	} {
-		if got := shell(t, platform.manager, a.WorkspaceID, proof.command); got != proof.want {
+		if got := shell(t, platform.manager, a.UserID, proof.command); got != proof.want {
 			t.Fatalf("%s = %q, want %q", proof.command, got, proof.want)
 		}
 	}
 }
 
-func TestActivationScansOnlyOnDemandAndDoesNotRecreateSandbox(t *testing.T) {
+func TestActivationScansOnlyOnDemandCommitsAndResetsOverlay(t *testing.T) {
 	platform := newTestPlatform(t)
-	workspace, err := platform.manager.Create(context.Background(), "developer")
+	sandbox, err := platform.manager.Create(context.Background(), "developer")
 	if err != nil {
 		t.Fatal(err)
 	}
-	shell(t, platform.manager, workspace.WorkspaceID, "write packages/the8020/dev-core/src/message.ts private-a")
-	shell(t, platform.manager, workspace.WorkspaceID, "write packages/the8020/demo/notes.txt private-b")
-	preview, err := platform.manager.Preview(context.Background(), workspace.WorkspaceID, ActivationOptions{SelectedPackages: []string{"the8020/dev-core"}})
+	shell(t, platform.manager, sandbox.UserID, "write packages/the8020/dev-core/src/message.ts private-a")
+	shell(t, platform.manager, sandbox.UserID, "write packages/the8020/demo/notes.txt private-b")
+	preview, err := platform.manager.Preview(context.Background(), sandbox.UserID, ActivationOptions{SelectedPackages: []string{"the8020/dev-core"}})
 	if err != nil || len(preview.Packages) != 2 {
 		t.Fatalf("preview = %#v, %v", preview, err)
 	}
 	starts := platform.driver.starts
-	oldSandbox := workspace.ActiveSandboxID
-	result, err := platform.manager.Activate(context.Background(), workspace.WorkspaceID, ActivationOptions{Description: "Common", SelectedPackages: []string{"the8020/dev-core"}, AuthorName: "Developer", AuthorEmail: "developer@example.test"})
+	oldSandbox := sandbox.SandboxID
+	result, err := platform.manager.Activate(context.Background(), sandbox.UserID, ActivationOptions{Description: "Common", SelectedPackages: []string{"the8020/dev-core"}, AuthorName: "Developer", AuthorEmail: "developer@example.test", Metadata: map[string]string{"client": "unit-test"}})
 	if err != nil || !result.Success || packageResult(result, "the8020/dev-core").Status != "committed" {
 		t.Fatalf("activation = %#v, %v", result, err)
 	}
-	current, _ := platform.manager.Inspect(workspace.WorkspaceID)
-	if platform.driver.starts != starts || current.ActiveSandboxID != oldSandbox {
-		t.Fatal("activation recreated a sandbox despite direct durable source storage")
+	current, _ := platform.manager.Inspect(sandbox.UserID)
+	if platform.driver.starts != starts+1 || current.SandboxID != oldSandbox || !result.OverlayReset {
+		t.Fatal("activation did not recreate the deterministic sandbox with a clean overlay")
 	}
 	if got, _ := os.ReadFile(filepath.Join(platform.root, "packages", "the8020", "dev-core", "src", "message.ts")); string(got) != "private-a" {
 		t.Fatalf("activated shared source = %q", got)
 	}
-	remaining, err := platform.manager.Preview(context.Background(), workspace.WorkspaceID, ActivationOptions{})
+	commitMessage, err := gitOutput(filepath.Join(platform.root, "packages", "the8020", "dev-core"), "log", "-1", "--pretty=%B")
+	metadataAt := strings.Index(commitMessage, "[the8020.activation]")
+	if err != nil || metadataAt < 0 {
+		t.Fatalf("activation commit metadata = %q, %v", commitMessage, err)
+	}
+	metadataFile := filepath.Join(t.TempDir(), "activation.toml")
+	writeTestFile(t, metadataFile, commitMessage[metadataAt:])
+	var metadataDocument struct {
+		The8020 struct {
+			Activation map[string]string `toml:"activation"`
+		} `toml:"the8020"`
+	}
+	if err := readTOML(metadataFile, &metadataDocument); err != nil || metadataDocument.The8020.Activation["sandbox"] != sandbox.SandboxID || metadataDocument.The8020.Activation["metadata_client"] != "unit-test" {
+		t.Fatalf("activation metadata TOML = %#v, %v", metadataDocument, err)
+	}
+	remaining, err := platform.manager.Preview(context.Background(), sandbox.UserID, ActivationOptions{})
 	if err != nil || len(remaining.Packages) != 1 || remaining.Packages[0].PackageID != "the8020/demo" {
 		t.Fatalf("remaining changes = %#v, %v", remaining, err)
 	}
-	writeTestFile(t, filepath.Join(workspace.SystemPath, "root", ".gitconfig"), "[user]\n\tname = Root Developer\n\temail = root@example.test\n")
-	result, err = platform.manager.Activate(context.Background(), workspace.WorkspaceID, ActivationOptions{Description: "Fallback", PackageMessages: map[string]string{"the8020/demo": "Override"}})
+	result, err = platform.manager.Activate(context.Background(), sandbox.UserID, ActivationOptions{Description: "Fallback", PackageMessages: map[string]string{"the8020/demo": "Override"}})
 	if err != nil || !result.Success {
 		t.Fatalf("second activation = %#v, %v", result, err)
 	}
@@ -411,50 +601,71 @@ func TestActivationScansOnlyOnDemandAndDoesNotRecreateSandbox(t *testing.T) {
 		t.Fatalf("package message = %q", message)
 	}
 	author, _ := gitOutput(filepath.Join(platform.root, "packages", "the8020", "demo"), "log", "-1", "--pretty=%an <%ae>")
-	if author != "Root Developer <root@example.test>" {
-		t.Fatalf("activation author from root home = %q", author)
+	if author != "developer <developer@development.local>" {
+		t.Fatalf("default activation author = %q", author)
 	}
 }
 
-func TestActivationConflictPersistsInNativeSource(t *testing.T) {
+func TestActivationRebasesPrivateOverlayOnCurrentSharedSource(t *testing.T) {
 	platform := newTestPlatform(t)
 	a, _ := platform.manager.Create(context.Background(), "developera")
 	b, _ := platform.manager.Create(context.Background(), "developerb")
-	shell(t, platform.manager, b.WorkspaceID, "write packages/the8020/dev-core/src/message.ts private-b")
-	shell(t, platform.manager, a.WorkspaceID, "write packages/the8020/dev-core/src/message.ts private-a")
-	if _, err := platform.manager.Activate(context.Background(), a.WorkspaceID, ActivationOptions{Description: "Advance A"}); err != nil {
+	shell(t, platform.manager, b.UserID, "write packages/the8020/dev-core/src/message.ts private-b")
+	shell(t, platform.manager, a.UserID, "write packages/the8020/dev-core/src/message.ts private-a")
+	if _, err := platform.manager.Activate(context.Background(), a.UserID, ActivationOptions{Description: "Advance A"}); err != nil {
 		t.Fatal(err)
 	}
-	oldSandbox := b.ActiveSandboxID
-	result, err := platform.manager.Activate(context.Background(), b.WorkspaceID, ActivationOptions{Description: "Conflict B"})
-	if err == nil || result.Status != "conflicted" {
-		t.Fatalf("conflict = %#v, %v", result, err)
+	result, err := platform.manager.Activate(context.Background(), b.UserID, ActivationOptions{Description: "Conflict B"})
+	if err != nil || !result.Success {
+		t.Fatalf("rebased activation = %#v, %v", result, err)
 	}
-	current, _ := platform.manager.Inspect(b.WorkspaceID)
-	if current.ActiveSandboxID != oldSandbox || current.State != StateConflicted {
-		t.Fatalf("conflicted workspace = %#v", current)
+	contents, _ := os.ReadFile(filepath.Join(platform.root, "packages", "the8020", "dev-core", "src", "message.ts"))
+	if string(contents) != "private-b" {
+		t.Fatalf("second overlay activation = %q", contents)
 	}
-	contents, _ := os.ReadFile(filepath.Join(b.SourcePath, "the8020", "dev-core", "src", "message.ts"))
-	if !strings.Contains(string(contents), "<<<<<<<") {
-		t.Fatalf("conflict markers were not persisted: %q", contents)
+	preview, err := platform.manager.Preview(context.Background(), b.UserID, ActivationOptions{})
+	if err != nil || len(preview.Packages) != 0 {
+		t.Fatalf("second overlay was not reset: %#v, %v", preview, err)
 	}
-	shell(t, platform.manager, b.WorkspaceID, "write packages/the8020/dev-core/src/message.ts resolved-b")
-	if _, err := platform.manager.Activate(context.Background(), b.WorkspaceID, ActivationOptions{Description: "Resolve B"}); err != nil {
+	encoded, err := json.Marshal(preview)
+	if err != nil || !strings.Contains(string(encoded), `"packages":[]`) {
+		t.Fatalf("empty activation preview JSON = %s, %v", encoded, err)
+	}
+}
+
+func TestActivationPreviewReportsChangesBlockedByDirtySharedRepository(t *testing.T) {
+	platform := newTestPlatform(t)
+	sandbox, err := platform.manager.Create(context.Background(), "developer")
+	if err != nil {
 		t.Fatal(err)
+	}
+	shell(t, platform.manager, sandbox.UserID, "write packages/the8020/dev-core/src/message.ts private")
+	writeTestFile(t, filepath.Join(platform.root, "packages", "the8020", "dev-core", "host-only.txt"), "dirty shared worktree\n")
+
+	preview, err := platform.manager.Preview(context.Background(), sandbox.UserID, ActivationOptions{})
+	if err != nil || len(preview.Packages) != 1 {
+		t.Fatalf("blocked preview = %#v, %v", preview, err)
+	}
+	if item := preview.Packages[0]; item.PackageID != "the8020/dev-core" || item.ActivationReady || item.ChangedFiles != 1 {
+		t.Fatalf("blocked package preview = %#v", item)
+	}
+	result, err := platform.manager.Activate(context.Background(), sandbox.UserID, ActivationOptions{Description: "Must remain private"})
+	if err == nil || result.Success || packageResult(result, "the8020/dev-core").Status != "failed" {
+		t.Fatalf("blocked activation = %#v, %v", result, err)
 	}
 }
 
 func TestResetBoundariesAndRepositoryInspectionLock(t *testing.T) {
 	platform := newTestPlatform(t)
-	workspace, _ := platform.manager.Create(context.Background(), "developer")
-	shell(t, platform.manager, workspace.WorkspaceID, "write packages/the8020/dev-core/new.txt source")
-	shell(t, platform.manager, workspace.WorkspaceID, "write home/proof home")
-	shell(t, platform.manager, workspace.WorkspaceID, "write system/proof system")
+	sandbox, _ := platform.manager.Create(context.Background(), "developer")
+	shell(t, platform.manager, sandbox.UserID, "write packages/the8020/dev-core/new.txt source")
+	shell(t, platform.manager, sandbox.UserID, "write home/proof home")
+	shell(t, platform.manager, sandbox.UserID, "write system/proof system")
 	userMarker := filepath.Join(platform.users, "developer", "profile.json")
 	writeTestFile(t, userMarker, "preserve\n")
 
-	workspaceLock := platform.manager.workspaceLock(workspace.WorkspaceID)
-	workspaceLock.Lock()
+	userLock := platform.manager.userLock(sandbox.UserID)
+	userLock.Lock()
 	inspected := make(chan error, 1)
 	go func() {
 		_, err := platform.manager.InspectRepository("the8020/dev-core")
@@ -466,23 +677,23 @@ func TestResetBoundariesAndRepositoryInspectionLock(t *testing.T) {
 			t.Fatal(err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("repository inspection waited for the workspace lifecycle lock")
+		t.Fatal("repository inspection waited for the sandbox lifecycle lock")
 	}
-	workspaceLock.Unlock()
+	userLock.Unlock()
 
-	reset, err := platform.manager.ResetSource(context.Background(), workspace.WorkspaceID, true)
+	reset, err := platform.manager.ResetSource(context.Background(), sandbox.UserID, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(reset.SourcePath, "the8020", "dev-core", "new.txt")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("source reset retained private source")
+		t.Fatal("source reset retained private package changes")
 	}
 	for _, path := range []string{filepath.Join(reset.SystemPath, "root", "proof"), filepath.Join(reset.SystemPath, "proof")} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("source reset removed durable user storage %s: %v", path, err)
 		}
 	}
-	factory, err := platform.manager.FactoryReset(context.Background(), workspace.WorkspaceID, true)
+	factory, err := platform.manager.FactoryReset(context.Background(), sandbox.UserID, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -499,9 +710,9 @@ func TestResetBoundariesAndRepositoryInspectionLock(t *testing.T) {
 func TestFailedStartAndBoundedDiagnostics(t *testing.T) {
 	platform := newTestPlatform(t)
 	platform.driver.startErr = errors.New("sandbox start failed")
-	workspace, err := platform.manager.Create(context.Background(), "failedstart")
-	if err == nil || workspace.ActiveSandboxID != "" {
-		t.Fatalf("failed workspace = %#v, %v", workspace, err)
+	sandbox, err := platform.manager.Create(context.Background(), "failedstart")
+	if err == nil || sandbox.State != StateFailed {
+		t.Fatalf("failed sandbox = %#v, %v", sandbox, err)
 	}
 	buffer := &boundedBuffer{limit: 8}
 	_, _ = buffer.Write([]byte("0123456789abcdef"))
@@ -540,28 +751,29 @@ func TestCopySystemRootCreatesPortableRuntimeMountPoints(t *testing.T) {
 	}
 }
 
-func TestInheritedCleanupNeverGatesStartupOrScansWorkspaces(t *testing.T) {
+func TestInheritedCleanupNeverGatesStartup(t *testing.T) {
 	root := t.TempDir()
 	packages := filepath.Join(root, "packages")
 	users := filepath.Join(root, "users")
 	runtimeRoot := filepath.Join(root, "node", "kernel", "runtime", "development")
 	image := filepath.Join(root, "node", "images", "development", "rootfs")
 	record := filepath.Join(root, "node", "images", "development", "image.json")
-	for _, directory := range []string{packages, users, runtimeRoot, image, filepath.Dir(record)} {
+	for _, directory := range []string{packages, users, runtimeRoot, image, filepath.Dir(record), filepath.Join(root, "scripts")} {
 		if err := os.MkdirAll(directory, 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
+	writeTestFile(t, filepath.Join(root, "scripts", "activate"), "#!/bin/sh\n")
 	writeTestFile(t, filepath.Join(image, "base"), "base")
 	if err := writeAtomic(record, []byte(`{"image_digest":"sha256:test"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	workspace := Workspace{Schema: workspaceSchema, WorkspaceID: workspaceID("developer"), OwnerUserID: "developer", ActiveSandboxID: "dev-old12345", State: StateReady, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(), Token: "token", MountProfile: DefaultMountProfile()}
-	workspaceRoot := filepath.Join(users, "developer", "workspaces", workspace.WorkspaceID)
-	if err := os.MkdirAll(workspaceRoot, 0o700); err != nil {
+	sandbox := Sandbox{Schema: sandboxSchema, UserID: "developer", SandboxID: "dev-developer", State: StateReady, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(), Token: "token"}
+	sandboxRoot := filepath.Join(users, "developer", "dev-sandbox")
+	if err := os.MkdirAll(sandboxRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeTOML(filepath.Join(workspaceRoot, "workspace.toml"), workspace, 0o600); err != nil {
+	if err := writeTOML(filepath.Join(sandboxRoot, "sandbox.toml"), sandbox, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	wait := make(chan struct{})
@@ -576,12 +788,12 @@ func TestInheritedCleanupNeverGatesStartupOrScansWorkspaces(t *testing.T) {
 	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
 		t.Fatalf("development cleanup gated startup for %s", elapsed)
 	}
-	inspected, err := manager.Inspect(workspace.WorkspaceID)
-	if err != nil || inspected.ActiveSandboxID != "" || inspected.State != StateStopped {
-		t.Fatalf("stale workspace was not normalized lazily: %#v, %v", inspected, err)
+	inspected, err := manager.Inspect(sandbox.UserID)
+	if err != nil || inspected.State != StateStopped {
+		t.Fatalf("stale sandbox was not normalized lazily: %#v, %v", inspected, err)
 	}
 	alice, err := manager.Create(context.Background(), "alice")
-	if err != nil || alice.ActiveSandboxID != "dev-alice" {
+	if err != nil || alice.SandboxID != "dev-alice" {
 		t.Fatalf("deterministic development sandbox = %#v, %v", alice, err)
 	}
 	close(wait)
@@ -600,20 +812,24 @@ func TestInheritedCleanupNeverGatesStartupOrScansWorkspaces(t *testing.T) {
 	}
 }
 
-func TestDevelopmentSpecUsesNativeRootWithoutOverlay(t *testing.T) {
+func TestDevelopmentSpecOverlaysOnlySandboxPackages(t *testing.T) {
 	root := t.TempDir()
 	for _, path := range []string{"rootfs", "packages", "bundle"} {
 		if err := os.MkdirAll(filepath.Join(root, path), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	start := SandboxStart{WorkspaceID: "workspace", SandboxID: "dev-alice", Packages: filepath.Join(root, "packages"), RootFS: filepath.Join(root, "rootfs"), Mounts: []SandboxMount{
-		{MountDefinition: MountDefinition{ID: "packages", Target: "/workspace/packages", Behavior: MountWorkspaceSource, Writable: true}, HostSource: filepath.Join(root, "packages")},
+	start := SandboxStart{UserID: "alice", SandboxID: "dev-alice", Packages: filepath.Join(root, "packages"), RootFS: filepath.Join(root, "rootfs"), Mounts: []SandboxMount{
+		{MountDefinition: MountDefinition{ID: "packages", Target: "/workspace/packages", Behavior: MountSandboxSource, Writable: true}, HostSource: filepath.Join(root, "packages")},
 		{MountDefinition: MountDefinition{ID: "temporary", Target: "/tmp", Behavior: MountEphemeral, Writable: true}},
 	}}
 	spec := developmentSpec(start, filepath.Join(root, "bundle"))
-	if spec.Root.Path != start.RootFS || spec.Root.Readonly || len(spec.Annotations) != 0 {
+	if spec.Root.Path != start.RootFS || spec.Root.Readonly {
 		t.Fatalf("development root = %#v", spec.Root)
+	}
+	prefix := "dev.gvisor.spec.mount.packages."
+	if spec.Annotations[prefix+"source"] != start.Packages || spec.Annotations[prefix+"type"] != "bind" || spec.Annotations[prefix+"share"] != "container" {
+		t.Fatalf("development package overlay annotations = %#v", spec.Annotations)
 	}
 	if len(spec.Process.Args) != 2 || spec.Process.Args[1] != "/opt/development/sandbox.sh" {
 		t.Fatalf("development init = %#v", spec.Process.Args)

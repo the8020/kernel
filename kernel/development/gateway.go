@@ -10,7 +10,7 @@ import (
 	"the8020/kernel/cbus/core"
 )
 
-// ActivationGateway is the only path from the workspace-scoped HTTP ingress
+// ActivationGateway is the only path from the sandbox HTTP ingress
 // to activation. Production supplies a CommandBusGateway backed by the same
 // registry as the administrative socket.
 type ActivationGateway interface {
@@ -23,7 +23,7 @@ type CommandExecutor interface {
 	Execute(context.Context, core.Request) core.Response
 }
 
-// CommandBusGateway translates the narrow workspace request into the existing
+// CommandBusGateway translates the narrow sandbox request into the existing
 // declarative activation commands. It does not call the development manager.
 type CommandBusGateway struct{ executor CommandExecutor }
 
@@ -31,23 +31,23 @@ func NewCommandBusGateway(executor CommandExecutor) *CommandBusGateway {
 	return &CommandBusGateway{executor: executor}
 }
 
-func (g *CommandBusGateway) Preview(ctx context.Context, workspaceID string, options ActivationOptions) (ActivationPreview, error) {
+func (g *CommandBusGateway) Preview(ctx context.Context, userID string, options ActivationOptions) (ActivationPreview, error) {
 	var result ActivationPreview
-	err := g.execute(ctx, "development.activate.preview", "preview", workspaceID, options, &result)
+	err := g.execute(ctx, "development.activate.preview", "preview", userID, options, &result)
 	return result, err
 }
 
-func (g *CommandBusGateway) Activate(ctx context.Context, workspaceID string, options ActivationOptions) (ActivationResult, error) {
+func (g *CommandBusGateway) Activate(ctx context.Context, userID string, options ActivationOptions) (ActivationResult, error) {
 	var result ActivationResult
-	err := g.execute(ctx, "development.activate.run", "activation", workspaceID, options, &result)
+	err := g.execute(ctx, "development.activate.run", "activation", userID, options, &result)
 	return result, err
 }
 
-func (g *CommandBusGateway) execute(ctx context.Context, commandID, resultField, workspaceID string, options ActivationOptions, output any) error {
+func (g *CommandBusGateway) execute(ctx context.Context, commandID, resultField, userID string, options ActivationOptions, output any) error {
 	if g == nil || g.executor == nil {
 		return errors.New("development activation command bus is unavailable")
 	}
-	arguments := map[string]any{"workspace_id": workspaceID}
+	arguments := map[string]any{"user_id": userID}
 	if options.Description != "" || commandID == "development.activate.run" {
 		arguments["message"] = options.Description
 	}

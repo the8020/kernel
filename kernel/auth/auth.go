@@ -225,13 +225,34 @@ func (m *Manager) AuthenticatePassword(username string, password []byte) (AuthCo
 	if err != nil {
 		return AuthContext{}, err
 	}
+	return authContextForUser(user), nil
+}
+
+// AuthenticateUser resolves a real enabled 80|20 user without verifying a
+// password. Protocol adapters use it only as the identity half of an
+// independently verified authentication factor.
+func (m *Manager) AuthenticateUser(username string) (AuthContext, error) {
+	user, exists, err := m.users.Get(username)
+	if err != nil {
+		return AuthContext{}, err
+	}
+	if !exists {
+		return AuthContext{}, ErrInvalidCredentials
+	}
+	if !user.Enabled {
+		return AuthContext{}, ErrUserDisabled
+	}
+	return authContextForUser(user), nil
+}
+
+func authContextForUser(user UserRecord) AuthContext {
 	return AuthContext{
 		Authenticated: true,
 		Realm:         BootstrapRealm,
 		UserID:        user.ID(),
 		Username:      user.Username,
 		AuthVersion:   user.AuthVersion,
-	}, nil
+	}
 }
 
 func (m *Manager) ValidateCookie(cookieValue string) (AuthContext, error) {

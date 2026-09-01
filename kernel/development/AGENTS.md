@@ -1,122 +1,89 @@
 # Purpose
 
-- Own private development workspaces, native durable storage, independent
-  package Git repositories, and activation.
+- Own each user's single persistent development sandbox, package-level Git
+  activation, and the independent development image/runtime.
 
 # Ownership
 
-- Own development-workspace records and source trees under
-  `users/<username>/workspaces/`, image-qualified `system/` roots, node-local
-  runsc process metadata under
-  `node/kernel/runtime/development/`, the workspace-scoped activation endpoint,
-  mount-profile resolution, development-image delegation, and Git publication
-  into shared package roots.
-- Do not own service sandboxes, remote push, environment manifests,
+- Own the record and every durable sandbox artifact beneath
+  `users/<username>/dev-sandbox/`, disposable runsc metadata beneath
+  `node/kernel/runtime/development/`, mount-profile resolution, the authenticated
+  activation endpoint, and publication into shared package repositories.
+- Do not own service/job sandboxes, remote push, package manifests,
   cross-package validation, activation history, or graphical programs.
 
 # Local Contracts
 
-- `/workspace/packages` and the writable OCI root are backed directly by owning
-  durable storage below the authenticated user's `users/<username>/` directory.
-  Development sandboxes run as Linux root, use `/root` as their login home, and
-  persist it as part of the OCI system root; there is no `developer` Linux
-  account or separate home bind. Normal writes are durable immediately; stop,
-  kill, restart, inherited-sandbox cleanup, kernel shutdown, and kernel startup
-  inspect no file contents.
-- Development system-root storage must preserve native Linux ownership, mode
-  bits, symlinks, and atomic renames; metadata-emulating host shares are not a
-  supported backing filesystem for interactive package installation.
-- Rootless development launches every runsc lifecycle and exec process inside
-  a kernel-created child user/mount namespace with the identity-mapped Linux
-  UID/GID range `0..65535`. Native package-account ownership therefore reaches
-  the durable system root without a filesystem shim or a broader host mount.
-- Development lifecycle has no timer, autosave, draft format, scanner helper,
-  rootfs tar, or gVisor overlay persistence. `node/kernel/` contains
-  process/bundle metadata only and may be deleted without losing workspace
-  files. Deleting a development sandbox removes its disposable bundle and
-  process logs.
-- Inherited runsc enumeration/deletion starts asynchronously and never gates
-  manager or command-socket readiness. Persisted sandbox IDs are process-local:
-  explicit workspace load lazily clears any ID not created by the current
-  manager, without probing runsc or scanning all workspace records at startup.
-- The authenticated user's default workspace ID is deterministic. SSH and other
-  direct entrypoints ensure that one workspace by loading only its record, then
-  creating or starting its sandbox as needed; this path never lists other
-  workspaces. Authentication guarantees a 3-32 character lowercase
-  alphanumeric username, which is used unchanged as the storage owner and
-  sandbox suffix. Active development sandbox IDs map directly back to their
-  owning workspace for console opens.
-- New development sandboxes use deterministic `dev-<owner>` resource IDs,
-  distinct from generated `sbx-` service/job identities, with no normalization,
-  hashing, aliases, or compatibility IDs. Restart reuses the ID because one
-  durable default workspace exists per owner. Per-ID locking serializes exact
-  inherited cleanup with startup.
-- The shared package tree is copied once when source storage is first created or
-  explicitly reset. Each image-qualified system root is copied once from its
-  immutable image. Copying streams through `cp -a --reflink=auto`, is staged
-  atomically, publishes the system root itself as traversable mode `0755`, and
-  retains bounded diagnostics. The empty `/proc` and `/sys` image placeholders
-  are created as ordinary writable mount points instead of preserving immutable
-  template modes that shared filesystems may reject.
-- A workspace source is scanned only by Git during an explicit
-  `development activate preview` or `development activate run`. A temporary Git
-  index compares each private working tree with its recorded base without
-  serializing file contents through Go or changing the private index.
-- Shared repository inspection uses a repository lock independent of workspace
-  lifecycle. Activation scanning occurs before the publication lock; only the
-  bounded shared Git prepare/publish window excludes repository mutation. The
-  same lock excludes package-manager index/source synchronization so activation
-  and remote replacement cannot mutate one shared repository concurrently.
-- Activation creates one commit per changed selected package, uses Git
-  cherry-pick conflict machinery, never pushes, preserves unselected packages,
-  and synchronizes successfully activated private package directories in place.
-  It pauses the sandbox only for a stable explicit operation and never recreates
-  it. Conflict markers are written directly into the durable private source.
-- Source reset replaces only workspace source and recorded bases. Factory reset
-  additionally replaces all image-qualified system roots, including `/root`,
-  but preserves unrelated data in the owning user directory. Both require
-  explicit confirmation.
-- The direct runsc driver uses the selected rootful/rootless mode, a writable
-  private OCI root, a direct writable source bind mount, validated shared
-  read-only mounts, ephemeral tmpfs mounts, and read-only mode-`0644` resolver
-  files so package-manager service accounts retain DNS access. It configures no
-  runsc overlay or rootfs-tar annotation; `--overlay2=none` is explicit because
-  runsc otherwise defaults the root to an ephemeral self-backed overlay.
-- Development exec and all kernel-owned subprocess diagnostics are bounded to
-  one MiB. Large output is truncated before it can enter errors or logs.
-- The helper endpoint authenticates one workspace token, fixes the helper client
-  identity, and re-enters the registered activation command handlers; it is not
-  a second activation implementation.
-- Development console and direct-stream exec processes retain the bounded
-  package-management capabilities required for APT/dpkg, keep
-  `no_new_privileges`, omit broad host-adjacent capabilities, include the
-  standard administrative `sbin` directories in `PATH`, and remain inside
-  gVisor.
+- The authenticated lowercase alphanumeric `user_id` is the only control-plane
+  key. Authentication guarantees 3-32 characters. The runtime ID is exactly
+  `dev-<user_id>`; there are no workspace IDs, aliases, hashes, conversions, or
+  compatibility paths.
+- Durable state is confined to `users/<username>/dev-sandbox/`: `sandbox.toml`,
+  overlay checkpoints, and image-qualified writable system
+  roots. Unrelated files beneath `users/<username>/` are not sandbox state.
+- `/workspace/packages` is a gVisor-private writable overlay over the shared
+  package tree. The live gVisor filestore is disposable; explicit lifecycle
+  boundaries checkpoint private package deltas beneath `dev-sandbox/runtime/`
+  and restore them on start. There is no timer, autosave loop, filesystem
+  scanner, full-tree copy, or serialized file-content format.
+- The writable OCI system root, including `/root`, is copied once per image
+  digest beneath `dev-sandbox/system/` and preserves native Linux ownership,
+  modes, symlinks, and atomic renames. `/run` and `/tmp` remain tmpfs-backed and
+  are intentionally not persisted.
+- Authorized-key lookup is a read-only operation on an already initialized
+  sandbox. It reads only the bounded regular `/root/.ssh/authorized_keys` file
+  beneath the record's expected canonical system root, rejects symlinks and
+  malformed roots, and never creates, starts, restarts, or mutates a sandbox.
+- Development sandboxes run as Linux root and have no `developer` account or
+  `/home/developer`. Rootless runsc processes use the kernel-created identity
+  mapping for Linux UID/GID `0..65535`.
+- Manager startup never waits for inherited runsc cleanup or scans sandbox
+  records. User lifecycle calls load only
+  `users/<user_id>/dev-sandbox/sandbox.toml`; list is the sole operation that
+  enumerates users. Per-user and per-runtime-ID locks serialize lifecycle and
+  inherited cleanup for deterministic IDs.
+- Git scans happen only during explicit activation preview/run or lifecycle
+  checkpointing. Activation creates one commit per selected changed package,
+  uses Git merge/cherry-pick machinery, never pushes, preserves unselected
+  changes, and recreates the same deterministic sandbox with a clean overlay.
+- Preview always returns an array, including `packages = []` after reset. It
+  reports every changed Git package with file and added/removed-row counts;
+  changes remain visible but blocked when the shared worktree is not clean and
+  activation-ready.
+- A nonblank message is required for publication. The authenticated username is
+  the default Git author name and email stem, and each package commit ends with
+  a valid `[the8020.activation]` TOML appendix containing the sandbox identity
+  and sanitized technical metadata.
+- Repository locking is independent of the per-user lifecycle lock. Never hold
+  the lifecycle lock merely to inspect a shared repository.
+- Source reset discards overlay changes and recorded bases while preserving the
+  system root. Factory reset removes exactly `users/<user>/dev-sandbox/` and
+  recreates it, preserving unrelated user data. Both require confirmation.
+- The helper endpoint authenticates the sandbox token, fixes helper client
+  metadata, and re-enters registered activation commands; it is not a second
+  activation implementation.
+- The platform-owned instance `scripts/` tree is mounted read-only and
+  executable at `/workspace/scripts`; `/workspace/scripts/activate` is the
+  canonical terminal helper and remains outside the mutable image system root.
+- Exec and subprocess diagnostics are bounded to one MiB. Development consoles
+  retain the bounded capabilities required for APT/dpkg, use the standard
+  administrative `PATH`, keep `no_new_privileges`, and remain inside gVisor.
 
 # Work Guidance
 
-- Prefer deleting lifecycle machinery over reconciling derivable state. Never
-  introduce a filesystem polling loop, full-tree serialization, or background
-  scan when native durable storage or an explicit operation owns the need.
-- Never hold the workspace mutex for package repository inspection, and never
-  put unbounded subprocess output in an error.
+- Prefer derivable state and one direct per-user path over registries, aliases,
+  migrations, background reconciliation, or per-file persistence exceptions.
+- Keep temporary runtime files temporary and durable sandbox files beneath the
+  one `dev-sandbox` root.
 
 # Verification
 
-- Unit tests prove zero idle sandbox work, native source/system and root-home persistence
-  through process replacement, developer isolation, explicit-only Git scans,
-  activation without sandbox recreation, persisted conflicts, independent
-  repository inspection, non-blocking inherited cleanup/lazy identity
-  normalization, reset boundaries, bounded diagnostics, and absence of runsc
-  overlay/tar flags, rootless package-account UID/GID mapping, deterministic
-  development IDs and inherited cleanup, plus direct default-workspace
-  ensure/reuse/restart.
-- The rootless and rootful real-gVisor E2E proves SSH password login and PTY
-  control/resize behavior, a contextual prompt that follows `cd`, and a real
-  `xterm` Nano full-screen session, native non-root UID/GID ownership, ordinary
-  edits plus APT/dpkg installation survive restart natively, helper
-  preview/activation works, source reset retains root-home/system state, factory
-  reset removes it, PID 1 remains `sleep`, deleted process logs do not
-  accumulate, and no scanner executable exists in the image.
-
-# Child DOX Index
+- Unit tests cover deterministic IDs, direct ensure/reuse/restart, bounded and
+  confined authorized-key reads without lifecycle mutation, user
+  isolation, overlay checkpoint/restore, explicit Git scans, activation/reset
+  boundaries, independent repository inspection, inherited-cleanup races,
+  bounded diagnostics, and OCI mount policy.
+- The real gVisor E2E covers SSH/PTY behavior, APT/dpkg persistence across
+  restart, temporary `/run`, read-only helper mounting, repeated helper
+  activation and clean overlay resets, source and factory reset, root identity,
+  and absence of a developer account.

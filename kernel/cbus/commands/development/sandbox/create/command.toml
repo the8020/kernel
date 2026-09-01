@@ -2,7 +2,7 @@ version = 1
 id = "development.sandbox.create"
 path = ["development", "sandbox", "create"]
 summary = "Create a developer sandbox"
-description = "Creates and starts the one default persistent development workspace for a developer user."
+description = "Creates and starts the user's persistent development sandbox."
 mutates_state = true
 restart_behavior = "none"
 [handler]
@@ -15,7 +15,7 @@ position = 0
 required = true
 description = "Developer user ID."
 [[result]]
-name = "workspace"
+name = "sandbox"
 type = "object"
 [[examples]]
-command = "development sandbox create developer-a"
+command = "development sandbox create alice"

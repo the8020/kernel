@@ -1,8 +1,8 @@
 const endpoint = Deno.env.get("DEVELOPMENT_ACTIVATION_ENDPOINT");
-const workspace = Deno.env.get("DEVELOPMENT_WORKSPACE_ID");
+const user = Deno.env.get("DEVELOPMENT_USER_ID");
 const token = Deno.env.get("DEVELOPMENT_ACTIVATION_TOKEN");
-if (!endpoint || !workspace || !token) {
-  throw new Error("activate is available only inside a development workspace");
+if (!endpoint || !user || !token) {
+  throw new Error("activate is available only inside a development sandbox");
 }
 
 let preview = false;
@@ -33,10 +33,12 @@ for (let index = 0; index < Deno.args.length; index++) {
   } else if (!description) description = argument;
   else throw new Error(`unexpected argument ${argument}`);
 }
-if (!description) throw new Error("an activation description is required");
+if (!preview && !description.trim()) {
+  throw new Error("an activation description is required");
+}
 const operation = preview ? "preview" : "activate";
 const response = await fetch(
-  `${endpoint}/v1/development/workspaces/${workspace}/${operation}`,
+  `${endpoint}/v1/development/sandboxes/${user}/${operation}`,
   {
     method: "POST",
     headers: {

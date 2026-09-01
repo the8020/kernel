@@ -10,12 +10,13 @@ import (
 
 const mountProfileSchema = 1
 
-// DefaultMountProfile returns the package and temporary mount
+// DefaultMountProfile returns the package, helper-script, and temporary mount
 // profile. Callers may instead provide an operator-authored TOML profile.
 func DefaultMountProfile() []MountDefinition {
 	return []MountDefinition{
-		{ID: "packages", Target: "/workspace/packages", Behavior: MountWorkspaceSource, Writable: true, Persistence: "workspace", ParticipatesActivate: true, WorkspaceOwned: true},
-		{ID: "temporary", Target: "/tmp", Behavior: MountEphemeral, Writable: true, Persistence: "sandbox"},
+		{ID: "packages", Target: "/workspace/packages", Behavior: MountSandboxSource, Writable: true},
+		{ID: "scripts", Source: "scripts", Target: "/workspace/scripts", Behavior: MountReadOnly, Executable: true},
+		{ID: "temporary", Target: "/tmp", Behavior: MountEphemeral, Writable: true},
 	}
 }
 
@@ -80,28 +81,25 @@ func validateMountProfile(config Config, profile []MountDefinition) error {
 			}
 		}
 		targets[mount.Target] = true
-		if mount.Persistence == "" {
-			return fmt.Errorf("development mount %s requires persistence behavior", mount.ID)
-		}
 		switch mount.Behavior {
-		case MountWorkspaceSource:
+		case MountSandboxSource:
 			sourceCount++
-			if mount.ID != "packages" || mount.Source != "" || mount.Target != "/workspace/packages" || !mount.Writable || !mount.ParticipatesActivate || !mount.WorkspaceOwned || mount.Persistence != "workspace" {
-				return errors.New("packages must be the writable workspace-owned activation source at /workspace/packages")
+			if mount.ID != "packages" || mount.Source != "" || mount.Target != "/workspace/packages" || !mount.Writable || mount.Executable {
+				return errors.New("packages must be the writable sandbox activation source at /workspace/packages")
 			}
 		case MountReadOnly:
-			if mount.Writable || mount.ParticipatesActivate || mount.WorkspaceOwned || mount.Persistence != "shared" {
+			if mount.Writable {
 				return fmt.Errorf("read-only shared mount %s has incompatible behavior flags", mount.ID)
 			}
 			if _, err := applicationMountSource(config, mount.Source); err != nil {
 				return fmt.Errorf("development mount %s: %w", mount.ID, err)
 			}
 		case MountPersistent:
-			if !mount.Writable || mount.ParticipatesActivate || mount.WorkspaceOwned || mount.Persistence != "persistent-user" || !validPersistentSource(mount.Source) {
+			if !mount.Writable || mount.Executable || !validPersistentSource(mount.Source) {
 				return fmt.Errorf("persistent user mount %s has incompatible source or behavior flags", mount.ID)
 			}
 		case MountEphemeral:
-			if mount.Source != "" || !mount.Writable || mount.ParticipatesActivate || mount.WorkspaceOwned || mount.Persistence != "sandbox" {
+			if mount.Source != "" || !mount.Writable || mount.Executable {
 				return fmt.Errorf("ephemeral mount %s has incompatible source or behavior flags", mount.ID)
 			}
 		default:
@@ -109,7 +107,7 @@ func validateMountProfile(config Config, profile []MountDefinition) error {
 		}
 	}
 	if sourceCount != 1 {
-		return errors.New("development mount profile requires exactly one workspace source")
+		return errors.New("development mount profile requires exactly one sandbox source")
 	}
 	return nil
 }
@@ -139,7 +137,7 @@ func safeSandboxMountTarget(value string) bool {
 }
 
 func validPersistentSource(value string) bool {
-	if !strings.HasPrefix(filepath.ToSlash(value), "users/<user-id>/") || strings.Count(value, "<user-id>") != 1 {
+	if !strings.HasPrefix(filepath.ToSlash(value), "users/<user-id>/dev-sandbox/") || strings.Count(value, "<user-id>") != 1 {
 		return false
 	}
 	probe := strings.Replace(value, "<user-id>", "profile-user", 1)
@@ -155,7 +153,7 @@ func applicationMountSource(config Config, relative string) (string, error) {
 		return "", err
 	}
 	if source == config.Root || !beneath(source, config.Root) {
-		return "", errors.New("application source escaped the configured workspace root")
+		return "", errors.New("application source escaped the configured root")
 	}
 	for _, restricted := range []string{"node", "config", "state", "users"} {
 		if beneath(source, filepath.Join(config.Root, restricted)) {
@@ -188,18 +186,18 @@ func (m *Manager) persistentMountSource(userID, template string, create bool) (s
 	if err != nil {
 		return "", err
 	}
-	if !beneath(canonical, m.userRoot(userID)) {
-		return "", errors.New("persistent development mount escaped its configured user root")
+	if !beneath(canonical, m.sandboxRootForUser(userID)) {
+		return "", errors.New("persistent development mount escaped the user's dev-sandbox root")
 	}
 	return canonical, nil
 }
 
-func (m *Manager) preparePersistentMounts(workspace *Workspace) error {
-	for _, mount := range workspace.MountProfile {
+func (m *Manager) preparePersistentMounts(userID string) error {
+	for _, mount := range m.config.MountProfile {
 		if mount.Behavior != MountPersistent {
 			continue
 		}
-		_, err := m.persistentMountSource(workspace.OwnerUserID, mount.Source, true)
+		_, err := m.persistentMountSource(userID, mount.Source, true)
 		if err != nil {
 			return fmt.Errorf("prepare persistent mount %s: %w", mount.ID, err)
 		}
@@ -207,21 +205,21 @@ func (m *Manager) preparePersistentMounts(workspace *Workspace) error {
 	return nil
 }
 
-func (m *Manager) resolveMounts(workspace Workspace) ([]SandboxMount, error) {
-	result := make([]SandboxMount, 0, len(workspace.MountProfile))
-	for _, mount := range workspace.MountProfile {
+func (m *Manager) resolveMounts(sandbox Sandbox) ([]SandboxMount, error) {
+	result := make([]SandboxMount, 0, len(m.config.MountProfile))
+	for _, mount := range m.config.MountProfile {
 		resolved := SandboxMount{MountDefinition: mount}
 		var err error
 		switch mount.Behavior {
-		case MountWorkspaceSource:
-			resolved.HostSource = workspace.SourcePath
+		case MountSandboxSource:
+			resolved.HostSource = sandbox.SourcePath
 			if resolved.HostSource == "" {
-				err = errors.New("workspace source is not initialized")
+				err = errors.New("sandbox source is not initialized")
 			}
 		case MountReadOnly:
 			resolved.HostSource, err = applicationMountSource(m.config, mount.Source)
 		case MountPersistent:
-			resolved.HostSource, err = m.persistentMountSource(workspace.OwnerUserID, mount.Source, true)
+			resolved.HostSource, err = m.persistentMountSource(sandbox.UserID, mount.Source, true)
 		case MountEphemeral:
 		default:
 			err = fmt.Errorf("unknown mount behavior %q", mount.Behavior)

@@ -37,6 +37,65 @@ func TestRootfulDevelopmentE2E(t *testing.T) {
 	runDevelopmentE2E(t, false)
 }
 
+func TestRootlessDevelopmentOverlayProbe(t *testing.T) {
+	if os.Getenv("THE8020_DEVELOPMENT_OVERLAY_PROBE") != "1" {
+		t.Skip("set THE8020_DEVELOPMENT_OVERLAY_PROBE=1 to probe the pinned gVisor overlay")
+	}
+	sourceRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runsc := filepath.Join(sourceRoot, ".development", "runtime", "gvisor", "bin", "runsc")
+	imageRoot := filepath.Join(sourceRoot, ".development", "runtime", "development", "rootfs")
+	root := t.TempDir()
+	rootfs := filepath.Join(root, "rootfs")
+	if err := copySystemRoot(context.Background(), imageRoot, rootfs); err != nil {
+		t.Fatal(err)
+	}
+	packages := filepath.Join(root, "packages")
+	writeTestFile(t, filepath.Join(packages, "unchanged.txt"), "lower-one\n")
+	writeTestFile(t, filepath.Join(packages, "changed.txt"), "lower-one\n")
+	driver := NewRootlessDriver(RootlessConfig{
+		RunscPath: runsc, RuntimeRoot: filepath.Join(root, "runsc"),
+		SandboxRoot: filepath.Join(root, "sandboxes"), LogRoot: filepath.Join(root, "logs"),
+	})
+	start := SandboxStart{
+		UserID: "overlayprobe", SandboxID: "dev-overlayprobe", Packages: packages, RootFS: rootfs,
+		Mounts: []SandboxMount{
+			{MountDefinition: MountDefinition{ID: "packages", Target: "/workspace/packages", Behavior: MountSandboxSource, Writable: true}, HostSource: packages},
+			{MountDefinition: MountDefinition{ID: "temporary", Target: "/tmp", Behavior: MountEphemeral, Writable: true}},
+		},
+	}
+	if err := driver.Start(context.Background(), start); err != nil {
+		t.Fatal(err)
+	}
+	cleanup := func() {
+		_ = driver.Kill(context.Background(), start.SandboxID)
+		_ = driver.Delete(context.Background(), start.SandboxID)
+	}
+	defer cleanup()
+	if _, err := driver.Exec(context.Background(), start.SandboxID, "printf private > /workspace/packages/changed.txt; printf added > /workspace/packages/added.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(filepath.Join(packages, "changed.txt")); err != nil || string(data) != "lower-one\n" {
+		t.Fatalf("overlay changed lower file: %q, %v", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(packages, "added.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("overlay created a lower file: %v", err)
+	}
+	writeTestFile(t, filepath.Join(packages, "unchanged.txt"), "lower-two\n")
+	if output, err := driver.Exec(context.Background(), start.SandboxID, "cat /workspace/packages/unchanged.txt; cat /workspace/packages/changed.txt"); err != nil || string(output) != "lower-two\nprivate" {
+		t.Fatalf("overlay lower refresh/private view = %q, %v", output, err)
+	}
+	cleanup()
+	if err := driver.Start(context.Background(), start); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := driver.Exec(context.Background(), start.SandboxID, "cat /workspace/packages/changed.txt; test ! -e /workspace/packages/added.txt"); err != nil || string(output) != "lower-one\n" {
+		t.Fatalf("fresh overlay after restart = %q, %v", output, err)
+	}
+}
+
 func runDevelopmentE2E(t *testing.T, rootless bool) {
 	t.Helper()
 	sourceRoot, err := filepath.Abs(filepath.Join("..", ".."))
@@ -68,6 +127,9 @@ func runDevelopmentE2E(t *testing.T, rootless bool) {
 			t.Fatal(err)
 		}
 	}
+	if err := copyDirectory(context.Background(), filepath.Join(sourceRoot, "defaults", "scripts"), filepath.Join(root, "scripts")); err != nil {
+		t.Fatal(err)
+	}
 	for _, id := range []string{"the8020/dev-core", "the8020/demo"} {
 		packageRoot := filepath.Join(packages, filepath.FromSlash(id))
 		writeTestFile(t, filepath.Join(packageRoot, "package.toml"), "schema = 1\n")
@@ -93,66 +155,112 @@ func runDevelopmentE2E(t *testing.T, rootless bool) {
 		}
 	})
 
-	workspace, err := manager.Create(context.Background(), "developer")
+	sandbox, err := manager.Create(context.Background(), "developer")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(workspace.SourcePath, filepath.Join(users, "developer")) || !strings.HasPrefix(workspace.SystemPath, filepath.Join(users, "developer")) {
-		t.Fatalf("workspace does not use native per-user storage: %#v", workspace)
+	if sandbox.SourcePath != packages || !strings.HasPrefix(sandbox.SystemPath, filepath.Join(users, "developer", "dev-sandbox")) {
+		t.Fatalf("sandbox does not use shared lower and per-user system storage: %#v", sandbox)
 	}
-	if workspace.ActiveSandboxID != "dev-developer" {
-		t.Fatalf("development sandbox ID = %q", workspace.ActiveSandboxID)
+	if sandbox.SandboxID != "dev-developer" {
+		t.Fatalf("development sandbox ID = %q", sandbox.SandboxID)
 	}
-	proveInteractiveConsole(t, manager, workspace.ActiveSandboxID)
+	proveInteractiveConsole(t, manager, sandbox.SandboxID)
 	proveSSHConsole(t, root, manager)
-	shell(t, manager, workspace.WorkspaceID, "test \"$(cat /proc/1/comm)\" = sleep && test \"$(id -u)\" = 0 && test \"$HOME:$USER:$LOGNAME\" = /root:root:root && ! getent passwd developer && test ! -e /home/developer && test ! -e /opt/development/snapshot && ! command -v codex && ! command -v node && ! command -v nodejs && ! command -v npm && ! command -v npx && deno --version && git --version")
-	shell(t, manager, workspace.WorkspaceID, "test \"$(stat -c %a /run/lock)\" = 1777 && test \"$(readlink /var/lock)\" = /run/lock && printf lock-ok > /var/lock/the8020-proof && rm /var/lock/the8020-proof && printf transient > /run/the8020-transient")
-	shell(t, manager, workspace.WorkspaceID, "install -o 42 -g 4 -m 0640 /dev/null /var/tmp/the8020-idmap-proof && test \"$(stat -c %u:%g /var/tmp/the8020-idmap-proof)\" = 42:4 && rm /var/tmp/the8020-idmap-proof")
-	shell(t, manager, workspace.WorkspaceID, "mkdir -p /tmp/the8020-proof/DEBIAN /tmp/the8020-proof/usr/local/bin /tmp/the8020-proof/usr/share/the8020-proof /root/.config/editor && printf 'Package: the8020-proof\\nVersion: 1\\nArchitecture: all\\nMaintainer: 80|20 Test <test@example.test>\\nDescription: proof\\n' > /tmp/the8020-proof/DEBIAN/control && printf '#!/bin/sh\\necho system-ok\\n' > /tmp/the8020-proof/usr/local/bin/the8020-proof && printf 'directory-ok\\n' > /tmp/the8020-proof/usr/share/the8020-proof/value && chmod 755 /tmp/the8020-proof/usr/local/bin/the8020-proof && dpkg-deb --build /tmp/the8020-proof /tmp/the8020-proof.deb && /usr/bin/dpkg --unpack /tmp/the8020-proof.deb && /usr/bin/dpkg --configure the8020-proof && grep -F directory-ok /usr/share/the8020-proof/value && printf 'home-ok\\n' > /root/.config/editor/proof && printf 'private\\n' > /workspace/packages/the8020/dev-core/src/message.ts")
-	if shared, _ := os.ReadFile(filepath.Join(packages, "the8020", "dev-core", "src", "message.ts")); strings.Contains(string(shared), "private") {
-		t.Fatal("private source changed shared repository before activation")
+	if _, err := os.Stat(filepath.Join(packages, "the8020", "dev-core", "ssh-proof.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("SSH package edit escaped the private overlay: %v", err)
 	}
-	oldSandbox := workspace.ActiveSandboxID
+	shell(t, manager, sandbox.UserID, "test \"$(cat /proc/1/comm)\" = sleep && test \"$(id -u)\" = 0 && test \"$HOME:$USER:$LOGNAME\" = /root:root:root && ! getent passwd developer && test ! -e /home/developer && test ! -e /opt/development/snapshot && ! command -v codex && ! command -v node && ! command -v nodejs && ! command -v npm && ! command -v npx && deno --version && git --version")
+	shell(t, manager, sandbox.UserID, "test \"$(command -v activate)\" = /workspace/scripts/activate && test -x /workspace/scripts/activate && ! sh -c 'printf no > /workspace/scripts/not-writable'")
+	shell(t, manager, sandbox.UserID, "test \"$(stat -c %a /run/lock)\" = 1777 && test \"$(readlink /var/lock)\" = /run/lock && printf lock-ok > /var/lock/the8020-proof && rm /var/lock/the8020-proof && printf transient > /run/the8020-transient")
+	shell(t, manager, sandbox.UserID, "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends aptitude && aptitude --version")
+	shell(t, manager, sandbox.UserID, "install -o 42 -g 4 -m 0640 /dev/null /var/tmp/the8020-idmap-proof && test \"$(stat -c %u:%g /var/tmp/the8020-idmap-proof)\" = 42:4 && rm /var/tmp/the8020-idmap-proof")
+	shell(t, manager, sandbox.UserID, "mkdir -p /tmp/the8020-proof/DEBIAN /tmp/the8020-proof/usr/local/bin /tmp/the8020-proof/usr/share/the8020-proof /root/.config/editor && printf 'Package: the8020-proof\\nVersion: 1\\nArchitecture: all\\nMaintainer: 80|20 Test <test@example.test>\\nDescription: proof\\n' > /tmp/the8020-proof/DEBIAN/control && printf '#!/bin/sh\\necho system-ok\\n' > /tmp/the8020-proof/usr/local/bin/the8020-proof && printf 'directory-ok\\n' > /tmp/the8020-proof/usr/share/the8020-proof/value && chmod 755 /tmp/the8020-proof/usr/local/bin/the8020-proof && dpkg-deb --build /tmp/the8020-proof /tmp/the8020-proof.deb && /usr/bin/dpkg --unpack /tmp/the8020-proof.deb && /usr/bin/dpkg --configure the8020-proof && grep -F directory-ok /usr/share/the8020-proof/value && printf 'home-ok\\n' > /root/.config/editor/proof && printf 'private\\n' > /workspace/packages/the8020/dev-core/src/message.ts")
+	if shared, _ := os.ReadFile(filepath.Join(packages, "the8020", "dev-core", "src", "message.ts")); strings.Contains(string(shared), "private") {
+		t.Fatal("private package edit changed the shared repository before activation")
+	}
+	oldSandbox := sandbox.SandboxID
 	oldLogMarker := filepath.Join(runtimeRoot, "logs", oldSandbox, "old-generation")
 	if err := os.WriteFile(oldLogMarker, []byte("old"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.Restart(context.Background(), workspace.WorkspaceID); err != nil {
+	if _, err := manager.Restart(context.Background(), sandbox.UserID); err != nil {
 		t.Fatal(err)
 	}
-	workspace, _ = manager.Inspect(workspace.WorkspaceID)
-	if workspace.ActiveSandboxID != oldSandbox {
+	sandbox, _ = manager.Inspect(sandbox.UserID)
+	if sandbox.SandboxID != oldSandbox {
 		t.Fatal("restart changed the deterministic development sandbox identity")
 	}
 	if _, err := os.Stat(oldLogMarker); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("restarted sandbox retained disposable logs: %v", err)
 	}
-	shell(t, manager, workspace.WorkspaceID, "test ! -e /run/the8020-transient && grep -F private /workspace/packages/the8020/dev-core/src/message.ts && grep -F home-ok /root/.config/editor/proof && test \"$(the8020-proof)\" = system-ok && dpkg-query -W the8020-proof")
+	shell(t, manager, sandbox.UserID, "test ! -e /run/the8020-transient && grep -F private /workspace/packages/the8020/dev-core/src/message.ts && grep -F home-ok /root/.config/editor/proof && test \"$(the8020-proof)\" = system-ok && dpkg-query -W the8020-proof && aptitude --version")
 
-	previewJSON := shell(t, manager, workspace.WorkspaceID, "activate --preview --message Preview")
+	previewJSON := shell(t, manager, sandbox.UserID, "activate --preview --message Preview")
 	var preview ActivationPreview
-	if err := json.Unmarshal([]byte(previewJSON), &preview); err != nil || len(preview.Packages) != 1 {
+	if err := json.Unmarshal([]byte(previewJSON), &preview); err != nil || len(preview.Packages) != 1 || preview.Packages[0].ChangedFiles != 2 || preview.Packages[0].AddedRows != 2 || preview.Packages[0].RemovedRows != 1 {
 		t.Fatalf("helper preview = %q, %v", previewJSON, err)
 	}
-	activationJSON := shell(t, manager, workspace.WorkspaceID, "activate --message Activate --author-name Developer --author-email developer@example.test")
+	activationJSON := shell(t, manager, sandbox.UserID, "activate --message Activate --author-name Developer --author-email developer@example.test")
 	var activation ActivationResult
 	if err := json.Unmarshal([]byte(activationJSON), &activation); err != nil || !activation.Success {
 		t.Fatalf("helper activation = %q, %v", activationJSON, err)
 	}
-	current, _ := manager.Inspect(workspace.WorkspaceID)
-	if current.ActiveSandboxID != workspace.ActiveSandboxID {
+	waitForOverlayReset(t, manager, sandbox.UserID)
+	if contents, err := os.ReadFile(filepath.Join(packages, "the8020", "dev-core", "ssh-proof.txt")); err != nil || string(contents) != "changed through SSH\n" {
+		t.Fatalf("SSH package edit was not activated: %q, %v", contents, err)
+	}
+	message, err := gitOutput(filepath.Join(packages, "the8020", "dev-core"), "log", "-1", "--pretty=%B")
+	if err != nil || !strings.Contains(message, "[the8020.activation]") || !strings.Contains(message, `"metadata_client" = "sandbox-helper"`) || !strings.Contains(message, `"sandbox" = "`+sandbox.SandboxID+`"`) {
+		t.Fatalf("activation TOML metadata = %q, %v", message, err)
+	}
+	current, _ := manager.Inspect(sandbox.UserID)
+	if current.SandboxID != sandbox.SandboxID {
 		t.Fatal("activation recreated the native-storage sandbox")
 	}
-	shell(t, manager, workspace.WorkspaceID, "grep -F private /workspace/packages/the8020/dev-core/src/message.ts && grep -F home-ok /root/.config/editor/proof && test \"$(the8020-proof)\" = system-ok")
+	shell(t, manager, sandbox.UserID, "grep -F private /workspace/packages/the8020/dev-core/src/message.ts && grep -F home-ok /root/.config/editor/proof && test \"$(the8020-proof)\" = system-ok")
+	shell(t, manager, sandbox.UserID, "printf 'second activation\\n' > /workspace/packages/the8020/demo/second-activation.txt")
+	if _, err := os.Stat(filepath.Join(packages, "the8020", "demo", "second-activation.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("second private edit escaped the overlay: %v", err)
+	}
+	secondJSON := shell(t, manager, sandbox.UserID, "activate --message 'Activate again'")
+	var second ActivationResult
+	if err := json.Unmarshal([]byte(secondJSON), &second); err != nil || !second.Success || packageResult(second, "the8020/demo").Status != "committed" {
+		t.Fatalf("second helper activation = %q, %v", secondJSON, err)
+	}
+	waitForOverlayReset(t, manager, sandbox.UserID)
+	if contents, err := os.ReadFile(filepath.Join(packages, "the8020", "demo", "second-activation.txt")); err != nil || string(contents) != "second activation\n" {
+		t.Fatalf("second activation was not published: %q, %v", contents, err)
+	}
+	secondSubject, err := gitOutput(filepath.Join(packages, "the8020", "demo"), "log", "-1", "--pretty=%s")
+	if err != nil || secondSubject != "Activate again" {
+		t.Fatalf("second activation commit = %q, %v", secondSubject, err)
+	}
 
-	if _, err := manager.ResetSource(context.Background(), workspace.WorkspaceID, true); err != nil {
+	if _, err := manager.ResetSource(context.Background(), sandbox.UserID, true); err != nil {
 		t.Fatal(err)
 	}
-	shell(t, manager, workspace.WorkspaceID, "grep -F private /workspace/packages/the8020/dev-core/src/message.ts && grep -F home-ok /root/.config/editor/proof && test \"$(the8020-proof)\" = system-ok")
-	if _, err := manager.FactoryReset(context.Background(), workspace.WorkspaceID, true); err != nil {
+	shell(t, manager, sandbox.UserID, "grep -F private /workspace/packages/the8020/dev-core/src/message.ts && grep -F home-ok /root/.config/editor/proof && test \"$(the8020-proof)\" = system-ok")
+	if _, err := manager.FactoryReset(context.Background(), sandbox.UserID, true); err != nil {
 		t.Fatal(err)
 	}
-	shell(t, manager, workspace.WorkspaceID, "test ! -e /root/.config/editor/proof && test ! -e /home/developer && ! getent passwd developer && ! command -v the8020-proof && grep -F private /workspace/packages/the8020/dev-core/src/message.ts")
+	shell(t, manager, sandbox.UserID, "test ! -e /root/.config/editor/proof && test ! -e /home/developer && ! getent passwd developer && ! command -v the8020-proof && ! command -v aptitude && grep -F private /workspace/packages/the8020/dev-core/src/message.ts")
+}
+
+func waitForOverlayReset(t *testing.T, manager *Manager, userID string) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		sandbox, inspectErr := manager.Inspect(userID)
+		if inspectErr == nil && sandbox.State == StateReady && sandbox.LastActivationResult != nil && sandbox.LastActivationResult.OverlayReset && !sandbox.LastActivationResult.OverlayResetPending {
+			preview, previewErr := manager.Preview(context.Background(), userID, ActivationOptions{})
+			if previewErr == nil && len(preview.Packages) == 0 {
+				return
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("development overlay did not reset after helper activation")
 }
 
 func proveSSHConsole(t *testing.T, root string, developmentManager *Manager) {
@@ -223,6 +331,7 @@ func proveSSHConsole(t *testing.T, root string, developmentManager *Manager) {
 	}
 	promptTranscript = append(promptTranscript, readSSHUntil(t, output, []byte("/workspace/packages"))...)
 	command := "printf '\\036SSH:%s:%s\\037\\n' \"$BASH_VERSION\" \"$(stty size)\"; " +
+		"printf 'changed through SSH\\n' > /workspace/packages/the8020/dev-core/ssh-proof.txt; " +
 		"printf '\\036NANO-READY\\037\\n'; nano /tmp/the8020-ssh-nano; printf '\\036NANO-EXIT:%s\\037\\n' \"$?\"; " +
 		"printf '\\033[?1049h\\036FULLSCREEN\\037\\033[?1049l\\n'; " +
 		"printf '\\036KEY-READY\\037\\n'; IFS= read -rsn 5 key; " +

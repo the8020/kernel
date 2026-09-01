@@ -3,6 +3,7 @@
 package sshserver
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -37,10 +38,12 @@ const (
 
 type Authenticator interface {
 	AuthenticatePassword(string, []byte) (auth.AuthContext, error)
+	AuthenticateUser(string) (auth.AuthContext, error)
 }
 
 type Development interface {
-	EnsureDefaultSandbox(context.Context, string) (string, error)
+	EnsureSandbox(context.Context, string) (string, error)
+	AuthorizedKeys(string) ([]byte, error)
 }
 
 type Consoles interface {
@@ -132,6 +135,23 @@ func New(config Config) (*Manager, error) {
 		}
 		return &gossh.Permissions{Extensions: map[string]string{"username": identity.Username}}, nil
 	}
+	serverConfig.PublicKeyCallback = func(metadata gossh.ConnMetadata, offered gossh.PublicKey) (*gossh.Permissions, error) {
+		select {
+		case authenticationSlots <- struct{}{}:
+			defer func() { <-authenticationSlots }()
+		default:
+			return nil, errors.New("authentication is temporarily unavailable")
+		}
+		identity, authenticateErr := config.Authentication.AuthenticateUser(metadata.User())
+		if authenticateErr != nil || !identity.Authenticated || identity.Username == "" {
+			return nil, errors.New("authentication failed")
+		}
+		content, readErr := config.Development.AuthorizedKeys(identity.Username)
+		if readErr != nil || !authorizedKeyMatches(content, offered) {
+			return nil, errors.New("authentication failed")
+		}
+		return &gossh.Permissions{Extensions: map[string]string{"username": identity.Username}}, nil
+	}
 	serverConfig.AddHostKey(signer)
 	listener, err := net.Listen("tcp", ":"+strconv.Itoa(config.Port))
 	if err != nil {
@@ -148,6 +168,21 @@ func New(config Config) (*Manager, error) {
 		close(manager.done)
 	}()
 	return manager, nil
+}
+
+func authorizedKeyMatches(content []byte, offered gossh.PublicKey) bool {
+	matched := false
+	for len(content) > 0 {
+		key, _, _, rest, err := gossh.ParseAuthorizedKey(content)
+		if err != nil {
+			return false
+		}
+		if key.Type() == offered.Type() && bytes.Equal(key.Marshal(), offered.Marshal()) {
+			matched = true
+		}
+		content = rest
+	}
+	return matched
 }
 
 func (m *Manager) Port() int {
@@ -479,7 +514,7 @@ func relaySignal(console backend.Console, signal string) bool {
 
 func (m *Manager) resolveTarget(ctx context.Context, username string, selected selector) (string, string, error) {
 	if selected.sandboxID == "" {
-		sandboxID, err := m.development.EnsureDefaultSandbox(ctx, username)
+		sandboxID, err := m.development.EnsureSandbox(ctx, username)
 		if err != nil {
 			return "", "", fmt.Errorf("prepare default development sandbox: %w", err)
 		}

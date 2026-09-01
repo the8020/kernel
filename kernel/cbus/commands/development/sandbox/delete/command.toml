@@ -1,30 +1,21 @@
 version = 1
 id = "development.sandbox.delete"
 path = ["development", "sandbox", "delete"]
-summary = "Delete a development workspace"
-description = "Deletes the workspace and durable private source; image-qualified system storage is retained unless --delete-user-data is supplied."
+summary = "Delete a development sandbox"
+description = "Deletes the user's development sandbox and everything persisted beneath users/<user>/dev-sandbox."
 mutates_state = true
 restart_behavior = "none"
 [handler]
 file = "kernel/cbus/commands/development/sandbox/delete/delete.go"
 symbol = "New"
 [[parameters]]
-name = "workspace_id"
+name = "user_id"
 type = "string"
 position = 0
 required = true
-description = "Development workspace ID."
-[[parameters]]
-name = "delete_user_data"
-type = "boolean"
-option = "delete-user-data"
-required = false
-description = "Also delete all development storage owned by this user, including image-qualified system roots."
+description = "Developer user ID."
 [[result]]
 name = "deleted"
 type = "boolean"
-[[result]]
-name = "user_data_deleted"
-type = "boolean"
 [[examples]]
-command = "development sandbox delete default-0123456789abcdef"
+command = "development sandbox delete alice"

@@ -1,7 +1,7 @@
 # Purpose
 
 - Own the separate editable development sandbox image and its portable
-  rootless/full materialization tooling and image-installed helpers.
+  rootless/full materialization tooling and image payload.
 
 # Ownership
 
@@ -10,15 +10,16 @@
   platform-owned definition under `config/runtime/development/`; materialized
   rootfs and records live under
   `node/kernel/runtime/images/development/`.
-- Do not own workspace storage, package Git commits, activation, or developer
+- Do not own sandbox storage, package Git commits, activation, or developer
   files.
 
 # Local Contracts
 
 - The image contains Git, pinned Deno, Bash, common Unix tools, `clear`, the
   common `ncurses-base` terminal definitions including `xterm` and
-  `xterm-256color`, CA certificates, curl, Nano, APT/dpkg, and the
-  workspace-scoped `activate` helper. Codex, Node.js, and npm are not
+  `xterm-256color`, CA certificates, curl, Nano, and APT/dpkg. The canonical
+  `activate` helper is supplied separately through the read-only
+  `/workspace/scripts` mount. Codex, Node.js, and npm are not
   preinstalled; developers may add their own tools through APT.
 - Interactive login shells source the image-owned `/etc/profile` and expose a
   restrained colorized `user@host:working-directory` prompt, with a plain-text
@@ -57,8 +58,8 @@
   rootless/rootful E2E requires a contextual working-directory prompt, a
   native dpkg transaction, an actual `xterm` full-screen Nano session over
   SSH, a `sleep` PID 1, a usable Debian lock directory, ephemeral `/run`, no
-  scanner, durable source/root-home/APT writes and package directories across sandbox
-  restart, helper preview/activation, and verified source/factory reset
+  scanner, durable root-home/APT writes and private package deltas across
+  sandbox restart, mounted-helper preview/activation, and verified source/factory reset
   boundaries.
 
 # Child DOX Index
