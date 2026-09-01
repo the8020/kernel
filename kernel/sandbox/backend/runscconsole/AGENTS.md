@@ -14,10 +14,12 @@
 
 - `Open` accepts an already validated runsc exec argument vector, inserts a
   private temporary console socket, and returns a bounded generic backend
-  console.
+  console. `OpenConfigured` additionally applies one caller-owned process
+  configurator immediately before runsc starts.
 - `OpenStream` runs the validated argument vector attached without a terminal,
   preserving separate stdout/stderr bytes, real stdin half-close semantics,
-  and process exit status.
+  and process exit status. `OpenStreamConfigured` provides the same narrow
+  pre-start process-configuration hook.
 - Closing the PTY ends only the exec process and never signals the sandbox.
 
 # Work Guidance

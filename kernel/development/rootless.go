@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	specs "github.com/opencontainers/runtime-spec/specs-go"
@@ -37,6 +38,11 @@ type RunscDriver struct{ config RunscConfig }
 type RootlessDriver = RunscDriver
 
 const developmentPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+// A conventional OCI user namespace maps 65536 IDs. Mapping that complete
+// identity range lets native package managers preserve service-user ownership
+// while runsc and its gofer remain confined to a child user namespace.
+const rootlessIDMapSize = 1 << 16
 
 var developmentRootCapabilities = []string{
 	"CAP_CHOWN",
@@ -83,7 +89,7 @@ func (d *RunscDriver) List(ctx context.Context) ([]string, error) {
 		return nil, err
 	}
 	args := []string{"--root=" + d.config.RuntimeRoot, "--rootless=" + strconv.FormatBool(d.config.Rootless), "--platform=systrap", "list", "--format=json"}
-	output, err := commandOutput(ctx, d.config.RunscPath, args...)
+	output, err := d.commandOutput(ctx, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list development sandboxes: %w: %s", err, strings.TrimSpace(string(output)))
 	}
@@ -156,12 +162,7 @@ func (d *RunscDriver) Start(ctx context.Context, start SandboxStart) error {
 		}
 	}
 	for _, source := range []string{"/etc/resolv.conf", "/etc/hosts"} {
-		data, err := os.ReadFile(source)
-		if err != nil {
-			_ = os.RemoveAll(path)
-			return err
-		}
-		if err := os.WriteFile(filepath.Join(bundle, filepath.Base(source)), data, 0o600); err != nil {
+		if err := copySandboxNetworkFile(source, filepath.Join(bundle, filepath.Base(source))); err != nil {
 			_ = os.RemoveAll(path)
 			return err
 		}
@@ -183,7 +184,7 @@ func (d *RunscDriver) Start(ctx context.Context, start SandboxStart) error {
 	}
 	defer stdout.Close()
 	args := append(d.flags(start.SandboxID, "run"), "--detach", "--bundle="+bundle, "--user-log="+filepath.Join(logs, "user.log"), start.SandboxID)
-	command := exec.CommandContext(ctx, d.config.RunscPath, args...)
+	command := d.commandContext(ctx, args...)
 	command.Stdout, command.Stderr = stdout, stdout
 	if err := command.Run(); err != nil {
 		_ = stdout.Sync()
@@ -255,7 +256,7 @@ func (d *RunscDriver) Exec(ctx context.Context, sandboxID, commandText string) (
 		commandText = "exec /bin/bash"
 	}
 	args := append(d.flags(sandboxID, "exec"), "--cwd=/workspace", "--env=HOME=/home/developer", "--env=PATH="+developmentPath, sandboxID, "/bin/bash", "-lc", commandText)
-	command := exec.CommandContext(ctx, d.config.RunscPath, args...)
+	command := d.commandContext(ctx, args...)
 	output := &boundedBuffer{limit: commandOutputLimit}
 	command.Stdout, command.Stderr = output, output
 	if err := command.Run(); err != nil {
@@ -289,9 +290,9 @@ func (d *RunscDriver) OpenConsole(ctx context.Context, sandboxID string, options
 	arguments = append(arguments, options.Arguments...)
 	arguments = append(d.flags(sandboxID, "exec"), arguments...)
 	if !options.Terminal {
-		return runscconsole.OpenStream(ctx, d.config.RunscPath, arguments)
+		return runscconsole.OpenStreamConfigured(ctx, d.config.RunscPath, arguments, d.configureCommand)
 	}
-	return runscconsole.Open(ctx, d.config.RunscPath, arguments, options.Size)
+	return runscconsole.OpenConfigured(ctx, d.config.RunscPath, arguments, options.Size, d.configureCommand)
 }
 
 func (d *RunscDriver) Pause(ctx context.Context, id string) error {
@@ -320,7 +321,7 @@ func (d *RunscDriver) Delete(ctx context.Context, id string) error {
 		return errors.New("safe development sandbox ID is required")
 	}
 	args := append(d.flags(id, "delete"), "--force", id)
-	output, err := commandOutput(ctx, d.config.RunscPath, args...)
+	output, err := d.commandOutput(ctx, args...)
 	if err != nil && !strings.Contains(output, "does not exist") && !strings.Contains(output, "not found") {
 		return fmt.Errorf("delete development sandbox: %w: %s", err, output)
 	}
@@ -334,7 +335,7 @@ func (d *RunscDriver) Running(ctx context.Context, id string) (bool, error) {
 		return false, errors.New("safe development sandbox ID is required")
 	}
 	args := append(d.flags(id, "state"), id)
-	output, err := commandOutput(ctx, d.config.RunscPath, args...)
+	output, err := d.commandOutput(ctx, args...)
 	if err != nil {
 		if strings.Contains(output, "does not exist") || strings.Contains(output, "not found") {
 			return false, nil
@@ -351,7 +352,7 @@ func (d *RunscDriver) Running(ctx context.Context, id string) (bool, error) {
 }
 func (d *RunscDriver) signal(ctx context.Context, id, signal string) error {
 	args := append(d.flags(id, "kill"), "--all", id, signal)
-	output, err := commandOutput(ctx, d.config.RunscPath, args...)
+	output, err := d.commandOutput(ctx, args...)
 	if err != nil && !strings.Contains(output, "does not exist") && !strings.Contains(output, "not found") && !strings.Contains(output, "connection refused") {
 		return fmt.Errorf("signal development sandbox: %w: %s", err, output)
 	}
@@ -359,7 +360,7 @@ func (d *RunscDriver) signal(ctx context.Context, id, signal string) error {
 }
 func (d *RunscDriver) simple(ctx context.Context, id, operation string) error {
 	args := append(d.flags(id, operation), id)
-	output, err := commandOutput(ctx, d.config.RunscPath, args...)
+	output, err := d.commandOutput(ctx, args...)
 	if err != nil {
 		return fmt.Errorf("%s development sandbox: %w: %s", operation, err, output)
 	}
@@ -372,6 +373,43 @@ func (d *RunscDriver) flags(id, operation string) []string {
 	}
 	return append(flags, operation)
 }
+
+func (d *RunscDriver) commandContext(ctx context.Context, arguments ...string) *exec.Cmd {
+	command := exec.CommandContext(ctx, d.config.RunscPath, arguments...)
+	d.configureCommand(command)
+	return command
+}
+
+func (d *RunscDriver) commandOutput(ctx context.Context, arguments ...string) (string, error) {
+	command := d.commandContext(ctx, arguments...)
+	output := &boundedBuffer{limit: commandOutputLimit}
+	command.Stdout, command.Stderr = output, output
+	err := command.Run()
+	return output.String(), err
+}
+
+func (d *RunscDriver) configureCommand(command *exec.Cmd) {
+	if !d.config.Rootless {
+		return
+	}
+	command.SysProcAttr = &syscall.SysProcAttr{
+		Cloneflags:  syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
+		UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: 0, Size: rootlessIDMapSize}},
+		GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: 0, Size: rootlessIDMapSize}},
+		Credential:  &syscall.Credential{Uid: 0, Gid: 0},
+		Pdeathsig:   syscall.SIGKILL,
+		Setsid:      true,
+	}
+}
+
+func copySandboxNetworkFile(source, destination string) error {
+	data, err := os.ReadFile(source)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(destination, data, 0o644)
+}
+
 func canonicalDirectory(path string) (string, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {

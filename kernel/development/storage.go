@@ -202,6 +202,9 @@ func copySystemRoot(ctx context.Context, source, destination string) error {
 			return fmt.Errorf("copy durable development system entry %s: %w: %s", entry.Name(), copyErr, output)
 		}
 	}
+	if err := os.Chmod(stage, 0o755); err != nil {
+		return err
+	}
 	if err := os.Rename(stage, destination); err != nil {
 		return err
 	}

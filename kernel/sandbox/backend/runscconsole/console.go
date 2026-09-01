@@ -37,13 +37,25 @@ type stream struct {
 	status    atomic.Uint32
 }
 
+// CommandConfigurator applies caller-owned process isolation before runsc is
+// started. Runtime arguments and console lifecycle remain owned here.
+type CommandConfigurator func(*exec.Cmd)
+
 // OpenStream starts an attached runsc exec without a terminal. It preserves
 // byte-transparent stdin/stdout and real half-close semantics for SSH exec.
 func OpenStream(ctx context.Context, runscPath string, arguments []string) (backend.Console, error) {
+	return OpenStreamConfigured(ctx, runscPath, arguments, nil)
+}
+
+// OpenStreamConfigured is OpenStream with caller-owned runsc process setup.
+func OpenStreamConfigured(ctx context.Context, runscPath string, arguments []string, configure CommandConfigurator) (backend.Console, error) {
 	if !filepath.IsAbs(runscPath) || len(arguments) == 0 {
 		return nil, errors.New("absolute runsc path and exec arguments are required")
 	}
 	command := exec.CommandContext(ctx, runscPath, arguments...)
+	if configure != nil {
+		configure(command)
+	}
 	input, err := command.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -103,6 +115,11 @@ func (s *stream) Close() error {
 // Open inserts a private console socket into an already complete runsc exec
 // argument vector and returns its PTY master.
 func Open(ctx context.Context, runscPath string, arguments []string, size backend.ConsoleSize) (backend.Console, error) {
+	return OpenConfigured(ctx, runscPath, arguments, size, nil)
+}
+
+// OpenConfigured is Open with caller-owned runsc process setup.
+func OpenConfigured(ctx context.Context, runscPath string, arguments []string, size backend.ConsoleSize, configure CommandConfigurator) (backend.Console, error) {
 	if !filepath.IsAbs(runscPath) || len(arguments) == 0 {
 		return nil, errors.New("absolute runsc path and exec arguments are required")
 	}
@@ -124,6 +141,9 @@ func Open(ctx context.Context, runscPath string, arguments []string, size backen
 		return nil, err
 	}
 	command := exec.Command(runscPath, arguments...)
+	if configure != nil {
+		configure(command)
+	}
 	var output bytes.Buffer
 	command.Stdout, command.Stderr = &output, &output
 	if err := command.Start(); err != nil {

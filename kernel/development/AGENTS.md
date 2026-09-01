@@ -24,6 +24,10 @@
 - Development system-root storage must preserve native Linux ownership, mode
   bits, symlinks, and atomic renames; metadata-emulating host shares are not a
   supported backing filesystem for interactive package installation.
+- Rootless development launches every runsc lifecycle and exec process inside
+  a kernel-created child user/mount namespace with the identity-mapped Linux
+  UID/GID range `0..65535`. Native package-account ownership therefore reaches
+  the durable system root without a filesystem shim or a broader host mount.
 - Development lifecycle has no timer, autosave, draft format, scanner helper,
   rootfs tar, or gVisor overlay persistence. `node/kernel/` contains
   process/bundle metadata only and may be deleted without losing workspace
@@ -48,9 +52,10 @@
 - The shared package tree is copied once when source storage is first created or
   explicitly reset. Each image-qualified system root is copied once from its
   immutable image. Copying streams through `cp -a --reflink=auto`, is staged
-  atomically, and retains bounded diagnostics. The empty `/proc` and `/sys`
-  image placeholders are created as ordinary writable mount points instead of
-  preserving immutable template modes that shared filesystems may reject.
+  atomically, publishes the system root itself as traversable mode `0755`, and
+  retains bounded diagnostics. The empty `/proc` and `/sys` image placeholders
+  are created as ordinary writable mount points instead of preserving immutable
+  template modes that shared filesystems may reject.
 - A workspace source is scanned only by Git during an explicit
   `development activate preview` or `development activate run`. A temporary Git
   index compares each private working tree with its recorded base without
@@ -71,9 +76,10 @@
   confirmation.
 - The direct runsc driver uses the selected rootful/rootless mode, a writable
   private OCI root, direct writable source/home bind mounts, validated shared
-  read-only mounts, and ephemeral tmpfs mounts. It configures no runsc overlay
-  or rootfs-tar annotation; `--overlay2=none` is explicit because runsc
-  otherwise defaults the root to an ephemeral self-backed overlay.
+  read-only mounts, ephemeral tmpfs mounts, and read-only mode-`0644` resolver
+  files so package-manager service accounts retain DNS access. It configures no
+  runsc overlay or rootfs-tar annotation; `--overlay2=none` is explicit because
+  runsc otherwise defaults the root to an ephemeral self-backed overlay.
 - Development exec and all kernel-owned subprocess diagnostics are bounded to
   one MiB. Large output is truncated before it can enter errors or logs.
 - The helper endpoint authenticates one workspace token, fixes the helper client
@@ -100,14 +106,15 @@
   activation without sandbox recreation, persisted conflicts, independent
   repository inspection, non-blocking inherited cleanup/lazy identity
   normalization, reset boundaries, bounded diagnostics, and absence of runsc
-  overlay/tar flags, canonical sandbox IDs and legacy inherited cleanup, plus
-  direct default-workspace ensure/reuse/restart.
+  overlay/tar flags, rootless package-account UID/GID mapping, canonical sandbox
+  IDs and legacy inherited cleanup, plus direct default-workspace
+  ensure/reuse/restart.
 - The rootless and rootful real-gVisor E2E proves SSH password login and PTY
   control/resize behavior, a contextual prompt that follows `cd`, and a real
-  `xterm` Nano full-screen session, ordinary edits plus APT/dpkg installation
-  survive restart natively, helper preview/activation works, source reset
-  retains home/system state, factory reset removes it, PID 1 remains `sleep`,
-  deleted process logs do not accumulate, and no scanner executable exists in
-  the image.
+  `xterm` Nano full-screen session, native non-root UID/GID ownership, ordinary
+  edits plus APT/dpkg installation survive restart natively, helper
+  preview/activation works, source reset retains home/system state, factory
+  reset removes it, PID 1 remains `sleep`, deleted process logs do not
+  accumulate, and no scanner executable exists in the image.
 
 # Child DOX Index

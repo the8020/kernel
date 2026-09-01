@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -515,6 +516,10 @@ func TestCopySystemRootCreatesPortableRuntimeMountPoints(t *testing.T) {
 	if err := copySystemRoot(context.Background(), source, destination); err != nil {
 		t.Fatal(err)
 	}
+	rootInfo, err := os.Stat(destination)
+	if err != nil || rootInfo.Mode().Perm() != 0o755 {
+		t.Fatalf("copied system root = %#v, %v", rootInfo, err)
+	}
 	contents, err := os.ReadFile(filepath.Join(destination, "usr", "bin", "base-tool"))
 	if err != nil || string(contents) != "base\n" {
 		t.Fatalf("copied system file = %q, %v", contents, err)
@@ -592,5 +597,50 @@ func TestDevelopmentSpecUsesNativeRootWithoutOverlay(t *testing.T) {
 	flags := strings.Join(driver.flags(start.SandboxID, "run"), " ")
 	if !strings.Contains(flags, "--overlay2=none") || strings.Contains(flags, "overlay2=all") || strings.Contains(flags, "overlay2=root") || strings.Contains(flags, "rootfs-tar") {
 		t.Fatalf("development driver still configures snapshots or overlays: %s", flags)
+	}
+}
+
+func TestRootlessDevelopmentCommandsMapPackageOwnershipIDs(t *testing.T) {
+	driver := &RunscDriver{config: RunscConfig{RunscPath: "/bin/true", Rootless: true}}
+	command := driver.commandContext(context.Background(), "--version")
+	attributes := command.SysProcAttr
+	if attributes == nil || attributes.Cloneflags&syscall.CLONE_NEWUSER == 0 || attributes.Cloneflags&syscall.CLONE_NEWNS == 0 {
+		t.Fatalf("rootless command namespaces = %#v", attributes)
+	}
+	wantMapping := syscall.SysProcIDMap{ContainerID: 0, HostID: 0, Size: rootlessIDMapSize}
+	if len(attributes.UidMappings) != 1 || attributes.UidMappings[0] != wantMapping {
+		t.Fatalf("rootless UID mappings = %#v", attributes.UidMappings)
+	}
+	if len(attributes.GidMappings) != 1 || attributes.GidMappings[0] != wantMapping {
+		t.Fatalf("rootless GID mappings = %#v", attributes.GidMappings)
+	}
+	if attributes.Credential == nil || attributes.Credential.Uid != 0 || attributes.Credential.Gid != 0 || attributes.Pdeathsig != syscall.SIGKILL || !attributes.Setsid {
+		t.Fatalf("rootless process attributes = %#v", attributes)
+	}
+
+	driver.config.Rootless = false
+	if attributes := driver.commandContext(context.Background(), "--version").SysProcAttr; attributes != nil {
+		t.Fatalf("rootful command unexpectedly enters a caller user namespace: %#v", attributes)
+	}
+}
+
+func TestSandboxNetworkFilesAreReadableByPackageAccounts(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "source")
+	destination := filepath.Join(root, "resolv.conf")
+	writeTestFile(t, source, "nameserver 192.0.2.1\n")
+	if err := os.Chmod(source, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := copySandboxNetworkFile(source, destination); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(destination)
+	if err != nil || info.Mode().Perm() != 0o644 {
+		t.Fatalf("sandbox network file = %#v, %v", info, err)
+	}
+	contents, err := os.ReadFile(destination)
+	if err != nil || string(contents) != "nameserver 192.0.2.1\n" {
+		t.Fatalf("sandbox network file contents = %q, %v", contents, err)
 	}
 }
