@@ -135,7 +135,7 @@ func TestSecretReaderUsesNoEchoConfirmationAndExplicitStdin(t *testing.T) {
 	if err != nil || secret != "automation-password" || output.Len() != 0 {
 		t.Fatalf("stdin secret = %q, error = %v, output = %q", secret, err, output.String())
 	}
-	if _, err := newInteractiveLineReader(strings.NewReader("password\n"), &output).ReadSecret("Password: ", "Confirm password: ", false); err == nil || !strings.Contains(err.Error(), "--password-stdin") {
+	if _, err := newInteractiveLineReader(strings.NewReader("password\n"), &output).ReadSecret("Password: ", "Confirm password: ", false); err == nil || !strings.Contains(err.Error(), "standard-input option") {
 		t.Fatalf("non-terminal prompt error = %v", err)
 	}
 }

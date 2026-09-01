@@ -25,7 +25,7 @@ name = "source"
 type = "string"
 option = "source"
 required = false
-description = "Public HTTPS Git URL."
+description = "HTTPS Git URL without embedded credentials."
 [[parameters]]
 name = "commit"
 type = "string"
@@ -44,6 +44,12 @@ type = "boolean"
 option = "local"
 required = false
 description = "Declare an unlinked local package."
+[[parameters]]
+name = "secret"
+type = "string"
+option = "secret"
+required = false
+description = "Stored secret name used by authenticated Git operations; an empty value disables authentication."
 [[result]]
 name = "package"
 type = "object"

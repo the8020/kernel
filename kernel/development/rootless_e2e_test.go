@@ -143,9 +143,7 @@ func runDevelopmentE2E(t *testing.T, rootless bool) {
 	}
 	registerTestActivationCommands(t, registry, manager)
 	for _, id := range []string{"the8020/dev-core", "the8020/demo"} {
-		if _, err := manager.InitializeRepository(context.Background(), id, "Developer", "developer@example.test", "Initial"); err != nil {
-			t.Fatal(err)
-		}
+		initializeTestRepository(t, manager, id, "Developer", "developer@example.test", "Initial")
 	}
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)

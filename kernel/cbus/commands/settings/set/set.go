@@ -10,6 +10,7 @@ import (
 	"the8020/kernel/network"
 	"the8020/kernel/services"
 	settingservice "the8020/kernel/settings"
+	sshserver "the8020/kernel/ssh"
 )
 
 // New binds settings.set to the settings transaction service.
@@ -37,7 +38,7 @@ func MapError(err error) error {
 		case settingservice.ErrorPersistence:
 			return core.NewError(core.CodePersistence, err.Error())
 		case settingservice.ErrorApplication:
-			if errors.Is(err, network.ErrPortUnavailable) {
+			if errors.Is(err, network.ErrPortUnavailable) || errors.Is(err, sshserver.ErrPortUnavailable) {
 				return core.NewError(core.CodePortUnavailable, err.Error())
 			}
 			if errors.Is(err, logging.ErrInitialization) {

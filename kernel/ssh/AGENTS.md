@@ -12,9 +12,12 @@
 
 # Local Contracts
 
-- `network.ssh_port` is the restart-required node-local listener port. The
-  Ed25519 host key lives only at `node/kernel/ssh/host_ed25519`, mode `0600`
-  below a mode-`0700` directory, and is generated once from `crypto/rand`.
+- `network.ssh_port` is the runtime-mutable node-local listener port. A change
+  binds the candidate listener before persistence, switches new accepts only on
+  commit, preserves established SSH connections, and leaves the current port
+  active when binding or persistence fails. The Ed25519 host key lives only at
+  `node/kernel/ssh/host_ed25519`, mode `0600` below a mode-`0700` directory, and
+  is generated once from `crypto/rand`.
 - SSH accepts password authentication and public keys listed in an existing
   development sandbox's `/root/.ssh/authorized_keys`, always against a real
   enabled 80|20 user. Public-key lookup does not create or start a sandbox;
@@ -68,7 +71,8 @@
   public-key handshakes, enabled identity checks, authorized-key parsing,
   default and selected routing, bounded environment forwarding, ordinary sandbox
   commands and exit statuses, streamed exec stdin and EOF, rejected channels,
-  PTY geometry and resizing, exact control/escape-byte relay, and shutdown.
+  PTY geometry and resizing, exact control/escape-byte relay, live listener
+  replacement and rollback, and shutdown.
 - The real rootless development E2E exercises SSH through the actual
   authentication, development-sandbox, console-broker, and runsc PTY path,
   including a contextual working-directory prompt and a plain-`xterm` Nano

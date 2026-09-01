@@ -23,7 +23,7 @@ func controlPlaneDefinitions() []settings.Definition {
 	minimum, maximum := int64(1), int64(65535)
 	return []settings.Definition{
 		{Key: "network.main_port", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(8080), Environment: "TEST_CONTROL_NETWORK_PORT", Minimum: &minimum, Maximum: &maximum, RuntimeMutable: true, Description: "Test HTTP port."},
-		{Key: "network.ssh_port", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(2222), Environment: "TEST_CONTROL_SSH_PORT", Minimum: &minimum, Maximum: &maximum, RestartRequired: true, Description: "Test SSH port."},
+		{Key: "network.ssh_port", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(2222), Environment: "TEST_CONTROL_SSH_PORT", Minimum: &minimum, Maximum: &maximum, RuntimeMutable: true, Description: "Test SSH port."},
 		{Key: "logging.enabled", Type: settings.TypeBoolean, Storage: settings.StorageNode, Default: true, Environment: "TEST_CONTROL_LOGGING_ENABLED", RuntimeMutable: true, Description: "Test logging switch."},
 		{Key: "logging.split_period", Type: settings.TypeEnum, Storage: settings.StorageNode, Default: "day", Environment: "TEST_CONTROL_LOGGING_SPLIT", Allowed: []string{"none", "minute", "hour", "day", "week", "month", "year"}, RuntimeMutable: true, Description: "Test log split period."},
 		{Key: "logging.max_file_size", Type: settings.TypeByteSize, Storage: settings.StorageNode, Default: "1GB", Environment: "TEST_CONTROL_LOGGING_FILE", RuntimeMutable: true, Description: "Test log file limit."},

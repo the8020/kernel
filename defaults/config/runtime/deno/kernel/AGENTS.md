@@ -6,7 +6,7 @@
 # Ownership
 
 - Own typed current-user, bootstrap login/logout, administrative command,
-  package-management convenience methods, exact-Worker invocation, and
+  secret/package-management convenience methods, exact-Worker invocation, and
   persistent-completion contracts; bind calls to trusted current
   request/execution context and correlate their results.
 - Do not own password verification, cookies, authorization policy, application
@@ -15,12 +15,17 @@
 # Local Contracts
 
 - Public API is `kernel.auth.currentUser()`, `kernel.auth.bootstrapLogin()`,
-  `kernel.auth.logoutCurrent()`, `kernel.admin.execute()`, `kernel.packages`,
-  `kernel.worker.invoke()`, and `kernel.execution.completePersistent()`.
+  `kernel.auth.logoutCurrent()`, `kernel.admin.execute()`, `kernel.secrets`,
+  `kernel.packages`, `kernel.worker.invoke()`, and
+  `kernel.execution.completePersistent()`.
+- `kernel.secrets` provides typed list/get/set delegation. List and set return
+  value-free summaries; get is deliberately explicit and returns the value to
+  the authenticated administrative caller.
 - `kernel.packages` provides typed index list/inspect/set, source inspection,
-  version listing, concise ID/commit/success synchronization results, and local
-  creation by delegating to generic `admin.execute`; it adds no bridge operation
-  and no package semantics to the supervisor.
+  version listing, repository inspect/pull/push/checkout, concise
+  ID/commit/success synchronization results, and local creation by delegating to
+  generic `admin.execute`; it adds no bridge operation and no package semantics
+  to the supervisor.
 - `worker.invoke` requires exact node, sandbox, and Worker IDs plus a bounded
   function name and JSON input. It returns JSON or a structured generic error;
   it never knows which application registered the function.
@@ -41,8 +46,8 @@
 
 # Verification
 
-- `kernel_test.ts` covers authentication/admin/package calls, exact Worker
-  invocation, persistent completion, structured errors, request correlation,
-  context ambiguity, unavailable calls, bounds, and bridge cleanup.
+- `kernel_test.ts` covers authentication/admin/secret/package calls, exact
+  Worker invocation, persistent completion, structured errors, request
+  correlation, context ambiguity, unavailable calls, bounds, and bridge cleanup.
 
 # Child DOX Index

@@ -20,6 +20,20 @@ export interface LogoutResult {
   setCookie: string;
 }
 
+export interface SecretSummary {
+  name: string;
+  updated_at: string;
+}
+
+export interface Secret extends SecretSummary {
+  value: string;
+}
+
+export interface SetSecretInput {
+  name: string;
+  value: string;
+}
+
 export interface PackageIndex {
   schema: number;
   author: string;
@@ -27,6 +41,7 @@ export interface PackageIndex {
   source?: string;
   commit?: string;
   tag?: string;
+  secret?: string;
   local: boolean;
   package_id: string;
   path: string;
@@ -80,7 +95,44 @@ export interface SetPackageIndexInput {
   source?: string;
   commit?: string;
   tag?: string;
+  secret?: string;
   local?: boolean;
+}
+
+export interface PackageRepositoryBranch {
+  name: string;
+  commit: string;
+  current: boolean;
+  remote: boolean;
+}
+
+export interface PackageRepositoryCommit {
+  commit: string;
+  short_commit: string;
+  authored_at: string;
+  author: string;
+  subject: string;
+  current: boolean;
+}
+
+export interface PackageRepository {
+  package_id: string;
+  path: string;
+  activation_ready: boolean;
+  branch?: string;
+  head?: string;
+  remote_name?: string;
+  remote_url?: string;
+  clean: boolean;
+  status: string;
+  branches: PackageRepositoryBranch[];
+  commits: PackageRepositoryCommit[];
+}
+
+export interface CheckoutPackageRepositoryInput {
+  packageId: string;
+  branch?: string;
+  commit?: string;
 }
 
 export interface CreateLocalPackageInput {
@@ -280,6 +332,28 @@ export const kernel = Object.freeze({
       return invoke<void>("execution.completePersistent", {});
     },
   }),
+  secrets: Object.freeze({
+    async list(): Promise<SecretSummary[]> {
+      const result = await executeAdminCommand<{ secrets: SecretSummary[] }>(
+        "secret.list",
+      );
+      return result.secrets;
+    },
+    async get(name: string): Promise<Secret> {
+      const result = await executeAdminCommand<{ secret: Secret }>(
+        "secret.get",
+        { name },
+      );
+      return result.secret;
+    },
+    async set(input: SetSecretInput): Promise<SecretSummary> {
+      const result = await executeAdminCommand<{ secret: SecretSummary }>(
+        "secret.set",
+        { name: input.name, value: input.value },
+      );
+      return result.secret;
+    },
+  }),
   packages: Object.freeze({
     index: Object.freeze({
       async list(): Promise<PackageIndex[]> {
@@ -344,6 +418,41 @@ export const kernel = Object.freeze({
           optionalArguments(input as unknown as Record<string, unknown>),
         );
         return result.package;
+      },
+    }),
+    repository: Object.freeze({
+      async inspect(packageId: string): Promise<PackageRepository> {
+        const result = await executeAdminCommand<
+          { repository: PackageRepository }
+        >("package.repository.inspect", { package_id: packageId });
+        return result.repository;
+      },
+      async pull(packageId: string): Promise<PackageRepository> {
+        const result = await executeAdminCommand<
+          { repository: PackageRepository }
+        >("package.repository.pull", { package_id: packageId });
+        return result.repository;
+      },
+      async push(packageId: string): Promise<PackageRepository> {
+        const result = await executeAdminCommand<
+          { repository: PackageRepository }
+        >("package.repository.push", { package_id: packageId });
+        return result.repository;
+      },
+      async checkout(
+        input: CheckoutPackageRepositoryInput,
+      ): Promise<PackageRepository> {
+        const result = await executeAdminCommand<
+          { repository: PackageRepository }
+        >(
+          "package.repository.checkout",
+          optionalArguments({
+            package_id: input.packageId,
+            branch: input.branch,
+            commit: input.commit,
+          }),
+        );
+        return result.repository;
       },
     }),
   }),

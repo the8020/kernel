@@ -209,6 +209,13 @@ relevant child AGENTS.md
   create local packages. Synchronization reports only package ID, commit, and
   success, atomically replaces changed repositories, and refreshes only their
   declared services; no package source is compiled or tested by the kernel.
+- Global named secrets live only in the private
+  `config/secrets/secrets.toml` kernel store. Package-index documents may retain
+  one secret name but never its value. Kernel-owned Git operations resolve that
+  value only for the selected package, inject it as a host-scoped transient
+  HTTPS authorization header, and never write credentials into a repository
+  URL or Git configuration. Administrative secret lists and writes omit stored
+  values; only an explicit authenticated get returns one.
 - The package-neutral Deno kernel SDK may invoke only explicitly registered
   JSON-in/JSON-out functions on one exact node, sandbox, and Worker. The kernel
   validates infrastructure identity, size, timeout, authentication, and
@@ -266,7 +273,9 @@ relevant child AGENTS.md
   the full permission system replaces that temporary policy; do not add
   per-target restrictions or port forwarding in the interim.
 - The Go kernel must expose password and authorized-public-key SSH on the
-  restart-required node-local `network.ssh_port`. It authenticates actual
+  runtime-mutable node-local `network.ssh_port`. Port replacement must bind
+  before persistence, preserve established connections, and leave the current
+  listener active on failure. It authenticates actual
   enabled 80|20 users, never persists or logs presented credentials, and
   defaults to creating or starting that user's development sandbox only after
   authentication. Public-key authentication reads the existing sandbox's
@@ -405,8 +414,11 @@ relevant child AGENTS.md
   sandboxes mount read-only.
 - The sibling `admin-core` repository's `programs/packages` program lists canonical package IDs through the cheap
   package summary command. Its selected-package detail alone performs bounded
-  service/program/file inspection and independent Git repository inspection, and
-  links contained services into the shared service detail program.
+  service/program/file inspection and independent Git repository inspection;
+  it can pull, push, check out a branch or commit, select a stored secret name,
+  and links contained services into the shared service detail program. Its
+  separate Secrets program lists names/timestamps and creates or overwrites
+  values without ever loading a stored value into the edit screen.
 - Every mapped `packages/<namespace>/<repository>/` root is an independent Git
   repository; there is no master source repository. Developers edit a private
   sandbox overlay whose durable state is confined to

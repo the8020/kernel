@@ -31,6 +31,8 @@ type Paths struct {
 	Packages              string
 	Config                string
 	ConfigAuth            string
+	ConfigSecrets         string
+	SecretsFile           string
 	RuntimeRootlessImage  string
 	RuntimeFullImage      string
 	DevelopmentImage      string
@@ -185,7 +187,7 @@ func NewPathsForLayout(root string, layout Layout) Paths {
 	runtimeImages := filepath.Join(runtimeState, "images")
 	return Paths{
 		Root: root, Node: node, Kernel: kernel, Bin: filepath.Join(kernel, "bin"), Runsc: filepath.Join(kernel, "bin", "runsc"), Users: layout.Users, Packages: layout.Packages,
-		Config: layout.Config, ConfigAuth: filepath.Join(layout.Config, "auth"),
+		Config: layout.Config, ConfigAuth: filepath.Join(layout.Config, "auth"), ConfigSecrets: filepath.Join(layout.Config, "secrets"), SecretsFile: filepath.Join(layout.Config, "secrets", "secrets.toml"),
 		RuntimeRootlessImage: filepath.Join(runtimeImages, "rootless"), RuntimeFullImage: filepath.Join(runtimeImages, "full"),
 		DevelopmentImage: filepath.Join(runtimeImages, "development"), RuntimeVersionsFile: filepath.Join(layout.Config, "runtime", "versions.toml"),
 		SharedState: layout.State, StateAuth: filepath.Join(layout.State, "auth"), BootstrapSessions: filepath.Join(layout.State, "auth", "bootstrap-sessions"), StateServices: filepath.Join(layout.State, "services"), StatePackageIndex: filepath.Join(layout.State, "package-index"), StatePackageData: filepath.Join(layout.State, "package-data"),
@@ -428,6 +430,12 @@ func Initialize(paths Paths) (string, error) {
 		if err := os.Chmod(dir, 0o755); err != nil {
 			return "", fmt.Errorf("set workspace directory permissions %s: %w", dir, err)
 		}
+	}
+	if err := os.MkdirAll(paths.ConfigSecrets, 0o700); err != nil {
+		return "", fmt.Errorf("create secrets directory %s: %w", paths.ConfigSecrets, err)
+	}
+	if err := os.Chmod(paths.ConfigSecrets, 0o700); err != nil {
+		return "", fmt.Errorf("restrict secrets directory %s: %w", paths.ConfigSecrets, err)
 	}
 	if err := os.MkdirAll(paths.BootstrapSessions, 0o700); err != nil {
 		return "", fmt.Errorf("create bootstrap authentication-session directory %s: %w", paths.BootstrapSessions, err)

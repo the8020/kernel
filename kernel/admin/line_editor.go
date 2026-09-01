@@ -185,18 +185,18 @@ func (r *interactiveLineReader) ReadSecret(prompt, confirmationPrompt string, fr
 			return "", err
 		}
 		if value != confirmation {
-			return "", errors.New("passwords do not match")
+			return "", errors.New("secret values do not match")
 		}
 		return value, nil
 	}
 	if !fromStdin {
-		return "", errors.New("secure password prompting requires a terminal; use --password-stdin for automation")
+		return "", errors.New("secure secret prompting requires a terminal; use the command's standard-input option for automation")
 	}
 	if !r.scanner.Scan() {
 		if err := r.scanner.Err(); err != nil {
 			return "", err
 		}
-		return "", errors.New("standard input ended before a password was read")
+		return "", errors.New("standard input ended before a secret was read")
 	}
 	return r.scanner.Text(), nil
 }

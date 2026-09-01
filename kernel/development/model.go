@@ -58,7 +58,7 @@ type Sandbox struct {
 	Token                string            `toml:"sandbox_token" json:"-"`
 }
 
-type Repository struct {
+type repository struct {
 	PackageID       string `json:"package_id"`
 	Path            string `json:"path"`
 	ActivationReady bool   `json:"activation_ready"`

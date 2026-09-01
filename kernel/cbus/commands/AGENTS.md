@@ -5,7 +5,7 @@
 
 # Ownership
 
-- Own system/settings, bootstrap authentication, node topology/capacity,
+- Own system/settings, bootstrap authentication, named secrets, node topology/capacity,
   runtime, sandbox, Worker,
   filesystem package/service, development workspace/draft/activation,
   package repository, job, port, debug, and pool definitions/handlers.
@@ -39,8 +39,9 @@
 - `port/AGENTS.md`: host-port leases.
 - `debug/AGENTS.md`: inspector targets and debug leases.
 - `pool/AGENTS.md`: warm-pool accounting and resize.
-- `package/AGENTS.md`: filesystem package discovery and independent repository
+- `package/AGENTS.md`: filesystem package discovery and package-repository
   administration.
+- `secret/AGENTS.md`: global named-secret list/get/set administration.
 - `development/AGENTS.md`: development image, sandbox, draft, and activation
   commands.
 - `node/AGENTS.md`: shared application-server topology and advertised capacity.

@@ -1,0 +1,35 @@
+version = 1
+id = "package.repository.checkout"
+path = ["package", "repository", "checkout"]
+summary = "Check out a package branch or commit"
+description = "Checks out exactly one local/remote branch or commit in a clean package repository and refreshes affected services."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/package/repository/checkout/checkout.go"
+symbol = "New"
+[[parameters]]
+name = "package_id"
+type = "string"
+position = 0
+required = true
+description = "Namespace/repository package ID."
+[[parameters]]
+name = "branch"
+type = "string"
+option = "branch"
+required = false
+description = "Branch to check out."
+[[parameters]]
+name = "commit"
+type = "string"
+option = "commit"
+required = false
+description = "Commit to check out with detached HEAD."
+[[result]]
+name = "repository"
+type = "object"
+[[examples]]
+command = "package repository checkout the8020/uui --branch main"
+[[examples]]
+command = "package repository checkout the8020/uui --commit 0123456"

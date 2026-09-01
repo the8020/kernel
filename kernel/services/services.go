@@ -25,6 +25,7 @@ import (
 	"the8020/kernel/sandbox/history"
 	"the8020/kernel/sandbox/manager"
 	"the8020/kernel/sandbox/model"
+	"the8020/kernel/secrets"
 	"the8020/kernel/settings"
 	"the8020/kernel/webservices"
 )
@@ -46,6 +47,7 @@ type Services struct {
 	Logging           *logging.Manager
 	Lifecycle         *lifecycle.Manager
 	Auth              AuthService
+	Secrets           SecretService
 	Layout            LayoutService
 	Instance          InstanceInfo
 	Runtime           *RuntimeServices
@@ -53,6 +55,13 @@ type Services struct {
 	PackageManagement PackageManagementService
 	Development       DevelopmentService
 	runtimeMu         sync.RWMutex
+}
+
+// SecretService is the handler-facing global named-secret contract.
+type SecretService interface {
+	List() ([]secrets.Summary, error)
+	Get(string) (secrets.Secret, error)
+	Set(context.Context, string, string) (secrets.Summary, error)
 }
 
 // LayoutService is the handler-facing bootstrap path configuration contract.
@@ -116,10 +125,17 @@ type PackageManagementService interface {
 	ListPackageVersions(context.Context, string, int) (workspacepackages.PackageVersions, error)
 	SynchronizePackages(context.Context, []string) ([]workspacepackages.PackageSynchronization, error)
 	CreateLocalPackage(context.Context, string, string, string) (workspacepackages.LocalPackage, error)
+	ListPackageRepositories(context.Context) ([]workspacepackages.Repository, error)
+	InspectPackageRepository(context.Context, string) (workspacepackages.Repository, error)
+	InitializePackageRepository(context.Context, string, string, string, string) (workspacepackages.Repository, error)
+	ConfigurePackageRemote(context.Context, string, string, string) (workspacepackages.Repository, error)
+	PullPackageRepository(context.Context, string) (workspacepackages.RepositoryMutation, error)
+	PushPackageRepository(context.Context, string) (workspacepackages.Repository, error)
+	CheckoutPackageRepository(context.Context, string, string, string) (workspacepackages.RepositoryMutation, error)
 }
 
 // DevelopmentService is the handler-facing durable development sandbox,
-// activation, image, and independent package-repository contract.
+// activation, and image contract.
 type DevelopmentService interface {
 	ImageStatus() (development.ImageStatus, error)
 	Create(context.Context, string) (development.Sandbox, error)
@@ -135,11 +151,6 @@ type DevelopmentService interface {
 	FactoryReset(context.Context, string, bool) (development.Sandbox, error)
 	Preview(context.Context, string, development.ActivationOptions) (development.ActivationPreview, error)
 	Activate(context.Context, string, development.ActivationOptions) (development.ActivationResult, error)
-	ListRepositories() ([]development.Repository, error)
-	InspectRepository(string) (development.Repository, error)
-	InitializeRepository(context.Context, string, string, string, string) (development.Repository, error)
-	ConfigureRemote(context.Context, string, string, string) (development.Repository, error)
-	RepositoryStatus(string) (development.Repository, error)
 }
 
 // WebServiceService is the handler-facing filesystem service lifecycle and

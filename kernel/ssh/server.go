@@ -21,6 +21,7 @@ import (
 	"the8020/kernel/auth"
 	"the8020/kernel/sandbox/backend"
 	"the8020/kernel/sandbox/model"
+	"the8020/kernel/settings"
 )
 
 const (
@@ -35,6 +36,9 @@ const (
 	maximumEnvBytes      = 16 << 10
 	maximumTerminalBytes = 128
 )
+
+// ErrPortUnavailable identifies failure to prepare an SSH listener.
+var ErrPortUnavailable = errors.New("SSH port is unavailable")
 
 type Authenticator interface {
 	AuthenticatePassword(string, []byte) (auth.AuthContext, error)
@@ -62,6 +66,7 @@ type Config struct {
 type Manager struct {
 	mu             sync.Mutex
 	listener       net.Listener
+	port           int
 	server         *gossh.ServerConfig
 	development    Development
 	consoles       Consoles
@@ -69,7 +74,10 @@ type Manager struct {
 	connections    map[net.Conn]struct{}
 	activeSessions int
 	closed         bool
+	context        context.Context
 	cancel         context.CancelFunc
+	lifecycle      sync.WaitGroup
+	finish         sync.Once
 	done           chan struct{}
 }
 
@@ -153,21 +161,36 @@ func New(config Config) (*Manager, error) {
 		return &gossh.Permissions{Extensions: map[string]string{"username": identity.Username}}, nil
 	}
 	serverConfig.AddHostKey(signer)
-	listener, err := net.Listen("tcp", ":"+strconv.Itoa(config.Port))
+	listener, err := prepareListener(config.Port)
 	if err != nil {
-		return nil, fmt.Errorf("listen for SSH: %w", err)
+		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	manager := &Manager{
-		listener: listener, server: serverConfig,
+		listener: listener, port: listenerPort(listener), server: serverConfig,
 		development: config.Development, consoles: config.Consoles, logger: config.Logger,
-		connections: make(map[net.Conn]struct{}), cancel: cancel, done: make(chan struct{}),
+		connections: make(map[net.Conn]struct{}), context: ctx, cancel: cancel, done: make(chan struct{}),
 	}
-	go func() {
-		manager.accept(ctx)
-		close(manager.done)
-	}()
+	manager.startAccept(listener)
 	return manager, nil
+}
+
+func prepareListener(port int) (net.Listener, error) {
+	if port < 0 || port > 65535 {
+		return nil, fmt.Errorf("%w: invalid port %d", ErrPortUnavailable, port)
+	}
+	listener, err := net.Listen("tcp", net.JoinHostPort("0.0.0.0", strconv.Itoa(port)))
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrPortUnavailable, err)
+	}
+	return listener, nil
+}
+
+func listenerPort(listener net.Listener) int {
+	if address, ok := listener.Addr().(*net.TCPAddr); ok {
+		return address.Port
+	}
+	return 0
 }
 
 func authorizedKeyMatches(content []byte, offered gossh.PublicKey) bool {
@@ -186,19 +209,24 @@ func authorizedKeyMatches(content []byte, offered gossh.PublicKey) bool {
 }
 
 func (m *Manager) Port() int {
-	if address, ok := m.listener.Addr().(*net.TCPAddr); ok {
-		return address.Port
-	}
-	return 0
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.port
 }
 
-func (m *Manager) accept(ctx context.Context) {
-	var connections sync.WaitGroup
-	defer connections.Wait()
+func (m *Manager) startAccept(listener net.Listener) {
+	m.lifecycle.Add(1)
+	go func() {
+		defer m.lifecycle.Done()
+		m.accept(m.context, listener)
+	}()
+}
+
+func (m *Manager) accept(ctx context.Context, listener net.Listener) {
 	for {
-		connection, err := m.listener.Accept()
+		connection, err := listener.Accept()
 		if err != nil {
-			if ctx.Err() == nil && m.logger != nil {
+			if ctx.Err() == nil && !errors.Is(err, net.ErrClosed) && m.logger != nil {
 				m.logger.Error("SSH listener failed", "error", err)
 			}
 			return
@@ -207,9 +235,8 @@ func (m *Manager) accept(ctx context.Context) {
 			_ = connection.Close()
 			continue
 		}
-		connections.Add(1)
 		go func() {
-			defer connections.Done()
+			defer m.lifecycle.Done()
 			m.serveConnection(ctx, connection)
 		}()
 	}
@@ -222,7 +249,67 @@ func (m *Manager) registerConnection(connection net.Conn) bool {
 		return false
 	}
 	m.connections[connection] = struct{}{}
+	m.lifecycle.Add(1)
 	return true
+}
+
+// Prepare binds a replacement while the current listener and connections remain active.
+func (m *Manager) Prepare(_ context.Context, values settings.Values) (settings.Prepared, error) {
+	raw, ok := values["network.ssh_port"].(int64)
+	if !ok {
+		return nil, errors.New("network.ssh_port is not an integer")
+	}
+	port := int(raw)
+	m.mu.Lock()
+	same, closed := m.port == port, m.closed
+	m.mu.Unlock()
+	if closed {
+		return nil, errors.New("SSH manager is closed")
+	}
+	if same {
+		return noopPrepared{}, nil
+	}
+	candidate, err := prepareListener(port)
+	if err != nil {
+		return nil, err
+	}
+	return &preparedPortChange{manager: m, listener: candidate, port: listenerPort(candidate)}, nil
+}
+
+type preparedPortChange struct {
+	manager  *Manager
+	listener net.Listener
+	port     int
+	once     sync.Once
+}
+
+func (p *preparedPortChange) Commit() {
+	p.once.Do(func() { p.manager.activate(p.listener, p.port) })
+}
+
+func (p *preparedPortChange) Discard() {
+	p.once.Do(func() { _ = p.listener.Close() })
+}
+
+type noopPrepared struct{}
+
+func (noopPrepared) Commit()  {}
+func (noopPrepared) Discard() {}
+
+func (m *Manager) activate(listener net.Listener, port int) {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		_ = listener.Close()
+		return
+	}
+	old := m.listener
+	m.listener, m.port = listener, port
+	m.startAccept(listener)
+	m.mu.Unlock()
+	if old != nil {
+		_ = old.Close()
+	}
 }
 
 func (m *Manager) serveConnection(ctx context.Context, connection net.Conn) {
@@ -615,15 +702,24 @@ func (m *Manager) Close(ctx context.Context) error {
 	if !m.closed {
 		m.closed = true
 		m.cancel()
-		_ = m.listener.Close()
+		if m.listener != nil {
+			_ = m.listener.Close()
+			m.listener = nil
+			m.port = 0
+		}
 		for connection := range m.connections {
 			_ = connection.Close()
 		}
 	}
-	done := m.done
 	m.mu.Unlock()
+	m.finish.Do(func() {
+		go func() {
+			m.lifecycle.Wait()
+			close(m.done)
+		}()
+	})
 	select {
-	case <-done:
+	case <-m.done:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()

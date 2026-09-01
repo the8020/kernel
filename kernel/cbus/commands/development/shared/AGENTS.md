@@ -22,9 +22,8 @@
 
 # Verification
 
-- `handlers_test.go` invokes all 19 development and package-repository command
-  handlers, proves one service delegation per operation, and checks structured
-  activation conversion; generated-handler compilation verifies every leaf
-  binding.
+- `handlers_test.go` invokes all 14 development command handlers, proves one
+  service delegation per operation, and checks structured activation
+  conversion; generated-handler compilation verifies every leaf binding.
 
 # Child DOX Index

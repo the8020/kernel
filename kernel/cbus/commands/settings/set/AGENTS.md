@@ -20,6 +20,6 @@
 # Verification
 
 - Application integration covers successful node/global writes through the same
-  command, network/logging mutation, and occupied-port rollback.
+  command, HTTP/SSH listener and logging mutation, and occupied-port rollback.
 
 # Child DOX Index

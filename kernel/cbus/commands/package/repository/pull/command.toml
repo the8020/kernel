@@ -1,0 +1,21 @@
+version = 1
+id = "package.repository.pull"
+path = ["package", "repository", "pull"]
+summary = "Pull a package repository"
+description = "Fetches and fast-forwards the current package branch, applying its selected stored secret when configured. Uncommitted work and non-fast-forward merges are rejected."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/package/repository/pull/pull.go"
+symbol = "New"
+[[parameters]]
+name = "package_id"
+type = "string"
+position = 0
+required = true
+description = "Namespace/repository package ID."
+[[result]]
+name = "repository"
+type = "object"
+[[examples]]
+command = "package repository pull the8020/uui"

@@ -79,12 +79,12 @@ func oneShotSecretResolver(input io.Reader, promptOutput io.Writer) cli.SecretRe
 				if err := scanner.Err(); err != nil {
 					return "", err
 				}
-				return "", errors.New("standard input ended before a password was read")
+				return "", errors.New("standard input ended before a secret was read")
 			}
 			return scanner.Text(), nil
 		}
 		if !isTerminal {
-			return "", errors.New("secure password prompting requires a terminal; use --password-stdin for automation")
+			return "", errors.New("secure secret prompting requires a terminal; use the command's standard-input option for automation")
 		}
 		read := func(label string) (string, error) {
 			if label != "" {
@@ -110,7 +110,7 @@ func oneShotSecretResolver(input io.Reader, promptOutput io.Writer) cli.SecretRe
 			return "", err
 		}
 		if value != confirmation {
-			return "", errors.New("passwords do not match")
+			return "", errors.New("secret values do not match")
 		}
 		return value, nil
 	}

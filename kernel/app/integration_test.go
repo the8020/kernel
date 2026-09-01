@@ -34,7 +34,7 @@ func pointer(value int64) *int64 { return &value }
 func definitions() []settings.Definition {
 	return []settings.Definition{
 		{Key: "network.main_port", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(8080), Environment: "KERNEL_NETWORK_MAIN_PORT", Minimum: pointer(1), Maximum: pointer(65535), RuntimeMutable: true, Description: "Main HTTP listener port."},
-		{Key: "network.ssh_port", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(2222), Environment: "KERNEL_NETWORK_SSH_PORT", Minimum: pointer(1), Maximum: pointer(65535), RestartRequired: true, Description: "SSH port."},
+		{Key: "network.ssh_port", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(2222), Environment: "KERNEL_NETWORK_SSH_PORT", Minimum: pointer(1), Maximum: pointer(65535), RuntimeMutable: true, Description: "SSH port."},
 		{Key: "logging.enabled", Type: settings.TypeBoolean, Storage: settings.StorageNode, Default: true, Environment: "KERNEL_LOGGING_ENABLED", RuntimeMutable: true, Description: "Logging enabled."},
 		{Key: "logging.split_period", Type: settings.TypeEnum, Storage: settings.StorageNode, Default: "day", Environment: "KERNEL_LOGGING_SPLIT_PERIOD", Allowed: []string{"none", "minute", "hour", "day", "week", "month", "year"}, RuntimeMutable: true, Description: "Split period."},
 		{Key: "logging.max_file_size", Type: settings.TypeByteSize, Storage: settings.StorageNode, Default: "1GB", Environment: "KERNEL_LOGGING_MAX_FILE_SIZE", RuntimeMutable: true, Description: "File size."},
@@ -185,7 +185,7 @@ func TestKernelRestartCommandSelectsSelfReplacement(t *testing.T) {
 
 func TestFullCommandBusLifecycleAndAdministrativeModes(t *testing.T) {
 	root := t.TempDir()
-	environmentPort, startupPort, runtimePort, restartStartupPort := availablePort(t), availablePort(t), availablePort(t), availablePort(t)
+	environmentPort, startupPort, runtimePort, restartStartupPort, runtimeSSHPort := availablePort(t), availablePort(t), availablePort(t), availablePort(t), availablePort(t)
 	t.Setenv("KERNEL_NETWORK_MAIN_PORT", stringInt(environmentPort))
 	done := startKernel(t, root, startupPort)
 	paths := instance.NewPaths(root)
@@ -282,6 +282,33 @@ func TestFullCommandBusLifecycleAndAdministrativeModes(t *testing.T) {
 	if afterFailure.Result["setting"].(map[string]any)["configured_value"] != json.Number(stringInt(runtimePort)) {
 		t.Fatalf("failed change altered setting: %#v", afterFailure)
 	}
+	sshChange := execute(t, commandClient, "settings.set", map[string]any{"key": "network.ssh_port", "value": stringInt(runtimeSSHPort)})
+	if !sshChange.Success {
+		t.Fatalf("set SSH port: %#v", sshChange)
+	}
+	sshSetting := sshChange.Result["setting"].(map[string]any)
+	if sshSetting["configured_value"] != json.Number(stringInt(runtimeSSHPort)) || sshSetting["active_value"] != json.Number(stringInt(runtimeSSHPort)) || sshSetting["restart_pending"] != false {
+		t.Fatalf("set SSH port: %#v", sshChange)
+	}
+	sshConnection, err := net.DialTimeout("tcp", "127.0.0.1:"+stringInt(runtimeSSHPort), time.Second)
+	if err != nil {
+		t.Fatalf("connect to replacement SSH port: %v", err)
+	}
+	_ = sshConnection.Close()
+	occupiedSSH, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	occupiedSSHPort := occupiedSSH.Addr().(*net.TCPAddr).Port
+	failedSSH := execute(t, commandClient, "settings.set", map[string]any{"key": "network.ssh_port", "value": stringInt(occupiedSSHPort)})
+	_ = occupiedSSH.Close()
+	if failedSSH.Success || failedSSH.Error.Code != core.CodePortUnavailable {
+		t.Fatalf("occupied SSH port response: %#v", failedSSH)
+	}
+	afterSSHFailure := execute(t, commandClient, "settings.get", map[string]any{"key": "network.ssh_port"})
+	if afterSSHFailure.Result["setting"].(map[string]any)["configured_value"] != json.Number(stringInt(runtimeSSHPort)) {
+		t.Fatalf("failed SSH change altered setting: %#v", afterSSHFailure)
+	}
 	loggingChange := execute(t, commandClient, "settings.set", map[string]any{"key": "logging.enabled", "value": "false"})
 	if !loggingChange.Success {
 		t.Fatalf("disable logging: %#v", loggingChange)
@@ -312,7 +339,7 @@ func TestFullCommandBusLifecycleAndAdministrativeModes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(nodeData), "main_port = ") || !strings.Contains(string(globalData), `root_alias = "example/auth/login/"`) || strings.Contains(string(globalData), "main_port") {
+	if !strings.Contains(string(nodeData), "main_port = ") || !strings.Contains(string(nodeData), "ssh_port = ") || !strings.Contains(string(globalData), `root_alias = "example/auth/login/"`) || strings.Contains(string(globalData), "main_port") || strings.Contains(string(globalData), "ssh_port") {
 		t.Fatalf("node settings=%q global settings=%q", nodeData, globalData)
 	}
 	shutdownAndWait(t, commandClient, done)
@@ -329,6 +356,16 @@ func TestFullCommandBusLifecycleAndAdministrativeModes(t *testing.T) {
 	if restarted.Result["setting"].(map[string]any)["configured_value"] != json.Number(stringInt(runtimePort)) || restarted.Result["setting"].(map[string]any)["source"] != "persisted" {
 		t.Fatalf("persisted restart: %#v", restarted)
 	}
+	restartedSSH := execute(t, commandClient, "settings.get", map[string]any{"key": "network.ssh_port"})
+	restartedSSHSetting := restartedSSH.Result["setting"].(map[string]any)
+	if restartedSSHSetting["configured_value"] != json.Number(stringInt(runtimeSSHPort)) || restartedSSHSetting["active_value"] != json.Number(stringInt(runtimeSSHPort)) || restartedSSHSetting["source"] != "persisted" || restartedSSHSetting["restart_pending"] != false {
+		t.Fatalf("persisted SSH restart: %#v", restartedSSH)
+	}
+	sshConnection, err = net.DialTimeout("tcp", "127.0.0.1:"+stringInt(runtimeSSHPort), time.Second)
+	if err != nil {
+		t.Fatalf("connect to persisted SSH port: %v", err)
+	}
+	_ = sshConnection.Close()
 	restartedRootAlias := execute(t, commandClient, "settings.get", map[string]any{"key": "network.root_alias"})
 	restartedRootAliasSetting := restartedRootAlias.Result["setting"].(map[string]any)
 	if restartedRootAliasSetting["configured_value"] != "example/auth/login/" || restartedRootAliasSetting["active_value"] != "example/auth/login/" || restartedRootAliasSetting["source"] != "persisted" || restartedRootAliasSetting["storage"] != "global" || restartedRootAliasSetting["restart_pending"] != false {

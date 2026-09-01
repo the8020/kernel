@@ -25,9 +25,9 @@
   record so later package-default edits cannot silently change deployed
   behavior.
 - Own fixed-depth `state/package-index/<author>/<repository>.toml` documents,
-  public HTTPS Git source/ref inspection, bounded version history, atomic
-  package worktree replacement, clean-worktree protection, and initial local
-  package repository creation.
+  HTTPS Git source/ref inspection, bounded version and working-tree history,
+  atomic package worktree replacement, clean-worktree protection, initial local
+  package repository creation, and independent pull/push/checkout operations.
 - Emit structured package/service discovery and validation events when a logger
   is supplied.
 - Do not own runtime Workers, reconciliation, HTTP dispatch, application routes,
@@ -36,7 +36,8 @@
 # Local Contracts
 
 - Public API: `New`, summary discovery and selected-package inspection methods,
-  package-index list/inspect/set, source inspection, version listing,
+  package-index list/inspect/set, source and repository inspection, version
+  listing, repository pull/push/checkout,
   synchronization and local creation,
   `ReadService`, `ReadState`, `MutateState`, `ServiceStateStore`,
   `FileServiceStateStore`, identity/path types, manifest types,
@@ -77,6 +78,15 @@
   repository by rename. Existing repositories with tracked or untracked changes
   are preserved and rejected. One failed package does not prevent other
   selected packages from synchronizing.
+- An index may retain one validated global secret name for Git authentication,
+  including for a local package later given a remote. The value is resolved
+  through the narrow injected secret resolver only during a network operation.
+  Git receives it as a transient host-scoped extra header; URLs, index TOML,
+  durable Git configuration, results, and errors never contain the value.
+- Repository pull is fetch plus fast-forward only on a clean attached branch;
+  push publishes the attached branch; checkout selects exactly one local/remote
+  branch or hexadecimal commit and rejects dirty worktrees. Changed pull or
+  checkout results carry old/new service sets for targeted command composition.
 
 # Work Guidance
 
@@ -95,7 +105,9 @@
   rejection, frozen first-discovery state,
   backend replacement, CRUD/list/delete behavior, monotonic atomic
   mutations, cross-process advisory locking, index validation and permissions,
-  real HTTPS Git ref/version discovery, latest/tag synchronization, service-set
-  changes, dirty-worktree preservation, and local repository creation.
+  real HTTPS Git ref/version discovery, latest/tag synchronization,
+  pull/push/branch/commit checkout, transient named-secret authentication,
+  service-set changes, dirty-worktree preservation, and local repository
+  creation.
 
 # Child DOX Index

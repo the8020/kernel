@@ -20,7 +20,7 @@ func New(serviceSet *services.Services) core.Handler {
 		entry, err := management.SetPackageIndex(ctx, workspacepackages.PackageIndex{
 			Author: commandutil.String(request, "author"), Repository: commandutil.String(request, "repository"),
 			Source: commandutil.String(request, "source"), Commit: commandutil.String(request, "commit"),
-			Tag: commandutil.String(request, "tag"), Local: commandutil.Bool(request, "local"),
+			Tag: commandutil.String(request, "tag"), Secret: commandutil.String(request, "secret"), Local: commandutil.Bool(request, "local"),
 		})
 		return core.Result{"package": entry}, commandutil.OperationError(err)
 	}

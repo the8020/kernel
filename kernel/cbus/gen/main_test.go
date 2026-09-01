@@ -270,10 +270,11 @@ func TestRepositoryCatalogContainsEveryAcceptedPhase1Command(t *testing.T) {
 		"development.sandbox.create", "development.sandbox.delete", "development.sandbox.factory_reset", "development.sandbox.inspect", "development.sandbox.kill", "development.sandbox.list", "development.sandbox.reset_source", "development.sandbox.restart", "development.sandbox.shell", "development.sandbox.start", "development.sandbox.stop",
 		"job.cancel", "job.inspect", "job.list", "job.run",
 		"node.list", "node.paths.get", "node.paths.set", "node.remove", "node.set",
-		"package.index.inspect", "package.index.list", "package.index.set", "package.inspect", "package.list", "package.local.create", "package.repository.init", "package.repository.inspect", "package.repository.list", "package.repository.remote", "package.repository.status", "package.source.inspect", "package.synchronize", "package.version.list",
+		"package.index.inspect", "package.index.list", "package.index.set", "package.inspect", "package.list", "package.local.create", "package.repository.checkout", "package.repository.init", "package.repository.inspect", "package.repository.list", "package.repository.pull", "package.repository.push", "package.repository.remote", "package.repository.status", "package.source.inspect", "package.synchronize", "package.version.list",
 		"pool.resize", "pool.status", "port.close", "port.expose", "port.list",
 		"runtime.doctor", "runtime.eval", "runtime.image.status", "runtime.run", "runtime.status",
 		"sandbox.delete", "sandbox.history.inspect", "sandbox.history.list", "sandbox.inspect", "sandbox.kill", "sandbox.list", "sandbox.metrics", "sandbox.stop",
+		"secret.get", "secret.list", "secret.set",
 		"service.inspect", "service.list", "service.openapi", "service.request", "service.restart", "service.scale", "service.start", "service.stop", "service.validate",
 		"settings.get", "settings.list", "settings.set", "settings.unset",
 		"system.restart", "system.shutdown", "system.status",
@@ -343,8 +344,8 @@ func TestEveryDevelopmentCommandExampleTraversesBothCLIParsingModes(t *testing.T
 		}
 		count++
 	}
-	if count != 19 {
-		t.Fatalf("development CLI command count = %d, want 19", count)
+	if count != 22 {
+		t.Fatalf("development CLI command count = %d, want 22", count)
 	}
 }
 

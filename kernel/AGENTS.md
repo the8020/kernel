@@ -28,7 +28,8 @@
   rootless gVisor is the automatic reduced fallback.
 - The kernel additionally owns development-image/sandbox lifecycle, durable
   per-user sandbox storage, sandbox-scoped activation ingress, package-index
-  persistence, Git source/version inspection, and package synchronization, plus
+  persistence, global named-secret storage, Git source/version and working-tree
+  inspection, authenticated pull/push/checkout, and package synchronization, plus
   the generic authenticated local console broker and
   backend PTY exec boundary. It owns the SSH listener and protocol adapter while
   authentication, development, and sandbox packages retain their domain
@@ -93,11 +94,14 @@
 - Ordinary service sandboxes receive only generic mounts: package source
   read-only at `/workspace/packages` and package-owned state read-write at
   `/state/package-data`. The kernel never interprets or scans package data.
-- Package-index commands validate public HTTPS Git sources, list bounded refs
-  and commits, atomically synchronize clean mapped repositories to latest, tag,
-  or commit selections, create unlinked local repositories, and reload only
-  services owned by changed packages. Git credentials never belong in index
-  documents or repository URLs.
+- Package-index commands validate HTTPS Git sources, list bounded refs and
+  commits, atomically synchronize clean mapped repositories to latest, tag, or
+  commit selections, create unlinked local repositories, and reload only
+  services owned by changed packages. Independent repository commands inspect,
+  fast-forward pull, push, and check out a branch or commit while preserving
+  dirty worktrees. A private global secret store owns values; package indexes
+  contain at most a selected secret name. Git credentials never belong in index
+  documents, repository URLs, durable Git configuration, or command arguments.
 - Authenticated Deno code may invoke a registered JSON-in/JSON-out function on
   one exact node/sandbox/Worker through the generic kernel SDK. Go validates
   infrastructure identity, bounds, timeout, and forwarding while treating the
@@ -203,6 +207,7 @@
   diagnostics, and mode selection.
 - `packages/AGENTS.md`: filesystem package/service manifests, desired package
   index, Git synchronization, identity, validation, and shared service state.
+- `secrets/AGENTS.md`: private global named-secret persistence and value access.
 - `webservices/AGENTS.md`: Phase 1C reconciliation, canonical service routing,
   lifecycle, administration, and node-local status.
 - `auth/AGENTS.md`: bootstrap administrators, Argon2id passwords, opaque shared

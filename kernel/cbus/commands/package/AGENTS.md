@@ -1,8 +1,8 @@
 # Purpose
 
 - Expose direct filesystem package discovery, desired package management, Git
-  synchronization, and independent development-repository administration
-  through the administrative command bus.
+  synchronization, and package-repository administration through the
+  administrative command bus.
 
 # Ownership
 
@@ -20,7 +20,7 @@
   bounded non-Git file inventory for one selected package.
 - Package commands remain available even when the Deno runtime is degraded.
 - Index list/inspect/set manage kernel-owned desired package records. Source
-  inspection lists bounded public refs without cloning; version listing fetches
+  inspection lists bounded refs without cloning; version listing fetches
   and reports bounded commit history. Synchronization accepts one, several, or
   all indexed packages and reports only package ID, resolved commit, and
   success for each result; Git and service-refresh details remain internal.
@@ -30,8 +30,12 @@
 - Local creation writes a minimal valid manifest, initializes an independent
   Git repository and first commit, and records a source-free local index entry.
 - Repository initialization is explicit, never inferred from discovery, and
-  creates one initial commit at the package root. Remote configuration is
-  informational for activation and does not authorize a push.
+  creates one initial commit at the package root. Remote configuration rejects
+  embedded credentials. Pull fast-forwards a clean attached branch, push
+  publishes it, and checkout selects a branch or detached commit. Pull and
+  checkout refresh only services affected by a changed HEAD. A package index
+  may select a global secret by name; handlers never resolve or return its
+  value.
 
 # Work Guidance
 
@@ -41,8 +45,9 @@
 # Verification
 
 - Generator catalog and aggregate handler tests cover discovery, management,
-  and repository commands; package-store tests own discovery/path safety and
-  real Git synchronization. Package-command tests cover offline synchronization,
+  repository commands, and secret-name options; package-store tests own
+  discovery/path safety and real Git synchronization/authentication.
+  Package-command tests cover offline synchronization,
   changed-service reload and retirement, and refresh failure reporting, while
   development-domain tests own activation histories.
 
@@ -51,4 +56,4 @@
 - This domain contract owns the `list`, `inspect`, `index`, `source`, `version`,
   `synchronize`, and `local` leaves.
 - `repository/AGENTS.md`: independent package Git inspection, initialization,
-  remote configuration, and status.
+  remote configuration, status, pull, push, and checkout.

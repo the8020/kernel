@@ -111,3 +111,33 @@ func TestSynchronizeReportsServiceRefreshFailureAfterPackageCommit(t *testing.T)
 		t.Fatalf("failure details = %#v, want %#v", commandError.Details, results)
 	}
 }
+
+func TestRepositoryMutationRefreshesOnlyAffectedServices(t *testing.T) {
+	runtimeServices := &synchronizationWebServices{}
+	serviceSet := &services.Services{Runtime: &services.RuntimeServices{Services: runtimeServices}}
+	err := RefreshRepositoryMutation(context.Background(), serviceSet, workspacepackages.RepositoryMutation{
+		Changed:          true,
+		PreviousServices: []string{"example/repo/kept", "example/repo/removed"},
+		Services:         []string{"example/repo/kept", "example/repo/added"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(runtimeServices.retired, []string{"example/repo/removed"}) {
+		t.Fatalf("retired services = %v", runtimeServices.retired)
+	}
+	if !reflect.DeepEqual(runtimeServices.reloaded, []string{"example/repo/kept", "example/repo/added"}) {
+		t.Fatalf("reloaded services = %v", runtimeServices.reloaded)
+	}
+}
+
+func TestUnchangedRepositoryMutationDoesNotTouchServices(t *testing.T) {
+	runtimeServices := &synchronizationWebServices{}
+	serviceSet := &services.Services{Runtime: &services.RuntimeServices{Services: runtimeServices}}
+	if err := RefreshRepositoryMutation(context.Background(), serviceSet, workspacepackages.RepositoryMutation{Services: []string{"example/repo/service"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtimeServices.reloaded)+len(runtimeServices.retired) != 0 {
+		t.Fatalf("unexpected service refresh: reload=%v retire=%v", runtimeServices.reloaded, runtimeServices.retired)
+	}
+}

@@ -8,8 +8,8 @@
 
 - Own `node/kernel/paths.toml`, which maps independently synchronized
   `packages/`, `config/`, `state/`, and `users/` roots.
-- Own creation of required shared directories, including
-  `config/auth/`, `state/auth/bootstrap-sessions/`, `state/services/`,
+- Own creation of required shared directories, including private
+  `config/secrets/`, `config/auth/`, `state/auth/bootstrap-sessions/`, `state/services/`,
   kernel-owned `state/package-index/`, and generic `state/package-data/`; own node-local settings, identity, bin,
   images, run/log/runtime/SSH roots, lock, PID, and command socket.
 - Do not copy defaults, seed application packages, build images, discover parent
@@ -30,6 +30,8 @@
   disposable file, creates empty package/user roots, and creates only empty
   settings files when absent.
 - `state/package-index/` stores kernel-managed desired package documents.
+- `config/secrets/secrets.toml` is the private global named-secret document;
+  instance initialization creates only its mode-`0700` parent.
   `state/package-data/` is generic application data: instance code creates and
   mounts it but never enumerates or interprets package-owned contents.
 - An explicit instance root may be absent. Resolution canonicalizes its nearest
@@ -47,7 +49,7 @@
 # Verification
 
 - `instance_test.go` covers mapped roots, overlap and permission rejection,
-  empty package/user/index/data roots,
+  empty package/user/index/data roots, the private secret path,
   image/runtime paths, settings files, identity, modes, locking, stale cleanup,
   and release.
 

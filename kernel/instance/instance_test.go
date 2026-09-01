@@ -40,10 +40,17 @@ func TestInitializeIdentityIsStable(t *testing.T) {
 	if first != second {
 		t.Fatalf("identity changed: %s != %s", first, second)
 	}
-	for _, path := range []string{paths.Packages, paths.ConfigAuth, paths.BootstrapSessions, paths.StateServices, paths.StatePackageIndex, paths.StatePackageData, paths.InstanceFile, paths.NodeSettingsFile, paths.GlobalSettingsFile, paths.Run, paths.Logs, paths.Runtime, paths.RuntimeGroups, paths.RuntimeSandboxHistory, paths.RuntimePorts, paths.RuntimeServices, paths.RuntimeServicePools, paths.RuntimeAttachments, paths.RuntimeTemporary, paths.SSH} {
+	for _, path := range []string{paths.Packages, paths.ConfigAuth, paths.ConfigSecrets, paths.BootstrapSessions, paths.StateServices, paths.StatePackageIndex, paths.StatePackageData, paths.InstanceFile, paths.NodeSettingsFile, paths.GlobalSettingsFile, paths.Run, paths.Logs, paths.Runtime, paths.RuntimeGroups, paths.RuntimeSandboxHistory, paths.RuntimePorts, paths.RuntimeServices, paths.RuntimeServicePools, paths.RuntimeAttachments, paths.RuntimeTemporary, paths.SSH} {
 		if _, err := os.Stat(path); err != nil {
 			t.Errorf("missing %s: %v", path, err)
 		}
+	}
+	secretsDirectory, err := os.Stat(paths.ConfigSecrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secretsDirectory.Mode().Perm() != 0o700 {
+		t.Fatalf("secrets directory mode = %v", secretsDirectory.Mode().Perm())
 	}
 	attachments, err := os.Stat(paths.RuntimeAttachments)
 	if err != nil {

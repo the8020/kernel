@@ -254,9 +254,7 @@ func newTestPlatform(t *testing.T) testPlatform {
 	}
 	registerTestActivationCommands(t, registry, manager)
 	for _, id := range []string{"the8020/dev-core", "the8020/demo"} {
-		if _, err := manager.InitializeRepository(context.Background(), id, "Test Developer", "developer@example.test", "Initial package"); err != nil {
-			t.Fatal(err)
-		}
+		initializeTestRepository(t, manager, id, "Test Developer", "developer@example.test", "Initial package")
 	}
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 	return testPlatform{root: root, users: users, image: image, record: record, manager: manager, driver: driver}
@@ -307,6 +305,29 @@ func testActivationCommands() []core.Command {
 	return []core.Command{
 		{Version: 1, ID: "development.activate.preview", Path: []string{"development", "activate", "preview"}, Summary: "preview", Description: "preview", Parameters: parameters},
 		{Version: 1, ID: "development.activate.run", Path: []string{"development", "activate", "run"}, Summary: "activate", Description: "activate", Parameters: runParameters},
+	}
+}
+
+func initializeTestRepository(t *testing.T, manager *Manager, id, authorName, authorEmail, message string) {
+	t.Helper()
+	manager.repositoryMu.Lock()
+	defer manager.repositoryMu.Unlock()
+	path, err := manager.packageRoot(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operations := []struct {
+		arguments   []string
+		environment []string
+	}{
+		{arguments: []string{"init", "-q", "-b", "main"}},
+		{arguments: []string{"add", "-A"}},
+		{arguments: []string{"commit", "-q", "--no-gpg-sign", "-m", message}, environment: gitIdentity(authorName, authorEmail)},
+	}
+	for _, operation := range operations {
+		if output, err := gitCommand(context.Background(), path, operation.environment, operation.arguments...); err != nil {
+			t.Fatalf("initialize test repository %s: %v: %s", id, err, output)
+		}
 	}
 }
 
@@ -842,7 +863,7 @@ func TestActivationPreviewReportsChangesBlockedByDirtySharedRepository(t *testin
 	}
 }
 
-func TestResetBoundariesAndRepositoryInspectionLock(t *testing.T) {
+func TestResetBoundaries(t *testing.T) {
 	platform := newTestPlatform(t)
 	sandbox, _ := platform.manager.Create(context.Background(), "developer")
 	shell(t, platform.manager, sandbox.UserID, "write packages/the8020/dev-core/new.txt source")
@@ -850,23 +871,6 @@ func TestResetBoundariesAndRepositoryInspectionLock(t *testing.T) {
 	shell(t, platform.manager, sandbox.UserID, "write system/proof system")
 	userMarker := filepath.Join(platform.users, "developer", "profile.json")
 	writeTestFile(t, userMarker, "preserve\n")
-
-	userLock := platform.manager.userLock(sandbox.UserID)
-	userLock.Lock()
-	inspected := make(chan error, 1)
-	go func() {
-		_, err := platform.manager.InspectRepository("the8020/dev-core")
-		inspected <- err
-	}()
-	select {
-	case err := <-inspected:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("repository inspection waited for the sandbox lifecycle lock")
-	}
-	userLock.Unlock()
 
 	reset, err := platform.manager.ResetSource(context.Background(), sandbox.UserID, true)
 	if err != nil {

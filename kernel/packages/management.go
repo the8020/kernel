@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	secretstore "the8020/kernel/secrets"
+
 	"github.com/pelletier/go-toml/v2"
 	"golang.org/x/sys/unix"
 )
@@ -37,6 +39,7 @@ type PackageIndex struct {
 	Source          string `toml:"source,omitempty" json:"source,omitempty"`
 	Commit          string `toml:"commit,omitempty" json:"commit,omitempty"`
 	Tag             string `toml:"tag,omitempty" json:"tag,omitempty"`
+	Secret          string `toml:"secret,omitempty" json:"secret,omitempty"`
 	Local           bool   `toml:"local,omitempty" json:"local"`
 	PackageID       string `toml:"-" json:"package_id"`
 	Path            string `toml:"-" json:"path"`
@@ -244,10 +247,14 @@ func (s *Store) ListPackageVersions(ctx context.Context, packageID string, limit
 		return PackageVersions{}, err
 	}
 	if !entry.Local {
+		authentication, authErr := s.repositoryAuthentication(packageID, entry.Source)
+		if authErr != nil {
+			return PackageVersions{}, authErr
+		}
 		if output, commandErr := s.runGit(ctx, repositoryPath, nil, "remote", "set-url", "origin", entry.Source); commandErr != nil {
 			return PackageVersions{}, fmt.Errorf("configure package source: %w: %s", commandErr, cleanGitOutput(output))
 		}
-		if output, commandErr := s.runGit(ctx, repositoryPath, nil, "fetch", "--quiet", "--prune", "--tags", "origin"); commandErr != nil {
+		if output, commandErr := s.runGit(ctx, repositoryPath, authentication, "fetch", "--quiet", "--prune", "--tags", "origin"); commandErr != nil {
 			return PackageVersions{}, fmt.Errorf("fetch package versions: %w: %s", commandErr, cleanGitOutput(output))
 		}
 	}
@@ -368,7 +375,11 @@ func (s *Store) synchronizePackage(ctx context.Context, packageID string) (Packa
 	}
 	defer os.RemoveAll(stageRoot)
 	stage := filepath.Join(stageRoot, "repository")
-	if output, commandErr := s.runGit(ctx, "", nil, "clone", "--quiet", "--no-checkout", "--origin", "origin", entry.Source, stage); commandErr != nil {
+	authentication, err := s.repositoryAuthentication(packageID, entry.Source)
+	if err != nil {
+		return result, err
+	}
+	if output, commandErr := s.runGit(ctx, "", authentication, "clone", "--quiet", "--no-checkout", "--origin", "origin", entry.Source, stage); commandErr != nil {
 		return result, fmt.Errorf("clone package: %w: %s", commandErr, cleanGitOutput(output))
 	}
 	commit, err := s.resolveDesiredCommit(ctx, stage, entry, true)
@@ -570,6 +581,7 @@ func validatePackageIndex(entry *PackageIndex) error {
 	entry.Source = strings.TrimSpace(entry.Source)
 	entry.Commit = strings.ToLower(strings.TrimSpace(entry.Commit))
 	entry.Tag = strings.TrimSpace(entry.Tag)
+	entry.Secret = strings.TrimSpace(entry.Secret)
 	if entry.Schema != packageIndexSchema {
 		return fmt.Errorf("package index schema must equal %d", packageIndexSchema)
 	}
@@ -582,6 +594,11 @@ func validatePackageIndex(entry *PackageIndex) error {
 	entry.PackageID = entry.Author + "/" + entry.Repository
 	if entry.Commit != "" && entry.Tag != "" {
 		return errors.New("package index may select a commit or tag, not both")
+	}
+	if entry.Secret != "" {
+		if err := secretstore.ValidateName(entry.Secret); err != nil {
+			return fmt.Errorf("secret: %w", err)
+		}
 	}
 	if entry.Commit != "" && !isCommitID(entry.Commit) {
 		return errors.New("package commit must be a 7- to 64-character hexadecimal object ID")
@@ -609,7 +626,7 @@ func validatePackageIndex(entry *PackageIndex) error {
 func normalizePackageSource(raw string) (string, string, string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", "", "", errors.New("package source must be a public HTTPS Git URL without credentials, query, or fragment")
+		return "", "", "", errors.New("package source must be an HTTPS Git URL without credentials, query, or fragment")
 	}
 	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
 	if len(parts) < 2 {
@@ -656,7 +673,11 @@ func (s *Store) resolveDesiredCommit(ctx context.Context, repositoryPath string,
 		return commit, nil
 	}
 	if entry.Commit != "" && allowFetchCommit {
-		if output, fetchErr := s.runGit(ctx, repositoryPath, nil, "fetch", "--quiet", "origin", entry.Commit); fetchErr != nil {
+		authentication, authErr := s.repositoryAuthentication(entry.PackageID, entry.Source)
+		if authErr != nil {
+			return "", authErr
+		}
+		if output, fetchErr := s.runGit(ctx, repositoryPath, authentication, "fetch", "--quiet", "origin", entry.Commit); fetchErr != nil {
 			return "", fmt.Errorf("fetch selected package commit: %w: %s", fetchErr, cleanGitOutput(output))
 		}
 		if commit, err = s.gitValue(ctx, repositoryPath, "rev-parse", "--verify", "FETCH_HEAD^{commit}"); err == nil {
@@ -795,7 +816,18 @@ func (s *Store) runGit(ctx context.Context, path string, extraEnvironment []stri
 		commandArguments = append([]string{"-C", path}, commandArguments...)
 	}
 	command := exec.CommandContext(ctx, s.gitPath, commandArguments...)
-	command.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
+	environment := make([]string, 0, len(os.Environ())+len(extraEnvironment)+2)
+	for _, value := range os.Environ() {
+		name := value
+		if separator := strings.IndexByte(value, '='); separator >= 0 {
+			name = value[:separator]
+		}
+		if name == "GIT_CONFIG_COUNT" || strings.HasPrefix(name, "GIT_CONFIG_KEY_") || strings.HasPrefix(name, "GIT_CONFIG_VALUE_") || name == "GIT_ASKPASS" || name == "SSH_ASKPASS" {
+			continue
+		}
+		environment = append(environment, value)
+	}
+	command.Env = append(environment, "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
 	command.Env = append(command.Env, extraEnvironment...)
 	output := &limitedGitOutput{limit: gitOutputLimit}
 	command.Stdout, command.Stderr = output, output

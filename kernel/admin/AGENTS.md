@@ -16,9 +16,11 @@
 - Interactive TTY editing delegates raw mode, terminal-width-aware wrapped rows, cursor movement, editing keys, and bracketed paste to the maintained `golang.org/x/term` terminal implementation. Do not maintain a project-owned escape parser or cursor renderer.
 - While terminal raw mode is active, route all interactive command results and errors through the `golang.org/x/term` writer so every newline returns to column zero; never write command output directly to the raw TTY.
 - Session history retains the latest 100 non-empty commands and suppresses consecutive duplicates. Bracketed CRLF/multiline paste is joined into one command before dispatch and renders only the initial primary prompt while the paste is collected.
-- Metadata-declared passwords use the terminal library's no-echo password reader with confirmation and never enter command history. Redirected automation is accepted only through the command's explicit standard-input flag.
+- Metadata-declared secrets use the terminal library's no-echo reader with
+  confirmation and never enter command history. Redirected automation is
+  accepted only through each command's explicit standard-input flag.
 - Metadata-declared ordinary prompts acquire omitted required positional values
-  in terminal one-shot and interactive modes before password input. Prompted
+  in terminal one-shot and interactive modes before secret input. Prompted
   values do not become standalone interactive history entries; redirected
   one-shot use must supply them as command tokens.
 - Terminal mode is used only when both input and output are terminals, receives the detected terminal dimensions, and must always be restored on exit. Redirected and scripted input keeps the scanner path without terminal escape output.

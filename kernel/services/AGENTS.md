@@ -5,7 +5,7 @@
 # Ownership
 
 - Own `Services`, `RuntimeServices`, immutable `InstanceInfo`, and narrow
-  handler-facing authentication, package, development, and web-service
+  handler-facing authentication, secrets, package, development, and web-service
   interfaces only.
 - Do not perform lookup, lifecycle behavior, validation, or domain operations.
 
@@ -14,8 +14,9 @@
 - Public API: `InstanceInfo`, `Services`, `RuntimeServices`, `RuntimeSnapshot`, `PublishRuntime`, narrow handler-facing domain interfaces, and `New`.
 - Fields are limited to settings, network, shared node topology/capacity,
   logging, lifecycle, bootstrap
-  authentication, instance status, package discovery/index/synchronization, development
-  image/workspace/repository/activation operations, selected isolation
+  authentication, instance status, named-secret list/get/set, package
+  discovery/index/synchronization/repository operations, development
+  image/workspace/activation operations, selected isolation
   diagnostics, low-level runtime pools, and exact operations used by current
   handlers/runtime bridges.
 - Both runtime diagnostics remain present when initialization fails; unavailable lifecycle fields stay nil with one safe failure string.

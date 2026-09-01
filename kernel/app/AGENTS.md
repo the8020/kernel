@@ -32,8 +32,8 @@
   synchronizes packages implicitly.
 - Startup order is load the explicit shared-root mapping → initialize shared
   and node-local state roots → lock → settings → logging →
-  bootstrap-authentication store and per-node cleanup → package and
-  desired-state stores → registry and
+  bootstrap-authentication store and per-node cleanup → global secret store →
+  package and desired-state stores → registry and
   development manager → network → authenticated console route → SSH listener → appliers →
   generated handler registration → command socket → asynchronous runtime-image
   record validation and runtime diagnostics/composition → initial terminal
@@ -91,7 +91,8 @@
   ordinary runtime sandbox manager only after asynchronous runtime startup,
   tracks browser and SSH PTY leases, closes runtime sessions when that provider
   is withdrawn, and closes all PTYs during kernel shutdown.
-- SSH composition reads restart-required `network.ssh_port`, uses the private
+- SSH composition reads runtime-mutable `network.ssh_port`, registers the SSH
+  manager as its transactional runtime applier, uses the private
   `node/kernel/ssh/host_ed25519` key, and starts only after authentication,
   development lifecycle, and the shared console broker are available.
 - Configured image reference and optional immutable digest must match the
@@ -103,6 +104,10 @@
 - Runtime composition supplies the already registered command bus to the
   authenticated supervisor callback; it does not construct a second
   administrative registry.
+- Package composition injects only the secret store's narrow value resolver
+  into the package manager; command services separately expose authenticated
+  secret administration. Deno and application packages never receive the
+  secret file path.
 - Service runtime profiles mount the configured package root read-only at
   `/workspace/packages` and shared package state read-write at
   `/state/package-data`, grant Workers read-only access to the bundled generic
@@ -163,9 +168,10 @@
   ready, then verifies live shutdown status and mutation rejection during
   cleanup. `integration_test.go` covers socket readiness, status, both admin
   modes, complete interactive help, compact/detailed settings lists, precedence,
-  live network/logging changes, root alias redirection and validation, failure
-  rollback, separate node/global persistence through the same commands,
-  persistence across restart, unset, shutdown/restart instructions, and cleanup;
+  live HTTP/SSH listener and logging changes, root alias redirection and
+  validation, occupied-port rollback, separate node/global persistence through
+  the same commands, persistence across restart, unset, shutdown/restart
+  instructions, and cleanup;
   `runtime_test.go` covers startup failure propagation, healthy-sandbox
   selection, ordered cleanup stages, and concurrent controller cleanup.
 

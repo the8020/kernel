@@ -19,6 +19,7 @@ import (
 
 	"the8020/kernel/auth"
 	"the8020/kernel/sandbox/backend"
+	"the8020/kernel/settings"
 )
 
 type observingAuthentication struct {
@@ -505,6 +506,79 @@ func TestCloseStopsListener(t *testing.T) {
 	}
 }
 
+func TestRuntimePortReplacementPreservesConnectionsAndRollsBack(t *testing.T) {
+	authentication, _ := testAuthentication(t)
+	manager, err := New(Config{
+		Port: 0, HostKeyPath: filepath.Join(t.TempDir(), "host_ed25519"), Authentication: authentication,
+		Development: &fakeDevelopment{sandbox: "dev-alice"}, Consoles: &fakeConsoles{opened: make(chan openedConsole, 1)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+
+	oldAddress := "127.0.0.1:" + stringPort(manager.Port())
+	existing, err := gossh.Dial("tcp", oldAddress, clientConfig("alice", "correct horse"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = existing.Close() })
+
+	replacementPort := availableTCPPort(t)
+	prepared, err := manager.Prepare(context.Background(), settings.Values{"network.ssh_port": int64(replacementPort)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared.Commit()
+	if manager.Port() != replacementPort {
+		t.Fatalf("active SSH port = %d, want %d", manager.Port(), replacementPort)
+	}
+	replacementAddress := "127.0.0.1:" + stringPort(replacementPort)
+	replacement, err := gossh.Dial("tcp", replacementAddress, clientConfig("alice", "correct horse"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = replacement.Close()
+	if connection, dialErr := netDial(oldAddress); dialErr == nil {
+		_ = connection.Close()
+		t.Fatal("old SSH listener accepted a new connection after replacement")
+	}
+	session, err := existing.NewSession()
+	if err != nil {
+		t.Fatalf("established SSH connection did not survive replacement: %v", err)
+	}
+	_ = session.Close()
+
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	occupiedPort := occupied.Addr().(*net.TCPAddr).Port
+	if _, err := manager.Prepare(context.Background(), settings.Values{"network.ssh_port": int64(occupiedPort)}); !errors.Is(err, ErrPortUnavailable) {
+		_ = occupied.Close()
+		t.Fatalf("occupied SSH port error = %v, want ErrPortUnavailable", err)
+	}
+	_ = occupied.Close()
+	if manager.Port() != replacementPort {
+		t.Fatalf("failed replacement changed SSH port to %d", manager.Port())
+	}
+
+	discardedPort := availableTCPPort(t)
+	discarded, err := manager.Prepare(context.Background(), settings.Values{"network.ssh_port": int64(discardedPort)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	discarded.Discard()
+	rebound, err := net.Listen("tcp", "127.0.0.1:"+stringPort(discardedPort))
+	if err != nil {
+		t.Fatalf("discarded SSH listener still owns its port: %v", err)
+	}
+	_ = rebound.Close()
+	if manager.Port() != replacementPort {
+		t.Fatalf("discard changed SSH port to %d", manager.Port())
+	}
+}
+
 func testAuthentication(t *testing.T) (*auth.Manager, string) {
 	t.Helper()
 	root := t.TempDir()
@@ -630,6 +704,17 @@ func stringPort(port int) string {
 		port /= 10
 	}
 	return string(result[index:])
+}
+
+func availableTCPPort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	_ = listener.Close()
+	return port
 }
 
 func netDial(address string) (io.Closer, error) {

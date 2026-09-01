@@ -19,10 +19,6 @@ func (r *developmentRecorder) sandbox(name string) development.Sandbox {
 	r.record(name)
 	return development.Sandbox{UserID: "alice", SandboxID: "dev-alice", State: development.StateReady}
 }
-func (r *developmentRecorder) repository(name string) development.Repository {
-	r.record(name)
-	return development.Repository{PackageID: "the8020/dev-core", ActivationReady: true, Clean: true}
-}
 func (r *developmentRecorder) ImageStatus() (development.ImageStatus, error) {
 	r.record("image.status")
 	return development.ImageStatus{BuildStatus: "ready"}, nil
@@ -73,23 +69,6 @@ func (r *developmentRecorder) Activate(_ context.Context, _ string, options deve
 	r.activationOptions = options
 	return development.ActivationResult{Success: true, Status: "committed"}, nil
 }
-func (r *developmentRecorder) ListRepositories() ([]development.Repository, error) {
-	r.record("repository.list")
-	return []development.Repository{{PackageID: "the8020/dev-core"}}, nil
-}
-func (r *developmentRecorder) InspectRepository(string) (development.Repository, error) {
-	return r.repository("repository.inspect"), nil
-}
-func (r *developmentRecorder) InitializeRepository(context.Context, string, string, string, string) (development.Repository, error) {
-	return r.repository("repository.init"), nil
-}
-func (r *developmentRecorder) ConfigureRemote(context.Context, string, string, string) (development.Repository, error) {
-	return r.repository("repository.remote"), nil
-}
-func (r *developmentRecorder) RepositoryStatus(string) (development.Repository, error) {
-	return r.repository("repository.status"), nil
-}
-
 func TestEveryDevelopmentCommandHandlerDelegatesExactlyOnce(t *testing.T) {
 	recorder := &developmentRecorder{calls: map[string]int{}}
 	serviceSet := &services.Services{Development: recorder}
@@ -112,11 +91,6 @@ func TestEveryDevelopmentCommandHandlerDelegatesExactlyOnce(t *testing.T) {
 		{"sandbox.factory-reset", SandboxFactoryReset(serviceSet), map[string]any{"user_id": "alice", "confirm": true}},
 		{"activate.preview", ActivatePreview(serviceSet), map[string]any{"user_id": "alice", "packages": "the8020/dev-core"}},
 		{"activate.run", ActivateRun(serviceSet), map[string]any{"user_id": "alice", "message": "Activate", "packages": "the8020/dev-core,the8020/demo", "package_messages": `{"the8020/demo":"Override"}`, "author_name": "Developer", "author_email": "developer@example.test", "metadata": `{"client":"external-cli"}`}},
-		{"repository.list", RepositoryList(serviceSet), nil},
-		{"repository.inspect", RepositoryInspect(serviceSet), map[string]any{"package_id": "the8020/dev-core"}},
-		{"repository.init", RepositoryInit(serviceSet), map[string]any{"package_id": "the8020/dev-core", "author_name": "Developer", "author_email": "developer@example.test", "message": "Initial"}},
-		{"repository.remote", RepositoryRemote(serviceSet), map[string]any{"package_id": "the8020/dev-core", "name": "origin", "url": "/tmp/remote.git"}},
-		{"repository.status", RepositoryStatus(serviceSet), map[string]any{"package_id": "the8020/dev-core"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -126,8 +100,8 @@ func TestEveryDevelopmentCommandHandlerDelegatesExactlyOnce(t *testing.T) {
 			}
 		})
 	}
-	if len(tests) != 19 {
-		t.Fatalf("handler count = %d, want 19", len(tests))
+	if len(tests) != 14 {
+		t.Fatalf("handler count = %d, want 14", len(tests))
 	}
 	if len(recorder.activationOptions.SelectedPackages) != 2 || recorder.activationOptions.PackageMessages["the8020/demo"] != "Override" || recorder.activationOptions.Metadata["client"] != "external-cli" {
 		t.Fatalf("activation options = %#v", recorder.activationOptions)

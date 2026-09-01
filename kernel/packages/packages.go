@@ -296,6 +296,7 @@ type Config struct {
 	IndexRoot        string
 	GitPath          string
 	RepositoryMu     *sync.RWMutex
+	Secrets          SecretResolver
 	StateStore       ServiceStateStore
 	StateLockTimeout time.Duration
 	Defaults         FrameworkDefaults
@@ -310,6 +311,7 @@ type Store struct {
 	indexRoot     string
 	gitPath       string
 	repositoryMu  *sync.RWMutex
+	secrets       SecretResolver
 	indexMu       sync.RWMutex
 	defaults      FrameworkDefaults
 	logger        *slog.Logger
@@ -365,9 +367,14 @@ func New(config Config) (*Store, error) {
 	return &Store{
 		workspaceRoot: workspace, packagesRoot: packagesRoot, state: stateStore,
 		stateRoot: stateRoot, indexRoot: indexRoot,
-		gitPath: gitPath, repositoryMu: repositoryMu, defaults: defaults,
+		gitPath: gitPath, repositoryMu: repositoryMu, secrets: config.Secrets, defaults: defaults,
 		logger: config.Logger,
 	}, nil
+}
+
+// SecretResolver exposes only the value lookup required by authenticated Git.
+type SecretResolver interface {
+	SecretValue(string) (string, error)
 }
 
 func (s *Store) PackagesRoot() string { return s.packagesRoot }

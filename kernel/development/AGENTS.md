@@ -9,8 +9,9 @@
   `users/<username>/dev-sandbox/`, disposable runsc metadata beneath
   `node/kernel/runtime/development/`, mount-profile resolution, the authenticated
   activation endpoint, and publication into shared package repositories.
-- Do not own service/job sandboxes, remote push, package manifests,
-  cross-package validation, activation history, or graphical programs.
+- Do not own service/job sandboxes, remote repository administration, package
+  manifests, cross-package validation, activation history, or graphical
+  programs.
 
 # Local Contracts
 
@@ -87,7 +88,7 @@
 - Unit tests cover deterministic IDs, direct ensure/reuse/restart, bounded and
   confined authorized-key reads without lifecycle mutation, user
   isolation, overlay checkpoint/restore, explicit Git scans, activation/reset
-  boundaries, independent repository inspection, inherited-cleanup races,
+  boundaries, repository-lock separation, inherited-cleanup races,
   bounded diagnostics, and OCI mount policy.
 - The real gVisor E2E covers SSH/PTY behavior, APT/dpkg persistence across
   restart, temporary `/run`, read-only helper mounting, repeated helper

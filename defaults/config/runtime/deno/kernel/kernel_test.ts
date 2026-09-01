@@ -24,20 +24,36 @@ const persistentMetadata: ServiceRequestMetadata = {
   persistentKeepAliveMilliseconds: 60_000,
 };
 
+function createCallQueue(port: MessagePort) {
+  const queued: Array<Record<string, unknown>> = [];
+  const waiting: Array<(call: Record<string, unknown>) => void> = [];
+  port.onmessage = (event) => {
+    const call = event.data as Record<string, unknown>;
+    const resolve = waiting.shift();
+    if (resolve === undefined) queued.push(call);
+    else resolve(call);
+  };
+  port.start();
+  return {
+    next(): Promise<Record<string, unknown>> {
+      const call = queued.shift();
+      if (call !== undefined) return Promise.resolve(call);
+      return new Promise((resolve) => waiting.push(resolve));
+    },
+  };
+}
+
 Deno.test("typed kernel auth bridge correlates login and logout", async () => {
   const channel = new MessageChannel();
   const bridge = createKernelBridge(channel.port1);
-  const calls: Array<Record<string, unknown>> = [];
-  channel.port2.onmessage = (event) => calls.push(event.data);
-  channel.port2.start();
+  const calls = createCallQueue(channel.port2);
   try {
     const loginPromise = bridge.withRequest(
       metadata,
       () =>
         kernel.auth.bootstrapLogin({ username: "Admin", password: "private" }),
     );
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    const loginCall = calls[0]!;
+    const loginCall = await calls.next();
     assertEquals(loginCall.type, "kernel_call");
     assertEquals(
       (loginCall.payload as { request: unknown }).request,
@@ -61,8 +77,7 @@ Deno.test("typed kernel auth bridge correlates login and logout", async () => {
       metadata,
       () => kernel.auth.logoutCurrent(),
     );
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    const logoutCall = calls[1]!;
+    const logoutCall = await calls.next();
     bridge.handle({
       type: "kernel_result",
       correlationId: logoutCall.correlationId as string,
@@ -119,9 +134,7 @@ Deno.test("current user reads trusted persistent context locally", async () => {
 Deno.test("persistent completion and exact Worker calls use the generic bridge", async () => {
   const channel = new MessageChannel();
   const bridge = createKernelBridge(channel.port1);
-  const calls: unknown[] = [];
-  channel.port2.onmessage = (event) => calls.push(event.data);
-  channel.port2.start();
+  const calls = createCallQueue(channel.port2);
   try {
     bridge.beginPersistentRequest(persistentMetadata);
     const completion = kernel.execution.completePersistent();
@@ -132,22 +145,26 @@ Deno.test("persistent completion and exact Worker calls use the generic bridge",
       function: "package.inspect",
       input: { id: "one" },
     });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    const completionCall = await calls.next();
+    const invocationCall = await calls.next();
     assertEquals(
-      (calls[0] as { payload: { operation: string } }).payload.operation,
+      (completionCall.payload as { operation: string }).operation,
       "execution.completePersistent",
     );
     assertEquals(
-      (calls[1] as { payload: { operation: string } }).payload.operation,
+      (invocationCall.payload as { operation: string }).operation,
       "worker.invoke",
     );
-    for (const call of calls as Array<Record<string, unknown>>) {
+    for (
+      const [call, payload] of [
+        [completionCall, undefined],
+        [invocationCall, { ok: true, output: { id: "one" } }],
+      ] as const
+    ) {
       bridge.handle({
         type: "kernel_result",
         correlationId: call.correlationId as string,
-        payload: call === calls[0]
-          ? undefined
-          : { ok: true, output: { id: "one" } },
+        payload,
       });
     }
     await completion;
@@ -162,9 +179,7 @@ Deno.test("persistent completion and exact Worker calls use the generic bridge",
 Deno.test("typed kernel admin bridge returns results and command errors", async () => {
   const channel = new MessageChannel();
   const bridge = createKernelBridge(channel.port1);
-  const calls: Array<Record<string, unknown>> = [];
-  channel.port2.onmessage = (event) => calls.push(event.data);
-  channel.port2.start();
+  const calls = createCallQueue(channel.port2);
   const authenticated: ServiceRequestMetadata = {
     ...persistentMetadata,
     auth: {
@@ -177,8 +192,7 @@ Deno.test("typed kernel admin bridge returns results and command errors", async 
   try {
     bridge.beginPersistentRequest(authenticated);
     const list = kernel.admin.execute<{ services: unknown[] }>("service.list");
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    const listCall = calls[0]!;
+    const listCall = await calls.next();
     assertEquals(
       (listCall.payload as { operation: string }).operation,
       "admin.execute",
@@ -204,8 +218,7 @@ Deno.test("typed kernel admin bridge returns results and command errors", async 
     const missing = kernel.admin.execute("service.inspect", {
       service_id: "missing/service/id",
     });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    const missingCall = calls[1]!;
+    const missingCall = await calls.next();
     bridge.handle({
       type: "kernel_result",
       correlationId: missingCall.correlationId as string,
@@ -231,12 +244,10 @@ Deno.test("typed kernel admin bridge returns results and command errors", async 
   }
 });
 
-Deno.test("typed package API delegates to generic administrative commands", async () => {
+Deno.test("typed secret and package APIs delegate to generic administrative commands", async () => {
   const channel = new MessageChannel();
   const bridge = createKernelBridge(channel.port1);
-  const calls: Array<Record<string, unknown>> = [];
-  channel.port2.onmessage = (event) => calls.push(event.data);
-  channel.port2.start();
+  const calls = createCallQueue(channel.port2);
   try {
     bridge.beginPersistentRequest({
       ...persistentMetadata,
@@ -253,8 +264,7 @@ Deno.test("typed package API delegates to generic administrative commands", asyn
       arguments_: Record<string, unknown>,
       result: Record<string, unknown>,
     ) => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      const call = calls.at(-1)!;
+      const call = await calls.next();
       assertEquals(
         (call.payload as { arguments: unknown }).arguments,
         { command_id: commandId, arguments: arguments_ },
@@ -266,6 +276,44 @@ Deno.test("typed package API delegates to generic administrative commands", asyn
       });
       return await promise;
     };
+
+    assertEquals(
+      await respond(
+        kernel.secrets.list(),
+        "secret.list",
+        {},
+        { secrets: [{ name: "github", updated_at: "2026-09-01T00:00:00Z" }] },
+      ),
+      [{ name: "github", updated_at: "2026-09-01T00:00:00Z" }],
+    );
+    assertEquals(
+      await respond(
+        kernel.secrets.set({ name: "github", value: "replacement" }),
+        "secret.set",
+        { name: "github", value: "replacement" },
+        { secret: { name: "github", updated_at: "2026-09-01T00:01:00Z" } },
+      ),
+      { name: "github", updated_at: "2026-09-01T00:01:00Z" },
+    );
+    assertEquals(
+      await respond(
+        kernel.secrets.get("github"),
+        "secret.get",
+        { name: "github" },
+        {
+          secret: {
+            name: "github",
+            value: "replacement",
+            updated_at: "2026-09-01T00:01:00Z",
+          },
+        },
+      ),
+      {
+        name: "github",
+        value: "replacement",
+        updated_at: "2026-09-01T00:01:00Z",
+      },
+    );
 
     assertEquals(
       await respond(
@@ -353,6 +401,64 @@ Deno.test("typed package API delegates to generic administrative commands", asyn
         { package: { commit: "abcdef1" } },
       ),
       { commit: "abcdef1" },
+    );
+
+    const repository = {
+      package_id: "the8020/uui",
+      path: "/packages/the8020/uui",
+      activation_ready: true,
+      branch: "main",
+      head: "abcdef1234567",
+      remote_name: "origin",
+      remote_url: "https://github.com/the8020/uui.git",
+      clean: true,
+      status: "ready",
+      branches: [{
+        name: "main",
+        commit: "abcdef1234567",
+        current: true,
+        remote: false,
+      }],
+      commits: [],
+    };
+    assertEquals(
+      await respond(
+        kernel.packages.repository.inspect("the8020/uui"),
+        "package.repository.inspect",
+        { package_id: "the8020/uui" },
+        { repository },
+      ),
+      repository,
+    );
+    assertEquals(
+      await respond(
+        kernel.packages.repository.pull("the8020/uui"),
+        "package.repository.pull",
+        { package_id: "the8020/uui" },
+        { repository },
+      ),
+      repository,
+    );
+    assertEquals(
+      await respond(
+        kernel.packages.repository.push("the8020/uui"),
+        "package.repository.push",
+        { package_id: "the8020/uui" },
+        { repository },
+      ),
+      repository,
+    );
+    assertEquals(
+      await respond(
+        kernel.packages.repository.checkout({
+          packageId: "the8020/uui",
+          branch: "main",
+        }),
+        "package.repository.checkout",
+        { package_id: "the8020/uui", branch: "main" },
+        { repository },
+      ),
+      repository,
     );
   } finally {
     bridge.close();

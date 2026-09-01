@@ -29,6 +29,7 @@ import (
 	"the8020/kernel/nodes"
 	workspacepackages "the8020/kernel/packages"
 	runtimehost "the8020/kernel/runtime"
+	secretstore "the8020/kernel/secrets"
 	"the8020/kernel/services"
 	"the8020/kernel/settings"
 	kernelssh "the8020/kernel/ssh"
@@ -326,6 +327,10 @@ func Run(parent context.Context, config Config) error {
 	if len(bootstrapUsers) == 0 {
 		logger.Warn("no bootstrap administrators configured", "next_step", "auth bootstrap-admin add <username>")
 	}
+	secretManager, err := secretstore.New(secretstore.Config{Path: paths.SecretsFile, LockTimeout: 5 * time.Second})
+	if err != nil {
+		return fmt.Errorf("initialize secret storage: %w", err)
+	}
 	repositoryMu := &sync.RWMutex{}
 	packageStore, err := workspacepackages.New(workspacepackages.Config{
 		WorkspaceRoot:    root,
@@ -333,6 +338,7 @@ func Run(parent context.Context, config Config) error {
 		StateRoot:        paths.StateServices,
 		IndexRoot:        paths.StatePackageIndex,
 		RepositoryMu:     repositoryMu,
+		Secrets:          secretManager,
 		StateLockTimeout: activeDuration(settingManager, "services.state_lock_timeout", 5*time.Second),
 		Defaults:         serviceFrameworkDefaults(settingManager),
 		Logger:           logger.With("node_id", uuid),
@@ -405,12 +411,16 @@ func Run(parent context.Context, config Config) error {
 		return fmt.Errorf("initialize SSH server: %w", err)
 	}
 	defer sshManager.Close(context.Background())
+	if err := settingManager.RegisterApplier([]string{"network.ssh_port"}, sshManager); err != nil {
+		return err
+	}
 	if err := settingManager.RegisterApplier([]string{"logging.enabled", "logging.split_period", "logging.max_file_size", "logging.max_total_size"}, loggingManager); err != nil {
 		return err
 	}
 	lifecycleManager := lifecycle.New()
 	lifecycleManager.ConfigureShutdown(gracefulShutdownSteps)
 	serviceSet := services.New(settingManager, networkManager, loggingManager, lifecycleManager, authManager, packageStore, developmentManager, uuid, paths, startedAt, config.BuildID, &services.RuntimeServices{Failure: "runtime initialization is in progress"})
+	serviceSet.Secrets = secretManager
 	serviceSet.Layout = instance.NewLayoutManager(root)
 	serviceSet.Nodes = nodeManager
 	if config.Register == nil {
@@ -532,9 +542,14 @@ func synchronizePackagesBeforeStartup(parent context.Context, config Config, pat
 		return fmt.Errorf("acquire node for package synchronization: %w", err)
 	}
 	defer lock.Release()
+	secretManager, err := secretstore.New(secretstore.Config{Path: paths.SecretsFile, LockTimeout: 5 * time.Second})
+	if err != nil {
+		return fmt.Errorf("initialize secret storage: %w", err)
+	}
 	store, err := workspacepackages.New(workspacepackages.Config{
 		WorkspaceRoot: rootForPaths(paths), PackagesRoot: paths.Packages,
 		StateRoot: paths.StateServices, IndexRoot: paths.StatePackageIndex,
+		Secrets: secretManager,
 	})
 	if err != nil {
 		return fmt.Errorf("initialize package synchronization: %w", err)
@@ -544,7 +559,7 @@ func synchronizePackagesBeforeStartup(parent context.Context, config Config, pat
 	}
 	registry := core.NewRegistry(nil)
 	serviceSet := &services.Services{
-		Packages: store, PackageManagement: store,
+		Packages: store, PackageManagement: store, Secrets: secretManager,
 		Instance: services.InstanceInfo{UUID: uuid, PID: os.Getpid(), Paths: paths, BuildID: config.BuildID},
 	}
 	if err := config.Register(registry, serviceSet); err != nil {

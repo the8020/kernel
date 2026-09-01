@@ -6,8 +6,43 @@ import (
 	"errors"
 
 	"the8020/kernel/cbus/core"
+	workspacepackages "the8020/kernel/packages"
 	"the8020/kernel/services"
 )
+
+// RefreshRepositoryMutation reloads only services affected by a changed
+// checkout. Offline package administration performs only the Git transaction.
+func RefreshRepositoryMutation(ctx context.Context, serviceSet *services.Services, mutation workspacepackages.RepositoryMutation) error {
+	if !mutation.Changed {
+		return nil
+	}
+	runtimeServices := serviceSet.RuntimeSnapshot()
+	if runtimeServices == nil || runtimeServices.Failure != "" || runtimeServices.Services == nil {
+		return nil
+	}
+	current := make(map[string]bool, len(mutation.Services))
+	for _, serviceID := range mutation.Services {
+		current[serviceID] = true
+	}
+	var lifecycleErrors []error
+	for _, serviceID := range mutation.PreviousServices {
+		if current[serviceID] {
+			continue
+		}
+		if err := runtimeServices.Services.Retire(ctx, serviceID); err != nil {
+			lifecycleErrors = append(lifecycleErrors, err)
+		}
+	}
+	for _, serviceID := range mutation.Services {
+		if _, err := runtimeServices.Services.Reload(ctx, serviceID); err != nil {
+			lifecycleErrors = append(lifecycleErrors, err)
+		}
+	}
+	if err := errors.Join(lifecycleErrors...); err != nil {
+		return core.NewError(core.CodeRuntimeOperation, "repository changed but service refresh failed: "+err.Error())
+	}
+	return nil
+}
 
 // SynchronizationResult is the complete public result for one synchronized
 // package. Detailed Git and service-refresh state remains internal.
