@@ -1,8 +1,0 @@
-key = "sandbox.resources.job.memory_high"
-type = "byte_size"
-storage = "node"
-default = "512MB"
-environment = "KERNEL_SANDBOX_RESOURCES_JOB_MEMORY_HIGH"
-runtime_mutable = false
-restart_required = true
-description = "Memory-high pressure threshold for job runtime groups."

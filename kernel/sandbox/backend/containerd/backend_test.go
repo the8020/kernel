@@ -55,7 +55,7 @@ func TestSandboxOCIOptionEnforcesBoundaryAndLimits(t *testing.T) {
 	if !generated.Root.Readonly || !generated.Process.NoNewPrivileges || len(generated.Process.Capabilities.Bounding) != 0 {
 		t.Fatalf("security boundary: %#v %#v", generated.Root, generated.Process)
 	}
-	if generated.Linux.Resources.Unified["memory.max"] != "268435456" || generated.Linux.Resources.Unified["pids.max"] != "64" || !strings.Contains(generated.Linux.CgroupsPath, sandbox.SandboxID) {
+	if len(generated.Linux.Resources.Unified) != 1 || generated.Linux.Resources.Unified["pids.max"] != "64" || !strings.Contains(generated.Linux.CgroupsPath, sandbox.SandboxID) {
 		t.Fatalf("resources: %#v cgroup %q", generated.Linux.Resources, generated.Linux.CgroupsPath)
 	}
 	if generated.Linux.Namespaces[0].Path != sandbox.Network.NamespacePath {
@@ -106,7 +106,7 @@ func testSandbox(t *testing.T) model.SandboxSpec {
 	return model.SandboxSpec{
 		SandboxID: "sandbox-one", RuntimeGroupID: "group-one", WorkloadType: model.WorkloadJob,
 		GroupKey: "user-one", OwnerIDs: []string{"user-one"}, ImageDigest: digest, RuntimeProfile: profile, ProfileHash: hash,
-		ResourceLimits: model.ResourceLimits{MemoryHigh: 134217728, MemoryMaximum: 268435456, SwapMaximum: 0, CPUQuotaMicros: 100000, CPUPeriodMicros: 100000, CPUWeight: 100, PIDMaximum: 64, TmpfsMaximum: 16777216},
+		ResourceLimits: model.ResourceLimits{PIDMaximum: 64, TmpfsMaximum: 16777216},
 		Network:        model.NetworkConfiguration{Mode: "netstack", NamespacePath: "/var/run/netns/the8020-one", NetworkName: "the8020"},
 		Mounts:         append([]model.Mount(nil), profileMounts...),
 		Permissions:    model.Permissions{ReadPaths: []string{"/workspace/user-one"}}, DependencyMode: model.DependencyCachedOnly,

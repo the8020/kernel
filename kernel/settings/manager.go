@@ -364,13 +364,6 @@ func validateSnapshot(values Values) error {
 	if fileOK && totalOK && total < file {
 		return errors.New("logging.max_total_size must be greater than or equal to logging.max_file_size")
 	}
-	for _, workload := range []string{"service", "job"} {
-		high, highOK := values["sandbox.resources."+workload+".memory_high"].(ByteSize)
-		maximum, maximumOK := values["sandbox.resources."+workload+".memory_maximum"].(ByteSize)
-		if highOK && maximumOK && high > maximum {
-			return fmt.Errorf("sandbox.resources.%s.memory_high must not exceed memory_maximum", workload)
-		}
-	}
 	minimum, minimumOK := values["services.default_minimum_workers"].(int64)
 	maximum, maximumOK := values["services.default_maximum_workers"].(int64)
 	if minimumOK && maximumOK && maximum != 0 && minimum > maximum {

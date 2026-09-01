@@ -128,5 +128,5 @@ func testTemplate(t *testing.T) (model.RuntimeProfile, model.ResourceLimits) {
 	if _, err := profile.Hash(); err != nil {
 		t.Fatal(err)
 	}
-	return profile, model.ResourceLimits{MemoryHigh: 128, MemoryMaximum: 256, CPUQuotaMicros: 50, CPUPeriodMicros: 100, CPUWeight: 100, PIDMaximum: 32, TmpfsMaximum: 64}
+	return profile, model.ResourceLimits{PIDMaximum: 32, TmpfsMaximum: 64}
 }

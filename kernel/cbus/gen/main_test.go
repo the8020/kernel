@@ -401,11 +401,26 @@ func TestRepositoryCatalogContainsEveryRequiredPlatformSetting(t *testing.T) {
 		"services.default_request_timeout", "services.default_drain_timeout", "services.default_minimum_workers",
 		"services.default_maximum_workers", "services.default_concurrency_per_worker", "services.default_target_utilization_percent",
 		"services.default_worker_keep_alive", "services.default_workers_per_sandbox", "services.default_minimum_sandboxes", "services.default_session_keep_alive", "services.state_lock_timeout",
-		"runtime.sandbox.maximum_workers", "runtime.sandbox.target_cpu_utilization_percent", "runtime.sandbox.target_ram_utilization_percent",
+		"runtime.sandbox.maximum_workers",
 		"network.root_alias",
 	} {
 		if _, exists := found[key]; !exists {
 			t.Errorf("missing required setting %s", key)
+		}
+	}
+	for _, key := range []string{
+		"runtime.node.cpu_millicores_budget",
+		"runtime.node.memory_budget",
+		"runtime.node.memory_reserved",
+		"runtime.sandbox.target_cpu_utilization_percent",
+		"runtime.sandbox.target_ram_utilization_percent",
+		"sandbox.resources.service.cpu_quota_micros",
+		"sandbox.resources.service.memory_maximum",
+		"sandbox.resources.job.cpu_quota_micros",
+		"sandbox.resources.job.memory_maximum",
+	} {
+		if _, exists := found[key]; exists {
+			t.Errorf("obsolete CPU/RAM setting remains: %s", key)
 		}
 	}
 	wantGlobal := []string{"network.root_alias"}

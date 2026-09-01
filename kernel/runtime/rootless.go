@@ -213,7 +213,7 @@ func NewIsolationReport(configured string, selected Mode, reason string, fullRea
 		report.Limitations = []string{
 			"uses host networking with loopback-only kernel control endpoints instead of a CNI network namespace",
 			"Deno permissions restrict program egress, but no host nftables policy backs that restriction",
-			"resource usage is observable through runsc and kernel-owned sandbox processes, but configured CPU, memory, and PID limits are not hard-enforced by cgroup v2",
+			"resource usage is observable through runsc and kernel-owned sandbox processes, but the configured PID limit is not hard-enforced by cgroup v2",
 		}
 	}
 	return report

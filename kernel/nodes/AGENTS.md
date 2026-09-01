@@ -23,7 +23,7 @@
 - Exact Worker forwarding validates the target node and bounded envelope,
   dispatches directly to the registered local invoker, and returns structured
   opaque results without scanning nodes, sandboxes, or Workers.
-- The internal capacity endpoint reports memory/CPU/temp-storage reservations,
+- The internal capacity endpoint reports temporary-storage reservations,
   sandbox and Worker limits/counts, service sandboxes and health, and available
   versus occupied execution slots. Capacity queries are bounded and happen for
   administration or spillover, never on successful local dispatch.
@@ -32,7 +32,7 @@
   disabled local node owns no indexes.
 - Spillover excludes nodes already present in the forwarding path, queries
   remaining peers concurrently, ignores unreachable/non-accepting peers, and
-  prefers the greatest advertised Worker then sandbox/memory headroom.
+  prefers the greatest advertised Worker then sandbox headroom.
 - Listener-address changes take effect after kernel restart.
 
 # Work Guidance

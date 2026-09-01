@@ -140,7 +140,7 @@ func TestAvailableForwardingUsesAdvertisedCapacity(t *testing.T) {
 	if _, err := owner.Set(context.Background(), configured); err != nil {
 		t.Fatal(err)
 	}
-	owner.SetCapacityProvider(staticCapacityProvider{capacity: Capacity{Accepting: true, AvailableWorkers: 8, AvailableSandboxes: 2, MemoryAvailableBytes: 1024, UpdatedAt: time.Now().UTC()}})
+	owner.SetCapacityProvider(staticCapacityProvider{capacity: Capacity{Accepting: true, AvailableWorkers: 8, AvailableSandboxes: 2, UpdatedAt: time.Now().UTC()}})
 	if err := owner.Start(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { _, _ = writer.Write([]byte("capacity-routed")) })); err != nil {
 		t.Fatal(err)
 	}

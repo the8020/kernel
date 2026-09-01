@@ -20,10 +20,9 @@
   already contains that logical service; releasing the final owner delegates
   sandbox destruction to the manager.
 - Existing service sandboxes are eligible only while their observed Worker
-  count remains below the kernel-wide limit and their sampled CPU and RAM
-  utilization remain below the configured targets. If every compatible
-  sandbox is full, busy, or already contains the service, cold construction
-  retains the requested sandbox group.
+  count remains below the kernel-wide limit. If every compatible sandbox is
+  full or already contains the service, cold construction retains the requested
+  sandbox group. CPU and RAM observations never influence selection.
 
 # Work Guidance
 
@@ -33,7 +32,7 @@
 
 - Unit tests cover same-owner reuse, cross-owner separation, persistent
   multi-owner shared groups, explicit shared keys, incompatible profiles,
-  no-cross-type reuse, Worker/CPU/RAM capacity exclusion, placement-group
+  no-cross-type reuse, Worker-count capacity exclusion, placement-group
   retention, and new sandbox construction.
 
 # Child DOX Index

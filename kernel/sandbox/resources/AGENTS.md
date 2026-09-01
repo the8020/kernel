@@ -4,12 +4,14 @@
 
 # Ownership
 
-- Own unified cgroup settings, CPU/memory/PID/tmpfs validation, cgroup-file parsing, OOM/pressure event exposure, and group-level metrics.
+- Own the unified PID cgroup setting, PID/tmpfs validation, cgroup-file parsing,
+  OOM/pressure event exposure, and group-level resource observations.
 
 # Local Contracts
 
 - Public API: `UnifiedSettings` and `ReadMetrics`.
-- Limits cover memory high/max/swap/oom-group, CPU quota/period/weight, and PID maximum; tmpfs bounds are passed to OCI mount construction.
+- Limits cover PID maximum; tmpfs bounds are passed to OCI mount construction.
+  CPU and memory have no cgroup limits.
 - Metrics come from cgroup v2 files and represent the complete gVisor/Deno runtime group, never an individual Worker.
 
 # Lifecycle

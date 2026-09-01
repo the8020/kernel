@@ -78,7 +78,7 @@
   is `stateless` or `session`; scaling owns minimum/maximum Workers, per-Worker
   concurrency and target utilization, and Worker keepalive; placement owns
   sandbox group, minimum warm sandboxes, and Workers per sandbox. The kernel
-  owns desired Worker allocation, sandbox placement, global Worker/CPU/RAM
+  owns desired Worker allocation, Worker-count-based sandbox placement and
   admission, and scale-down; Deno owns only exact local Worker lifecycle and
   utilization observation. Internal persistent execution binding implements
   session services independently of HTTP or WebSocket transport and never
@@ -144,10 +144,11 @@
   The first lifecycle request selects shutdown or restart. Status exposes
   synchronized stage completion, restart intent, and the currently active
   cleanup message.
-- Hard CPU and memory limits apply to the complete sandbox in full mode.
-  Rootless mode reports runsc resource usage and explicitly reports that hard
-  cgroup limits and CNI/firewall isolation are unavailable. Shared grouping is
-  explicit and shares one failure, security, permission, and resource boundary.
+- CPU and memory usage remain observable but never limit sandbox creation,
+  placement, or Worker admission and receive no cgroup ceilings. Full mode
+  retains PID control; rootless mode reports that PID cgroup enforcement and
+  CNI/firewall isolation are unavailable. Shared grouping is explicit and
+  shares one failure, security, permission, and resource boundary.
 - System-shipped and user-developed programs use the same supervisor and Worker
   path.
 - Development sandboxes use the same selected rootful or rootless runsc mode as

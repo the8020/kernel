@@ -108,29 +108,11 @@ type Mount struct {
 }
 
 type ResourceLimits struct {
-	MemoryHigh      int64 `json:"memory_high"`
-	MemoryMaximum   int64 `json:"memory_maximum"`
-	SwapMaximum     int64 `json:"swap_maximum"`
-	CPUQuotaMicros  int64 `json:"cpu_quota_micros"`
-	CPUPeriodMicros int64 `json:"cpu_period_micros"`
-	CPUWeight       int64 `json:"cpu_weight"`
-	PIDMaximum      int64 `json:"pid_maximum"`
-	TmpfsMaximum    int64 `json:"tmpfs_maximum"`
+	PIDMaximum   int64 `json:"pid_maximum"`
+	TmpfsMaximum int64 `json:"tmpfs_maximum"`
 }
 
 func (r ResourceLimits) Validate() error {
-	if r.MemoryHigh <= 0 || r.MemoryMaximum <= 0 || r.MemoryHigh > r.MemoryMaximum {
-		return errors.New("memory high and maximum must be positive and high must not exceed maximum")
-	}
-	if r.SwapMaximum < 0 {
-		return errors.New("swap maximum cannot be negative")
-	}
-	if r.CPUQuotaMicros <= 0 || r.CPUPeriodMicros <= 0 {
-		return errors.New("CPU quota and period must be positive")
-	}
-	if r.CPUWeight < 1 || r.CPUWeight > 10000 {
-		return errors.New("CPU weight must be between 1 and 10000")
-	}
 	if r.PIDMaximum <= 0 || r.TmpfsMaximum <= 0 {
 		return errors.New("PID and tmpfs maximums must be positive")
 	}
@@ -354,43 +336,15 @@ type DebugLeaseStatus struct {
 }
 
 type ResourceMetrics struct {
-	CPUUsageMicros    int64             `json:"cpu_usage_micros"`
-	CPUUtilization    float64           `json:"cpu_utilization"`
-	MemoryCurrent     int64             `json:"memory_current"`
-	MemoryPeak        int64             `json:"memory_peak"`
-	MemoryUtilization float64           `json:"memory_utilization"`
-	PIDCurrent        int64             `json:"pid_current"`
-	SampledAt         time.Time         `json:"sampled_at,omitempty"`
-	MemoryEvents      map[string]uint64 `json:"memory_events,omitempty"`
-	PIDEvents         map[string]uint64 `json:"pid_events,omitempty"`
-	CPUStat           map[string]uint64 `json:"cpu_stat,omitempty"`
-	CgroupEvents      map[string]uint64 `json:"cgroup_events,omitempty"`
-}
-
-// SandboxCapacityPolicy is the kernel-owned admission policy applied both
-// when selecting a compatible sandbox and immediately before starting a
-// Worker. It is deliberately independent from per-service scaling policy.
-type SandboxCapacityPolicy struct {
-	MaximumWorkers       int     `json:"maximum_workers"`
-	TargetCPUUtilization float64 `json:"target_cpu_utilization"`
-	TargetRAMUtilization float64 `json:"target_ram_utilization"`
-}
-
-func DefaultSandboxCapacityPolicy() SandboxCapacityPolicy {
-	return SandboxCapacityPolicy{MaximumWorkers: 64, TargetCPUUtilization: 0.8, TargetRAMUtilization: 0.8}
-}
-
-func (p SandboxCapacityPolicy) Validate() error {
-	if p.MaximumWorkers < 1 {
-		return errors.New("sandbox maximum Workers must be positive")
-	}
-	if p.TargetCPUUtilization <= 0 || p.TargetCPUUtilization > 1 {
-		return errors.New("sandbox target CPU utilization must be greater than zero and at most one")
-	}
-	if p.TargetRAMUtilization <= 0 || p.TargetRAMUtilization > 1 {
-		return errors.New("sandbox target RAM utilization must be greater than zero and at most one")
-	}
-	return nil
+	CPUUsageMicros int64             `json:"cpu_usage_micros"`
+	MemoryCurrent  int64             `json:"memory_current"`
+	MemoryPeak     int64             `json:"memory_peak"`
+	PIDCurrent     int64             `json:"pid_current"`
+	SampledAt      time.Time         `json:"sampled_at,omitempty"`
+	MemoryEvents   map[string]uint64 `json:"memory_events,omitempty"`
+	PIDEvents      map[string]uint64 `json:"pid_events,omitempty"`
+	CPUStat        map[string]uint64 `json:"cpu_stat,omitempty"`
+	CgroupEvents   map[string]uint64 `json:"cgroup_events,omitempty"`
 }
 
 type SandboxStatus struct {

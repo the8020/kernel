@@ -58,8 +58,6 @@ type Config struct {
 // NodeLimits are kernel-owned admission budgets for all live sandboxes on one
 // application-server node. Zero leaves the corresponding resource unlimited.
 type NodeLimits struct {
-	MemoryBytes           int64 `json:"memory_bytes"`
-	CPUMillicores         int64 `json:"cpu_millicores"`
 	TemporaryStorageBytes int64 `json:"temporary_storage_bytes"`
 	MaximumSandboxes      int   `json:"maximum_sandboxes"`
 	MaximumWorkers        int   `json:"maximum_workers"`
@@ -68,8 +66,6 @@ type NodeLimits struct {
 type NodeCapacity struct {
 	Limits                NodeLimits `json:"limits"`
 	SandboxCount          int        `json:"sandbox_count"`
-	MemoryReservedBytes   int64      `json:"memory_reserved_bytes"`
-	CPUReservedMillicores int64      `json:"cpu_reserved_millicores"`
 	TemporaryStorageBytes int64      `json:"temporary_storage_reserved_bytes"`
 }
 
@@ -309,8 +305,6 @@ func (m *Manager) capacityLocked() (NodeCapacity, error) {
 			return result, loadErr
 		}
 		result.SandboxCount++
-		result.MemoryReservedBytes += spec.ResourceLimits.MemoryMaximum
-		result.CPUReservedMillicores += sandboxCPUMillicores(spec.ResourceLimits)
 		result.TemporaryStorageBytes += spec.ResourceLimits.TmpfsMaximum
 	}
 	return result, nil
@@ -322,29 +316,14 @@ func (m *Manager) admitSandboxLocked(spec model.SandboxSpec) error {
 		return err
 	}
 	nextSandboxes := capacity.SandboxCount + 1
-	nextMemory := capacity.MemoryReservedBytes + spec.ResourceLimits.MemoryMaximum
-	nextCPU := capacity.CPUReservedMillicores + sandboxCPUMillicores(spec.ResourceLimits)
 	nextStorage := capacity.TemporaryStorageBytes + spec.ResourceLimits.TmpfsMaximum
 	if limit := m.nodeLimits.MaximumSandboxes; limit > 0 && nextSandboxes > limit {
 		return fmt.Errorf("node sandbox capacity exhausted: %d of %d sandboxes are allocated", capacity.SandboxCount, limit)
-	}
-	if limit := m.nodeLimits.MemoryBytes; limit > 0 && nextMemory > limit {
-		return fmt.Errorf("node memory capacity exhausted: %d of %d bytes are reserved", capacity.MemoryReservedBytes, limit)
-	}
-	if limit := m.nodeLimits.CPUMillicores; limit > 0 && nextCPU > limit {
-		return fmt.Errorf("node CPU capacity exhausted: %d of %d millicores are reserved", capacity.CPUReservedMillicores, limit)
 	}
 	if limit := m.nodeLimits.TemporaryStorageBytes; limit > 0 && nextStorage > limit {
 		return fmt.Errorf("node temporary storage capacity exhausted: %d of %d bytes are reserved", capacity.TemporaryStorageBytes, limit)
 	}
 	return nil
-}
-
-func sandboxCPUMillicores(limits model.ResourceLimits) int64 {
-	if limits.CPUQuotaMicros <= 0 || limits.CPUPeriodMicros <= 0 {
-		return 0
-	}
-	return (limits.CPUQuotaMicros*1000 + limits.CPUPeriodMicros - 1) / limits.CPUPeriodMicros
 }
 
 // AssignWarm converts one healthy, unused warm runtime group into an assigned
@@ -543,7 +522,7 @@ func (m *Manager) Inspect(ctx context.Context, sandboxID string) (Inspection, er
 		return Inspection{}, err
 	}
 	workers, workerErr := m.supervisor.Workers(ctx, spec)
-	metrics, metricsErr := m.sampleMetrics(ctx, spec, status.Metrics)
+	metrics, metricsErr := m.sampleMetrics(ctx, spec)
 	if workerErr == nil || metricsErr == nil {
 		if updated, updateErr := m.store.UpdateStatus(spec.RuntimeGroupID, func(value *model.SandboxStatus) error {
 			if workerErr == nil {
@@ -563,11 +542,11 @@ func (m *Manager) Inspect(ctx context.Context, sandboxID string) (Inspection, er
 func (m *Manager) Metrics(sandboxID string) (model.ResourceMetrics, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	spec, status, err := m.find(sandboxID)
+	spec, _, err := m.find(sandboxID)
 	if err != nil {
 		return model.ResourceMetrics{}, err
 	}
-	metrics, err := m.sampleMetrics(context.Background(), spec, status.Metrics)
+	metrics, err := m.sampleMetrics(context.Background(), spec)
 	if err != nil {
 		return metrics, err
 	}
@@ -649,7 +628,7 @@ func (m *Manager) CheckHealth(ctx context.Context, heartbeatTimeout time.Duratio
 			}
 			continue
 		}
-		metrics, metricsErr := m.sampleMetrics(ctx, spec, status.Metrics)
+		metrics, metricsErr := m.sampleMetrics(ctx, spec)
 		status, err = m.store.UpdateStatus(id, func(current *model.SandboxStatus) error {
 			current.ContainerID, current.TaskPID = observation.ContainerID, observation.TaskPID
 			if metricsErr == nil {
@@ -938,23 +917,12 @@ func (m *Manager) readMetrics(ctx context.Context, spec model.SandboxSpec) (mode
 	return resources.ReadMetrics(directory)
 }
 
-func (m *Manager) sampleMetrics(ctx context.Context, spec model.SandboxSpec, previous model.ResourceMetrics) (model.ResourceMetrics, error) {
+func (m *Manager) sampleMetrics(ctx context.Context, spec model.SandboxSpec) (model.ResourceMetrics, error) {
 	metrics, err := m.readMetrics(ctx, spec)
 	if err != nil {
 		return metrics, err
 	}
-	now := m.now()
-	metrics.SampledAt = now
-	if spec.ResourceLimits.MemoryMaximum > 0 {
-		metrics.MemoryUtilization = float64(metrics.MemoryCurrent) / float64(spec.ResourceLimits.MemoryMaximum)
-	}
-	if !previous.SampledAt.IsZero() && now.After(previous.SampledAt) && metrics.CPUUsageMicros >= previous.CPUUsageMicros {
-		quotaCores := float64(spec.ResourceLimits.CPUQuotaMicros) / float64(spec.ResourceLimits.CPUPeriodMicros)
-		elapsedMicros := float64(now.Sub(previous.SampledAt).Microseconds())
-		if quotaCores > 0 && elapsedMicros > 0 {
-			metrics.CPUUtilization = float64(metrics.CPUUsageMicros-previous.CPUUsageMicros) / elapsedMicros / quotaCores
-		}
-	}
+	metrics.SampledAt = m.now()
 	return metrics, nil
 }
 

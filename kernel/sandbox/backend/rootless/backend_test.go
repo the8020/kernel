@@ -227,7 +227,7 @@ func testBackend(t *testing.T) *Backend {
 func testSandbox(t *testing.T) model.SandboxSpec {
 	t.Helper()
 	digest := "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	limits := model.ResourceLimits{MemoryHigh: 1, MemoryMaximum: 2, CPUQuotaMicros: 1, CPUPeriodMicros: 1, CPUWeight: 1, PIDMaximum: 1, TmpfsMaximum: 1}
+	limits := model.ResourceLimits{PIDMaximum: 1, TmpfsMaximum: 1}
 	profile := model.RuntimeProfile{WorkloadType: model.WorkloadJob, ImageDigest: digest, DependencyMode: model.DependencyCachedOnly, Permissions: model.Permissions{}, NetworkMode: "netstack", ResourceClass: "job:test"}
 	hash, err := profile.Hash()
 	if err != nil {

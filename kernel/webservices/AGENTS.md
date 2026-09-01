@@ -47,12 +47,12 @@
   and target utilization, then packs Workers into compatible existing sandboxes
   before provisioning another. A narrow per-service capacity lock prevents
   concurrent requests or reconciliation from exceeding a finite maximum.
-  Per-service Workers-per-sandbox and kernel-wide Worker/CPU/RAM limits are all
-  enforced; remote spillover follows local admission failure. Saturation returns
+  Per-service Workers-per-sandbox and the kernel-wide per-sandbox Worker limit
+  are enforced; remote spillover follows local admission failure. Saturation returns
   structured `503` capacity diagnostics.
 - Minimum-worker reconciliation uses the same one-Worker-at-a-time placement:
   it retains successful Workers, packs each eligible sandbox up to service and
-  kernel limits, and spills a typed CPU/RAM/Worker rejection into another
+  kernel Worker limits, and spills a typed Worker rejection into another
   same-group sandbox. Per-sandbox floors are then derived from the observed
   distribution so global minimum capacity is not churned back into a full
   sandbox.
@@ -117,7 +117,7 @@
   Worker reuse, shared token-safe routes, crash expiry, node forwarding,
   assigned sandbox indexes, reserved-demand Worker scaling, finite maximums,
   fake-clock Worker keepalive, minimum Worker and sandbox floors, compatible
-  sandbox packing and resource-triggered minimum spillover, per-service capacity
+  sandbox packing and Worker-limit-triggered minimum spillover, per-service capacity
   locking, failed cold-start rollback,
   idle sandbox scale-down,
   generation replacement, degraded cold-start routing, in-place missing-capacity

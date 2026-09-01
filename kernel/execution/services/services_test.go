@@ -713,7 +713,7 @@ func TestTargetHeadroomFailurePreservesAvailableHardCapacity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	workersFake.startErr = errors.New("sandbox CPU utilization is at target")
+	workersFake.startErr = errors.New("sandbox Worker capacity is exhausted")
 	record, err = manager.EnsureCapacity(context.Background(), record.ServiceID, 2, 0)
 	var capacity *SandboxCapacityError
 	if !errors.As(err, &capacity) || capacity.Occupied != 0 || capacity.Slots != 1 || len(record.WorkerIDs) != 1 {

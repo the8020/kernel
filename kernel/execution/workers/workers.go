@@ -37,11 +37,11 @@ type Control interface {
 }
 
 type Manager struct {
-	sandboxes      Sandboxes
-	control        Control
-	maximumWorkers int
-	capacity       model.SandboxCapacityPolicy
-	nodes          interface {
+	sandboxes                Sandboxes
+	control                  Control
+	maximumWorkers           int
+	maximumWorkersPerSandbox int
+	nodes                    interface {
 		LocalNodeID() string
 		InvokeWorker(context.Context, nodes.WorkerInvocationRequest) nodes.WorkerInvocationResult
 	}
@@ -67,39 +67,17 @@ var (
 	ErrSandboxCapacity = errors.New("sandbox Worker capacity is exhausted")
 )
 
-func New(sandboxes Sandboxes, control Control, maximumWorkers ...int) (*Manager, error) {
-	limit := 0
-	if len(maximumWorkers) > 0 {
-		limit = maximumWorkers[0]
-	}
-	capacity := model.DefaultSandboxCapacityPolicy()
-	if len(maximumWorkers) > 1 {
-		capacity.MaximumWorkers = maximumWorkers[1]
-	}
-	return NewWithCapacity(sandboxes, control, limit, capacity)
-}
-
-func NewWithCapacity(sandboxes Sandboxes, control Control, maximumWorkers int, capacity model.SandboxCapacityPolicy) (*Manager, error) {
+func New(sandboxes Sandboxes, control Control, maximumWorkers, maximumWorkersPerSandbox int) (*Manager, error) {
 	if sandboxes == nil || control == nil {
 		return nil, errors.New("sandbox catalog and supervisor control are required")
 	}
 	if maximumWorkers < 0 {
 		return nil, errors.New("maximum node Worker count cannot be negative")
 	}
-	if err := capacity.Validate(); err != nil {
-		return nil, fmt.Errorf("sandbox capacity policy: %w", err)
+	if maximumWorkersPerSandbox < 1 {
+		return nil, errors.New("sandbox maximum Workers must be positive")
 	}
-	return &Manager{sandboxes: sandboxes, control: control, maximumWorkers: maximumWorkers, capacity: capacity}, nil
-}
-
-func (m *Manager) SetSandboxCapacityPolicy(policy model.SandboxCapacityPolicy) error {
-	if err := policy.Validate(); err != nil {
-		return err
-	}
-	m.startMu.Lock()
-	m.capacity = policy
-	m.startMu.Unlock()
-	return nil
+	return &Manager{sandboxes: sandboxes, control: control, maximumWorkers: maximumWorkers, maximumWorkersPerSandbox: maximumWorkersPerSandbox}, nil
 }
 
 func (m *Manager) Start(ctx context.Context, runtimeGroupID string, request supervisor.StartWorkerRequest) (Record, error) {
@@ -122,17 +100,8 @@ func (m *Manager) Start(ctx context.Context, runtimeGroupID string, request supe
 	if err != nil {
 		return Record{}, err
 	}
-	if len(live) >= m.capacity.MaximumWorkers {
-		return Record{}, fmt.Errorf("%w: %d of %d Workers are running", ErrSandboxCapacity, len(live), m.capacity.MaximumWorkers)
-	}
-	// A newly provisioned empty sandbox must be able to bootstrap its first
-	// application Worker even while the supervisor's startup sample is above a
-	// utilization target. Subsequent Workers use the exact resource sample.
-	if len(live) > 0 && inspection.Status.Metrics.CPUUtilization >= m.capacity.TargetCPUUtilization {
-		return Record{}, fmt.Errorf("%w: sandbox CPU utilization %.3f is at or above target %.3f", ErrSandboxCapacity, inspection.Status.Metrics.CPUUtilization, m.capacity.TargetCPUUtilization)
-	}
-	if len(live) > 0 && inspection.Status.Metrics.MemoryUtilization >= m.capacity.TargetRAMUtilization {
-		return Record{}, fmt.Errorf("%w: sandbox RAM utilization %.3f is at or above target %.3f", ErrSandboxCapacity, inspection.Status.Metrics.MemoryUtilization, m.capacity.TargetRAMUtilization)
+	if len(live) >= m.maximumWorkersPerSandbox {
+		return Record{}, fmt.Errorf("%w: %d of %d Workers are running", ErrSandboxCapacity, len(live), m.maximumWorkersPerSandbox)
 	}
 	if request.Metadata.WorkloadType != inspection.Spec.WorkloadType {
 		return Record{}, errors.New("Worker workload type does not match runtime group")

@@ -328,13 +328,10 @@ func TestRemoveOwnerRetainsSharedSandboxThenDeletesItWhenEmpty(t *testing.T) {
 	}
 }
 
-func TestSandboxAdmissionEnforcesNodeBudgets(t *testing.T) {
+func TestSandboxAdmissionEnforcesCountAndTemporaryStorageBudgets(t *testing.T) {
 	manager, _, _, _, _ := testManager(t)
-	manager.nodeLimits = NodeLimits{MaximumSandboxes: 1, MemoryBytes: 300, CPUMillicores: 600, TemporaryStorageBytes: 100}
+	manager.nodeLimits = NodeLimits{MaximumSandboxes: 1, TemporaryStorageBytes: 100}
 	first := testSandboxSpec(t, "group-first", "sandbox-first")
-	first.ResourceLimits.MemoryMaximum = 256
-	first.ResourceLimits.CPUQuotaMicros = 50
-	first.ResourceLimits.CPUPeriodMicros = 100
 	first.ResourceLimits.TmpfsMaximum = 64
 	if _, err := manager.Create(context.Background(), first); err != nil {
 		t.Fatal(err)
@@ -344,7 +341,7 @@ func TestSandboxAdmissionEnforcesNodeBudgets(t *testing.T) {
 		t.Fatalf("second sandbox admission error=%v", err)
 	}
 	capacity, err := manager.Capacity()
-	if err != nil || capacity.SandboxCount != 1 || capacity.MemoryReservedBytes != 256 || capacity.CPUReservedMillicores != 500 || capacity.TemporaryStorageBytes != 64 {
+	if err != nil || capacity.SandboxCount != 1 || capacity.TemporaryStorageBytes != 64 {
 		t.Fatalf("capacity=%#v err=%v", capacity, err)
 	}
 }
@@ -369,7 +366,7 @@ func TestMetricsReadsSandboxCgroupAndPersistsSnapshot(t *testing.T) {
 		}
 	}
 	metrics, err := manager.Metrics(spec.SandboxID)
-	if err != nil || metrics.MemoryPeak != 12 || metrics.CPUUsageMicros != 33 || metrics.MemoryUtilization != 10.0/256.0 {
+	if err != nil || metrics.MemoryPeak != 12 || metrics.CPUUsageMicros != 33 || !metrics.SampledAt.Equal(now) {
 		t.Fatalf("metrics=%#v err=%v", metrics, err)
 	}
 	now = now.Add(time.Second)
@@ -380,11 +377,11 @@ func TestMetricsReadsSandboxCgroupAndPersistsSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	metrics, err = manager.Metrics(spec.SandboxID)
-	if err != nil || metrics.CPUUtilization != 1 || metrics.MemoryUtilization != 200.0/256.0 || !metrics.SampledAt.Equal(now) {
+	if err != nil || metrics.CPUUsageMicros != 500033 || metrics.MemoryCurrent != 200 || !metrics.SampledAt.Equal(now) {
 		t.Fatalf("derived metrics=%#v err=%v", metrics, err)
 	}
 	_, status, err := store.Load(spec.RuntimeGroupID)
-	if err != nil || status.Metrics.MemoryCurrent != 200 || status.Metrics.CPUUtilization != 1 {
+	if err != nil || status.Metrics.MemoryCurrent != 200 || status.Metrics.CPUUsageMicros != 500033 {
 		t.Fatalf("status=%#v err=%v", status, err)
 	}
 }
@@ -591,7 +588,7 @@ func testSandboxSpec(t *testing.T, group, sandbox string) model.SandboxSpec {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return model.SandboxSpec{SandboxID: sandbox, RuntimeGroupID: group, WorkloadType: model.WorkloadJob, GroupKey: "job:owner:job", OwnerIDs: []string{"job"}, ImageDigest: digest, RuntimeProfile: profile, ProfileHash: hash, ResourceLimits: model.ResourceLimits{MemoryHigh: 128, MemoryMaximum: 256, SwapMaximum: 0, CPUQuotaMicros: 50, CPUPeriodMicros: 100, CPUWeight: 100, PIDMaximum: 32, TmpfsMaximum: 64}, Network: model.NetworkConfiguration{Mode: "netstack", NetworkName: "the8020"}, DependencyMode: model.DependencyCachedOnly, Lifecycle: model.LifecyclePolicy{StopGracePeriod: time.Second}, InternalToken: "0123456789abcdef0123456789abcdef"}
+	return model.SandboxSpec{SandboxID: sandbox, RuntimeGroupID: group, WorkloadType: model.WorkloadJob, GroupKey: "job:owner:job", OwnerIDs: []string{"job"}, ImageDigest: digest, RuntimeProfile: profile, ProfileHash: hash, ResourceLimits: model.ResourceLimits{PIDMaximum: 32, TmpfsMaximum: 64}, Network: model.NetworkConfiguration{Mode: "netstack", NetworkName: "the8020"}, DependencyMode: model.DependencyCachedOnly, Lifecycle: model.LifecyclePolicy{StopGracePeriod: time.Second}, InternalToken: "0123456789abcdef0123456789abcdef"}
 }
 
 func contains(values []string, target string) bool {

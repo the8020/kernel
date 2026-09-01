@@ -22,9 +22,9 @@ type Request struct {
 	PlacementGroup   *string
 	LogicalServiceID string
 	RequestedWorkers int
+	MaximumWorkers   int
 	Strategy         model.GroupingStrategy
 	Profile          model.RuntimeProfile
-	Capacity         model.SandboxCapacityPolicy
 }
 
 type Group struct {
@@ -37,8 +37,6 @@ type Group struct {
 	State          model.SandboxState
 	Healthy        bool
 	WorkerCount    int
-	CPUUtilization float64
-	RAMUtilization float64
 }
 
 type Selection struct {
@@ -73,13 +71,7 @@ func Select(request Request, existing []Group) (Selection, error) {
 		if group.State != model.StateReady && group.State != model.StateActive {
 			continue
 		}
-		if request.Capacity.MaximumWorkers > 0 && group.WorkerCount+request.RequestedWorkers > request.Capacity.MaximumWorkers {
-			continue
-		}
-		if request.Capacity.TargetCPUUtilization > 0 && group.CPUUtilization >= request.Capacity.TargetCPUUtilization {
-			continue
-		}
-		if request.Capacity.TargetRAMUtilization > 0 && group.RAMUtilization >= request.Capacity.TargetRAMUtilization {
+		if request.MaximumWorkers > 0 && group.WorkerCount+request.RequestedWorkers > request.MaximumWorkers {
 			continue
 		}
 		if request.LogicalServiceID != "" && slices.Contains(group.ServiceIDs, request.LogicalServiceID) {

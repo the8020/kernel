@@ -108,11 +108,11 @@
   `/state/package-data`, grant Workers read-only access to the bundled generic
   `/opt/runtime` modules, and keep portable dependency mode in runtime-group
   compatibility. The kernel never scans or interprets package state.
-- Runtime composition derives node memory/CPU/temp-storage budgets when their
-  node-local setting is zero, applies node Worker admission plus kernel-wide
-  per-sandbox Worker/CPU/RAM targets, derives the canonical service framework
-  defaults, and publishes local sandbox/Worker/execution-slot capacity to the
-  authenticated node topology owner.
+- Runtime composition derives the node temporary-storage budget when its
+  node-local setting is zero, applies node Worker admission and the kernel-wide
+  per-sandbox Worker maximum, derives the canonical service framework defaults,
+  and publishes local sandbox/Worker/execution-slot capacity to the authenticated
+  node topology owner. CPU and RAM are not admission dimensions.
 - Runtime composition exposes generic exact-Worker invocation through the
   authenticated local/cross-node path and generic persistent-execution
   completion through the supervisor callback. Function names and JSON payloads

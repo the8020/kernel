@@ -10,7 +10,7 @@ import (
 const testDigest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 func testLimits() ResourceLimits {
-	return ResourceLimits{MemoryHigh: 128_000_000, MemoryMaximum: 256_000_000, SwapMaximum: 0, CPUQuotaMicros: 50_000, CPUPeriodMicros: 100_000, CPUWeight: 100, PIDMaximum: 128, TmpfsMaximum: 64_000_000}
+	return ResourceLimits{PIDMaximum: 128, TmpfsMaximum: 64_000_000}
 }
 
 func testProfile() RuntimeProfile {
@@ -88,7 +88,7 @@ func TestSandboxSpecValidation(t *testing.T) {
 		{"mutable image reference", func(value *SandboxSpec) { value.ImageDigest = "denoland/deno:latest" }, "immutable sha256"},
 		{"duplicate owner", func(value *SandboxSpec) { value.OwnerIDs = []string{"one", "one"} }, "unique"},
 		{"host network", func(value *SandboxSpec) { value.Network.Mode = "host" }, "netstack"},
-		{"bad limits", func(value *SandboxSpec) { value.ResourceLimits.MemoryHigh = value.ResourceLimits.MemoryMaximum + 1 }, "memory"},
+		{"bad limits", func(value *SandboxSpec) { value.ResourceLimits.PIDMaximum = 0 }, "PID"},
 		{"duplicate port", func(value *SandboxSpec) { value.InternalPorts = []int{8000, 8000} }, "duplicate"},
 	}
 	for _, test := range tests {

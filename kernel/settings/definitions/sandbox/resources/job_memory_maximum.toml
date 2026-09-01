@@ -1,8 +1,0 @@
-key = "sandbox.resources.job.memory_maximum"
-type = "byte_size"
-storage = "node"
-default = "1GB"
-environment = "KERNEL_SANDBOX_RESOURCES_JOB_MEMORY_MAXIMUM"
-runtime_mutable = false
-restart_required = true
-description = "Hard memory maximum for job runtime groups."

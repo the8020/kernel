@@ -179,11 +179,13 @@ relevant child AGENTS.md
   sandbox, removes only excess idle Workers after Worker keepalive, retains
   configured warm sandboxes independently, and destroys ownerless sandboxes.
   Global allocation indexes are partitioned across enabled application-server
-  nodes. Kernel policy defaults to 64 total Workers per sandbox and rejects new
-  placement when the sandbox is at its CPU or RAM target. Nodes also enforce and
-  advertise sandbox, Worker, memory, CPU, and temporary-storage budgets;
-  insufficient capacity retains desired state, reports `PENDING_CAPACITY` or
-  `DEGRADED`, and may spill new work through authenticated node forwarding.
+  nodes. Kernel packing policy has exactly one per-sandbox capacity dimension:
+  total Workers, defaulting to 64. CPU and RAM have no settings, reservations,
+  placement targets, admission limits, or cgroup ceilings; their raw usage is
+  diagnostic only. Nodes enforce and advertise sandbox-count, Worker-count, and
+  temporary-storage budgets. Insufficient capacity retains desired state,
+  reports `PENDING_CAPACITY` or `DEGRADED`, and may spill new work through
+  authenticated node forwarding.
 - UUI establishment, messages, replay, heartbeat, reconnect behavior, program
   lifecycle, and session administration belong to the ordinary persistent UUI
   service handler. The Deno supervisor and Worker bridge must remain generic so

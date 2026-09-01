@@ -14,10 +14,10 @@
   contain compatible allocations of different services but never two
   allocations of the same logical service.
 - Kernel placement admits a new Worker only below the configured per-sandbox
-  Worker count and sampled CPU/RAM targets; the sandbox layer reports the exact
-  observations but does not own service scaling decisions.
-- Sandbox creation enforces node-wide sandbox-count, memory, CPU, and temporary
-  storage reservation budgets before host mutation.
+  Worker count. CPU and RAM observations are diagnostic and never influence
+  placement; the sandbox layer does not own service scaling decisions.
+- Sandbox creation enforces node-wide sandbox-count and temporary-storage
+  reservation budgets before host mutation.
 - Full containerd namespace/labels and rootless metadata derive from the stable kernel instance UUID; foreign or unlabeled runtimes are never managed.
 - Full roots are immutable snapshots; rootless roots use a shared lower rootfs and private overlay. Mounts remain bounded and the containerd socket is never mounted.
 - State transitions are explicit and synchronized; desired files, backend/task observation, supervisor health, and backend metrics remain separate evidence.

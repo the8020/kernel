@@ -9,7 +9,7 @@ import (
 )
 
 func testLimits() model.ResourceLimits {
-	return model.ResourceLimits{MemoryHigh: 128, MemoryMaximum: 256, SwapMaximum: 0, CPUQuotaMicros: 50_000, CPUPeriodMicros: 100_000, CPUWeight: 200, PIDMaximum: 64, TmpfsMaximum: 32}
+	return model.ResourceLimits{PIDMaximum: 64, TmpfsMaximum: 32}
 }
 
 func TestUnifiedSettings(t *testing.T) {
@@ -17,7 +17,10 @@ func TestUnifiedSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wants := map[string]string{"memory.high": "128", "memory.max": "256", "memory.swap.max": "0", "memory.oom.group": "1", "cpu.max": "50000 100000", "cpu.weight": "200", "pids.max": "64"}
+	wants := map[string]string{"pids.max": "64"}
+	if len(settings) != len(wants) {
+		t.Fatalf("settings = %#v, want only PID control", settings)
+	}
 	for key, want := range wants {
 		if settings[key] != want {
 			t.Errorf("%s = %q, want %q", key, settings[key], want)

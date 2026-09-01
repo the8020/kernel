@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -323,11 +322,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		return runtimeServices, closeRuntime
 	}
 	nodeLimits := runtimeNodeLimits(settingManager, paths.Runtime)
-	sandboxCapacity := model.SandboxCapacityPolicy{
-		MaximumWorkers:       activeInt(settingManager, "runtime.sandbox.maximum_workers", 64),
-		TargetCPUUtilization: float64(activeInt(settingManager, "runtime.sandbox.target_cpu_utilization_percent", 80)) / 100,
-		TargetRAMUtilization: float64(activeInt(settingManager, "runtime.sandbox.target_ram_utilization_percent", 80)) / 100,
-	}
+	maximumWorkersPerSandbox := activeInt(settingManager, "runtime.sandbox.maximum_workers", 64)
 	sandboxManager, err := manager.New(manager.Config{
 		InstanceUUID: instanceUUID, StartupTimeout: activeDuration(settingManager, "runtime.sandbox.startup_timeout", 30*time.Second),
 		StopGrace: activeDuration(settingManager, "runtime.sandbox.stop_grace_period", 10*time.Second), Store: stateStore,
@@ -357,7 +352,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		consoleManager.SetRuntime(sandboxManager)
 		cleanup.console = consoleManager
 	}
-	workerManager, err := workers.NewWithCapacity(sandboxManager, supervisorClient, nodeLimits.MaximumWorkers, sandboxCapacity)
+	workerManager, err := workers.New(sandboxManager, supervisorClient, nodeLimits.MaximumWorkers, maximumWorkersPerSandbox)
 	if err != nil {
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
@@ -398,7 +393,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		runtimeServices.Failure = "initialize warm pool: " + err.Error()
 		return runtimeServices, closeRuntime
 	}
-	groupCoordinator, err := coordinator.NewWithCapacity(sandboxManager, sandboxCapacity, warmController)
+	groupCoordinator, err := coordinator.New(sandboxManager, maximumWorkersPerSandbox, warmController)
 	if err != nil {
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
@@ -504,14 +499,10 @@ func (p *runtimeNodeCapacityProvider) NodeCapacity(ctx context.Context) (nodes.C
 		return nodes.Capacity{}, err
 	}
 	capacity := nodes.Capacity{
-		MemoryBudgetBytes: sandboxes.Limits.MemoryBytes, MemoryReservedBytes: sandboxes.MemoryReservedBytes,
-		CPUBudgetMillicores: sandboxes.Limits.CPUMillicores, CPUReservedMillicores: sandboxes.CPUReservedMillicores,
 		TemporaryStorageBudgetBytes: sandboxes.Limits.TemporaryStorageBytes, TemporaryStorageReservedBytes: sandboxes.TemporaryStorageBytes,
 		MaximumSandboxes: sandboxes.Limits.MaximumSandboxes, SandboxCount: sandboxes.SandboxCount,
 		MaximumWorkers: sandboxes.Limits.MaximumWorkers, WorkerCount: len(workerRecords), UpdatedAt: time.Now().UTC(),
 	}
-	capacity.MemoryAvailableBytes = remainingInt64(capacity.MemoryBudgetBytes, capacity.MemoryReservedBytes)
-	capacity.CPUAvailableMillicores = remainingInt64(capacity.CPUBudgetMillicores, capacity.CPUReservedMillicores)
 	capacity.TemporaryStorageAvailableBytes = remainingInt64(capacity.TemporaryStorageBudgetBytes, capacity.TemporaryStorageReservedBytes)
 	capacity.AvailableSandboxes = remainingInt(capacity.MaximumSandboxes, capacity.SandboxCount)
 	capacity.AvailableWorkers = remainingInt(capacity.MaximumWorkers, capacity.WorkerCount)
@@ -549,7 +540,7 @@ func (p *runtimeNodeCapacityProvider) NodeCapacity(ctx context.Context) (nodes.C
 		capacity.OccupiedExecutionSlots += item.OccupiedSlots
 	}
 	sort.Slice(capacity.Services, func(i, j int) bool { return capacity.Services[i].ServiceID < capacity.Services[j].ServiceID })
-	canCreateSandbox := capacity.AvailableSandboxes > 0 && capacity.MemoryAvailableBytes > 0 && capacity.CPUAvailableMillicores > 0 && capacity.TemporaryStorageAvailableBytes > 0
+	canCreateSandbox := capacity.AvailableSandboxes > 0 && capacity.TemporaryStorageAvailableBytes > 0
 	capacity.Accepting = capacity.AvailableWorkers > 0 && (capacity.SandboxCount > 0 || canCreateSandbox)
 	return capacity, nil
 }
@@ -761,7 +752,7 @@ func runtimeProfile(workload model.WorkloadType, digest string, mounts []model.M
 }
 
 func resourceClass(workload model.WorkloadType, resources model.ResourceLimits) string {
-	value := fmt.Sprintf("%s:%d:%d:%d:%d:%d:%d:%d:%d", workload, resources.MemoryHigh, resources.MemoryMaximum, resources.SwapMaximum, resources.CPUQuotaMicros, resources.CPUPeriodMicros, resources.CPUWeight, resources.PIDMaximum, resources.TmpfsMaximum)
+	value := fmt.Sprintf("%s:%d:%d", workload, resources.PIDMaximum, resources.TmpfsMaximum)
 	sum := sha256.Sum256([]byte(value))
 	return string(workload) + ":sha256:" + hex.EncodeToString(sum[:])
 }
@@ -769,28 +760,11 @@ func resourceClass(workload model.WorkloadType, resources model.ResourceLimits) 
 func resourceLimits(manager *settings.Manager, workload string) model.ResourceLimits {
 	prefix := "sandbox.resources." + workload + "."
 	return model.ResourceLimits{
-		MemoryHigh: activeBytes(manager, prefix+"memory_high", 256_000_000), MemoryMaximum: activeBytes(manager, prefix+"memory_maximum", 512_000_000),
-		SwapMaximum: int64(activeInt(manager, prefix+"swap_maximum", 0)), CPUQuotaMicros: int64(activeInt(manager, prefix+"cpu_quota_micros", 100000)),
-		CPUPeriodMicros: int64(activeInt(manager, prefix+"cpu_period_micros", 100000)), CPUWeight: int64(activeInt(manager, prefix+"cpu_weight", 100)),
 		PIDMaximum: int64(activeInt(manager, prefix+"pid_maximum", 256)), TmpfsMaximum: activeBytes(manager, prefix+"tmpfs_maximum", 128_000_000),
 	}
 }
 
 func runtimeNodeLimits(settingManager *settings.Manager, runtimeRoot string) manager.NodeLimits {
-	memory := activeBytes(settingManager, "runtime.node.memory_budget", 0)
-	if memory <= 0 {
-		memory = 512_000_000
-		var info unix.Sysinfo_t
-		if unix.Sysinfo(&info) == nil {
-			total := clampUint64(uint64(info.Totalram) * uint64(info.Unit))
-			reserved := activeBytes(settingManager, "runtime.node.memory_reserved", 1_000_000_000)
-			memory = max(total-reserved, int64(1))
-		}
-	}
-	cpu := int64(activeInt(settingManager, "runtime.node.cpu_millicores_budget", 0))
-	if cpu <= 0 {
-		cpu = int64(runtime.NumCPU()) * 1000
-	}
 	temporaryStorage := activeBytes(settingManager, "runtime.node.temporary_storage_budget", 0)
 	if temporaryStorage <= 0 {
 		temporaryStorage = 1
@@ -800,9 +774,9 @@ func runtimeNodeLimits(settingManager *settings.Manager, runtimeRoot string) man
 		}
 	}
 	return manager.NodeLimits{
-		MemoryBytes: memory, CPUMillicores: cpu, TemporaryStorageBytes: temporaryStorage,
-		MaximumSandboxes: activeInt(settingManager, "runtime.node.maximum_sandboxes", 64),
-		MaximumWorkers:   activeInt(settingManager, "runtime.node.maximum_workers", 1024),
+		TemporaryStorageBytes: temporaryStorage,
+		MaximumSandboxes:      activeInt(settingManager, "runtime.node.maximum_sandboxes", 64),
+		MaximumWorkers:        activeInt(settingManager, "runtime.node.maximum_workers", 1024),
 	}
 }
 

@@ -76,19 +76,16 @@ func TestServicePlacementGroupSharesAcrossServicesButNotDuplicateAllocations(t *
 	}
 }
 
-func TestSelectSkipsSandboxesAtWorkerCPUOrRAMCapacity(t *testing.T) {
+func TestSelectSkipsSandboxesAtWorkerCapacity(t *testing.T) {
 	placement := "shared"
-	capacity := model.SandboxCapacityPolicy{MaximumWorkers: 64, TargetCPUUtilization: 0.8, TargetRAMUtilization: 0.8}
-	request := Request{WorkloadType: model.WorkloadService, OwnerID: "allocation", PlacementGroup: &placement, LogicalServiceID: "example/orders/api", RequestedWorkers: 1, Strategy: model.GroupingOwner, Profile: profile(model.WorkloadService, model.DependencyCachedOnly), Capacity: capacity}
+	request := Request{WorkloadType: model.WorkloadService, OwnerID: "allocation", PlacementGroup: &placement, LogicalServiceID: "example/orders/api", RequestedWorkers: 1, MaximumWorkers: 64, Strategy: model.GroupingOwner, Profile: profile(model.WorkloadService, model.DependencyCachedOnly)}
 	hash, _ := request.Profile.Hash()
 	base := Group{WorkloadType: model.WorkloadService, GroupKey: "service:placement:c2hhcmVk", ProfileHash: hash, State: model.StateReady, Healthy: true}
-	workerFull, cpuFull, ramFull, eligible := base, base, base, base
+	workerFull, eligible := base, base
 	workerFull.RuntimeGroupID, workerFull.WorkerCount = "a-worker-full", 64
-	cpuFull.RuntimeGroupID, cpuFull.CPUUtilization = "b-cpu-full", 0.8
-	ramFull.RuntimeGroupID, ramFull.RAMUtilization = "c-ram-full", 0.9
-	eligible.RuntimeGroupID, eligible.WorkerCount = "d-eligible", 63
-	selection, err := Select(request, []Group{workerFull, cpuFull, ramFull, eligible})
-	if err != nil || !selection.Existing || selection.RuntimeGroupID != "d-eligible" {
+	eligible.RuntimeGroupID, eligible.WorkerCount = "b-eligible", 63
+	selection, err := Select(request, []Group{workerFull, eligible})
+	if err != nil || !selection.Existing || selection.RuntimeGroupID != "b-eligible" {
 		t.Fatalf("selection=%#v err=%v", selection, err)
 	}
 	request.RequestedWorkers = 2

@@ -14,9 +14,9 @@
 - Service groups additionally require the same exact placement-group value and
   reject candidates already containing the logical service. Empty placement
   group is the ordinary shared default; there is no dedicated flag or tag list.
-- Candidate snapshots carry observed Worker count and CPU/RAM utilization.
-  Selection excludes candidates at the kernel-wide Worker limit or at/above
-  either resource target, so the coordinator can provision compatible capacity.
+- Candidate snapshots carry observed Worker count. Selection excludes candidates
+  at the kernel-wide Worker limit so the coordinator can provision compatible
+  capacity; CPU and RAM are not selection inputs.
 - Used warm supervisors are destroyed on release and never returned to the clean pool.
 
 # Lifecycle
@@ -42,7 +42,7 @@
 # Verification
 
 - Unit tests cover every strategy and override, same-key profile splits,
-  cross-type exclusion, defaults, service duplicate rejection, Worker/CPU/RAM
+  cross-type exclusion, defaults, service duplicate rejection, Worker-count
   capacity exclusion, concurrent reservations, resize, durable accounting
   restoration, failure, assignment, destruction, and replenishment counts.
 

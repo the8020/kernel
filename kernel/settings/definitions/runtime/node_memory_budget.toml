@@ -1,9 +1,0 @@
-key = "runtime.node.memory_budget"
-type = "byte_size"
-storage = "node"
-default = "0B"
-environment = "KERNEL_RUNTIME_NODE_MEMORY_BUDGET"
-minimum = 0
-runtime_mutable = false
-restart_required = true
-description = "Total memory budget available to sandboxes on this node; zero derives it from host memory minus the reserved amount."

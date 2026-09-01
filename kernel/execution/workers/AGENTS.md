@@ -34,13 +34,9 @@
 - Worker startup serializes admission, enforces the existing node-wide Worker
   budget, and immediately before creation re-inspects the exact target sandbox.
   It refuses creation when that sandbox is at the kernel-wide per-sandbox
-  Worker limit or its sampled CPU/RAM utilization is at/above either target.
-  These checks apply across workload types and do not reject dispatch to an
-  already running Worker.
-- An empty newly provisioned or warm sandbox may bootstrap its first Worker
-  despite the supervisor-only startup resource sample; otherwise identical new
-  sandboxes could reject forever. CPU/RAM targets apply before every additional
-  Worker, while hard sandbox and node Worker limits always apply.
+  Worker limit. CPU and RAM observations never reject Worker creation. The
+  Worker-count checks apply across workload types and do not reject dispatch to
+  an already running Worker.
 - Node-wide and sandbox-local admission failures have distinct typed sentinels;
   service placement may spill a sandbox-local rejection into another compatible
   sandbox, while creating another local sandbox cannot evade node exhaustion.
@@ -53,7 +49,7 @@
 # Verification
 
 - Unit tests cover permission/entrypoint rejection, service/job start, exact
-  sandbox Worker/CPU/RAM admission, aggregation, direct exact-group filtering,
+  sandbox Worker-count admission, aggregation, direct exact-group filtering,
   inspect, global and known-group stop, local/cross-node invocation, target
   mismatch and bounds, and delegated workload operations.
 

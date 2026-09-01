@@ -557,7 +557,7 @@ func TestColdStartRollsBackFailedFirstWorkerAndRecoversOnRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	poolID := generationPoolID(serviceID, definition.State.Generation, 0)
-	pools.failScale[poolID] = errors.New("sandbox CPU utilization is at target")
+	pools.failScale[poolID] = errors.New("sandbox Worker capacity is exhausted")
 	failed := httptest.NewRecorder()
 	manager.ServeHTTP(failed, httptest.NewRequest(http.MethodGet, "/the8020/demo/variables/fail", nil))
 	if failed.Code != http.StatusServiceUnavailable {
@@ -590,10 +590,10 @@ func TestTargetHeadroomFailureFallsBackToAvailableHardSlot(t *testing.T) {
 	pools.capacityErrors[existing.PoolID] = &executionservices.SandboxCapacityError{
 		Occupied: 0,
 		Slots:    1,
-		Reason:   "target-utilization growth failed: sandbox CPU utilization is at target",
+		Reason:   "target-utilization growth failed: sandbox Worker capacity is exhausted",
 	}
 	newPoolID := generationPoolID(serviceID, started.DesiredGeneration, 1)
-	pools.failScale[newPoolID] = errors.New("sandbox CPU utilization is at target")
+	pools.failScale[newPoolID] = errors.New("sandbox Worker capacity is exhausted")
 
 	response := httptest.NewRecorder()
 	manager.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/the8020/demo/variables/value", nil))
@@ -645,13 +645,13 @@ func TestBackgroundReconciliationMaintainsWorkerAndWarmSandboxFloors(t *testing.
 	}
 }
 
-func TestMinimumWorkersSpillIntoAnotherSandboxWhenResourceTargetBlocksPacking(t *testing.T) {
+func TestMinimumWorkersSpillIntoAnotherSandboxWhenWorkerLimitBlocksPacking(t *testing.T) {
 	root := t.TempDir()
 	serviceID := "the8020/demo/variables"
 	store := writeCanonicalTestService(t, root, serviceID, 2, 4, 0, 4, workspacepackages.ServiceTypeStateless)
 	pools, router := newFakePools(), &fakeRouter{}
 	firstPoolID := generationPoolID(serviceID, 1, 0)
-	pools.failScale[firstPoolID] = fmt.Errorf("%w: CPU utilization is at target", executionworkers.ErrSandboxCapacity)
+	pools.failScale[firstPoolID] = fmt.Errorf("%w: Worker limit is reached", executionworkers.ErrSandboxCapacity)
 	manager := newTestManager(t, store, pools, router, filepath.Join(root, "node", "kernel", "services"))
 
 	status, err := manager.Start(context.Background(), serviceID)
@@ -660,7 +660,7 @@ func TestMinimumWorkersSpillIntoAnotherSandboxWhenResourceTargetBlocksPacking(t 
 	}
 	for _, sandbox := range status.Sandboxes {
 		if len(sandbox.WorkerIDs) != 1 {
-			t.Fatalf("minimum Workers were not isolated after resource rejection: %#v", status.Sandboxes)
+			t.Fatalf("minimum Workers were not isolated after Worker rejection: %#v", status.Sandboxes)
 		}
 	}
 }

@@ -27,8 +27,8 @@
 - Service specs retain one exact placement-group value plus the logical service
   IDs already present. The lists are used to prevent duplicate allocations in one
   sandbox; an empty placement group remains a valid shared value.
-- `SandboxCapacityPolicy` validates the kernel-wide maximum Worker count and
-  CPU/RAM target utilization used by placement and exact Worker admission.
+- Sandbox resource limits contain only PID and temporary-filesystem bounds;
+  CPU and RAM fields are observations, not limits or placement inputs.
 
 # Lifecycle
 

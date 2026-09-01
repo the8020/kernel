@@ -18,13 +18,7 @@ func UnifiedSettings(limits model.ResourceLimits) (map[string]string, error) {
 		return nil, err
 	}
 	return map[string]string{
-		"memory.high":      strconv.FormatInt(limits.MemoryHigh, 10),
-		"memory.max":       strconv.FormatInt(limits.MemoryMaximum, 10),
-		"memory.swap.max":  strconv.FormatInt(limits.SwapMaximum, 10),
-		"memory.oom.group": "1",
-		"cpu.max":          fmt.Sprintf("%d %d", limits.CPUQuotaMicros, limits.CPUPeriodMicros),
-		"cpu.weight":       strconv.FormatInt(limits.CPUWeight, 10),
-		"pids.max":         strconv.FormatInt(limits.PIDMaximum, 10),
+		"pids.max": strconv.FormatInt(limits.PIDMaximum, 10),
 	}, nil
 }
 

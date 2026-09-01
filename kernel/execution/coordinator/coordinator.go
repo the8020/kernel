@@ -33,9 +33,9 @@ type WarmPool interface {
 }
 
 type Coordinator struct {
-	sandboxes SandboxManager
-	warm      WarmPool
-	capacity  model.SandboxCapacityPolicy
+	sandboxes      SandboxManager
+	warm           WarmPool
+	maximumWorkers int
 }
 
 type Request struct {
@@ -53,18 +53,14 @@ type Request struct {
 	Lifecycle        model.LifecyclePolicy
 }
 
-func New(sandboxes SandboxManager, warm ...WarmPool) (*Coordinator, error) {
-	return NewWithCapacity(sandboxes, model.DefaultSandboxCapacityPolicy(), warm...)
-}
-
-func NewWithCapacity(sandboxes SandboxManager, capacity model.SandboxCapacityPolicy, warm ...WarmPool) (*Coordinator, error) {
+func New(sandboxes SandboxManager, maximumWorkers int, warm ...WarmPool) (*Coordinator, error) {
 	if sandboxes == nil {
 		return nil, errors.New("sandbox manager is required")
 	}
-	if err := capacity.Validate(); err != nil {
-		return nil, fmt.Errorf("sandbox capacity policy: %w", err)
+	if maximumWorkers < 1 {
+		return nil, errors.New("sandbox maximum Workers must be positive")
 	}
-	coordinator := &Coordinator{sandboxes: sandboxes, capacity: capacity}
+	coordinator := &Coordinator{sandboxes: sandboxes, maximumWorkers: maximumWorkers}
 	if len(warm) > 0 {
 		coordinator.warm = warm[0]
 	}
@@ -83,11 +79,11 @@ func (c *Coordinator) Ensure(ctx context.Context, request Request) (manager.Insp
 	byID := map[string]manager.Inspection{}
 	for _, item := range items {
 		healthy := item.Status.SupervisorHealthy && (item.Status.ObservedState == model.StateReady || item.Status.ObservedState == model.StateActive)
-		group := groups.Group{RuntimeGroupID: item.Spec.RuntimeGroupID, WorkloadType: item.Spec.WorkloadType, GroupKey: item.Spec.GroupKey, ProfileHash: item.Spec.ProfileHash, Owners: append([]string(nil), item.Spec.OwnerIDs...), ServiceIDs: append([]string(nil), item.Spec.ServiceIDs...), State: item.Status.ObservedState, Healthy: healthy, WorkerCount: item.Status.WorkerCount, CPUUtilization: item.Status.Metrics.CPUUtilization, RAMUtilization: item.Status.Metrics.MemoryUtilization}
+		group := groups.Group{RuntimeGroupID: item.Spec.RuntimeGroupID, WorkloadType: item.Spec.WorkloadType, GroupKey: item.Spec.GroupKey, ProfileHash: item.Spec.ProfileHash, Owners: append([]string(nil), item.Spec.OwnerIDs...), ServiceIDs: append([]string(nil), item.Spec.ServiceIDs...), State: item.Status.ObservedState, Healthy: healthy, WorkerCount: item.Status.WorkerCount}
 		existing = append(existing, group)
 		byID[item.Spec.RuntimeGroupID] = item
 	}
-	selection, err := groups.Select(groups.Request{WorkloadType: request.WorkloadType, OwnerID: request.OwnerID, ExecutionID: request.ExecutionID, Namespace: request.Namespace, ExplicitGroupKey: request.ExplicitGroupKey, PlacementGroup: request.PlacementGroup, LogicalServiceID: request.LogicalServiceID, RequestedWorkers: request.RequestedWorkers, Strategy: request.Strategy, Profile: request.Profile, Capacity: c.capacity}, existing)
+	selection, err := groups.Select(groups.Request{WorkloadType: request.WorkloadType, OwnerID: request.OwnerID, ExecutionID: request.ExecutionID, Namespace: request.Namespace, ExplicitGroupKey: request.ExplicitGroupKey, PlacementGroup: request.PlacementGroup, LogicalServiceID: request.LogicalServiceID, RequestedWorkers: request.RequestedWorkers, MaximumWorkers: c.maximumWorkers, Strategy: request.Strategy, Profile: request.Profile}, existing)
 	if err != nil {
 		return manager.Inspection{}, err
 	}

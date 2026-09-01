@@ -60,12 +60,6 @@ type ServiceCapacity struct {
 type Capacity struct {
 	NodeID                         string            `json:"node_id"`
 	Accepting                      bool              `json:"accepting"`
-	MemoryBudgetBytes              int64             `json:"memory_budget_bytes"`
-	MemoryReservedBytes            int64             `json:"memory_reserved_bytes"`
-	MemoryAvailableBytes           int64             `json:"memory_available_bytes"`
-	CPUBudgetMillicores            int64             `json:"cpu_budget_millicores"`
-	CPUReservedMillicores          int64             `json:"cpu_reserved_millicores"`
-	CPUAvailableMillicores         int64             `json:"cpu_available_millicores"`
 	TemporaryStorageBudgetBytes    int64             `json:"temporary_storage_budget_bytes"`
 	TemporaryStorageReservedBytes  int64             `json:"temporary_storage_reserved_bytes"`
 	TemporaryStorageAvailableBytes int64             `json:"temporary_storage_available_bytes"`
@@ -472,9 +466,6 @@ func (m *Manager) availableNodes(ctx context.Context, visited map[string]bool) [
 		}
 		if left.AvailableSandboxes != right.AvailableSandboxes {
 			return left.AvailableSandboxes > right.AvailableSandboxes
-		}
-		if left.MemoryAvailableBytes != right.MemoryAvailableBytes {
-			return left.MemoryAvailableBytes > right.MemoryAvailableBytes
 		}
 		return available[i].node.ID < available[j].node.ID
 	})

@@ -86,7 +86,7 @@ func (f *fakeSandboxes) Create(_ context.Context, spec model.SandboxSpec) (manag
 
 func TestEnsureReusesOnlyCompatibleHealthyGroups(t *testing.T) {
 	backend := &fakeSandboxes{}
-	coordinator, _ := New(backend)
+	coordinator, _ := New(backend, 64)
 	request := testRequest(t, "owner-one", model.WorkloadJob)
 	first, err := coordinator.Ensure(context.Background(), request)
 	if err != nil {
@@ -120,7 +120,7 @@ func TestEnsureReusesOnlyCompatibleHealthyGroups(t *testing.T) {
 
 func TestEnsureSharedGroupPersistsEveryOwner(t *testing.T) {
 	backend := &fakeSandboxes{}
-	coordinator, _ := New(backend)
+	coordinator, _ := New(backend, 64)
 	firstRequest := testRequest(t, "owner-one", model.WorkloadJob)
 	firstRequest.ExplicitGroupKey = "shared"
 	first, err := coordinator.Ensure(context.Background(), firstRequest)
@@ -140,7 +140,7 @@ func TestEnsureSharedGroupPersistsEveryOwner(t *testing.T) {
 
 func TestEnsureSharedExplicitKeyStillSeparatesWorkloadTypes(t *testing.T) {
 	backend := &fakeSandboxes{}
-	coordinator, _ := New(backend)
+	coordinator, _ := New(backend, 64)
 	job := testRequest(t, "job", model.WorkloadJob)
 	job.Strategy = model.GroupingShared
 	job.ExplicitGroupKey = "common"
@@ -162,7 +162,7 @@ func TestEnsureSharedExplicitKeyStillSeparatesWorkloadTypes(t *testing.T) {
 
 func TestEnsureServiceSandboxesUsePlacementGroupWithoutDuplicateAllocation(t *testing.T) {
 	backend := &fakeSandboxes{}
-	coordinator, _ := New(backend)
+	coordinator, _ := New(backend, 64)
 	placement := "interactive"
 	firstRequest := testRequest(t, "pool-one", model.WorkloadService)
 	firstRequest.PlacementGroup = &placement
@@ -198,7 +198,7 @@ func TestEnsureAssignsCompatibleWarmGroupBeforeColdCreate(t *testing.T) {
 	request := testRequest(t, "owner-one", model.WorkloadJob)
 	warmInspection := manager.Inspection{Spec: model.SandboxSpec{RuntimeGroupID: "group-warm", SandboxID: "sandbox-warm", WorkloadType: model.WorkloadJob}}
 	warm := &fakeWarmPool{inspection: warmInspection, assigned: true}
-	coordinator, err := New(backend, warm)
+	coordinator, err := New(backend, 64, warm)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,5 +219,5 @@ func testRequest(t *testing.T, owner string, workload model.WorkloadType) Reques
 	if _, err := profile.Hash(); err != nil {
 		t.Fatal(err)
 	}
-	return Request{WorkloadType: workload, OwnerID: owner, ExecutionID: "execution", Strategy: model.GroupingOwner, Profile: profile, ResourceLimits: model.ResourceLimits{MemoryHigh: 128, MemoryMaximum: 256, CPUQuotaMicros: 50, CPUPeriodMicros: 100, CPUWeight: 100, PIDMaximum: 32, TmpfsMaximum: 64}}
+	return Request{WorkloadType: workload, OwnerID: owner, ExecutionID: "execution", Strategy: model.GroupingOwner, Profile: profile, ResourceLimits: model.ResourceLimits{PIDMaximum: 32, TmpfsMaximum: 64}}
 }

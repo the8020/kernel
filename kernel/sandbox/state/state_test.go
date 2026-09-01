@@ -19,7 +19,7 @@ func testRecord(t *testing.T, id string) (model.SandboxSpec, model.SandboxStatus
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec := model.SandboxSpec{SandboxID: "sandbox-" + id, RuntimeGroupID: id, WorkloadType: model.WorkloadJob, GroupKey: "job:one", OwnerIDs: []string{"one"}, ImageDigest: testDigest, RuntimeProfile: profile, ProfileHash: hash, ResourceLimits: model.ResourceLimits{MemoryHigh: 128, MemoryMaximum: 256, CPUQuotaMicros: 50, CPUPeriodMicros: 100, CPUWeight: 100, PIDMaximum: 32, TmpfsMaximum: 64}, Network: model.NetworkConfiguration{Mode: "netstack", NetworkName: "the8020"}, DependencyMode: model.DependencyCachedOnly, InternalToken: "secret-" + id}
+	spec := model.SandboxSpec{SandboxID: "sandbox-" + id, RuntimeGroupID: id, WorkloadType: model.WorkloadJob, GroupKey: "job:one", OwnerIDs: []string{"one"}, ImageDigest: testDigest, RuntimeProfile: profile, ProfileHash: hash, ResourceLimits: model.ResourceLimits{PIDMaximum: 32, TmpfsMaximum: 64}, Network: model.NetworkConfiguration{Mode: "netstack", NetworkName: "the8020"}, DependencyMode: model.DependencyCachedOnly, InternalToken: "secret-" + id}
 	status := model.SandboxStatus{DesiredState: model.StateReady, ObservedState: model.StateCreating}
 	return spec, status
 }
