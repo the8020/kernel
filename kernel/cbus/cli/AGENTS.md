@@ -27,6 +27,9 @@
   runtime state in stable preferred order before alphabetically ordered unknown
   fields.
 - Named `core.Result` maps render directly instead of passing through lossy JSON normalization; execution summaries render state, result, logs, duration, resources, and execution identity in that order when present.
+- Text-mode command failures render their stable code and message followed by
+  any structured error details; JSON mode retains the complete response
+  envelope.
 - Extend syntax only through command metadata or shared client-local behavior.
 
 # Work Guidance
@@ -37,7 +40,8 @@
 
 - `cli_test.go` covers aliases, typed and metadata-prompted arguments, prompt
   ordering, complete global help, local and catalog help topics, examples,
-  errors, compact setting and flat resource summaries, empty collections,
+  local and structured command errors, compact setting and flat resource
+  summaries, empty collections,
   detailed rendering order, exact large-integer rendering, and quoted input.
 
 # Child DOX Index

@@ -126,6 +126,8 @@ relevant child AGENTS.md
   roots. Both validate Unix permission support and keep node-local settings,
   locks, sockets, logs, images, and runtime data under `node/`. Runtime
   instances never use the source repository's `.development/` tree as state.
+  The interactive wrapper repairs inherited terminal state before output and
+  on exit so an interrupted raw-mode client cannot cascade line indentation.
 - The root `Dockerfile` builds a Debian slim image, runs the ordinary default
   installation in `/8020`, synchronizes first-party packages, and materializes
   both rootless service and development sandbox images before publishing only

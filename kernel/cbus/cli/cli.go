@@ -98,6 +98,9 @@ func (r *Runner) Run(ctx context.Context, args []string, jsonOutput bool, output
 		_, _ = fmt.Fprintln(output, string(data))
 	} else if !response.Success {
 		_, _ = fmt.Fprintf(output, "error [%s]: %s\n", response.Error.Code, response.Error.Message)
+		if len(response.Error.Details) > 0 {
+			renderValue(output, response.Error.Details, 0)
+		}
 	} else {
 		renderValue(output, response.Result, 0)
 	}

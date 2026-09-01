@@ -16,8 +16,42 @@ func (f *fakeExecutor) Execute(_ context.Context, request core.Request) (core.Re
 	f.request = request
 	return core.Response{ProtocolVersion: core.ProtocolVersion, Success: true, RequestID: request.RequestID, Result: core.Result{"ok": true}}, nil
 }
+
+type errorExecutor struct{ response core.Response }
+
+func (e errorExecutor) Execute(context.Context, core.Request) (core.Response, error) {
+	return e.response, nil
+}
+
 func testCatalog() []core.Command {
 	return []core.Command{{ID: "thing.set", Path: []string{"thing", "set"}, Aliases: [][]string{{"config", "set"}}, Summary: "Set thing", Description: "Sets a thing.", Parameters: []core.Parameter{{Name: "name", Type: "string", Required: true}, {Name: "count", Type: "integer", Position: 1, Required: true}, {Name: "enabled", Type: "boolean", Position: 2, Required: true}, {Name: "namespace", Type: "string", Option: "namespace", Description: "Grouping namespace."}, {Name: "detached", Type: "boolean", Option: "detached", Description: "Return without waiting."}}, Examples: []string{"thing set x 2 true --namespace demo --detached"}}}
+}
+
+func TestTextErrorsRenderStructuredDetails(t *testing.T) {
+	commandError := core.NewError(core.CodeRuntimeOperation, "one or more packages failed to synchronize")
+	commandError.Details = map[string]any{"packages": []any{map[string]any{
+		"package_id": "the8020/uui",
+		"success":    false,
+		"error":      "installed package has uncommitted changes",
+	}}}
+	runner := New(testCatalog(), errorExecutor{response: core.Response{
+		ProtocolVersion: core.ProtocolVersion,
+		Error:           commandError,
+	}})
+	var output bytes.Buffer
+	if code := runner.Run(context.Background(), []string{"thing", "set", "value", "2", "true"}, false, &output); code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+	for _, expected := range []string{
+		"error [runtime_operation_failed]: one or more packages failed to synchronize",
+		"package_id: the8020/uui",
+		"error: installed package has uncommitted changes",
+		"success: false",
+	} {
+		if !strings.Contains(output.String(), expected) {
+			t.Fatalf("output missing %q:\n%s", expected, output.String())
+		}
+	}
 }
 
 func TestSharedLookupParsingHelpAndRendering(t *testing.T) {

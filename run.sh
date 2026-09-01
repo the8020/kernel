@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+restore_terminal() {
+  if [[ -t 0 ]] && command -v stty >/dev/null 2>&1; then
+    stty sane 2>/dev/null || true
+  fi
+}
+
+# A previously interrupted raw-terminal client can leave line-feed translation
+# and echo disabled in the parent shell. Repair that inherited state before the
+# build emits anything, and again on every wrapper exit.
+restore_terminal
+
 SOURCE_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 INSTANCE_ROOT=$(pwd -P)
 
@@ -117,8 +128,8 @@ report_start_failure() {
   fi
 }
 
-trap 'stop_started_kernel; exit 130' INT TERM HUP
-trap 'stop_started_kernel' EXIT
+trap 'stop_started_kernel; restore_terminal; exit 130' INT TERM HUP
+trap 'stop_started_kernel; restore_terminal' EXIT
 
 ATTACHED_STATUS=""
 if ATTACHED_STATUS=$("$ADMIN" --root "$INSTANCE_ROOT" --json system status 2>/dev/null); then
@@ -195,5 +206,6 @@ set -e
 if [[ "$STARTED_KERNEL" == true ]]; then
   stop_started_kernel
 fi
+restore_terminal
 trap - EXIT
 exit "$ADMIN_STATUS"
