@@ -140,7 +140,7 @@ KERNEL="$DEVELOPMENT_DIR/bin/kernel"
 LAYOUT_FILE="$INSTANCE_ROOT/node/kernel/paths.toml"
 NEW_LAYOUT=false
 if [[ ! -f "$LAYOUT_FILE" ]]; then
-	NEW_LAYOUT=true
+  NEW_LAYOUT=true
   echo "platform build [2/5]: initializing instance layout" >&2
   "$KERNEL" --root "$INSTANCE_ROOT" --init-defaults --init-only
 else
@@ -218,15 +218,10 @@ if ! find "$PACKAGE_INDEX_ROOT" -mindepth 2 -maxdepth 2 -type f -name '*.toml' -
   done < <(find "$SOURCE_ROOT/defaults/state/package-index" -type f -name '*.toml' -print0)
 fi
 
-# Synchronization uses the same generated command handler online and offline.
-# A running pre-upgrade kernel may not know the new command yet; run.sh retries
-# after replacing it with the freshly built binary.
-ADMIN="$DEVELOPMENT_DIR/bin/admin"
-if "$ADMIN" --root "$INSTANCE_ROOT" system status >/dev/null 2>&1; then
-  PACKAGE_SYNC_ONLINE=true
-else
-  PACKAGE_SYNC_ONLINE=false
-  echo "synchronizing indexed packages through the offline command bus" >&2
+# Seed package content exactly once as part of a fresh instance installation.
+# Existing instances update packages only through an explicit synchronization.
+if [[ "$NEW_LAYOUT" == true ]]; then
+  echo "synchronizing initial indexed packages" >&2
   "$KERNEL" --root "$INSTANCE_ROOT" --init-only --synchronize-packages
 fi
 
@@ -357,11 +352,4 @@ if [[ "$RUN_VERIFICATION" == true ]]; then
   "$DENO_CMD" check "$RUNTIME_SOURCE/development/image/files/activate.ts"
 else
   echo "platform verification gates skipped; required binaries and images are current" >&2
-fi
-
-if [[ "$PACKAGE_SYNC_ONLINE" == true ]]; then
-  echo "synchronizing indexed packages through the running kernel" >&2
-  if ! "$ADMIN" --root "$INSTANCE_ROOT" package synchronize; then
-    echo "running kernel deferred package synchronization until its rebuilt restart" >&2
-  fi
 fi

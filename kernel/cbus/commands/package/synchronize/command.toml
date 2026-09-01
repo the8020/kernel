@@ -2,7 +2,7 @@ version = 1
 id = "package.synchronize"
 path = ["package", "synchronize"]
 summary = "Synchronize desired packages"
-description = "Clones or atomically replaces selected indexed package repositories at their desired commit, tag, or latest default-branch commit, then refreshes their services when the runtime is active. Omit --packages to synchronize the complete index."
+description = "Clones or atomically replaces selected indexed package repositories at their desired commit, tag, or latest default-branch commit, then refreshes their services when the runtime is active. Reports only package ID, resolved commit, and success. Omit --packages to synchronize the complete index."
 mutates_state = true
 restart_behavior = "none"
 [handler]

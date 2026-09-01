@@ -193,11 +193,6 @@ if ! "$ADMIN" --root "$INSTANCE_ROOT" runtime status >/dev/null 2>&1; then
   echo "runtime subsystem is degraded; use 'runtime doctor' in the console for details" >&2
 fi
 
-if ! "$ADMIN" --root "$INSTANCE_ROOT" package synchronize; then
-  echo "package synchronization failed" >&2
-  exit 1
-fi
-
 set +e
 "$ADMIN" --root "$INSTANCE_ROOT"
 ADMIN_STATUS=$?

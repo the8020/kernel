@@ -27,8 +27,9 @@
   packages, tools, or images. `--init-only` exits after node state creation.
 - `--init-only --synchronize-packages` acquires the node lock and dispatches the
   generated `package.synchronize` handler in-process without starting listeners
-  or runtime services. Installation uses this offline command-bus path when no
-  kernel owns the instance.
+  or runtime services. Fresh installation uses this offline command-bus path
+  exactly once; rebuilding or restarting an initialized instance never
+  synchronizes packages implicitly.
 - Startup order is load the explicit shared-root mapping → initialize shared
   and node-local state roots → lock → settings → logging →
   bootstrap-authentication store and per-node cleanup → package and

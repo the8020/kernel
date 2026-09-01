@@ -18,9 +18,9 @@
   `kernel.auth.logoutCurrent()`, `kernel.admin.execute()`, `kernel.packages`,
   `kernel.worker.invoke()`, and `kernel.execution.completePersistent()`.
 - `kernel.packages` provides typed index list/inspect/set, source inspection,
-  version listing, synchronization, and local creation by delegating to generic
-  `admin.execute`; it adds no bridge operation and no package semantics to the
-  supervisor.
+  version listing, concise ID/commit/success synchronization results, and local
+  creation by delegating to generic `admin.execute`; it adds no bridge operation
+  and no package semantics to the supervisor.
 - `worker.invoke` requires exact node, sandbox, and Worker IDs plus a bounded
   function name and JSON input. It returns JSON or a structured generic error;
   it never knows which application registered the function.

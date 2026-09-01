@@ -26,7 +26,9 @@
 - Package-index defaults declare public Git sources without credentials or
   version pins, so initial synchronization follows each repository's latest
   default-branch commit. Once any desired package entry exists, installation
-  treats the complete mapped index as operator-owned and seeds nothing.
+  treats the complete mapped index as operator-owned and seeds nothing. A fresh
+  instance synchronizes the seeded index once; subsequent installation and
+  startup leave package updates to explicit synchronization.
 - Materialized images, build caches, downloads, smoke records, and temporary
   construction output belong under `node/kernel/runtime/`, never in this tree
   or another top-level instance directory.

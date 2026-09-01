@@ -70,18 +70,8 @@ export interface PackageVersions {
 
 export interface PackageSynchronization {
   package_id: string;
-  source?: string;
-  requested: string;
-  previous_commit?: string;
-  commit?: string;
-  changed: boolean;
-  cloned: boolean;
-  local: boolean;
-  services: string[];
-  restarted_services?: string[];
-  retired_services?: string[];
+  commit: string;
   success: boolean;
-  error?: string;
 }
 
 export interface SetPackageIndexInput {

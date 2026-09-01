@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"the8020/kernel/cbus/core"
@@ -49,6 +50,7 @@ func TestSynchronizeRefreshesOnlyChangedPackageServices(t *testing.T) {
 	management := synchronizationManagement{results: []workspacepackages.PackageSynchronization{
 		{
 			PackageID:        "example/changed",
+			Commit:           "1111111111111111111111111111111111111111",
 			Success:          true,
 			Changed:          true,
 			PreviousServices: []string{"example/changed/kept", "example/changed/removed"},
@@ -71,8 +73,9 @@ func TestSynchronizeRefreshesOnlyChangedPackageServices(t *testing.T) {
 	if !reflect.DeepEqual(runtimeServices.reloaded, []string{"example/changed/kept", "example/changed/added"}) {
 		t.Fatalf("reloaded services = %v", runtimeServices.reloaded)
 	}
-	if !reflect.DeepEqual(results[0].RetiredServices, runtimeServices.retired) || !reflect.DeepEqual(results[0].RestartedServices, runtimeServices.reloaded) {
-		t.Fatalf("synchronization result = %#v", results[0])
+	want := SynchronizationResult{PackageID: "example/changed", Commit: "1111111111111111111111111111111111111111", Success: true}
+	if results[0] != want {
+		t.Fatalf("synchronization result = %#v, want %#v", results[0], want)
 	}
 }
 
@@ -81,7 +84,7 @@ func TestSynchronizeOfflineDoesNotRequireRuntimeServices(t *testing.T) {
 		PackageID: "example/offline", Success: true, Changed: true, Services: []string{"example/offline/service"},
 	}}}
 	results, err := Synchronize(context.Background(), &services.Services{PackageManagement: management}, []string{"example/offline"})
-	if err != nil || len(results) != 1 || !results[0].Success || len(results[0].RestartedServices) != 0 {
+	if err != nil || len(results) != 1 || !results[0].Success {
 		t.Fatalf("offline synchronization = %#v, err=%v", results, err)
 	}
 }
@@ -100,7 +103,11 @@ func TestSynchronizeReportsServiceRefreshFailureAfterPackageCommit(t *testing.T)
 	if !errors.As(err, &commandError) || commandError.Code != core.CodeRuntimeOperation {
 		t.Fatalf("error = %#v", err)
 	}
-	if len(results) != 1 || results[0].Success || results[0].Error == "" {
+	if len(results) != 1 || results[0].Success || !strings.Contains(commandError.Message, "example/failure: package synchronized but service refresh failed: reload failed") {
 		t.Fatalf("failure result = %#v", results)
+	}
+	details, ok := commandError.Details["packages"].([]SynchronizationResult)
+	if !ok || !reflect.DeepEqual(details, results) {
+		t.Fatalf("failure details = %#v, want %#v", commandError.Details, results)
 	}
 }

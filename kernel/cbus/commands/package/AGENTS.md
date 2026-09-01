@@ -22,7 +22,8 @@
 - Index list/inspect/set manage kernel-owned desired package records. Source
   inspection lists bounded public refs without cloning; version listing fetches
   and reports bounded commit history. Synchronization accepts one, several, or
-  all indexed packages and reports each result independently.
+  all indexed packages and reports only package ID, resolved commit, and
+  success for each result; Git and service-refresh details remain internal.
 - A changed synchronized package retires removed service capacity and increments
   the generations of its current services so active Workers reload. Offline
   dispatch performs only the package transaction because no runtime exists.

@@ -24,10 +24,10 @@ RUN apt-get update \
 WORKDIR /usr/local/src/the8020
 COPY . .
 
-# run.sh performs the normal default installation, synchronizes the indexed
-# packages, builds and bundles the service runtime, and builds the development
-# sandbox image. Scripted `exit` closes only the build-time admin console; its
-# wrapper then shuts the build-time kernel down cleanly.
+# The fresh installation synchronizes the initial indexed packages once, builds
+# and bundles the service runtime, and builds the development sandbox image.
+# Scripted `exit` closes only the build-time admin console; its wrapper then
+# shuts the build-time kernel down cleanly.
 RUN install -d -m 0755 /8020 \
     && cd /8020 \
     && printf 'exit\n' | /usr/local/src/the8020/run.sh \

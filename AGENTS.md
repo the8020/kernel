@@ -200,11 +200,13 @@ relevant child AGENTS.md
   reconciles, or polls that state.
 - Shared `state/package-index/<author>/<repository>.toml` is kernel-owned desired
   package state, separate from application data. An empty index receives the
-  tracked first-party defaults during installation. Typed package commands and
-  `@the8020/kernel` inspect sources and versions, set index entries, synchronize
-  one or more clean Git worktrees, and create local packages. Synchronization
-  atomically replaces changed repositories and refreshes only their declared
-  services; no package source is compiled or tested by the kernel.
+  tracked first-party defaults and one automatic synchronization only during
+  fresh installation; later builds and restarts never synchronize packages.
+  Typed package commands and `@the8020/kernel` inspect sources and versions, set
+  index entries, explicitly synchronize one or more clean Git worktrees, and
+  create local packages. Synchronization reports only package ID, commit, and
+  success, atomically replaces changed repositories, and refreshes only their
+  declared services; no package source is compiled or tested by the kernel.
 - The package-neutral Deno kernel SDK may invoke only explicitly registered
   JSON-in/JSON-out functions on one exact node, sandbox, and Worker. The kernel
   validates infrastructure identity, size, timeout, authentication, and
