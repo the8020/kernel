@@ -2,7 +2,7 @@ version = 1
 id = "development.image.status"
 path = ["development", "image", "status"]
 summary = "Inspect the development image"
-description = "Reports the immutable development image digest, build time, Codex CLI and Deno versions, and build status."
+description = "Reports the immutable development image digest, build time, Deno version, and build status."
 mutates_state = false
 restart_behavior = "none"
 [handler]

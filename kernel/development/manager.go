@@ -840,11 +840,10 @@ func (m *Manager) ImageStatus() (ImageStatus, error) {
 
 func (m *Manager) imageStatusLocked() (ImageStatus, error) {
 	var record struct {
-		Digest       string    `json:"digest"`
-		ImageDigest  string    `json:"image_digest"`
-		BuiltAt      time.Time `json:"built_at"`
-		CodexVersion string    `json:"codex_version"`
-		DenoVersion  string    `json:"deno_version"`
+		Digest      string    `json:"digest"`
+		ImageDigest string    `json:"image_digest"`
+		BuiltAt     time.Time `json:"built_at"`
+		DenoVersion string    `json:"deno_version"`
 	}
 	if err := readJSON(m.config.ImageRecord, &record); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -856,7 +855,7 @@ func (m *Manager) imageStatusLocked() (ImageStatus, error) {
 	if digest == "" {
 		digest = record.ImageDigest
 	}
-	return ImageStatus{Digest: digest, BuiltAt: record.BuiltAt, CodexVersion: record.CodexVersion, DenoVersion: record.DenoVersion, BuildStatus: "ready"}, nil
+	return ImageStatus{Digest: digest, BuiltAt: record.BuiltAt, DenoVersion: record.DenoVersion, BuildStatus: "ready"}, nil
 }
 
 func (m *Manager) serveWorkspace(response http.ResponseWriter, request *http.Request) {

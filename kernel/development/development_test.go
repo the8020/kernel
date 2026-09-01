@@ -188,7 +188,7 @@ func newTestPlatform(t *testing.T) testPlatform {
 		writeTestFile(t, filepath.Join(packageRoot, "src", "message.ts"), "export const message = \"shared\";\n")
 		writeTestFile(t, filepath.Join(packageRoot, "notes.txt"), id+" notes\n")
 	}
-	if err := writeAtomic(record, []byte(`{"image_digest":"sha256:`+strings.Repeat("1", 64)+`","codex_version":"test","deno_version":"test"}`), 0o600); err != nil {
+	if err := writeAtomic(record, []byte(`{"image_digest":"sha256:`+strings.Repeat("1", 64)+`","deno_version":"test"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	driver := newFakeDriver()
@@ -336,7 +336,7 @@ func TestNativeStoragePersistsWithoutBackgroundWork(t *testing.T) {
 		t.Fatalf("system path is not user-owned durable storage: %q", a.SystemPath)
 	}
 	shell(t, platform.manager, a.WorkspaceID, "write packages/the8020/dev-core/src/message.ts private-a")
-	shell(t, platform.manager, a.WorkspaceID, "write home/.codex/config.toml model=test")
+	shell(t, platform.manager, a.WorkspaceID, "write home/.config/editor/config.toml model=test")
 	shell(t, platform.manager, a.WorkspaceID, "write system/usr/local/bin/private-tool tool")
 	if got := shell(t, platform.manager, b.WorkspaceID, "read packages/the8020/dev-core/src/message.ts"); strings.Contains(got, "private-a") {
 		t.Fatal("workspace B observed workspace A's source")
@@ -363,7 +363,7 @@ func TestNativeStoragePersistsWithoutBackgroundWork(t *testing.T) {
 	}
 	for _, proof := range []struct{ command, want string }{
 		{"read packages/the8020/dev-core/src/message.ts", "private-a"},
-		{"read home/.codex/config.toml", "model=test"},
+		{"read home/.config/editor/config.toml", "model=test"},
 		{"read system/usr/local/bin/private-tool", "tool"},
 	} {
 		if got := shell(t, platform.manager, a.WorkspaceID, proof.command); got != proof.want {

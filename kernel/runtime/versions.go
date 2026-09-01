@@ -49,12 +49,6 @@ type RuntimeImageVersion struct {
 	Name string `toml:"name"`
 }
 
-type CodexVersion struct {
-	Version            string `toml:"version"`
-	ArchiveSHA512AMD64 string `toml:"archive_sha512_amd64"`
-	ArchiveSHA512ARM64 string `toml:"archive_sha512_arm64"`
-}
-
 type Versions struct {
 	SchemaVersion          int                 `toml:"schema_version"`
 	RuntimeProtocolVersion int                 `toml:"runtime_protocol_version"`
@@ -64,7 +58,6 @@ type Versions struct {
 	CNI                    ArchiveVersion      `toml:"cni"`
 	BuildKit               ArchiveVersion      `toml:"buildkit"`
 	Deno                   DenoVersion         `toml:"deno"`
-	Codex                  CodexVersion        `toml:"codex"`
 	RuntimeImage           RuntimeImageVersion `toml:"runtime_image"`
 	DevelopmentImage       RuntimeImageVersion `toml:"development_image"`
 }
@@ -113,7 +106,6 @@ func (v Versions) Validate() error {
 		"CNI":                    v.CNI.Version,
 		"BuildKit":               v.BuildKit.Version,
 		"Deno":                   v.Deno.Version,
-		"Codex":                  v.Codex.Version,
 	} {
 		if !pinnedVersion(value) {
 			return fmt.Errorf("%s version %q is not pinned", name, value)
@@ -126,8 +118,6 @@ func (v Versions) Validate() error {
 		"runsc arm64":          v.GVisor.RunscSHA512ARM64,
 		"runsc shim amd64":     v.GVisor.ShimSHA512AMD64,
 		"runsc shim arm64":     v.GVisor.ShimSHA512ARM64,
-		"Codex archive amd64":  v.Codex.ArchiveSHA512AMD64,
-		"Codex archive arm64":  v.Codex.ArchiveSHA512ARM64,
 	} {
 		if !hexDigest(value, 128) {
 			return fmt.Errorf("%s checksum is not SHA-512", name)

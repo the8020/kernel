@@ -9,7 +9,7 @@
 # Local Contracts
 
 - The command delegates to the development service and returns digest, build
-  time, Codex version, Deno version, and build status. Image construction is an
+  time, Deno version, and build status. Image construction is an
   installation concern and is not reachable through the running kernel.
 
 # Work Guidance

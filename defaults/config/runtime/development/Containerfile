@@ -1,10 +1,9 @@
 ARG DENO_BASE=docker.io/denoland/deno:2.9.4@sha256:c777b4b225501a61074837e90a826a58f99124837824023cd60334b1e2374498
 FROM ${DENO_BASE}
 
-ARG CODEX_VERSION=0.149.1
 USER root
 COPY build.sh /tmp/the8020-image-build.sh
-RUN CODEX_VERSION="${CODEX_VERSION}" /bin/bash /tmp/the8020-image-build.sh \
+RUN /bin/bash /tmp/the8020-image-build.sh \
  && rm -f /tmp/the8020-image-build.sh
 
 COPY files/ /opt/development/

@@ -75,11 +75,10 @@ type Repository struct {
 }
 
 type ImageStatus struct {
-	Digest       string    `json:"digest,omitempty"`
-	BuiltAt      time.Time `json:"built_at,omitempty"`
-	CodexVersion string    `json:"codex_version,omitempty"`
-	DenoVersion  string    `json:"deno_version,omitempty"`
-	BuildStatus  string    `json:"build_status"`
+	Digest      string    `json:"digest,omitempty"`
+	BuiltAt     time.Time `json:"built_at,omitempty"`
+	DenoVersion string    `json:"deno_version,omitempty"`
+	BuildStatus string    `json:"build_status"`
 }
 
 type ActivationOptions struct {

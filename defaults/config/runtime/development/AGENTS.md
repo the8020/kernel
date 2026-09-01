@@ -15,10 +15,11 @@
 
 # Local Contracts
 
-- The image contains Codex CLI, Git, pinned Deno, Bash, common Unix tools,
-  `clear`, the common `ncurses-base` terminal definitions including `xterm`
-  and `xterm-256color`, CA certificates, curl, Nano, APT/dpkg, and the
-  workspace-scoped `activate` helper.
+- The image contains Git, pinned Deno, Bash, common Unix tools, `clear`, the
+  common `ncurses-base` terminal definitions including `xterm` and
+  `xterm-256color`, CA certificates, curl, Nano, APT/dpkg, and the
+  workspace-scoped `activate` helper. Codex, Node.js, and npm are not
+  preinstalled; developers may add their own tools through APT.
 - Interactive login shells source the image-owned `/etc/profile` and expose a
   restrained colorized `user@host:working-directory` prompt, with a plain-text
   fallback for terminals without common ANSI capabilities.
@@ -50,8 +51,9 @@
 
 # Verification
 
-- Portable installation verifies required executables, APT metadata, Debian
-  `dpkg`, common terminfo, pinned tools, and image identity. The real
+- Portable installation verifies required executables, the absence of Codex,
+  Node.js, and npm, APT metadata, Debian `dpkg`, common terminfo, pinned tools,
+  and image identity. The real
   rootless/rootful E2E requires a contextual working-directory prompt, a
   native dpkg transaction, an actual `xterm` full-screen Nano session over
   SSH, a `sleep` PID 1, a usable Debian lock directory, ephemeral `/run`, no

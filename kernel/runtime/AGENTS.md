@@ -1,7 +1,7 @@
 # Purpose
 
-- Own host/runtime compatibility, the pinned version manifest including Codex
-  and the development-image identity, full-image and portable-rootfs records,
+- Own host/runtime compatibility, the pinned version manifest and
+  development-image identity, full-image and portable-rootfs records,
   sandbox-mode selection, and runtime health diagnostics used by the kernel and
   administration commands.
 
@@ -19,8 +19,8 @@
 
 - Public API: `LoadVersions`, `Versions.Checksums`, `NewDoctor`, `NewRootlessDoctor`, `SelectMode`, `NewIsolationReport`, and the version/report model types.
 - The initialized shared manifest originates from the tracked default and is
-  authoritative for that system; floating versions, malformed service
-  or Codex checksums, unsafe development-image records, unsupported
+  authoritative for that system; floating versions, malformed artifact
+  checksums, unsafe development-image records, unsupported
   architectures, and protocol/image schema mismatches fail explicitly.
 - Diagnostics read only already materialized records and artifacts beneath
   `node/kernel/runtime/images/`. This package never executes Deno, downloads a

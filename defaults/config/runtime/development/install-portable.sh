@@ -33,11 +33,10 @@ case $(uname -m) in
   *) echo "unsupported development image architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 DENO_VERSION=$(toml_value deno version)
-CODEX_VERSION=$(toml_value codex version)
 SOURCE_HASH="sha256:$({
   find "$RUNTIME_SOURCE/development/image/files" -type f -print0 | sort -z | xargs -0 sha256sum
   sha256sum "$IMAGE_DEFINITION/Containerfile" "$IMAGE_DEFINITION/build.sh" "$MANIFEST" "$RUNTIME_SOURCE/development/install-portable.sh" "$RUNTIME_SOURCE/materialize-oci-rootfs.sh" "$RUNTIME_SOURCE/run-rootfs-build.sh"
-  printf '%s\n' "$BASE_MANIFEST" "$CODEX_VERSION" "$DENO_VERSION" "$(uname -m)"
+  printf '%s\n' "$BASE_MANIFEST" "$DENO_VERSION" "$(uname -m)"
 } | sha256sum | awk '{print $1}')"
 if [[ "$REBUILD" == false && -f "$RECORD" && -x "$ROOTFS/usr/bin/deno" ]] &&
   grep -Fq "\"source_hash\": \"$SOURCE_HASH\"" "$RECORD" &&
@@ -53,7 +52,7 @@ echo "development image [1/3]: materializing pinned OCI base" >&2
 install -m 0555 "$IMAGE_DEFINITION/build.sh" "$STAGE/the8020-image-build.sh"
 echo "development image [2/3]: installing declared packages inside gVisor" >&2
 "$RUNTIME_SOURCE/run-rootfs-build.sh" "$SOURCE_ROOT" "$RUNTIME_ROOT" "$STAGE" /bin/sh -c \
-  "/usr/bin/env CODEX_VERSION=$CODEX_VERSION /bin/bash /the8020-image-build.sh && rm -f /the8020-image-build.sh"
+  "/bin/bash /the8020-image-build.sh && rm -f /the8020-image-build.sh"
 
 install -d -m 0755 "$STAGE/opt/development" "$STAGE/usr/local/bin"
 cp -a "$RUNTIME_SOURCE/development/image/files/." "$STAGE/opt/development/"
@@ -61,14 +60,14 @@ chmod 0555 "$STAGE/opt/development/sandbox.sh"
 install -m 0555 "$RUNTIME_SOURCE/development/image/files/activate" "$STAGE/usr/local/bin/activate"
 install -m 0444 "$RUNTIME_SOURCE/development/image/files/profile" "$STAGE/etc/profile"
 
-for required in deno codex git bash clear curl nano find grep sed apt-get apt-cache dpkg dpkg-deb; do
+for required in deno git bash clear curl nano find grep sed apt-get apt-cache dpkg dpkg-deb; do
   if [[ ! -x "$STAGE/usr/bin/$required" && ! -x "$STAGE/usr/local/bin/$required" && ! -x "$STAGE/bin/$required" ]]; then
     echo "development image build omitted $required" >&2
     exit 1
   fi
 done
 "$RUNTIME_SOURCE/run-rootfs-build.sh" "$SOURCE_ROOT" "$RUNTIME_ROOT" "$STAGE" /bin/sh -c \
-  "apt-get --version >/dev/null && dpkg-query -W apt >/dev/null && TERM=xterm clear >/dev/null && TERM=xterm-256color clear >/dev/null && test \"\$(deno --version | awk 'NR == 1 {print \$2}')\" = '$DENO_VERSION' && codex --version | grep -F '$CODEX_VERSION' >/dev/null"
+  "apt-get --version >/dev/null && dpkg-query -W apt >/dev/null && TERM=xterm clear >/dev/null && TERM=xterm-256color clear >/dev/null && test \"\$(deno --version | awk 'NR == 1 {print \$2}')\" = '$DENO_VERSION' && ! command -v codex && ! command -v node && ! command -v nodejs && ! command -v npm && ! command -v npx"
 
 rm -rf -- "$ROOTFS"
 mv "$STAGE" "$ROOTFS"
@@ -77,8 +76,8 @@ BUILT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 echo "development image [3/3]: publishing verified image record" >&2
 IMAGE_DIGEST="sha256:$(printf '%s\n%s\n' "$SOURCE_HASH" rootless-containerfile-equivalent-v1 | sha256sum | awk '{print $1}')"
 TEMP_RECORD="$RECORD.tmp"
-printf '{\n  "schema": 1,\n  "image_digest": "%s",\n  "source_hash": "%s",\n  "materialization": "rootless-containerfile-equivalent",\n  "built_at": "%s",\n  "codex_version": "%s",\n  "deno_version": "%s",\n  "build_status": "ready"\n}\n' \
-  "$IMAGE_DIGEST" "$SOURCE_HASH" "$BUILT_AT" "$CODEX_VERSION" "$DENO_VERSION" > "$TEMP_RECORD"
+printf '{\n  "schema": 1,\n  "image_digest": "%s",\n  "source_hash": "%s",\n  "materialization": "rootless-containerfile-equivalent",\n  "built_at": "%s",\n  "deno_version": "%s",\n  "build_status": "ready"\n}\n' \
+  "$IMAGE_DIGEST" "$SOURCE_HASH" "$BUILT_AT" "$DENO_VERSION" > "$TEMP_RECORD"
 chmod 0600 "$TEMP_RECORD"
 mv -f "$TEMP_RECORD" "$RECORD"
 trap - EXIT

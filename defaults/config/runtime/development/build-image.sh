@@ -47,11 +47,10 @@ case $(uname -m) in
 esac
 DENO_VERSION=$(toml_value deno version)
 BASE_IMAGE=$(toml_value deno base_image)
-CODEX_VERSION=$(toml_value codex version)
 SOURCE_HASH="sha256:$({
   find "$RUNTIME_SOURCE/development/image/files" -type f -print0 | sort -z | xargs -0 sha256sum
   sha256sum "$IMAGE_DEFINITION/Containerfile" "$IMAGE_DEFINITION/build.sh" "$MANIFEST"
-  printf '%s\n' "$BASE_MANIFEST" "$CODEX_VERSION" "$DENO_VERSION" "$(uname -m)"
+  printf '%s\n' "$BASE_MANIFEST" "$DENO_VERSION" "$(uname -m)"
 } | sha256sum | awk '{print $1}')"
 if [[ "$REBUILD" == false && -f "$RECORD" && -x "$ROOTFS/usr/bin/deno" ]] &&
   grep -Fq "\"source_hash\": \"$SOURCE_HASH\"" "$RECORD" &&
@@ -91,12 +90,17 @@ echo "development image [full 1/2]: building inside BuildKit" >&2
   --local dockerfile="$IMAGE_DEFINITION" \
   --opt filename=Containerfile \
   --opt "build-arg:DENO_BASE=$BASE_IMAGE@$BASE_MANIFEST" \
-  --opt "build-arg:CODEX_VERSION=$CODEX_VERSION" \
   --output "type=local,dest=$STAGE"
 
-for required in deno codex git bash clear curl nano find grep sed apt-get apt-cache dpkg dpkg-deb; do
+for required in deno git bash clear curl nano find grep sed apt-get apt-cache dpkg dpkg-deb; do
   if [[ ! -x "$STAGE/usr/bin/$required" && ! -x "$STAGE/usr/local/bin/$required" && ! -x "$STAGE/bin/$required" ]]; then
     echo "development Containerfile omitted $required" >&2
+    exit 1
+  fi
+done
+for omitted in codex node nodejs npm npx; do
+  if chroot "$STAGE" /usr/bin/env PATH=/usr/local/bin:/usr/bin:/bin /bin/sh -c "command -v $omitted"; then
+    echo "development Containerfile unexpectedly included $omitted" >&2
     exit 1
   fi
 done
@@ -108,11 +112,6 @@ if [[ "$(chroot "$STAGE" /usr/bin/deno --version | awk 'NR == 1 {print $2}')" !=
   echo "development Containerfile has the wrong Deno version" >&2
   exit 1
 fi
-CODEX_OUTPUT=$(chroot "$STAGE" /usr/bin/env PATH=/usr/local/bin:/usr/bin:/bin codex --version)
-if [[ "$CODEX_OUTPUT" != *"$CODEX_VERSION"* ]]; then
-  echo "development Containerfile has the wrong Codex version" >&2
-  exit 1
-fi
 
 rm -rf -- "$ROOTFS"
 mv "$STAGE" "$ROOTFS"
@@ -121,8 +120,8 @@ BUILT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 echo "development image [full 2/2]: publishing verified image record" >&2
 IMAGE_DIGEST="sha256:$(printf '%s\n%s\n' "$SOURCE_HASH" rootful-containerfile | sha256sum | awk '{print $1}')"
 TEMP_RECORD="$RECORD.tmp"
-printf '{\n  "schema": 1,\n  "image_digest": "%s",\n  "source_hash": "%s",\n  "materialization": "rootful-containerfile",\n  "built_at": "%s",\n  "codex_version": "%s",\n  "deno_version": "%s",\n  "build_status": "ready"\n}\n' \
-  "$IMAGE_DIGEST" "$SOURCE_HASH" "$BUILT_AT" "$CODEX_VERSION" "$DENO_VERSION" > "$TEMP_RECORD"
+printf '{\n  "schema": 1,\n  "image_digest": "%s",\n  "source_hash": "%s",\n  "materialization": "rootful-containerfile",\n  "built_at": "%s",\n  "deno_version": "%s",\n  "build_status": "ready"\n}\n' \
+  "$IMAGE_DIGEST" "$SOURCE_HASH" "$BUILT_AT" "$DENO_VERSION" > "$TEMP_RECORD"
 chmod 0600 "$TEMP_RECORD"
 mv -f "$TEMP_RECORD" "$RECORD"
 trap - EXIT

@@ -36,11 +36,6 @@ base_image_digest = "sha256:c777b4b225501a61074837e90a826a58f99124837824023cd603
 base_manifest_digest_amd64 = "sha256:15ce8dc7aab3bea3c43c1f91e7b45b6bbd8cfbb64a71360659e476e4e87e78f2"
 base_manifest_digest_arm64 = "sha256:4c186883472a8f457b8500b5749d61898b9eddb38ea5fac2ad2bf4d026cd230e"
 
-[codex]
-version = "0.149.1"
-archive_sha512_amd64 = "39fe5f19882beed00cb328fabe15dbe3f44cfd4a00dd9abc04b7a05010c2d3d50dcb55d32c660fff65c3f945fccf7aa1d0d0f0c587428c52167433628ca66081"
-archive_sha512_arm64 = "3aac547d9d5356f1ddd7ccc73ca2bff19465a64f15cb5d6683908c1da2f135695d4dbc152260cab522d64fe9bc9b834ce52cf83db8ed64cad54ff45fa415bf99"
-
 [development_image]
 name = "the8020/development:1"
 

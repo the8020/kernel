@@ -16,7 +16,7 @@ func TestLoadVersionsAndArchitectureChecksums(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if versions.Deno.Version != "2.9.4" || versions.Codex.Version != "0.149.1" || versions.RuntimeImage.Name == "" || versions.DevelopmentImage.Name == "" {
+	if versions.Deno.Version != "2.9.4" || versions.RuntimeImage.Name == "" || versions.DevelopmentImage.Name == "" {
 		t.Fatalf("versions: %#v", versions)
 	}
 	amd64, err := versions.Checksums("x86_64")
