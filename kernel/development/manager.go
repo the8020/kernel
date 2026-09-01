@@ -399,7 +399,7 @@ func (m *Manager) startLocked(ctx context.Context, sandbox *Sandbox) error {
 	if err != nil {
 		return err
 	}
-	sandbox.State, sandbox.DevelopmentImage = StateStarting, image.Digest
+	sandbox.State = StateStarting
 	sandbox.UpdatedAt = time.Now().UTC()
 	if err := m.saveSandbox(*sandbox); err != nil {
 		return err
@@ -440,19 +440,39 @@ func (m *Manager) prepareSandboxStorage(ctx context.Context, sandbox *Sandbox, i
 		return err
 	}
 	sandbox.SourcePath = m.config.PackagesRoot
-	systemRoot, err := m.systemRootPath(sandbox.UserID, imageDigest)
-	if err != nil {
-		return err
-	}
-	if _, err := os.Stat(systemRoot); errors.Is(err, os.ErrNotExist) {
+	if sandbox.DevelopmentImage == "" && sandbox.SystemPath == "" {
+		if sandbox.State != StateCreating {
+			return errors.New("development sandbox system root is uninitialized; factory reset is required")
+		}
+		systemRoot, err := m.systemRootPath(sandbox.UserID, imageDigest)
+		if err != nil {
+			return err
+		}
 		if err := copySystemRoot(ctx, m.config.ImageRoot, systemRoot); err != nil {
 			return fmt.Errorf("initialize durable development system: %w", err)
 		}
-	} else if err != nil {
-		return err
+		canonicalRoot, err := canonicalDirectory(systemRoot)
+		if err != nil {
+			return err
+		}
+		sandbox.DevelopmentImage, sandbox.SystemPath = imageDigest, canonicalRoot
+		return nil
 	}
-	sandbox.SystemPath, err = canonicalDirectory(systemRoot)
-	return err
+	if sandbox.DevelopmentImage == "" || sandbox.SystemPath == "" {
+		return errors.New("development sandbox system root record is incomplete; factory reset is required")
+	}
+	expectedRoot, err := m.systemRootPath(sandbox.UserID, sandbox.DevelopmentImage)
+	if err != nil || filepath.Clean(sandbox.SystemPath) != expectedRoot {
+		return errors.New("development sandbox system root record is invalid; factory reset is required")
+	}
+	canonicalRoot, err := canonicalDirectory(expectedRoot)
+	if err != nil {
+		return fmt.Errorf("development sandbox system root is unavailable; factory reset is required: %w", err)
+	}
+	if canonicalRoot != expectedRoot {
+		return errors.New("development sandbox system root is unsafe; factory reset is required")
+	}
+	return nil
 }
 
 func packageDirectories(root string) []string {

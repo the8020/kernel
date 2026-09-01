@@ -26,10 +26,14 @@
   boundaries checkpoint private package deltas beneath `dev-sandbox/runtime/`
   and restore them on start. There is no timer, autosave loop, filesystem
   scanner, full-tree copy, or serialized file-content format.
-- The writable OCI system root, including `/root`, is copied once per image
-  digest beneath `dev-sandbox/system/` and preserves native Linux ownership,
-  modes, symlinks, and atomic renames. `/run` and `/tmp` remain tmpfs-backed and
-  are intentionally not persisted.
+- The writable OCI system root, including `/root`, is initialized from the
+  current development image only when the sandbox is first created or after a
+  confirmed factory reset. Its recorded image-qualified path and image
+  provenance are then retained across image changes and ordinary lifecycle
+  operations. Missing, unsafe, or inconsistent recorded roots fail closed and
+  require explicit recovery or factory reset. Native Linux ownership, modes,
+  symlinks, and atomic renames are preserved; `/run` and `/tmp` remain
+  tmpfs-backed and intentionally unpersisted.
 - Authorized-key lookup is a read-only operation on an already initialized
   sandbox. It reads only the bounded regular `/root/.ssh/authorized_keys` file
   beneath the record's expected canonical system root, rejects symlinks and
@@ -57,8 +61,10 @@
 - Repository locking is independent of the per-user lifecycle lock. Never hold
   the lifecycle lock merely to inspect a shared repository.
 - Source reset discards overlay changes and recorded bases while preserving the
-  system root. Factory reset removes exactly `users/<user>/dev-sandbox/` and
-  recreates it, preserving unrelated user data. Both require confirmation.
+  recorded system root and image provenance. Factory reset is the sole path
+  that removes exactly `users/<user>/dev-sandbox/` and initializes a replacement
+  root from the current development image, preserving unrelated user data. Both
+  require confirmation.
 - The helper endpoint authenticates the sandbox token, fixes helper client
   metadata, and re-enters registered activation commands; it is not a second
   activation implementation.

@@ -37,9 +37,10 @@
   supplies that boundary through `chroot` without a nested gVisor launch.
   No mode imports host binaries or host package closures, and development
   sandboxes run behind the direct runsc driver.
-- The image is an immutable template only. The kernel copies it once into an
-  image-qualified native durable root per developer and runs that private root
-  directly; interactive APT/dpkg and system changes therefore require no
+- The image is an immutable template only. The kernel copies the current image
+  into an image-qualified native durable root on initial sandbox creation or
+  confirmed factory reset, then retains that recorded private root across later
+  image updates. Interactive APT/dpkg and system changes therefore require no
   overlay or snapshot.
 - `install.sh` rebuilds the image only when its complete generic input digest
   changes. Kernel startup only reads the verified record; there is no image

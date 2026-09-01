@@ -216,6 +216,8 @@ func (d *fakeDriver) Running(_ context.Context, id string) (bool, error) {
 type testPlatform struct {
 	root    string
 	users   string
+	image   string
+	record  string
 	manager *Manager
 	driver  *fakeDriver
 }
@@ -257,7 +259,7 @@ func newTestPlatform(t *testing.T) testPlatform {
 		}
 	}
 	t.Cleanup(func() { _ = manager.Close(context.Background()) })
-	return testPlatform{root: root, users: users, manager: manager, driver: driver}
+	return testPlatform{root: root, users: users, image: image, record: record, manager: manager, driver: driver}
 }
 
 func registerTestActivationCommands(t *testing.T, registry *core.Registry, manager *Manager) {
@@ -369,6 +371,191 @@ func TestEnsureSandboxCreatesAndRestartsDirectly(t *testing.T) {
 		if _, err := platform.manager.EnsureSandbox(context.Background(), owner); err == nil {
 			t.Errorf("unsupported development username %q was accepted", owner)
 		}
+	}
+}
+
+func TestSystemRootSurvivesImageUpdateUntilFactoryReset(t *testing.T) {
+	platform := newTestPlatform(t)
+	sandbox, err := platform.manager.Create(context.Background(), "developer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalDigest, originalRoot := sandbox.DevelopmentImage, sandbox.SystemPath
+	writeTestFile(t, filepath.Join(originalRoot, "usr", "local", "bin", "installed-tool"), "installed\n")
+	authorized := []byte("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKey developer@test\n")
+	writeTestFile(t, filepath.Join(originalRoot, "root", ".ssh", "authorized_keys"), string(authorized))
+	if _, err := platform.manager.Stop(context.Background(), sandbox.UserID); err != nil {
+		t.Fatal(err)
+	}
+
+	latestDigest := "sha256:" + strings.Repeat("2", 64)
+	writeTestFile(t, filepath.Join(platform.image, "usr", "bin", "base-tool"), "latest-image\n")
+	if err := writeAtomic(platform.record, []byte(`{"image_digest":"`+latestDigest+`","deno_version":"test"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	platform.manager.config.MountProfile = append(platform.manager.config.MountProfile, MountDefinition{
+		ID: "cache", Source: "users/<user-id>/dev-sandbox/persistent/cache", Target: "/workspace/cache", Behavior: MountPersistent, Writable: true,
+	})
+	systemEntriesBefore, err := os.ReadDir(filepath.Join(platform.users, sandbox.UserID, "dev-sandbox", "system"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	starts := platform.driver.starts
+	restarted, err := platform.manager.Start(context.Background(), sandbox.UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restarted.DevelopmentImage != originalDigest || restarted.SystemPath != originalRoot {
+		t.Fatalf("image update changed recorded root: digest=%q path=%q", restarted.DevelopmentImage, restarted.SystemPath)
+	}
+	if platform.driver.starts != starts+1 || platform.driver.views[sandbox.SandboxID].start.RootFS != originalRoot {
+		t.Fatal("restart did not mount the retained system root exactly once")
+	}
+	if got := shell(t, platform.manager, sandbox.UserID, "read system/usr/local/bin/installed-tool"); got != "installed\n" {
+		t.Fatalf("retained installed tool = %q", got)
+	}
+	if got := shell(t, platform.manager, sandbox.UserID, "read system/usr/bin/base-tool"); got != "image-default\n" {
+		t.Fatalf("existing root was replaced with latest image contents: %q", got)
+	}
+	if keys, err := platform.manager.AuthorizedKeys(sandbox.UserID); err != nil || !bytes.Equal(keys, authorized) {
+		t.Fatalf("authorized keys did not resolve through retained root: %q, %v", keys, err)
+	}
+	resolvedCache := false
+	for _, mount := range platform.driver.views[sandbox.SandboxID].start.Mounts {
+		if mount.ID == "cache" && mount.HostSource == filepath.Join(platform.users, sandbox.UserID, "dev-sandbox", "persistent", "cache") {
+			resolvedCache = true
+		}
+	}
+	if !resolvedCache {
+		t.Fatal("restart did not resolve the current mount profile")
+	}
+	systemEntriesAfter, err := os.ReadDir(filepath.Join(platform.users, sandbox.UserID, "dev-sandbox", "system"))
+	if err != nil || len(systemEntriesAfter) != len(systemEntriesBefore) {
+		t.Fatalf("image update created another system root: before=%d after=%d err=%v", len(systemEntriesBefore), len(systemEntriesAfter), err)
+	}
+	latestRoot, err := platform.manager.systemRootPath(sandbox.UserID, latestDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(latestRoot); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("existing sandbox received an implicit latest-image root: %v", err)
+	}
+
+	sourceReset, err := platform.manager.ResetSource(context.Background(), sandbox.UserID, true)
+	if err != nil || sourceReset.SystemPath != originalRoot || sourceReset.DevelopmentImage != originalDigest {
+		t.Fatalf("source reset changed retained root: %#v, %v", sourceReset, err)
+	}
+	if keys, err := platform.manager.AuthorizedKeys(sandbox.UserID); err != nil || !bytes.Equal(keys, authorized) {
+		t.Fatalf("source reset changed retained authorized keys: %q, %v", keys, err)
+	}
+
+	newSandbox, err := platform.manager.Create(context.Background(), "newdeveloper")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newSandbox.DevelopmentImage != latestDigest {
+		t.Fatalf("new sandbox image = %q, want %q", newSandbox.DevelopmentImage, latestDigest)
+	}
+	if got := shell(t, platform.manager, newSandbox.UserID, "read system/usr/bin/base-tool"); got != "latest-image\n" {
+		t.Fatalf("new sandbox image contents = %q", got)
+	}
+
+	factoryReset, err := platform.manager.FactoryReset(context.Background(), sandbox.UserID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if factoryReset.DevelopmentImage != latestDigest || factoryReset.SystemPath == originalRoot {
+		t.Fatalf("factory reset did not select latest image root: %#v", factoryReset)
+	}
+	if _, err := os.Stat(originalRoot); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("factory reset retained old system root: %v", err)
+	}
+	if got := shell(t, platform.manager, sandbox.UserID, "read system/usr/bin/base-tool"); got != "latest-image\n" {
+		t.Fatalf("factory-reset image contents = %q", got)
+	}
+}
+
+func TestExistingSystemRootRecordFailsClosed(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*testing.T, testPlatform, *Sandbox)
+	}{
+		{
+			name: "missing root",
+			mutate: func(t *testing.T, _ testPlatform, sandbox *Sandbox) {
+				if err := os.RemoveAll(sandbox.SystemPath); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "inconsistent path",
+			mutate: func(t *testing.T, platform testPlatform, sandbox *Sandbox) {
+				outside := filepath.Join(platform.root, "outside-root")
+				if err := os.MkdirAll(outside, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				sandbox.SystemPath = outside
+				if err := platform.manager.saveSandbox(*sandbox); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "unsafe symlinked root",
+			mutate: func(t *testing.T, platform testPlatform, sandbox *Sandbox) {
+				outside := filepath.Join(platform.root, "outside-root")
+				if err := os.MkdirAll(outside, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.RemoveAll(sandbox.SystemPath); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outside, sandbox.SystemPath); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "incomplete provenance",
+			mutate: func(t *testing.T, platform testPlatform, sandbox *Sandbox) {
+				sandbox.DevelopmentImage = ""
+				if err := platform.manager.saveSandbox(*sandbox); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			platform := newTestPlatform(t)
+			sandbox, err := platform.manager.Create(context.Background(), "developer")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := platform.manager.Stop(context.Background(), sandbox.UserID); err != nil {
+				t.Fatal(err)
+			}
+			test.mutate(t, platform, &sandbox)
+			latestDigest := "sha256:" + strings.Repeat("3", 64)
+			if err := writeAtomic(platform.record, []byte(`{"image_digest":"`+latestDigest+`"}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			starts := platform.driver.starts
+			if _, err := platform.manager.Start(context.Background(), sandbox.UserID); err == nil || !strings.Contains(err.Error(), "factory reset is required") {
+				t.Fatalf("invalid existing storage did not fail with recovery guidance: %v", err)
+			}
+			if platform.driver.starts != starts {
+				t.Fatalf("failed start created a runtime sandbox: %d -> %d", starts, platform.driver.starts)
+			}
+			latestRoot, err := platform.manager.systemRootPath(sandbox.UserID, latestDigest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(latestRoot); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("failed start implicitly initialized replacement root: %v", err)
+			}
+		})
 	}
 }
 
