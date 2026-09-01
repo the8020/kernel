@@ -2,7 +2,7 @@ version = 1
 id = "service.scale"
 path = ["service", "scale"]
 summary = "Scale a filesystem service"
-description = "Updates canonical Worker scaling, sandbox placement, and service lifecycle policy, then reconciles the new generation."
+description = "Updates canonical Worker scaling, sandbox placement, and service lifecycle policy, then reconciles the new version."
 mutates_state = true
 restart_behavior = "none"
 [handler]

@@ -10,9 +10,10 @@
 
 - Service IDs and canonical prefixes are filesystem-derived; commands cannot supply entrypoints, route prefixes, package IDs, or source mounts.
 - `service list` exposes only service identity, description, canonical path,
-  state, enabled status, and local sandbox/Worker counts; `service inspect` owns
-  generations, sandbox identities, effective configuration, failures, and metrics.
-- Lifecycle commands return generation/capacity summaries by default and expose complete status only through `--detail`.
+  state, enabled status, version count, and unique local sandbox/Worker counts;
+  `service inspect` owns versioned sandbox identities, effective configuration,
+  failures, and metrics.
+- Lifecycle commands return version/capacity summaries by default and expose complete status only through `--detail`.
 - `service scale` mutates the canonical service type, minimum/maximum Workers,
   per-Worker concurrency and target utilization, Worker/session keepalives,
   sandbox group, minimum sandboxes, and Workers-per-sandbox through validated

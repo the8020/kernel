@@ -15,6 +15,7 @@ type summary struct {
 	CanonicalBasePath string            `json:"canonical_base_path"`
 	State             webservices.State `json:"state"`
 	Enabled           bool              `json:"enabled"`
+	VersionCount      int               `json:"version_count"`
 	SandboxCount      int               `json:"sandbox_count"`
 	WorkerCount       int               `json:"worker_count"`
 	ServiceType       string            `json:"service_type"`
@@ -39,7 +40,7 @@ func New(serviceSet *services.Services) core.Handler {
 		for _, status := range statuses {
 			items = append(items, summary{
 				ServiceID: status.ServiceID, CanonicalBasePath: status.CanonicalBasePath, Description: status.Description,
-				Enabled: status.Enabled, State: status.State, SandboxCount: status.SandboxCount,
+				Enabled: status.Enabled, State: status.State, VersionCount: status.VersionCount, SandboxCount: status.SandboxCount,
 				WorkerCount: status.WorkerCount, ValidationError: status.ValidationError,
 				ServiceType: status.ServiceType, AccessMode: status.AccessMode,
 			})

@@ -6,7 +6,7 @@
 # Ownership
 
 - Reconcile shared package desired state into node-local low-level service
-  sandbox allocations, perform rolling generation replacement, retain healthy generations
+  sandbox allocations, perform rolling version replacement, retain healthy versions
   on replacement failure, and publish node-local observed status.
 - Enforce public/authenticated access, strip canonical service prefixes and
   untrusted internal headers, attach trusted request/auth/execution metadata,
@@ -66,18 +66,18 @@
   and active session routes prevent retirement. Releasing the final sandbox
   owner destroys that sandbox.
 - Minimum-sandbox allocation indexes are partitioned deterministically across
-  enabled nodes and same-generation reconciliation moves allocations when that
+  enabled nodes and same-version reconciliation moves allocations when that
   assignment changes. Sandbox and Worker counts in service status remain
   node-local while node capacity reports provide cluster-facing inventory.
 - Initial zero-capacity failure is `PENDING_CAPACITY`; partial minimum capacity
   is `DEGRADED`; desired state remains intact and reconciliation retries. A cold
-  request may use healthy degraded capacity. Same-generation retries add only
+  request may use healthy degraded capacity. Same-version retries add only
   missing assigned sandboxes or Workers in place and never drain healthy
   capacity or invalidate session routes merely because a configured minimum is
   temporarily unavailable.
-- A supervisor-rejected application definition marks that exact generation
+- A supervisor-rejected application definition marks that exact version
   stably `FAILED` or `DEGRADED`. Maintenance and cold requests do not compile or
-  retry the same rejected generation; an explicit restart or a new generation
+  retry the same rejected version; an explicit restart or a new version
   clears the rejection and attempts it once. Capacity and infrastructure
   failures remain retryable `PENDING_CAPACITY` behavior.
 - Startup performs one fixed-depth package/service discovery. Periodic
@@ -86,18 +86,23 @@
   mutations, requests, and `ReconcileAll` reconcile immediately.
 - Repeated identical maintenance failures neither increment failure counters nor
   emit duplicate logs until the failure changes or clears.
-- Replacement capacity is validated before a generation switch. Persistent
-  routes may retain old-generation pools until their executions expire; all
+- Replacement capacity is validated before a version switch. Persistent
+  routes may retain old-version pools until their executions expire; all
   other stale pools drain and are retried on cleanup failure. Fully stopped
-  stale-generation pool records are removed so destroyed prior-generation
+  stale-version pool records are removed so destroyed prior-version
   sandboxes cannot cause permanent reconciliation retries.
-- Package synchronization increments every current service generation through
+- Package synchronization increments every current service version through
   `Reload` and uses `Retire` to stop and forget runtime capacity for services no
   longer declared by the package. Shared service desired state remains intact
   so restoring a prior package version can reconcile it again.
 - Entrypoint/OpenAPI validation uses an isolated temporary pool and removes its
   terminal record after validation; reconciliation garbage-collects stopped
   validation records left by earlier kernels.
+- Service status is one logical row per service. It aggregates current and
+  retained session versions, counts physical sandboxes and Workers by unique
+  identity, reports the number of live versions, and includes each sandbox's
+  version. A serving retained version prevents the logical service from being
+  reported as idle.
 - This package forwards no application settings and performs no application
   inventory or Worker scan. Package-owned administration may use the generic
   exact-Worker invocation capability through the kernel SDK.
@@ -120,11 +125,11 @@
   sandbox packing and Worker-limit-triggered minimum spillover, per-service capacity
   locking, failed cold-start rollback,
   idle sandbox scale-down,
-  generation replacement, degraded cold-start routing, in-place missing-capacity
+  version replacement, aggregate retained-version visibility, degraded cold-start routing, in-place missing-capacity
   recovery, capacity states, stale-pool cleanup, terminal pool-record removal,
   validation-pool cleanup, stale persistent-Worker rejection, exact persistent
   completion, one-time catalog discovery, active-only background maintenance,
-  stable rejected-generation suppression with explicit retry, and duplicate
+  stable rejected-version suppression with explicit retry, and duplicate
   failure suppression.
 
 # Child DOX Index

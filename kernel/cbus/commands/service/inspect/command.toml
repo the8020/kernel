@@ -2,7 +2,7 @@ version = 1
 id = "service.inspect"
 path = ["service", "inspect"]
 summary = "Inspect one filesystem service"
-description = "Reads the current manifests and desired state and reports effective configuration, generations, local sandboxes, Workers, failures, and metrics."
+description = "Reads the current manifests and desired state and reports effective configuration, versions, local sandboxes, Workers, failures, and metrics."
 mutates_state = false
 restart_behavior = "none"
 [handler]

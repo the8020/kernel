@@ -2,7 +2,7 @@ version = 1
 id = "service.start"
 path = ["service", "start"]
 summary = "Start a filesystem service"
-description = "Enables the service in shared desired state, increments its generation, and waits for local ready capacity."
+description = "Enables the service in shared desired state, increments its version, and waits for local ready capacity."
 mutates_state = true
 restart_behavior = "none"
 [handler]

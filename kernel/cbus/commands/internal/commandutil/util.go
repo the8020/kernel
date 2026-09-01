@@ -150,12 +150,13 @@ func WebServiceStatus(status webservices.Status, detail bool) core.Result {
 		return core.Result{"service": status}
 	}
 	return core.Result{
-		"service_id":         status.ServiceID,
-		"state":              status.State,
-		"enabled":            status.Enabled,
-		"desired_generation": status.DesiredGeneration,
-		"loaded_generation":  status.LoadedGeneration,
-		"sandbox_count":      status.SandboxCount,
-		"worker_count":       status.WorkerCount,
+		"service_id":      status.ServiceID,
+		"state":           status.State,
+		"enabled":         status.Enabled,
+		"desired_version": status.DesiredVersion,
+		"loaded_version":  status.LoadedVersion,
+		"version_count":   status.VersionCount,
+		"sandbox_count":   status.SandboxCount,
+		"worker_count":    status.WorkerCount,
 	}
 }

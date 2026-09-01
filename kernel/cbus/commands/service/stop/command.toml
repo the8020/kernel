@@ -2,7 +2,7 @@ version = 1
 id = "service.stop"
 path = ["service", "stop"]
 summary = "Stop a filesystem service"
-description = "Disables the service in shared desired state, increments its generation, drains requests, and stops only its local capacity."
+description = "Disables the service in shared desired state, increments its version, drains requests, and stops only its local capacity."
 mutates_state = true
 restart_behavior = "none"
 [handler]

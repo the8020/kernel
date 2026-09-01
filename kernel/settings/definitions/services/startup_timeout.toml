@@ -7,4 +7,4 @@ minimum = 1000
 maximum = 600000
 runtime_mutable = false
 restart_required = true
-description = "Maximum time to prepare one service generation in milliseconds."
+description = "Maximum time to prepare one service version in milliseconds."

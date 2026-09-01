@@ -169,7 +169,7 @@ type fakePools struct {
 	records         map[string]executionservices.Record
 	options         map[string]executionservices.Options
 	events          []string
-	failGeneration  map[uint64]error
+	failVersion     map[uint64]error
 	failStart       map[string]error
 	failScale       map[string]error
 	failStop        map[string]error
@@ -196,7 +196,7 @@ func newFakePools() *fakePools {
 	return &fakePools{
 		records:        map[string]executionservices.Record{},
 		options:        map[string]executionservices.Options{},
-		failGeneration: map[uint64]error{},
+		failVersion:    map[uint64]error{},
 		failStart:      map[string]error{},
 		failScale:      map[string]error{},
 		failStop:       map[string]error{},
@@ -238,7 +238,7 @@ func (p *fakePools) Start(_ context.Context, serviceID, entrypoint string, optio
 	if err := p.failStart[serviceID]; err != nil {
 		return executionservices.Record{}, err
 	}
-	if err := p.failGeneration[options.Generation]; err != nil {
+	if err := p.failVersion[options.Generation]; err != nil {
 		return executionservices.Record{}, err
 	}
 	if existing, exists := p.records[serviceID]; exists && existing.State == "READY" {
@@ -441,14 +441,14 @@ func (p *fakePools) RemoveStopped(serviceID string) error {
 	return nil
 }
 
-func TestReconcileRetriesPersistedStaleGenerationPoolCleanup(t *testing.T) {
+func TestReconcileRetriesPersistedStaleVersionPoolCleanup(t *testing.T) {
 	root := t.TempDir()
 	store := writeTestService(t, root, "the8020/demo/variables", "")
 	pools, router := newFakePools(), &fakeRouter{}
-	staleID := "stale-generation-pool"
+	staleID := "stale-version-pool"
 	pools.records[staleID] = executionservices.Record{
 		ServiceID: staleID, LogicalServiceID: "the8020/demo/variables",
-		ReleaseID: "service-generation-0", Generation: 0, State: "READY",
+		ReleaseID: "service-version-0", Generation: 0, State: "READY",
 		WorkerIDs: []string{"stale-worker"},
 	}
 	validationID := "old-validation-pool"
@@ -475,7 +475,7 @@ func TestReconcileRetriesPersistedStaleGenerationPoolCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, exists := pools.records[staleID]; exists {
-		t.Fatalf("stale generation record was not removed on retry: %#v", pools.records[staleID])
+		t.Fatalf("stale version record was not removed on retry: %#v", pools.records[staleID])
 	}
 }
 
@@ -556,7 +556,7 @@ func TestColdStartRollsBackFailedFirstWorkerAndRecoversOnRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	poolID := generationPoolID(serviceID, definition.State.Generation, 0)
+	poolID := versionPoolID(serviceID, definition.State.Generation, 0)
 	pools.failScale[poolID] = errors.New("sandbox Worker capacity is exhausted")
 	failed := httptest.NewRecorder()
 	manager.ServeHTTP(failed, httptest.NewRequest(http.MethodGet, "/the8020/demo/variables/fail", nil))
@@ -592,7 +592,7 @@ func TestTargetHeadroomFailureFallsBackToAvailableHardSlot(t *testing.T) {
 		Slots:    1,
 		Reason:   "target-utilization growth failed: sandbox Worker capacity is exhausted",
 	}
-	newPoolID := generationPoolID(serviceID, started.DesiredGeneration, 1)
+	newPoolID := versionPoolID(serviceID, started.DesiredVersion, 1)
 	pools.failScale[newPoolID] = errors.New("sandbox Worker capacity is exhausted")
 
 	response := httptest.NewRecorder()
@@ -650,7 +650,7 @@ func TestMinimumWorkersSpillIntoAnotherSandboxWhenWorkerLimitBlocksPacking(t *te
 	serviceID := "the8020/demo/variables"
 	store := writeCanonicalTestService(t, root, serviceID, 2, 4, 0, 4, workspacepackages.ServiceTypeStateless)
 	pools, router := newFakePools(), &fakeRouter{}
-	firstPoolID := generationPoolID(serviceID, 1, 0)
+	firstPoolID := versionPoolID(serviceID, 1, 0)
 	pools.failScale[firstPoolID] = fmt.Errorf("%w: Worker limit is reached", executionworkers.ErrSandboxCapacity)
 	manager := newTestManager(t, store, pools, router, filepath.Join(root, "node", "kernel", "services"))
 
@@ -717,31 +717,31 @@ func TestIdenticalServiceFailuresAreRecordedOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	cause := errors.New("package is unavailable")
-	if _, err := manager.retainFailedGeneration("the8020/demo/static", 3, cause); !errors.Is(err, cause) {
+	if _, err := manager.retainFailedVersion("the8020/demo/static", 3, cause); !errors.Is(err, cause) {
 		t.Fatal(err)
 	}
-	status, err := manager.retainFailedGeneration("the8020/demo/static", 3, cause)
+	status, err := manager.retainFailedVersion("the8020/demo/static", 3, cause)
 	if !errors.Is(err, cause) {
 		t.Fatal(err)
 	}
 	if status.Metrics.StartupFailures != 1 {
 		t.Fatalf("identical failure count = %d", status.Metrics.StartupFailures)
 	}
-	if count := strings.Count(logs.String(), "service generation failed"); count != 1 {
+	if count := strings.Count(logs.String(), "service version failed"); count != 1 {
 		t.Fatalf("identical failure logs = %d: %s", count, logs.String())
 	}
 }
 
-func TestRejectedServiceGenerationDoesNotEnterCapacityRetryLoop(t *testing.T) {
+func TestRejectedServiceVersionDoesNotEnterCapacityRetryLoop(t *testing.T) {
 	root := t.TempDir()
 	store := writeTestService(t, root, "the8020/demo/variables", "")
 	pools, router := newFakePools(), &fakeRouter{}
 	manager := newTestManager(t, store, pools, router, filepath.Join(root, "node", "kernel", "services"))
 	rejection := fmt.Errorf("%w: type check failed", executionservices.ErrInvalidServiceDefinition)
-	pools.failGeneration[1] = rejection
+	pools.failVersion[1] = rejection
 
 	status, err := manager.Start(context.Background(), "the8020/demo/variables")
-	if !errors.Is(err, executionservices.ErrInvalidServiceDefinition) || status.State != StateFailed || status.FailedGeneration != 1 || status.Metrics.StartupFailures != 1 {
+	if !errors.Is(err, executionservices.ErrInvalidServiceDefinition) || status.State != StateFailed || status.FailedVersion != 1 || status.Metrics.StartupFailures != 1 {
 		t.Fatalf("status=%#v err=%v", status, err)
 	}
 	pools.mu.Lock()
@@ -755,18 +755,18 @@ func TestRejectedServiceGenerationDoesNotEnterCapacityRetryLoop(t *testing.T) {
 	afterMaintenanceAndRequest := len(pools.events)
 	pools.mu.Unlock()
 	if afterMaintenanceAndRequest != starts {
-		t.Fatalf("rejected generation retried: before=%d after=%d", starts, afterMaintenanceAndRequest)
+		t.Fatalf("rejected version retried: before=%d after=%d", starts, afterMaintenanceAndRequest)
 	}
 
-	pools.failGeneration[2] = rejection
-	if retried, err := manager.Restart(context.Background(), "the8020/demo/variables"); !errors.Is(err, executionservices.ErrInvalidServiceDefinition) || retried.FailedGeneration != 2 {
+	pools.failVersion[2] = rejection
+	if retried, err := manager.Restart(context.Background(), "the8020/demo/variables"); !errors.Is(err, executionservices.ErrInvalidServiceDefinition) || retried.FailedVersion != 2 {
 		t.Fatalf("explicit retry status=%#v err=%v", retried, err)
 	}
 	pools.mu.Lock()
 	afterExplicitRestart := len(pools.events)
 	pools.mu.Unlock()
 	if afterExplicitRestart <= starts {
-		t.Fatal("explicit service restart did not retry the rejected generation")
+		t.Fatal("explicit service restart did not retry the rejected version")
 	}
 }
 
@@ -789,8 +789,8 @@ workers_per_sandbox = 1
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstPoolID := generationPoolID(definition.Identity.ServiceID(), definition.State.Generation, 0)
-	missingPoolID := generationPoolID(definition.Identity.ServiceID(), definition.State.Generation, 1)
+	firstPoolID := versionPoolID(definition.Identity.ServiceID(), definition.State.Generation, 0)
+	missingPoolID := versionPoolID(definition.Identity.ServiceID(), definition.State.Generation, 1)
 	pools := newFakePools()
 	pools.failStart[missingPoolID] = errors.New("node CPU capacity exhausted")
 	manager := newTestManager(t, store, pools, &fakeRouter{}, filepath.Join(root, "node", "kernel", "node-a", "services"))
@@ -871,7 +871,7 @@ workers_per_sandbox = 2
 	}
 }
 
-func TestLifecyclePersistsGenerationsRollsCapacityAndRetainsBrokenReplacement(t *testing.T) {
+func TestLifecyclePersistsVersionsRollsCapacityAndRetainsBrokenReplacement(t *testing.T) {
 	root := t.TempDir()
 	store := writeTestService(t, root, "the8020/demo/variables", `[scaling]
 minimum_workers = 2
@@ -889,7 +889,7 @@ workers_per_sandbox = 4
 	if err != nil {
 		t.Fatal(err)
 	}
-	if started.State != StateReady || started.DesiredGeneration != 1 || started.LoadedGeneration != 1 || started.SandboxCount != 1 || started.WorkerCount != 2 {
+	if started.State != StateReady || started.DesiredVersion != 1 || started.LoadedVersion != 1 || started.SandboxCount != 1 || started.WorkerCount != 2 {
 		t.Fatalf("started = %#v", started)
 	}
 	state, exists, err := store.ReadState("the8020/demo/variables")
@@ -902,20 +902,20 @@ workers_per_sandbox = 4
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restarted.LoadedGeneration != 2 || restarted.Sandboxes[0].PoolID == firstPool {
+	if restarted.LoadedVersion != 2 || restarted.Sandboxes[0].PoolID == firstPool {
 		t.Fatalf("restarted = %#v", restarted)
 	}
 	assertEventBefore(t, pools.events, "start:"+restarted.Sandboxes[0].PoolID+":2", "stop:"+firstPool)
 
-	pools.failGeneration[3] = errors.New("entrypoint initialization failed")
+	pools.failVersion[3] = errors.New("entrypoint initialization failed")
 	degraded, err := manager.Restart(context.Background(), "the8020/demo/variables")
-	if err == nil || degraded.State != StateDegraded || degraded.LoadedGeneration != 2 || degraded.DesiredGeneration != 3 || degraded.FailedGeneration != 3 {
+	if err == nil || degraded.State != StateDegraded || degraded.LoadedVersion != 2 || degraded.DesiredVersion != 3 || degraded.FailedVersion != 3 {
 		t.Fatalf("degraded=%#v err=%v", degraded, err)
 	}
 	if record, inspectErr := pools.Inspect(restarted.Sandboxes[0].PoolID); inspectErr != nil || record.State != "READY" {
 		t.Fatalf("old capacity was not retained: record=%#v err=%v", record, inspectErr)
 	}
-	delete(pools.failGeneration, 3)
+	delete(pools.failVersion, 3)
 	if err := manager.ReconcileAll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -936,7 +936,7 @@ workers_per_sandbox = 4
 	if err != nil {
 		t.Fatal(err)
 	}
-	if scaled.LoadedGeneration != 4 || scaled.SandboxCount != 2 || scaled.WorkerCount != 6 {
+	if scaled.LoadedVersion != 4 || scaled.SandboxCount != 2 || scaled.WorkerCount != 6 {
 		t.Fatalf("scaled = %#v", scaled)
 	}
 	if scaled.Effective.Scaling.ConcurrencyPerWorker != 8 || scaled.Effective.Scaling.WorkerKeepAlive != 3*time.Minute || scaled.Effective.Lifecycle.SessionKeepAlive != 4*time.Minute || scaled.Effective.Scaling.TargetUtilization != 0.65 || scaled.Effective.Placement.SandboxGroup != "shared-proof" {
@@ -946,7 +946,7 @@ workers_per_sandbox = 4
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stopped.State != StateStopped || stopped.Enabled || stopped.DesiredGeneration != 5 || stopped.SandboxCount != 0 {
+	if stopped.State != StateStopped || stopped.Enabled || stopped.DesiredVersion != 5 || stopped.SandboxCount != 0 {
 		t.Fatalf("stopped = %#v", stopped)
 	}
 	if err := manager.ReconcileAll(context.Background()); err != nil {
@@ -980,12 +980,12 @@ func TestServiceStatusDistinguishesStartupRestartAndDrainFromObservedCapacity(t 
 	}()
 	<-startEntered
 	status, err := manager.Inspect("the8020/demo/variables")
-	if err != nil || status.State != StateStarting || status.DesiredGeneration != 1 || status.LoadedGeneration != 0 || status.SandboxCount != 0 {
+	if err != nil || status.State != StateStarting || status.DesiredVersion != 1 || status.LoadedVersion != 0 || status.SandboxCount != 0 {
 		t.Fatalf("starting status=%#v err=%v", status, err)
 	}
 	close(startRelease)
 	status, err = <-started, <-startErrors
-	if err != nil || status.State != StateReady || status.LoadedGeneration != 1 || status.SandboxCount != 1 || status.WorkerCount != 1 {
+	if err != nil || status.State != StateReady || status.LoadedVersion != 1 || status.SandboxCount != 1 || status.WorkerCount != 1 {
 		t.Fatalf("ready status=%#v err=%v", status, err)
 	}
 
@@ -1002,12 +1002,12 @@ func TestServiceStatusDistinguishesStartupRestartAndDrainFromObservedCapacity(t 
 	}()
 	<-restartEntered
 	status, err = manager.Inspect("the8020/demo/variables")
-	if err != nil || status.State != StateRestarting || status.DesiredGeneration != 2 || status.LoadedGeneration != 1 || status.SandboxCount != 1 || status.WorkerCount != 1 {
+	if err != nil || status.State != StateRestarting || status.DesiredVersion != 2 || status.LoadedVersion != 1 || status.SandboxCount != 1 || status.WorkerCount != 1 {
 		t.Fatalf("restarting status=%#v err=%v", status, err)
 	}
 	close(restartRelease)
 	status, err = <-restarted, <-restartErrors
-	if err != nil || status.State != StateReady || status.LoadedGeneration != 2 {
+	if err != nil || status.State != StateReady || status.LoadedVersion != 2 {
 		t.Fatalf("restarted status=%#v err=%v", status, err)
 	}
 
@@ -1025,7 +1025,7 @@ func TestServiceStatusDistinguishesStartupRestartAndDrainFromObservedCapacity(t 
 	}()
 	<-stopEntered
 	status, err = manager.Inspect("the8020/demo/variables")
-	if err != nil || status.State != StateDraining || status.Enabled || status.DesiredGeneration != 3 || status.LoadedGeneration != 2 || status.SandboxCount != 1 {
+	if err != nil || status.State != StateDraining || status.Enabled || status.DesiredVersion != 3 || status.LoadedVersion != 2 || status.SandboxCount != 1 {
 		t.Fatalf("draining status=%#v err=%v", status, err)
 	}
 	close(stopRelease)
@@ -1313,7 +1313,89 @@ func TestSessionServiceEstablishesHTTPRouteThenReconnectsWebSocketToExactSandbox
 	}
 }
 
-func TestPersistentRouteKeepsOldGenerationUntilKeepaliveExpires(t *testing.T) {
+func TestObservedSandboxesCountUniqueResourcesAndVersions(t *testing.T) {
+	current := &runtimeSandbox{status: ServiceSandboxStatus{Version: 2, SandboxID: "sandbox-current", WorkerIDs: []string{"worker-a", "worker-b"}}}
+	duplicate := &runtimeSandbox{status: ServiceSandboxStatus{Version: 2, SandboxID: "sandbox-current", WorkerIDs: []string{"worker-b"}}}
+	retained := &runtimeSandbox{status: ServiceSandboxStatus{Version: 1, SandboxID: "sandbox-retained", WorkerIDs: []string{"worker-c"}}}
+
+	sandboxes, workers, versions := observedSandboxes([]*runtimeSandbox{current, duplicate, retained}, Status{LoadedVersion: 2, VersionCount: 1})
+	if len(sandboxes) != 2 || workers != 3 || versions != 2 {
+		t.Fatalf("observed sandboxes=%#v workers=%d versions=%d", sandboxes, workers, versions)
+	}
+	if sandboxes[0].Version != 2 || len(sandboxes[0].WorkerIDs) != 2 || sandboxes[1].Version != 1 {
+		t.Fatalf("ordered versioned sandboxes = %#v", sandboxes)
+	}
+}
+
+func TestServiceStatusAggregatesRetainedSessionVersionWithIdleCurrentVersion(t *testing.T) {
+	root := t.TempDir()
+	store := writeTestService(t, root, "example/realtime/channel", persistentServiceManifest)
+	pools, router := newFakePools(), &fakeRouter{}
+	manager := newTestManager(t, store, pools, router, filepath.Join(root, "node", "kernel", "services"))
+	manager.authentication = &fakeAuthentication{}
+	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	manager.persistentRoutes.now = func() time.Time { return base }
+
+	statePath := filepath.Join(root, "state", "services", "example", "realtime", "channel", "state.toml")
+	writeTestFile(t, statePath, "schema = 2\nenabled = true\ngeneration = 0\n")
+	if err := manager.ReconcileAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	initial, err := manager.Inspect("example/realtime/channel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial.LoadedVersion != 0 || initial.VersionCount != 1 {
+		t.Fatalf("initial zero version = %#v", initial)
+	}
+	pools.dispatched = make(chan dispatchedRequest, 1)
+	establish := httptest.NewRequest(http.MethodPost, "/example/realtime/channel/connect", nil)
+	establish.AddCookie(&http.Cookie{Name: "the8020_auth", Value: "valid-opaque-cookie"})
+	established := httptest.NewRecorder()
+	manager.ServeHTTP(established, establish)
+	route := established.Header().Get(RouteHeader)
+	dispatched := <-pools.dispatched
+	if established.Code != http.StatusOK || route == "" {
+		t.Fatalf("establishment status=%d route=%q", established.Code, route)
+	}
+
+	zero := 0
+	current, err := manager.Scale(context.Background(), "example/realtime/channel", ScaleOptions{MinimumWorkers: &zero, MinimumSandboxes: &zero})
+	if err != nil || current.State != StateIdle || current.SandboxCount != 0 || current.WorkerCount != 0 {
+		t.Fatalf("idle current version=%#v err=%v", current, err)
+	}
+	status, err := manager.Inspect("example/realtime/channel")
+	if err != nil || status.State != StateReady || status.VersionCount != 2 || status.SandboxCount != 1 || status.WorkerCount != 1 {
+		t.Fatalf("aggregate status=%#v err=%v", status, err)
+	}
+	for _, sandbox := range status.Sandboxes {
+		if sandbox.Version != initial.LoadedVersion {
+			t.Fatalf("retained sandbox version=%d want=%d: %#v", sandbox.Version, initial.LoadedVersion, status.Sandboxes)
+		}
+	}
+	statuses, err := manager.List()
+	if err != nil || len(statuses) != 1 || statuses[0].VersionCount != 2 || statuses[0].SandboxCount != 1 || statuses[0].WorkerCount != 1 {
+		t.Fatalf("service list=%#v err=%v", statuses, err)
+	}
+
+	resume := websocketRequest("/example/realtime/channel/connect?route="+route, "")
+	resume.AddCookie(&http.Cookie{Name: "the8020_auth", Value: "valid-opaque-cookie"})
+	manager.ServeHTTP(httptest.NewRecorder(), resume)
+	if got := pools.websockets[len(pools.websockets)-1].poolID; got != dispatched.poolID {
+		t.Fatalf("route selected %s, want retained pool %s", got, dispatched.poolID)
+	}
+
+	manager.persistentRoutes.now = func() time.Time { return base.Add(3 * time.Minute) }
+	if err := manager.ReconcileAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	status, err = manager.Inspect("example/realtime/channel")
+	if err != nil || status.State != StateIdle || status.VersionCount != 1 || status.SandboxCount != 0 || status.WorkerCount != 0 {
+		t.Fatalf("retired aggregate status=%#v err=%v", status, err)
+	}
+}
+
+func TestPersistentRouteKeepsOldVersionUntilKeepaliveExpires(t *testing.T) {
 	root := t.TempDir()
 	store := writeTestService(t, root, "example/realtime/channel", persistentServiceManifest)
 	pools, router := newFakePools(), &fakeRouter{}
@@ -1342,8 +1424,8 @@ func TestPersistentRouteKeepsOldGenerationUntilKeepaliveExpires(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restarted.LoadedGeneration == initial.LoadedGeneration || restarted.Sandboxes[0].PoolID == oldPool {
-		t.Fatalf("restart did not switch generation: initial=%#v restarted=%#v", initial, restarted)
+	if restarted.LoadedVersion == initial.LoadedVersion || restarted.Sandboxes[0].PoolID == oldPool {
+		t.Fatalf("restart did not switch version: initial=%#v restarted=%#v", initial, restarted)
 	}
 	if pools.records[oldPool].State != "READY" {
 		t.Fatalf("old persistent replica was not retained: %#v", pools.records[oldPool])
@@ -1361,7 +1443,7 @@ func TestPersistentRouteKeepsOldGenerationUntilKeepaliveExpires(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, exists := pools.records[oldPool]; exists {
-		t.Fatalf("empty draining generation record was not removed: %#v", pools.records[oldPool])
+		t.Fatalf("empty draining version record was not removed: %#v", pools.records[oldPool])
 	}
 }
 
@@ -1800,17 +1882,17 @@ func TestFirstValidationCreatesStateAndTwoNodesReconcileSharedDesiredState(t *te
 	}
 	for name, manager := range map[string]*Manager{"node-a": managerA, "node-b": managerB} {
 		status, err := manager.Inspect("the8020/demo/variables")
-		if err != nil || status.State != StateReady || status.LoadedGeneration != 1 || status.SandboxCount != 1 {
+		if err != nil || status.State != StateReady || status.LoadedVersion != 1 || status.SandboxCount != 1 {
 			t.Fatalf("%s status=%#v err=%v", name, status, err)
 		}
 	}
-	if status, err := managerB.Restart(context.Background(), "the8020/demo/variables"); err != nil || status.LoadedGeneration != 2 {
+	if status, err := managerB.Restart(context.Background(), "the8020/demo/variables"); err != nil || status.LoadedVersion != 2 {
 		t.Fatalf("node B restart=%#v err=%v", status, err)
 	}
 	if err := managerA.ReconcileAll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if status, err := managerA.Inspect("the8020/demo/variables"); err != nil || status.LoadedGeneration != 2 {
+	if status, err := managerA.Inspect("the8020/demo/variables"); err != nil || status.LoadedVersion != 2 {
 		t.Fatalf("node A did not observe restart: %#v err=%v", status, err)
 	}
 	if status, err := managerA.Stop(context.Background(), "the8020/demo/variables"); err != nil || status.State != StateStopped {
@@ -1819,7 +1901,7 @@ func TestFirstValidationCreatesStateAndTwoNodesReconcileSharedDesiredState(t *te
 	if err := managerB.ReconcileAll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if status, err := managerB.Inspect("the8020/demo/variables"); err != nil || status.State != StateStopped || status.DesiredGeneration != 3 {
+	if status, err := managerB.Inspect("the8020/demo/variables"); err != nil || status.State != StateStopped || status.DesiredVersion != 3 {
 		t.Fatalf("node B did not observe stop: %#v err=%v", status, err)
 	}
 	for _, path := range []string{

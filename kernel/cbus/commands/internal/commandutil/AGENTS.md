@@ -11,7 +11,7 @@
 
 - Public API is internal to `kernel/cbus/commands`: `Runtime`, primitive accessors, `JSON`, `CSV`, `Duration`, `Permissions`, `AdministrativeExecution`, `WebServiceStatus`, and `OperationError`.
 - Administrative eval/run responses share one concise default shape; the explicit detail view preserves the complete artifact, execution, and resource record.
-- Filesystem service lifecycle responses share one concise generation/capacity
+- Filesystem service lifecycle responses share one concise version/capacity
   shape; `--detail` preserves complete configuration, sandbox allocations,
   Workers, failures, and metrics.
 - User-facing runtime errors retain stable command-bus codes and never silently invoke a fallback runtime.

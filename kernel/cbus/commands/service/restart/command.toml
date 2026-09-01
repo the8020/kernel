@@ -2,7 +2,7 @@ version = 1
 id = "service.restart"
 path = ["service", "restart"]
 summary = "Restart a filesystem service"
-description = "Increments desired generation, validates and starts replacement capacity, switches traffic when ready, and then drains the old generation."
+description = "Increments the desired version, validates and starts replacement capacity, switches traffic when ready, and then drains the old version."
 mutates_state = true
 restart_behavior = "none"
 [handler]
