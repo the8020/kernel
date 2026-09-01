@@ -17,10 +17,7 @@ func Reason(inspection manager.Inspection) string {
 	if inspection.Spec.WorkloadType == model.WorkloadService && len(inspection.Spec.ServiceIDs) > 0 {
 		values := append([]string(nil), inspection.Spec.ServiceIDs...)
 		sort.Strings(values)
-		for index := range values {
-			values[index] = "service:" + values[index]
-		}
-		return strings.Join(values, ", ")
+		return "service:" + values[0]
 	}
 	owners := map[string]bool{}
 	for _, worker := range inspection.Workers {

@@ -12,10 +12,16 @@ func TestReasonUsesLogicalServiceIDForListAndDetailInspections(t *testing.T) {
 	summary := manager.Inspection{Spec: model.SandboxSpec{
 		WorkloadType: model.WorkloadService,
 		GroupKey:     "service:placement:dXVpLWxvZ2lu",
-		ServiceIDs:   []string{"the8020/uui/login"},
+		ServiceIDs: []string{
+			"the8020/uui/shell",
+			"the8020/uui/login",
+		},
 	}}
 	detail := summary
-	detail.Workers = []supervisor.WorkerStatus{{OwnerID: "the8020/uui/login"}}
+	detail.Workers = []supervisor.WorkerStatus{
+		{OwnerID: "the8020/uui/login"},
+		{OwnerID: "the8020/uui/shell"},
+	}
 
 	const want = "service:the8020/uui/login"
 	if got := Reason(summary); got != want {
