@@ -16,8 +16,8 @@ if [[ ! -f "$RUNTIME_ROOT/deno.json" || ! -f "$RUNTIME_ROOT/deno.lock" ]]; then
 fi
 deno cache --config "$RUNTIME_ROOT/deno.json" \
   --lock "$RUNTIME_ROOT/deno.lock" --frozen npm:kysely@0.29.4
-deno eval --config "$RUNTIME_ROOT/deno.json" --cached-only \
-  'await import("kysely")'
+deno eval --config "$RUNTIME_ROOT/deno.json" --cached-only --check \
+  'import type { ColumnType } from "kysely"; let value: ColumnType<string, string, string> | undefined; void value; await import("kysely")'
 TEMPORARY="$DESTINATION/the8020_http.js.tmp"
 deno bundle --config "$SOURCE/deno.json" --frozen --no-check "$SOURCE/mod.ts" --output "$TEMPORARY"
 {
