@@ -15,6 +15,8 @@ const (
 	TypeBoolean  = "boolean"
 	TypeEnum     = "enum"
 	TypeByteSize = "byte_size"
+
+	environmentPrefix = "THE8020_"
 )
 
 // Storage identifies the persisted override store owned by a setting.
@@ -49,7 +51,7 @@ func ValidateDefinition(definition Definition) (Definition, error) {
 	if !validKey(definition.Key) {
 		return definition, fmt.Errorf("invalid setting key %q", definition.Key)
 	}
-	if definition.Environment == "" || !validEnvironment(definition.Environment) {
+	if !strings.HasPrefix(definition.Environment, environmentPrefix) || !validEnvironment(definition.Environment) {
 		return definition, fmt.Errorf("invalid environment variable for %s", definition.Key)
 	}
 	if definition.Storage != StorageNode && definition.Storage != StorageGlobal {

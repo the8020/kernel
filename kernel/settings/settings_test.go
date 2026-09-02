@@ -12,15 +12,15 @@ import (
 func integerPointer(value int64) *int64 { return &value }
 func testDefinitions() []Definition {
 	return []Definition{
-		{Key: "network.main_port", Type: TypeInteger, Storage: StorageNode, Default: int64(8080), Environment: "KERNEL_NETWORK_MAIN_PORT", Minimum: integerPointer(1), Maximum: integerPointer(65535), RuntimeMutable: true, Description: "port"},
-		{Key: "logging.enabled", Type: TypeBoolean, Storage: StorageNode, Default: true, Environment: "KERNEL_LOGGING_ENABLED", RuntimeMutable: true, Description: "enabled"},
-		{Key: "logging.split_period", Type: TypeEnum, Storage: StorageNode, Default: "day", Environment: "KERNEL_LOGGING_SPLIT_PERIOD", Allowed: []string{"none", "day"}, RuntimeMutable: true, Description: "period"},
-		{Key: "logging.max_file_size", Type: TypeByteSize, Storage: StorageNode, Default: "1GB", Environment: "KERNEL_LOGGING_MAX_FILE_SIZE", RuntimeMutable: true, Description: "file"},
-		{Key: "logging.max_total_size", Type: TypeByteSize, Storage: StorageNode, Default: "10GB", Environment: "KERNEL_LOGGING_MAX_TOTAL_SIZE", RuntimeMutable: true, Description: "total"},
-		{Key: "database.maximum_open_connections", Type: TypeInteger, Storage: StorageNode, Default: int64(32), Environment: "KERNEL_DATABASE_MAXIMUM_OPEN_CONNECTIONS", Minimum: integerPointer(1), RuntimeMutable: true, Description: "open database connections"},
-		{Key: "database.maximum_idle_connections", Type: TypeInteger, Storage: StorageNode, Default: int64(8), Environment: "KERNEL_DATABASE_MAXIMUM_IDLE_CONNECTIONS", Minimum: integerPointer(0), RuntimeMutable: true, Description: "idle database connections"},
-		{Key: "network.root_alias", Type: TypeString, Storage: StorageGlobal, Default: "the8020/uui/shell/", Environment: "KERNEL_NETWORK_ROOT_ALIAS", Pattern: `^[A-Za-z0-9_-]+(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*/?$`, RestartRequired: true, Description: "root alias"},
-		{Key: "platform.display_name", Type: TypeString, Storage: StorageGlobal, Default: "80|20", Environment: "KERNEL_PLATFORM_DISPLAY_NAME", RestartRequired: true, Description: "display name"},
+		{Key: "network.main_port", Type: TypeInteger, Storage: StorageNode, Default: int64(8080), Environment: "THE8020_NETWORK_MAIN_PORT", Minimum: integerPointer(1), Maximum: integerPointer(65535), RuntimeMutable: true, Description: "port"},
+		{Key: "logging.enabled", Type: TypeBoolean, Storage: StorageNode, Default: true, Environment: "THE8020_LOGGING_ENABLED", RuntimeMutable: true, Description: "enabled"},
+		{Key: "logging.split_period", Type: TypeEnum, Storage: StorageNode, Default: "day", Environment: "THE8020_LOGGING_SPLIT_PERIOD", Allowed: []string{"none", "day"}, RuntimeMutable: true, Description: "period"},
+		{Key: "logging.max_file_size", Type: TypeByteSize, Storage: StorageNode, Default: "1GB", Environment: "THE8020_LOGGING_MAX_FILE_SIZE", RuntimeMutable: true, Description: "file"},
+		{Key: "logging.max_total_size", Type: TypeByteSize, Storage: StorageNode, Default: "10GB", Environment: "THE8020_LOGGING_MAX_TOTAL_SIZE", RuntimeMutable: true, Description: "total"},
+		{Key: "database.maximum_open_connections", Type: TypeInteger, Storage: StorageNode, Default: int64(32), Environment: "THE8020_DATABASE_MAXIMUM_OPEN_CONNECTIONS", Minimum: integerPointer(1), RuntimeMutable: true, Description: "open database connections"},
+		{Key: "database.maximum_idle_connections", Type: TypeInteger, Storage: StorageNode, Default: int64(8), Environment: "THE8020_DATABASE_MAXIMUM_IDLE_CONNECTIONS", Minimum: integerPointer(0), RuntimeMutable: true, Description: "idle database connections"},
+		{Key: "network.root_alias", Type: TypeString, Storage: StorageGlobal, Default: "the8020/uui/shell/", Environment: "THE8020_NETWORK_ROOT_ALIAS", Pattern: `^[A-Za-z0-9_-]+(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*/?$`, RestartRequired: true, Description: "root alias"},
+		{Key: "platform.display_name", Type: TypeString, Storage: StorageGlobal, Default: "80|20", Environment: "THE8020_PLATFORM_DISPLAY_NAME", RestartRequired: true, Description: "display name"},
 	}
 }
 
@@ -67,7 +67,7 @@ func newTestManager(t *testing.T, startup map[string]string, environment map[str
 }
 
 func TestPrecedenceAndNodePersistedRemoval(t *testing.T) {
-	manager, paths := newTestManager(t, map[string]string{"network.main_port": "8082"}, map[string]string{"KERNEL_NETWORK_MAIN_PORT": "8081"})
+	manager, paths := newTestManager(t, map[string]string{"network.main_port": "8082"}, map[string]string{"THE8020_NETWORK_MAIN_PORT": "8081"})
 	applier := &testApplier{}
 	if err := manager.RegisterApplier([]string{"network.main_port"}, applier); err != nil {
 		t.Fatal(err)
@@ -235,7 +235,7 @@ func TestPersistedHasHighestInitialPrecedence(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager, err := New(testDefinitions(), paths, map[string]string{"network.main_port": "8082"}, func(name string) (string, bool) {
-		if name == "KERNEL_NETWORK_MAIN_PORT" {
+		if name == "THE8020_NETWORK_MAIN_PORT" {
 			return "8081", true
 		}
 		return "", false
@@ -256,7 +256,7 @@ func TestRestartRequiredSettingPersistsWithoutChangingActiveValue(t *testing.T) 
 		Type:            TypeString,
 		Storage:         StorageNode,
 		Default:         "io.containerd.runsc.v1",
-		Environment:     "KERNEL_SANDBOX_RUNTIME_NAME",
+		Environment:     "THE8020_SANDBOX_RUNTIME_NAME",
 		RestartRequired: true,
 		Description:     "runtime",
 	})
@@ -362,7 +362,7 @@ func TestWrongStoreAndInvalidStorageDefinitionsFail(t *testing.T) {
 		t.Fatalf("wrong-store error = %v", err)
 	}
 
-	base := Definition{Key: "test.value", Type: TypeString, Default: "value", Environment: "TEST_VALUE", Description: "test"}
+	base := Definition{Key: "test.value", Type: TypeString, Default: "value", Environment: "THE8020_TEST_VALUE", Description: "test"}
 	for name, mutate := range map[string]func(*Definition){
 		"missing": func(*Definition) {},
 		"invalid": func(definition *Definition) { definition.Storage = "cluster" },
@@ -381,6 +381,14 @@ func TestWrongStoreAndInvalidStorageDefinitionsFail(t *testing.T) {
 	}
 }
 
+func TestSettingEnvironmentPrefixIsRequired(t *testing.T) {
+	definition := testDefinitions()[0]
+	definition.Environment = "KERNEL_NETWORK_MAIN_PORT"
+	if _, err := ValidateDefinition(definition); err == nil {
+		t.Fatal("accepted setting environment variable without THE8020_ prefix")
+	}
+}
+
 func TestConversionsAndCrossValidation(t *testing.T) {
 	for input, want := range map[string]ByteSize{"0B": 0, "1KB": 1000, "10MB": 10_000_000, "1GB": 1_000_000_000, "123B": 123} {
 		value, err := parseByteSize(input)
@@ -389,10 +397,10 @@ func TestConversionsAndCrossValidation(t *testing.T) {
 		}
 	}
 	minimum := int64(0)
-	if _, err := ValidateDefinition(Definition{Key: "runtime.node.auto_budget", Type: TypeByteSize, Storage: StorageNode, Default: "0B", Environment: "KERNEL_RUNTIME_NODE_AUTO_BUDGET", Minimum: &minimum, RestartRequired: true, Description: "auto"}); err != nil {
+	if _, err := ValidateDefinition(Definition{Key: "runtime.node.auto_budget", Type: TypeByteSize, Storage: StorageNode, Default: "0B", Environment: "THE8020_RUNTIME_NODE_AUTO_BUDGET", Minimum: &minimum, RestartRequired: true, Description: "auto"}); err != nil {
 		t.Fatalf("zero byte-size sentinel rejected: %v", err)
 	}
-	if _, err := ValidateDefinition(Definition{Key: "runtime.node.invalid_budget", Type: TypeByteSize, Storage: StorageNode, Default: "0B", Environment: "KERNEL_RUNTIME_NODE_INVALID_BUDGET", RestartRequired: true, Description: "invalid"}); err == nil {
+	if _, err := ValidateDefinition(Definition{Key: "runtime.node.invalid_budget", Type: TypeByteSize, Storage: StorageNode, Default: "0B", Environment: "THE8020_RUNTIME_NODE_INVALID_BUDGET", RestartRequired: true, Description: "invalid"}); err == nil {
 		t.Fatal("zero byte size accepted without explicit minimum")
 	}
 	definition := testDefinitions()[0]
@@ -450,7 +458,7 @@ func TestUnknownPersistedSettingIsRejected(t *testing.T) {
 func TestStringPatternValidation(t *testing.T) {
 	definition := Definition{
 		Key: "network.root_alias", Type: TypeString, Storage: StorageGlobal,
-		Default: "the8020/uui/shell/", Environment: "KERNEL_NETWORK_ROOT_ALIAS",
+		Default: "the8020/uui/shell/", Environment: "THE8020_NETWORK_ROOT_ALIAS",
 		Pattern:         `^[A-Za-z0-9_-]+(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*/?$`,
 		RestartRequired: true, Description: "root alias",
 	}

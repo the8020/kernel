@@ -6,9 +6,9 @@ FROM debian:trixie-slim AS builder
 
 ARG DEBIAN_FRONTEND=noninteractive
 ENV CGO_ENABLED=0 \
-    KERNEL_NETWORK_MAIN_PORT=80 \
-    KERNEL_NETWORK_SSH_PORT=22 \
-    KERNEL_SANDBOX_RUNTIME_MODE=rootless \
+    THE8020_NETWORK_MAIN_PORT=80 \
+    THE8020_NETWORK_SSH_PORT=22 \
+    THE8020_SANDBOX_RUNTIME_MODE=rootless \
     THE8020_OUTER_CONTAINER_BUILD=true \
     THE8020_SKIP_RUNTIME_HOST=true
 
@@ -40,9 +40,9 @@ RUN install -d -m 0755 /8020 \
 FROM debian:trixie-slim
 
 ARG DEBIAN_FRONTEND=noninteractive
-ENV KERNEL_NETWORK_MAIN_PORT=80 \
-    KERNEL_NETWORK_SSH_PORT=22 \
-    KERNEL_SANDBOX_RUNTIME_MODE=rootless
+ENV THE8020_NETWORK_MAIN_PORT=80 \
+    THE8020_NETWORK_SSH_PORT=22 \
+    THE8020_SANDBOX_RUNTIME_MODE=rootless
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \

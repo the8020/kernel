@@ -23,18 +23,18 @@ import (
 func controlPlaneDefinitions() []settings.Definition {
 	zero, minimum, maximum := int64(0), int64(1), int64(65535)
 	return []settings.Definition{
-		{Key: "network.main_port", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(8080), Environment: "TEST_CONTROL_NETWORK_PORT", Minimum: &minimum, Maximum: &maximum, RuntimeMutable: true, Description: "Test HTTP port."},
-		{Key: "network.ssh_port", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(2222), Environment: "TEST_CONTROL_SSH_PORT", Minimum: &minimum, Maximum: &maximum, RuntimeMutable: true, Description: "Test SSH port."},
-		{Key: "logging.enabled", Type: settings.TypeBoolean, Storage: settings.StorageNode, Default: true, Environment: "TEST_CONTROL_LOGGING_ENABLED", RuntimeMutable: true, Description: "Test logging switch."},
-		{Key: "logging.split_period", Type: settings.TypeEnum, Storage: settings.StorageNode, Default: "day", Environment: "TEST_CONTROL_LOGGING_SPLIT", Allowed: []string{"none", "minute", "hour", "day", "week", "month", "year"}, RuntimeMutable: true, Description: "Test log split period."},
-		{Key: "logging.max_file_size", Type: settings.TypeByteSize, Storage: settings.StorageNode, Default: "1GB", Environment: "TEST_CONTROL_LOGGING_FILE", RuntimeMutable: true, Description: "Test log file limit."},
-		{Key: "logging.max_total_size", Type: settings.TypeByteSize, Storage: settings.StorageNode, Default: "10GB", Environment: "TEST_CONTROL_LOGGING_TOTAL", RuntimeMutable: true, Description: "Test total log limit."},
-		{Key: "database.backend", Type: settings.TypeEnum, Storage: settings.StorageGlobal, Default: "sqlite", Environment: "TEST_CONTROL_DATABASE_BACKEND", Allowed: []string{"sqlite", "postgresql"}, RestartRequired: true, Description: "Test database backend."},
-		{Key: "database.location", Type: settings.TypeString, Storage: settings.StorageGlobal, Default: "${INSTANCE_ROOT}/database/system.db", Environment: "TEST_CONTROL_DATABASE_LOCATION", RestartRequired: true, Description: "Test database location."},
-		{Key: "database.username", Type: settings.TypeString, Storage: settings.StorageGlobal, Default: "", Environment: "TEST_CONTROL_DATABASE_USERNAME", RestartRequired: true, Description: "Test database username."},
-		{Key: "database.password", Type: settings.TypeString, Storage: settings.StorageGlobal, Default: "", Environment: "TEST_CONTROL_DATABASE_PASSWORD", RestartRequired: true, Description: "Test database password."},
-		{Key: "database.maximum_open_connections", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(32), Environment: "TEST_CONTROL_DATABASE_MAXIMUM_OPEN_CONNECTIONS", Minimum: &minimum, RuntimeMutable: true, Description: "Test maximum open database connections."},
-		{Key: "database.maximum_idle_connections", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(8), Environment: "TEST_CONTROL_DATABASE_MAXIMUM_IDLE_CONNECTIONS", Minimum: &zero, RuntimeMutable: true, Description: "Test maximum idle database connections."},
+		{Key: "network.main_port", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(8080), Environment: "THE8020_TEST_CONTROL_NETWORK_PORT", Minimum: &minimum, Maximum: &maximum, RuntimeMutable: true, Description: "Test HTTP port."},
+		{Key: "network.ssh_port", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(2222), Environment: "THE8020_TEST_CONTROL_SSH_PORT", Minimum: &minimum, Maximum: &maximum, RuntimeMutable: true, Description: "Test SSH port."},
+		{Key: "logging.enabled", Type: settings.TypeBoolean, Storage: settings.StorageNode, Default: true, Environment: "THE8020_TEST_CONTROL_LOGGING_ENABLED", RuntimeMutable: true, Description: "Test logging switch."},
+		{Key: "logging.split_period", Type: settings.TypeEnum, Storage: settings.StorageNode, Default: "day", Environment: "THE8020_TEST_CONTROL_LOGGING_SPLIT", Allowed: []string{"none", "minute", "hour", "day", "week", "month", "year"}, RuntimeMutable: true, Description: "Test log split period."},
+		{Key: "logging.max_file_size", Type: settings.TypeByteSize, Storage: settings.StorageNode, Default: "1GB", Environment: "THE8020_TEST_CONTROL_LOGGING_FILE", RuntimeMutable: true, Description: "Test log file limit."},
+		{Key: "logging.max_total_size", Type: settings.TypeByteSize, Storage: settings.StorageNode, Default: "10GB", Environment: "THE8020_TEST_CONTROL_LOGGING_TOTAL", RuntimeMutable: true, Description: "Test total log limit."},
+		{Key: "database.backend", Type: settings.TypeEnum, Storage: settings.StorageGlobal, Default: "sqlite", Environment: "THE8020_TEST_CONTROL_DATABASE_BACKEND", Allowed: []string{"sqlite", "postgresql"}, RestartRequired: true, Description: "Test database backend."},
+		{Key: "database.location", Type: settings.TypeString, Storage: settings.StorageGlobal, Default: "${INSTANCE_ROOT}/database/system.db", Environment: "THE8020_TEST_CONTROL_DATABASE_LOCATION", RestartRequired: true, Description: "Test database location."},
+		{Key: "database.username", Type: settings.TypeString, Storage: settings.StorageGlobal, Default: "", Environment: "THE8020_TEST_CONTROL_DATABASE_USERNAME", RestartRequired: true, Description: "Test database username."},
+		{Key: "database.password", Type: settings.TypeString, Storage: settings.StorageGlobal, Default: "", Environment: "THE8020_TEST_CONTROL_DATABASE_PASSWORD", RestartRequired: true, Description: "Test database password."},
+		{Key: "database.maximum_open_connections", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(32), Environment: "THE8020_TEST_CONTROL_DATABASE_MAXIMUM_OPEN_CONNECTIONS", Minimum: &minimum, RuntimeMutable: true, Description: "Test maximum open database connections."},
+		{Key: "database.maximum_idle_connections", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(8), Environment: "THE8020_TEST_CONTROL_DATABASE_MAXIMUM_IDLE_CONNECTIONS", Minimum: &zero, RuntimeMutable: true, Description: "Test maximum idle database connections."},
 	}
 }
 

@@ -33,15 +33,15 @@ import (
 func pointer(value int64) *int64 { return &value }
 func definitions() []settings.Definition {
 	return []settings.Definition{
-		{Key: "network.main_port", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(8080), Environment: "KERNEL_NETWORK_MAIN_PORT", Minimum: pointer(1), Maximum: pointer(65535), RuntimeMutable: true, Description: "Main HTTP listener port."},
-		{Key: "network.ssh_port", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(2222), Environment: "KERNEL_NETWORK_SSH_PORT", Minimum: pointer(1), Maximum: pointer(65535), RuntimeMutable: true, Description: "SSH port."},
-		{Key: "logging.enabled", Type: settings.TypeBoolean, Storage: settings.StorageNode, Default: true, Environment: "KERNEL_LOGGING_ENABLED", RuntimeMutable: true, Description: "Logging enabled."},
-		{Key: "logging.split_period", Type: settings.TypeEnum, Storage: settings.StorageNode, Default: "day", Environment: "KERNEL_LOGGING_SPLIT_PERIOD", Allowed: []string{"none", "minute", "hour", "day", "week", "month", "year"}, RuntimeMutable: true, Description: "Split period."},
-		{Key: "logging.max_file_size", Type: settings.TypeByteSize, Storage: settings.StorageNode, Default: "1GB", Environment: "KERNEL_LOGGING_MAX_FILE_SIZE", RuntimeMutable: true, Description: "File size."},
-		{Key: "logging.max_total_size", Type: settings.TypeByteSize, Storage: settings.StorageNode, Default: "10GB", Environment: "KERNEL_LOGGING_MAX_TOTAL_SIZE", RuntimeMutable: true, Description: "Total size."},
-		{Key: "database.maximum_open_connections", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(32), Environment: "KERNEL_DATABASE_MAXIMUM_OPEN_CONNECTIONS", Minimum: pointer(1), RuntimeMutable: true, Description: "Maximum open database connections."},
-		{Key: "database.maximum_idle_connections", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(8), Environment: "KERNEL_DATABASE_MAXIMUM_IDLE_CONNECTIONS", Minimum: pointer(0), RuntimeMutable: true, Description: "Maximum idle database connections."},
-		{Key: "network.root_alias", Type: settings.TypeString, Storage: settings.StorageGlobal, Default: "the8020/uui/shell/", Environment: "KERNEL_NETWORK_ROOT_ALIAS", Pattern: `^[A-Za-z0-9_-]+(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*/?$`, RestartRequired: true, Description: "Root alias."},
+		{Key: "network.main_port", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(8080), Environment: "THE8020_NETWORK_MAIN_PORT", Minimum: pointer(1), Maximum: pointer(65535), RuntimeMutable: true, Description: "Main HTTP listener port."},
+		{Key: "network.ssh_port", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(2222), Environment: "THE8020_NETWORK_SSH_PORT", Minimum: pointer(1), Maximum: pointer(65535), RuntimeMutable: true, Description: "SSH port."},
+		{Key: "logging.enabled", Type: settings.TypeBoolean, Storage: settings.StorageNode, Default: true, Environment: "THE8020_LOGGING_ENABLED", RuntimeMutable: true, Description: "Logging enabled."},
+		{Key: "logging.split_period", Type: settings.TypeEnum, Storage: settings.StorageNode, Default: "day", Environment: "THE8020_LOGGING_SPLIT_PERIOD", Allowed: []string{"none", "minute", "hour", "day", "week", "month", "year"}, RuntimeMutable: true, Description: "Split period."},
+		{Key: "logging.max_file_size", Type: settings.TypeByteSize, Storage: settings.StorageNode, Default: "1GB", Environment: "THE8020_LOGGING_MAX_FILE_SIZE", RuntimeMutable: true, Description: "File size."},
+		{Key: "logging.max_total_size", Type: settings.TypeByteSize, Storage: settings.StorageNode, Default: "10GB", Environment: "THE8020_LOGGING_MAX_TOTAL_SIZE", RuntimeMutable: true, Description: "Total size."},
+		{Key: "database.maximum_open_connections", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(32), Environment: "THE8020_DATABASE_MAXIMUM_OPEN_CONNECTIONS", Minimum: pointer(1), RuntimeMutable: true, Description: "Maximum open database connections."},
+		{Key: "database.maximum_idle_connections", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(8), Environment: "THE8020_DATABASE_MAXIMUM_IDLE_CONNECTIONS", Minimum: pointer(0), RuntimeMutable: true, Description: "Maximum idle database connections."},
+		{Key: "network.root_alias", Type: settings.TypeString, Storage: settings.StorageGlobal, Default: "the8020/uui/shell/", Environment: "THE8020_NETWORK_ROOT_ALIAS", Pattern: `^[A-Za-z0-9_-]+(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*/?$`, RestartRequired: true, Description: "Root alias."},
 	}
 }
 func catalog() []core.Command {
@@ -188,7 +188,7 @@ func TestKernelRestartCommandSelectsSelfReplacement(t *testing.T) {
 func TestFullCommandBusLifecycleAndAdministrativeModes(t *testing.T) {
 	root := t.TempDir()
 	environmentPort, startupPort, runtimePort, restartStartupPort, runtimeSSHPort := availablePort(t), availablePort(t), availablePort(t), availablePort(t), availablePort(t)
-	t.Setenv("KERNEL_NETWORK_MAIN_PORT", stringInt(environmentPort))
+	t.Setenv("THE8020_NETWORK_MAIN_PORT", stringInt(environmentPort))
 	done := startKernel(t, root, startupPort)
 	paths := instance.NewPaths(root)
 	commandClient := client.New(paths.Socket)

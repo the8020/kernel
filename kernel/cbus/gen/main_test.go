@@ -43,7 +43,7 @@ func commandTOML(id, path, alias, handler, symbol, parameterType string) string 
 	return fmt.Sprintf("version = 1\nid = %q\npath = [%q]\n%ssummary = \"summary\"\ndescription = \"description\"\nmutates_state = false\nrestart_behavior = \"none\"\n[handler]\nfile = %q\nsymbol = %q\n%s[[result]]\nname = \"ok\"\ntype = \"boolean\"\n[[examples]]\ncommand = %q\n", id, path, aliases, handler, symbol, parameters, path)
 }
 func settingTOML(key string) string {
-	return fmt.Sprintf("key = %q\ntype = \"integer\"\nstorage = \"node\"\ndefault = 1\nenvironment = \"TEST_VALUE\"\nminimum = 1\nmaximum = 10\nruntime_mutable = true\nrestart_required = false\ndescription = \"test\"\n", key)
+	return fmt.Sprintf("key = %q\ntype = \"integer\"\nstorage = \"node\"\ndefault = 1\nenvironment = \"THE8020_TEST_VALUE\"\nminimum = 1\nmaximum = 10\nruntime_mutable = true\nrestart_required = false\ndescription = \"test\"\n", key)
 }
 func fixture(t *testing.T) string {
 	t.Helper()

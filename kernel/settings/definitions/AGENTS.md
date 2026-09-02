@@ -26,8 +26,8 @@
 - Every file declares `storage = "node"` or `storage = "global"`; storage never
   falls back implicitly. String-format constraints use declarative `pattern`
   metadata rather than owner-specific settings parsing.
-- Keys and environment variables are unique; values must pass generated-catalog
-  validation.
+- Keys and environment variables are unique; every setting environment variable
+  starts with `THE8020_`, and values must pass generated-catalog validation.
 - Files are data, not executable hooks.
 
 # Work Guidance

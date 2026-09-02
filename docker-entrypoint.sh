@@ -23,21 +23,21 @@ bootstrap_username=""
 bootstrap_password=""
 if [[ ! -f "$BOOTSTRAP_MARKER" ]]; then
   bootstrap_required=true
-  bootstrap_username=${USERNAME-admin}
-  bootstrap_password=${PASSWORD-admin}
+  bootstrap_username=${THE8020_USERNAME-admin}
+  bootstrap_password=${THE8020_PASSWORD-admin}
   if [[ -z "$bootstrap_username" ]]; then
-    echo "USERNAME must not be empty on the first container boot" >&2
+    echo "THE8020_USERNAME must not be empty on the first container boot" >&2
     exit 1
   fi
   if [[ -z "$bootstrap_password" ]]; then
-    echo "PASSWORD must not be empty on the first container boot" >&2
+    echo "THE8020_PASSWORD must not be empty on the first container boot" >&2
     exit 1
   fi
 fi
 
 # Do not pass bootstrap inputs to the kernel or any sandbox process. They are
 # consulted only by this entrypoint while completing the first boot.
-unset USERNAME PASSWORD || true
+unset THE8020_USERNAME THE8020_PASSWORD || true
 
 "$PORTABLE_SMOKE" \
   "$INSTANCE_ROOT/node/kernel/bin/runsc" \

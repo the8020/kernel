@@ -144,9 +144,9 @@ relevant child AGENTS.md
   ordinary `docker build` uses its existing build sandbox rather than nesting
   gVisor, while Docker runs require an unconfined outer seccomp profile and
   complete the pinned runsc smoke before kernel startup. The entrypoint creates
-  exactly one first-boot bootstrap administrator from `USERNAME` and `PASSWORD`,
-  defaulting both to `admin`, records completion under `node/kernel/`, and never
-  reapplies those environment values later.
+  exactly one first-boot bootstrap administrator from `THE8020_USERNAME` and
+  `THE8020_PASSWORD`, defaulting both to `admin`, records completion under
+  `node/kernel/`, and never reapplies those environment values later.
 
 - Interactive kernel shutdown must acknowledge `Ctrl-C` immediately and emit
   one ordinary line whenever the graceful-shutdown stage or completed-stage
@@ -164,8 +164,10 @@ relevant child AGENTS.md
 - Every kernel setting definition must declare whether its persisted override is
   node-local or global. Node overrides belong in `node/kernel/settings.toml`; global
   overrides belong in shared `config/settings.toml`. Both stores use the same
-  typed settings commands. Application-specific configuration is not a kernel
-  setting and is never injected into generic request metadata.
+  typed settings commands. Every externally configurable kernel-setting
+  environment variable uses the `THE8020_` prefix. Application-specific
+  configuration is not a kernel setting and is never injected into generic
+  request metadata.
 - Filesystem-service schema 2 declares `stateless` or `session` lifecycle,
   positive session keepalive, minimum/maximum Workers, concurrency and target
   utilization per Worker, positive Worker keepalive, optional sandbox group,

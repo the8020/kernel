@@ -17,6 +17,9 @@
   `OperationError`, and `Manager` construction/query/mutation/registration
   methods.
 - Precedence is default < environment < startup argument < persisted override.
+- Every setting definition declares one external environment variable beginning
+  with `THE8020_`; environment names are explicit metadata rather than derived
+  from setting keys.
 - Every definition explicitly declares `node` or `global` storage. Node
   overrides persist in `node/kernel/settings.toml`; global overrides persist in
   shared `config/settings.toml`. Both stores contain only their declared keys as

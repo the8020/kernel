@@ -366,7 +366,7 @@ full_runtime_host_available() {
 }
 
 FULL_RUNTIME_HOST=false
-REQUESTED_RUNTIME_MODE=${KERNEL_SANDBOX_RUNTIME_MODE:-auto}
+REQUESTED_RUNTIME_MODE=${THE8020_SANDBOX_RUNTIME_MODE:-auto}
 if [[ "$SETUP_RUNTIME_HOST" == true && "$REQUESTED_RUNTIME_MODE" != rootless ]] && full_runtime_host_available; then
   bash "$RUNTIME_SOURCE/install-host.sh" "$SOURCE_ROOT" "$CONFIG_RUNTIME/versions.toml" "$NODE_RUNTIME"
   FULL_RUNTIME_HOST=true
