@@ -32,6 +32,7 @@ Deno.test("portable self-types match source request metadata", () => {
   const bundled: BundledRequestMetadata = source;
   const roundTrip: RequestMetadata = bundled;
   assertEquals(roundTrip.execution.workerId, "wrk-test0001");
+  assertEquals(roundTrip.client.networkScope, "loopback");
 });
 
 function context(requestId = "request-1"): RuntimeServiceContext {
@@ -43,6 +44,7 @@ function context(requestId = "request-1"): RuntimeServiceContext {
       serviceGeneration: 3,
       canonicalBasePath: "/core/example/service",
       originalUrl: "http://localhost/core/example/service/path",
+      client: { ipAddress: "127.0.0.1", networkScope: "loopback" },
       execution: {
         nodeId: "node-test",
         runtimeGroupId: "rgp-test0001",

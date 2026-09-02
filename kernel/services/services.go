@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"the8020/kernel/auth"
+	"the8020/kernel/database"
 	"the8020/kernel/debugging"
 	"the8020/kernel/development"
 	"the8020/kernel/execution/adminrun"
@@ -54,7 +55,17 @@ type Services struct {
 	Packages          PackageService
 	PackageManagement PackageManagementService
 	Development       DevelopmentService
+	Database          DatabaseService
 	runtimeMu         sync.RWMutex
+}
+
+// DatabaseService is the only SQL boundary exposed to handlers and the
+// authenticated sandbox callback.
+type DatabaseService interface {
+	Status() database.Status
+	Check(context.Context) (database.Status, error)
+	Query(context.Context, string, []any) (database.QueryResult, error)
+	Execute(context.Context, string, []any) (database.ExecuteResult, error)
 }
 
 // SecretService is the handler-facing global named-secret contract.

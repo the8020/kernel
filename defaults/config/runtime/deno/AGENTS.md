@@ -25,12 +25,13 @@
   named functions are invocable; input/output are bounded JSON, function names
   are never interpreted by generic code, and arbitrary module exports or `eval`
   are forbidden.
-- `@the8020/kernel` exposes authentication/admin capabilities, typed secret and
-  package command conveniences, exact Worker invocation, and
+- `@the8020/kernel` exposes authentication/admin capabilities, typed database,
+  secret and package command conveniences, exact Worker invocation, and
   persistent-execution completion. The Worker bridge binds calls to trusted
   current request/execution identity without cookies or route tokens.
 - Current service metadata exposes package-neutral node, runtime-group, sandbox,
-  Worker, and execution identity. No application settings map is transported.
+  Worker, and execution identity plus the kernel-observed client IP address and
+  network scope. No application settings map is transported.
 - Physical WebSockets are upgraded and relayed by the supervisor; application
   Workers own all logical message parsing and connection behavior.
 - Logs and control request/response bodies are bounded and identity-associated.

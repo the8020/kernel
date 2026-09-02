@@ -1,0 +1,9 @@
+key = "database.backend"
+type = "enum"
+storage = "global"
+default = "sqlite"
+allowed = ["sqlite", "postgresql"]
+environment = "KERNEL_DATABASE_BACKEND"
+runtime_mutable = false
+restart_required = true
+description = "System database backend. SQLite is intended for one-node deployments; PostgreSQL is intended for shared multi-node deployments."

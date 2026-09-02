@@ -109,6 +109,10 @@
 - Request and response bodies remain streaming. Canonical path validation
   rejects encoded separators, backslashes, nulls, traversal, invalid UTF-8, and
   client-supplied internal headers.
+- Trusted request metadata includes the normalized IP address observed on the
+  kernel socket and its loopback, private, link-local, public, or special
+  network scope. Client-supplied internal address metadata is discarded; proxy
+  forwarding headers are not trusted without an explicit trusted-proxy policy.
 
 # Work Guidance
 

@@ -40,7 +40,7 @@ func TestInitializeIdentityIsStable(t *testing.T) {
 	if first != second {
 		t.Fatalf("identity changed: %s != %s", first, second)
 	}
-	for _, path := range []string{paths.Packages, paths.ConfigAuth, paths.ConfigSecrets, paths.BootstrapSessions, paths.StateServices, paths.StatePackageIndex, paths.StatePackageData, paths.InstanceFile, paths.NodeSettingsFile, paths.GlobalSettingsFile, paths.Run, paths.Logs, paths.Runtime, paths.RuntimeGroups, paths.RuntimeSandboxHistory, paths.RuntimePorts, paths.RuntimeServices, paths.RuntimeServicePools, paths.RuntimeAttachments, paths.RuntimeTemporary, paths.SSH} {
+	for _, path := range []string{paths.Packages, paths.ConfigAuth, paths.ConfigSecrets, paths.BootstrapSessions, paths.StateServices, paths.StatePackageIndex, paths.StatePackageData, paths.Database, paths.InstanceFile, paths.NodeSettingsFile, paths.GlobalSettingsFile, paths.Run, paths.Logs, paths.Runtime, paths.RuntimeGroups, paths.RuntimeSandboxHistory, paths.RuntimePorts, paths.RuntimeServices, paths.RuntimeServicePools, paths.RuntimeAttachments, paths.RuntimeTemporary, paths.SSH} {
 		if _, err := os.Stat(path); err != nil {
 			t.Errorf("missing %s: %v", path, err)
 		}
@@ -65,6 +65,13 @@ func TestInitializeIdentityIsStable(t *testing.T) {
 	}
 	if runtimeRoot.Mode().Perm() != 0o700 {
 		t.Fatalf("runtime permissions=%v", runtimeRoot.Mode().Perm())
+	}
+	databaseRoot, err := os.Stat(paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if databaseRoot.Mode().Perm() != 0o700 {
+		t.Fatalf("database permissions=%v", databaseRoot.Mode().Perm())
 	}
 	sshRoot, err := os.Stat(paths.SSH)
 	if err != nil {

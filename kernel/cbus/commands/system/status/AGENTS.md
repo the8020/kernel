@@ -4,7 +4,9 @@
 
 # Ownership
 
-- Own assembly of current instance, process, uptime, socket, network, logging, selected runtime mode/readiness, initialization progress/failure, graceful-shutdown progress, and build information.
+- Own assembly of current instance, process, uptime, socket, network, logging,
+  database readiness, selected runtime mode/readiness, initialization
+  progress/failure, graceful-shutdown progress, and build information.
 - Do not cache status or mutate services.
 
 # Local Contracts
@@ -14,6 +16,8 @@
 - `instance_root` is the initialized node directory; source-installation paths
   are not part of process status.
 - Status reads one synchronized runtime snapshot; while asynchronous runtime composition is incomplete it reports `runtime_ready=false` and the initialization-progress message without delaying the command.
+- Database status is the cached result of the kernel startup or explicit
+  connectivity check; reading system status performs no database I/O.
 - Shutdown fields report requested and restart intent, integer completed-stage
   percentage/count/total, current step, and current message; the percentage
   represents completed stages, not estimated elapsed time.

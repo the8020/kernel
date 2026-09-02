@@ -1,0 +1,22 @@
+version = 1
+id = "database.check"
+path = ["database", "check"]
+aliases = [["db", "check"]]
+summary = "Check the system database connection"
+description = "Verifies that the configured SQLite or PostgreSQL system database is reachable. Failure does not stop the kernel control plane."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/database/check/check.go"
+symbol = "New"
+[[result]]
+name = "backend"
+type = "string"
+[[result]]
+name = "location"
+type = "string"
+[[result]]
+name = "status"
+type = "string"
+[[examples]]
+command = "database check"

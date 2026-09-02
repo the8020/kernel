@@ -12,6 +12,9 @@
   `config/secrets/`, `config/auth/`, `state/auth/bootstrap-sessions/`, `state/services/`,
   kernel-owned `state/package-index/`, and generic `state/package-data/`; own node-local settings, identity, bin,
   images, run/log/runtime/SSH roots, lock, PID, and command socket.
+- Own the private top-level `database/` directory used by the default
+  single-node SQLite backend. It is never mounted into a sandbox; multi-node
+  systems use the configured PostgreSQL backend instead.
 - Do not copy defaults, seed application packages, build images, discover parent
   projects, scan processes, or treat the PID file as a lock.
 
@@ -39,6 +42,8 @@
 - Private node/kernel directories are mode `0700`. The runtime attachments root
   alone is `0755` so it can be mounted read-only as `/artifacts`; bootstrap
   authentication sessions remain private.
+- The instance database directory is mode `0700`; the database owner creates
+  the SQLite file as mode `0600` during ordinary kernel startup.
 
 # Work Guidance
 

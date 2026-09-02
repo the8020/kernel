@@ -22,7 +22,8 @@
   supervisor reports the timestamp but does not decide when kernel policy should
   remove the Worker.
 - Request metadata carries trusted authentication and current generic execution
-  identity without cookies, route tokens, or application settings.
+  identity plus the kernel-observed client IP address and network scope, without
+  cookies, route tokens, or application settings.
 - The kernel bridge retains one request context for an HTTP stream or WebSocket
   lifetime and relays only declared generic kernel operations.
 - An entrypoint may export a validated `workerFunctions` map. Only those named

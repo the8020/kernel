@@ -9,6 +9,7 @@ const metadata: ServiceRequestMetadata = {
   serviceGeneration: 1,
   canonicalBasePath: "/example/auth/login",
   originalUrl: "https://example.test/example/auth/login",
+  client: { ipAddress: "203.0.113.4", networkScope: "public" },
   execution: {
     nodeId: "node-1",
     runtimeGroupId: "rgp-test0001",
@@ -237,6 +238,71 @@ Deno.test("typed kernel admin bridge returns results and command errors", async 
       assertEquals(error.code, "not_found");
       assertEquals(error.requestId, "command-2");
     }
+  } finally {
+    bridge.close();
+    channel.port1.close();
+    channel.port2.close();
+  }
+});
+
+Deno.test("typed database bridge sends bounded SQL and scalar parameters", async () => {
+  const channel = new MessageChannel();
+  const bridge = createKernelBridge(channel.port1);
+  const calls = createCallQueue(channel.port2);
+  try {
+    const query = bridge.withRequest(
+      metadata,
+      () => kernel.database.query("SELECT $1", [7]),
+    );
+    const queryCall = await calls.next();
+    assertEquals(
+      (queryCall.payload as { operation: string }).operation,
+      "database.query",
+    );
+    assertEquals(
+      (queryCall.payload as { arguments: unknown }).arguments,
+      { statement: "SELECT $1", parameters: [7] },
+    );
+    bridge.handle({
+      type: "kernel_result",
+      correlationId: queryCall.correlationId as string,
+      payload: { columns: ["value"], rows: [[7]], truncated: false },
+    });
+    assertEquals(await query, {
+      columns: ["value"],
+      rows: [[7]],
+      truncated: false,
+    });
+
+    const execute = bridge.withRequest(
+      metadata,
+      () => kernel.database.execute("DELETE FROM example"),
+    );
+    const executeCall = await calls.next();
+    assertEquals(
+      (executeCall.payload as { operation: string }).operation,
+      "database.execute",
+    );
+    bridge.handle({
+      type: "kernel_result",
+      correlationId: executeCall.correlationId as string,
+      payload: { rows_affected: 2 },
+    });
+    assertEquals(await execute, { rows_affected: 2 });
+    await assertRejects(
+      () => bridge.withRequest(metadata, () => kernel.database.query("", [])),
+      TypeError,
+      "SQL statement is required",
+    );
+    await assertRejects(
+      () =>
+        bridge.withRequest(
+          metadata,
+          () => kernel.database.query("SELECT $1", [{}] as never),
+        ),
+      TypeError,
+      "SQL parameters must be scalar values",
+    );
   } finally {
     bridge.close();
     channel.port1.close();

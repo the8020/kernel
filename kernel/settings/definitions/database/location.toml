@@ -1,0 +1,8 @@
+key = "database.location"
+type = "string"
+storage = "global"
+default = "${INSTANCE_ROOT}/database/system.db"
+environment = "KERNEL_DATABASE_LOCATION"
+runtime_mutable = false
+restart_required = true
+description = "SQLite file path or PostgreSQL connection URL. ${INSTANCE_ROOT} expands to the current kernel instance root."

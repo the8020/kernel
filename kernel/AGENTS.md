@@ -168,8 +168,9 @@
   registration, and shared parsing/validation.
 - External dependencies are limited to TOML decoding, official Go cryptography
   and terminal packages, Linux syscalls, the official containerd Go client and
-  its OCI dependencies, and narrowly scoped runtime/network libraries required
-  by current runtime behavior.
+  its OCI dependencies, the pgx PostgreSQL driver, the CGo-free modernc SQLite
+  driver, and narrowly scoped runtime/network libraries required by current
+  behavior.
 - Update the closest package DOX contract whenever ownership, APIs, invariants,
   lifecycle, extension, or verification changes.
 
@@ -192,6 +193,8 @@
 - `services/AGENTS.md`: typed handler dependencies.
 - `settings/AGENTS.md`: definitions, precedence, persistence, queries, and
   runtime transactions.
+- `database/AGENTS.md`: the single SQLite/PostgreSQL system connection and
+  bounded SQL operations.
 - `network/AGENTS.md`: proof HTTP listener and port replacement.
 - `logging/AGENTS.md`: slog writer, rotation, retention, and policy replacement.
 - `cbus/AGENTS.md`: typed administrative command bus and generation hierarchy.

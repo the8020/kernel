@@ -33,6 +33,9 @@ const (
 	MessageAuthResult                   MessageType = "auth_result"
 	MessageAdminCommand                 MessageType = "admin_command"
 	MessageAdminResult                  MessageType = "admin_result"
+	MessageDatabaseQuery                MessageType = "database_query"
+	MessageDatabaseExecute              MessageType = "database_execute"
+	MessageDatabaseResult               MessageType = "database_result"
 	MessageErrorResponse                MessageType = "error_response"
 )
 
@@ -59,6 +62,9 @@ var validMessageTypes = map[MessageType]bool{
 	MessageAuthResult:                   true,
 	MessageAdminCommand:                 true,
 	MessageAdminResult:                  true,
+	MessageDatabaseQuery:                true,
+	MessageDatabaseExecute:              true,
+	MessageDatabaseResult:               true,
 	MessageErrorResponse:                true,
 }
 

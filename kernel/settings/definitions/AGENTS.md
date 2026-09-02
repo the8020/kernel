@@ -13,7 +13,9 @@
   generic supervisor timing, node count/storage admission budgets, and the
   kernel-wide sandbox Worker capacity; `execution/`, `service/`, `services/`, and `job/` own generic
   grouping, canonical service defaults, reconciliation, and job policy; and
-  `auth/` owns bootstrap authentication-session, cookie, and Argon2id settings.
+  `auth/` owns bootstrap authentication-session, cookie, and Argon2id settings;
+  `database/` owns the global backend, location, and plain development-phase
+  PostgreSQL credentials.
 - No definition subtree or setting may describe an application protocol,
   application program, application state schema, or UUI behavior.
 

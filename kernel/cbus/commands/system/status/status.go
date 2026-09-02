@@ -36,6 +36,15 @@ func New(serviceSet *services.Services) core.Handler {
 			result["runtime_mode"] = runtimeServices.Isolation.SelectedMode
 			result["runtime_failure"] = runtimeServices.Failure
 		}
+		if serviceSet.Database != nil {
+			database := serviceSet.Database.Status()
+			result["database_backend"] = database.Backend
+			result["database_location"] = database.Location
+			result["database_status"] = database.State
+			if database.Error != "" {
+				result["database_error"] = database.Error
+			}
+		}
 		return result, nil
 	}
 }

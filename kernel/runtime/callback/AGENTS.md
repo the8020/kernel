@@ -7,15 +7,15 @@
 - Own the bounded internal HTTP listener, durable per-mode endpoint selection,
   selected-network source restriction, per-sandbox token verification, protocol
   envelope validation, observed heartbeat persistence, and supervisor-mediated
-  authentication, administrative, exact-Worker invocation, and persistent
-  completion calls tied to trusted service execution context.
+  authentication, administrative, database, exact-Worker invocation, and
+  persistent completion calls tied to trusted service execution context.
 - Do not expose public APIs, control Workers, probe containerd, allocate networking, or replace direct supervisor health checks.
 
 # Local Contracts
 
 - Public API: `New`, `Server.Start`, `Address`, and `Close`.
 - Only generated registration, heartbeat, bootstrap-authentication,
-  administrative, Worker-invocation, and persistent-completion envelopes are
+  administrative, database, Worker-invocation, and persistent-completion envelopes are
   accepted; envelope/payload versions and runtime-group identity must agree,
   constant-time bearer validation uses persisted sandbox secrets, and terminal
   groups cannot be revived by late callbacks.
@@ -23,6 +23,9 @@
   preserves concurrent monitor fields and rechecks terminal state before write.
 - Authentication and administrative calls additionally require service workload identity, execution/Worker/sandbox/service/request identifiers, a matching active kernel request registration, and a correlation ID; password payloads are never logged.
 - Administrative calls require the active request's kernel-trusted bootstrap-administrator identity and dispatch the existing transport-independent command registry without duplicating handlers.
+- Database calls require an active trusted service request and delegate bounded
+  SQL to the kernel-owned system database; the sandbox never receives database
+  credentials or network authority.
 - Worker invocation additionally requires an authenticated active request,
   applies a five-second context, and forwards one exact node/sandbox/Worker
   target while treating the registered function and JSON as opaque.

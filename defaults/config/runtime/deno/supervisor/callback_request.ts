@@ -51,6 +51,20 @@ export function kernelCallbackRequest(
         responseMessageType: "admin_result",
         payload: { ...call.arguments, ...identity },
       };
+    case "database.query":
+      return {
+        path: "/v1/runtime/database/query",
+        messageType: "database_query",
+        responseMessageType: "database_result",
+        payload: { ...call.arguments, ...identity },
+      };
+    case "database.execute":
+      return {
+        path: "/v1/runtime/database/execute",
+        messageType: "database_execute",
+        responseMessageType: "database_result",
+        payload: { ...call.arguments, ...identity },
+      };
     case "auth.bootstrapLogin":
       return {
         path: "/v1/runtime/auth/bootstrap-login",

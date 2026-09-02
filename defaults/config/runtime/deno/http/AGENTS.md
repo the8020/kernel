@@ -27,8 +27,9 @@
   query, and trusted request metadata as HTTP. It receives an abstract
   text/binary connection while the supervisor retains the physical socket.
 - Trusted metadata exposes authentication and generic current execution
-  identity, including optional persistent execution identity; it carries no
-  application configuration.
+  identity, including optional persistent execution identity, plus the
+  kernel-observed client IP address and network scope; it carries no application
+  configuration.
 - OpenAPI paths are relative, servers contain the canonical base path, and
   output order follows deterministic registration order.
 - The portable bundled module's self-types expose the Zod schema classes and

@@ -40,7 +40,9 @@
 
 # Non-Responsibilities
 
-- No business logic, payload streaming, credential validation, command authorization, or transport ownership; authentication and administrative command/result envelopes carry typed control messages only.
+- No business logic, payload streaming, credential validation, command
+  authorization, or transport ownership; authentication, administrative, and
+  database command/result envelopes carry typed control messages only.
 
 # Verification
 

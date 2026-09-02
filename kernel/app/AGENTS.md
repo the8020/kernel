@@ -5,6 +5,7 @@
 # Ownership
 
 - Own startup/shutdown order, generic settings arguments,
+  system-database composition and non-fatal readiness checking,
   bootstrap-authentication composition and cleanup lifecycle,
   full-versus-rootless runtime selection, degraded diagnostics,
   mapped package/state-store composition, service-package mounts, and
@@ -31,7 +32,8 @@
   exactly once; rebuilding or restarting an initialized instance never
   synchronizes packages implicitly.
 - Startup order is load the explicit shared-root mapping → initialize shared
-  and node-local state roots → lock → settings → logging →
+  and node-local state roots → lock → settings → logging → system
+  database connection/readiness check →
   bootstrap-authentication store and per-node cleanup → global secret store →
   package and desired-state stores → registry and
   development manager → network → authenticated console route → SSH listener → appliers →
@@ -46,6 +48,10 @@
   complete runtime dependency snapshot is ready; runtime commands fail safely
   during that interval while system/settings/authentication administration
   remains available.
+- Database connection failure is logged and cached in `system status` but never
+  prevents the administrative command socket from starting. An explicit
+  `database check` retries connectivity after operators change or repair the
+  configured backend.
 - `sandbox.startup_policy` defaults to `destroy`, which enumerates
   instance-owned metadata and force-deletes inherited backend objects without
   task, network, or supervisor health probes. `reconcile` is the explicit
@@ -104,6 +110,9 @@
 - Runtime composition supplies the already registered command bus to the
   authenticated supervisor callback; it does not construct a second
   administrative registry.
+- Runtime composition supplies the kernel-owned database service to the
+  authenticated supervisor callback. Neither the supervisor nor a Worker
+  receives database credentials or direct database network permissions.
 - Package composition injects only the secret store's narrow value resolver
   into the package manager; command services separately expose authenticated
   secret administration. Deno and application packages never receive the

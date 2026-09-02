@@ -264,6 +264,7 @@ func TestRepositoryCatalogContainsEveryAcceptedPhase1Command(t *testing.T) {
 	expected := []string{
 		"auth.bootstrap_admin.add", "auth.bootstrap_admin.disable", "auth.bootstrap_admin.enable", "auth.bootstrap_admin.invalidate_sessions", "auth.bootstrap_admin.list", "auth.bootstrap_admin.remove", "auth.bootstrap_admin.set_password",
 		"auth.session.cleanup", "auth.session.list", "auth.session.revoke", "auth.session.revoke_user",
+		"database.check", "database.sql",
 		"debug.close", "debug.open", "debug.targets",
 		"development.activate.preview", "development.activate.run",
 		"development.image.status",
@@ -386,10 +387,10 @@ func TestRepositoryCatalogContainsEveryRequiredPlatformSetting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	found := make(map[string]settings.Storage, len(definitions))
+	found := make(map[string]settings.Definition, len(definitions))
 	global := []string{}
 	for _, definition := range definitions {
-		found[definition.Key] = definition.Storage
+		found[definition.Key] = definition
 		if definition.Storage == settings.StorageGlobal {
 			global = append(global, definition.Key)
 		}
@@ -403,10 +404,25 @@ func TestRepositoryCatalogContainsEveryRequiredPlatformSetting(t *testing.T) {
 		"services.default_maximum_workers", "services.default_concurrency_per_worker", "services.default_target_utilization_percent",
 		"services.default_worker_keep_alive", "services.default_workers_per_sandbox", "services.default_minimum_sandboxes", "services.default_session_keep_alive", "services.state_lock_timeout",
 		"runtime.sandbox.maximum_workers",
+		"database.backend", "database.location", "database.username", "database.password",
 		"network.root_alias",
 	} {
 		if _, exists := found[key]; !exists {
 			t.Errorf("missing required setting %s", key)
+		}
+	}
+	backend := found["database.backend"]
+	if backend.Default != "sqlite" || fmt.Sprint(backend.Allowed) != "[sqlite postgresql]" || backend.Storage != settings.StorageGlobal || !backend.RestartRequired || backend.RuntimeMutable {
+		t.Fatalf("database backend setting = %#v", backend)
+	}
+	location := found["database.location"]
+	if location.Default != "${INSTANCE_ROOT}/database/system.db" || location.Storage != settings.StorageGlobal || !location.RestartRequired || location.RuntimeMutable {
+		t.Fatalf("database location setting = %#v", location)
+	}
+	for _, key := range []string{"database.username", "database.password"} {
+		definition := found[key]
+		if definition.Default != "" || definition.Storage != settings.StorageGlobal || !definition.RestartRequired || definition.RuntimeMutable {
+			t.Fatalf("database credential setting %s = %#v", key, definition)
 		}
 	}
 	for _, key := range []string{
@@ -424,7 +440,7 @@ func TestRepositoryCatalogContainsEveryRequiredPlatformSetting(t *testing.T) {
 			t.Errorf("obsolete CPU/RAM setting remains: %s", key)
 		}
 	}
-	wantGlobal := []string{"network.root_alias"}
+	wantGlobal := []string{"database.backend", "database.location", "database.password", "database.username", "network.root_alias"}
 	if fmt.Sprint(global) != fmt.Sprint(wantGlobal) {
 		t.Fatalf("global settings = %v, want %v", global, wantGlobal)
 	}

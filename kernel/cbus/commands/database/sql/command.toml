@@ -1,0 +1,45 @@
+version = 1
+id = "database.sql"
+path = ["sql"]
+aliases = [["database", "sql"], ["db", "sql"]]
+summary = "Run SQL against the system database"
+description = "Runs one bounded SQL query, or one non-row-returning statement when --execute is set. Parameters are an optional JSON array of scalar values."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/database/sql/sql.go"
+symbol = "New"
+[[parameters]]
+name = "statement"
+type = "string"
+position = 0
+required = true
+description = "One SQL statement. Use $1, $2, and so on for portable positional parameters."
+[[parameters]]
+name = "parameters"
+type = "string"
+option = "parameters"
+required = false
+description = "JSON array of positional parameter values."
+[[parameters]]
+name = "execute"
+type = "boolean"
+option = "execute"
+required = false
+description = "Execute a statement that does not return rows."
+[[result]]
+name = "columns"
+type = "array"
+[[result]]
+name = "rows"
+type = "array"
+[[result]]
+name = "truncated"
+type = "boolean"
+[[result]]
+name = "rows_affected"
+type = "integer"
+[[examples]]
+command = "sql 'SELECT 1 AS value'"
+[[examples]]
+command = "sql 'CREATE TABLE example (id INTEGER PRIMARY KEY)' --execute"

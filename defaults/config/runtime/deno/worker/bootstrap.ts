@@ -314,6 +314,7 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
                 serviceGeneration: metadata.service?.generation ?? 0,
                 canonicalBasePath: metadata.service?.canonicalBasePath ?? "/",
                 originalUrl: requestMetadata.url,
+                client: { ipAddress: "", networkScope: "special" },
                 execution: {
                   nodeId: metadata.nodeId,
                   runtimeGroupId: metadata.runtimeGroupId,

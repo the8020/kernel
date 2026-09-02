@@ -6,9 +6,9 @@
 # Ownership
 
 - Own typed current-user, bootstrap login/logout, administrative command,
-  secret/package-management convenience methods, exact-Worker invocation, and
-  persistent-completion contracts; bind calls to trusted current
-  request/execution context and correlate their results.
+  system-database calls, secret/package-management convenience methods,
+  exact-Worker invocation, and persistent-completion contracts; bind calls to
+  trusted current request/execution context and correlate their results.
 - Do not own password verification, cookies, authorization policy, application
   configuration, application function schemas, or service behavior.
 
@@ -16,8 +16,8 @@
 
 - Public API is `kernel.auth.currentUser()`, `kernel.auth.bootstrapLogin()`,
   `kernel.auth.logoutCurrent()`, `kernel.admin.execute()`, `kernel.secrets`,
-  `kernel.packages`, `kernel.worker.invoke()`, and
-  `kernel.execution.completePersistent()`.
+  `kernel.packages`, `kernel.database.query()`, `kernel.database.execute()`,
+  `kernel.worker.invoke()`, and `kernel.execution.completePersistent()`.
 - `kernel.secrets` provides typed list/get/set delegation. List and set return
   value-free summaries; get is deliberately explicit and returns the value to
   the authenticated administrative caller.
@@ -26,6 +26,10 @@
   ID/commit/success synchronization results, and local creation by delegating to
   generic `admin.execute`; it adds no bridge operation and no package semantics
   to the supervisor.
+- `kernel.database` sends bounded SQL statements and scalar parameters to the Go
+  kernel and returns bounded ordered rows or affected-row counts. Portable SQL
+  uses `$1`, `$2`, and so on; the SDK does not rewrite SQL. It never opens a
+  database connection inside the sandbox.
 - `worker.invoke` requires exact node, sandbox, and Worker IDs plus a bounded
   function name and JSON input. It returns JSON or a structured generic error;
   it never knows which application registered the function.

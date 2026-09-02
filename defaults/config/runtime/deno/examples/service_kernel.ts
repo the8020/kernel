@@ -9,6 +9,14 @@ export const fetch: ServiceEntrypoint = async (request) => {
   if (path === "/admin") {
     return Response.json(await kernel.admin.execute("service.list"));
   }
+  if (path === "/database-query") {
+    return Response.json(await kernel.database.query("SELECT $1", [7]));
+  }
+  if (path === "/database-execute") {
+    return Response.json(
+      await kernel.database.execute("DELETE FROM example WHERE id = $1", [7]),
+    );
+  }
   const credentials = await request.json() as {
     username: string;
     password: string;

@@ -20,6 +20,7 @@ import (
 
 	"the8020/kernel/auth"
 	"the8020/kernel/cbus/core"
+	"the8020/kernel/database"
 	"the8020/kernel/nodes"
 	"the8020/kernel/runtime/protocol"
 	"the8020/kernel/sandbox/model"
@@ -36,6 +37,7 @@ type Config struct {
 	Now              func() time.Time
 	Authentication   Authentication
 	RuntimeRequests  RuntimeRequests
+	Database         Database
 	AdminBus         AdminBus
 	WorkerInvoker    WorkerInvoker
 	Persistent       PersistentExecutionCompleter
@@ -52,6 +54,11 @@ type RuntimeRequests interface {
 
 type AdminBus interface {
 	Execute(context.Context, core.Request) core.Response
+}
+
+type Database interface {
+	Query(context.Context, string, []any) (database.QueryResult, error)
+	Execute(context.Context, string, []any) (database.ExecuteResult, error)
 }
 
 type WorkerInvoker interface {
@@ -81,6 +88,7 @@ type Server struct {
 	authentication   Authentication
 	runtimeRequests  RuntimeRequests
 	adminBus         AdminBus
+	database         Database
 	workerInvoker    WorkerInvoker
 	persistent       PersistentExecutionCompleter
 	mu               sync.Mutex
@@ -135,6 +143,16 @@ type adminCallPayload struct {
 	Arguments   map[string]any `json:"arguments"`
 }
 
+type databaseCallPayload struct {
+	ExecutionID string          `json:"execution_id"`
+	WorkerID    string          `json:"worker_id"`
+	ServiceID   string          `json:"service_id"`
+	RequestID   string          `json:"request_id"`
+	SandboxID   string          `json:"sandbox_id"`
+	Statement   string          `json:"statement"`
+	Parameters  json.RawMessage `json:"parameters,omitempty"`
+}
+
 type workerCallPayload struct {
 	ExecutionID     string `json:"execution_id"`
 	SourceWorkerID  string `json:"worker_id"`
@@ -176,7 +194,7 @@ func New(config Config) (*Server, error) {
 	if config.Now == nil {
 		config.Now = func() time.Time { return time.Now().UTC() }
 	}
-	return &Server{store: config.Store, protocolVersion: config.ProtocolVersion, bindAddress: config.BindAddress, advertiseAddress: config.AdvertiseAddress, allowedNetwork: config.AllowedNetwork, endpointState: config.EndpointState, now: config.Now, authentication: config.Authentication, runtimeRequests: config.RuntimeRequests, adminBus: config.AdminBus, workerInvoker: config.WorkerInvoker, persistent: config.Persistent}, nil
+	return &Server{store: config.Store, protocolVersion: config.ProtocolVersion, bindAddress: config.BindAddress, advertiseAddress: config.AdvertiseAddress, allowedNetwork: config.AllowedNetwork, endpointState: config.EndpointState, now: config.Now, authentication: config.Authentication, runtimeRequests: config.RuntimeRequests, database: config.Database, adminBus: config.AdminBus, workerInvoker: config.WorkerInvoker, persistent: config.Persistent}, nil
 }
 
 func (s *Server) SetWorkerInvoker(invoker WorkerInvoker) {
@@ -363,6 +381,10 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 		s.handleAdministration(writer, request, message, spec)
 		return
 	}
+	if wantType == protocol.MessageDatabaseQuery || wantType == protocol.MessageDatabaseExecute {
+		s.handleDatabase(writer, request, message, spec)
+		return
+	}
 	if wantType == protocol.MessageWorkerInvoke {
 		s.handleWorkerInvocation(writer, request, message, spec)
 		return
@@ -410,7 +432,7 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 
 func validCallbackPath(path string) bool {
 	switch path {
-	case "/v1/runtime/register", "/v1/runtime/heartbeat", "/v1/runtime/auth/bootstrap-login", "/v1/runtime/auth/logout-current", "/v1/runtime/admin/execute", "/v1/runtime/worker/invoke", "/v1/runtime/execution/complete":
+	case "/v1/runtime/register", "/v1/runtime/heartbeat", "/v1/runtime/auth/bootstrap-login", "/v1/runtime/auth/logout-current", "/v1/runtime/admin/execute", "/v1/runtime/database/query", "/v1/runtime/database/execute", "/v1/runtime/worker/invoke", "/v1/runtime/execution/complete":
 		return true
 	default:
 		return false
@@ -427,6 +449,10 @@ func callbackMessageType(path string) protocol.MessageType {
 		return protocol.MessageAuthLogoutCurrent
 	case "/v1/runtime/admin/execute":
 		return protocol.MessageAdminCommand
+	case "/v1/runtime/database/query":
+		return protocol.MessageDatabaseQuery
+	case "/v1/runtime/database/execute":
+		return protocol.MessageDatabaseExecute
 	case "/v1/runtime/worker/invoke":
 		return protocol.MessageWorkerInvoke
 	case "/v1/runtime/execution/complete":
@@ -434,6 +460,52 @@ func callbackMessageType(path string) protocol.MessageType {
 	default:
 		return protocol.MessageHeartbeat
 	}
+}
+
+func (s *Server) handleDatabase(writer http.ResponseWriter, request *http.Request, message protocol.Envelope, spec model.SandboxSpec) {
+	if s.database == nil || s.runtimeRequests == nil {
+		http.Error(writer, "system database is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if spec.WorkloadType != model.WorkloadService || message.CorrelationID == "" {
+		http.Error(writer, "runtime database identity mismatch", http.StatusBadRequest)
+		return
+	}
+	var payload databaseCallPayload
+	if err := decodePayload(message.Payload, &payload); err != nil || payload.Statement == "" {
+		http.Error(writer, "invalid runtime database payload", http.StatusBadRequest)
+		return
+	}
+	active, exists := s.runtimeRequests.RuntimeRequest(payload.RequestID)
+	if !exists || payload.ExecutionID == "" || payload.WorkerID == "" || payload.ServiceID != active.ServiceID || payload.SandboxID != spec.SandboxID || active.RuntimeGroupID != spec.RuntimeGroupID || active.SandboxID != spec.SandboxID {
+		http.Error(writer, "runtime database request is not active", http.StatusConflict)
+		return
+	}
+	parameters, err := database.DecodeParameters(payload.Parameters)
+	if err != nil {
+		http.Error(writer, err.Error(), http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 30*time.Second)
+	defer cancel()
+	var result any
+	if message.MessageType == protocol.MessageDatabaseQuery {
+		result, err = s.database.Query(ctx, payload.Statement, parameters)
+	} else {
+		result, err = s.database.Execute(ctx, payload.Statement, parameters)
+	}
+	if err != nil {
+		http.Error(writer, "database operation failed: "+err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	data, err := json.Marshal(result)
+	if err != nil || len(data) > 2<<20 {
+		http.Error(writer, "encode database result", http.StatusInternalServerError)
+		return
+	}
+	response := protocol.Envelope{ProtocolVersion: s.protocolVersion, MessageType: protocol.MessageDatabaseResult, RuntimeGroupID: spec.RuntimeGroupID, CorrelationID: message.CorrelationID, Payload: data}
+	writer.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(writer).Encode(response)
 }
 
 func (s *Server) handleWorkerInvocation(writer http.ResponseWriter, request *http.Request, message protocol.Envelope, spec model.SandboxSpec) {

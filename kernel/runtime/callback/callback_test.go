@@ -15,6 +15,7 @@ import (
 
 	platformauth "the8020/kernel/auth"
 	"the8020/kernel/cbus/core"
+	"the8020/kernel/database"
 	"the8020/kernel/nodes"
 	"the8020/kernel/runtime/protocol"
 	"the8020/kernel/sandbox/model"
@@ -43,6 +44,22 @@ func (i *recordingWorkerInvoker) InvokeWorker(_ context.Context, input nodes.Wor
 type recordingPersistentCompleter struct {
 	calls []PersistentExecutionTarget
 	err   error
+}
+
+type recordingDatabase struct {
+	queries    []string
+	executions []string
+	parameters []any
+}
+
+func (d *recordingDatabase) Query(_ context.Context, statement string, parameters []any) (database.QueryResult, error) {
+	d.queries, d.parameters = append(d.queries, statement), parameters
+	return database.QueryResult{Columns: []string{"value"}, Rows: [][]any{{int64(3)}}}, nil
+}
+
+func (d *recordingDatabase) Execute(_ context.Context, statement string, parameters []any) (database.ExecuteResult, error) {
+	d.executions, d.parameters = append(d.executions, statement), parameters
+	return database.ExecuteResult{RowsAffected: 1}, nil
 }
 
 func (c *recordingPersistentCompleter) CompletePersistentExecution(_ context.Context, target PersistentExecutionTarget) error {
@@ -278,6 +295,45 @@ func TestSupervisorMediatedAdminBusRequiresBootstrapAdministrator(t *testing.T) 
 	mismatch.RequestID = "other-request"
 	if response := call(mismatch); response.Code != http.StatusConflict {
 		t.Fatalf("mismatch status=%d body=%q", response.Code, response.Body.String())
+	}
+}
+
+func TestActiveServiceRequestCanUseKernelOwnedDatabase(t *testing.T) {
+	store, _ := state.New(t.TempDir())
+	spec, _ := callbackFixtureForWorkload(t, store, model.WorkloadService)
+	_, network, _ := net.ParseCIDR("10.88.0.0/16")
+	active := platformauth.RuntimeRequest{
+		RequestID: "request-database", ServiceID: "example/data/service",
+		RuntimeGroupID: spec.RuntimeGroupID, SandboxID: spec.SandboxID,
+	}
+	runtimeRequests := fixedRuntimeRequests{requests: map[string]platformauth.RuntimeRequest{active.RequestID: active}}
+	databaseService := &recordingDatabase{}
+	server, err := New(Config{Store: store, ProtocolVersion: 1, AdvertiseAddress: "10.88.0.1", AllowedNetwork: network, RuntimeRequests: runtimeRequests, Database: databaseService})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := databaseCallPayload{
+		ExecutionID: "execution-1", WorkerID: "worker-1", ServiceID: active.ServiceID,
+		RequestID: active.RequestID, SandboxID: spec.SandboxID,
+		Statement: "SELECT $1", Parameters: json.RawMessage(`[3]`),
+	}
+	response := runtimeControlCall(t, server, spec, "/v1/runtime/database/query", protocol.MessageDatabaseQuery, payload)
+	if response.Code != http.StatusOK || len(databaseService.queries) != 1 || databaseService.parameters[0] != int64(3) {
+		t.Fatalf("query status=%d body=%q database=%#v", response.Code, response.Body.String(), databaseService)
+	}
+	var envelope protocol.Envelope
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil || envelope.MessageType != protocol.MessageDatabaseResult {
+		t.Fatalf("query envelope=%#v error=%v", envelope, err)
+	}
+	payload.Statement, payload.Parameters = "DELETE FROM example", nil
+	response = runtimeControlCall(t, server, spec, "/v1/runtime/database/execute", protocol.MessageDatabaseExecute, payload)
+	if response.Code != http.StatusOK || len(databaseService.executions) != 1 {
+		t.Fatalf("execute status=%d body=%q database=%#v", response.Code, response.Body.String(), databaseService)
+	}
+	payload.RequestID = "inactive"
+	response = runtimeControlCall(t, server, spec, "/v1/runtime/database/query", protocol.MessageDatabaseQuery, payload)
+	if response.Code != http.StatusConflict || len(databaseService.queries) != 1 {
+		t.Fatalf("inactive status=%d database=%#v", response.Code, databaseService)
 	}
 }
 

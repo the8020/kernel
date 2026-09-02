@@ -10,7 +10,8 @@
   SDKs, image definitions, portable/full materialization, and runtime-specific
   tests.
 - The Go kernel owns backend selection, sandbox/network/resource/mount policy,
-  placement, opaque persistent routing, and node-local runtime state.
+  placement, opaque persistent routing, the system database connection, and
+  node-local runtime state.
 - Application packages own every application protocol and behavior. This tree
   must contain no UUI implementation, package tests, package build products, or
   hardcoded application identity.

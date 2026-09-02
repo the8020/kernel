@@ -19,6 +19,7 @@ import (
 
 	"the8020/kernel/auth"
 	platformconsole "the8020/kernel/console"
+	"the8020/kernel/database"
 	"the8020/kernel/debugging"
 	"the8020/kernel/execution/adminrun"
 	"the8020/kernel/execution/coordinator"
@@ -145,7 +146,7 @@ func (c *runtimeCleanup) Close(ctx context.Context, report shutdownProgressFunc)
 	return c.err
 }
 
-func initializeRuntime(ctx context.Context, root, instanceUUID string, paths instance.Paths, settingManager *settings.Manager, packageStore *workspacepackages.Store, router *mainnetwork.Manager, authentication *auth.Manager, adminBus callback.AdminBus, consoleManager *platformconsole.Manager, nodeManager *nodes.Manager, logger *slog.Logger) (*services.RuntimeServices, runtimeCleanupFunc) {
+func initializeRuntime(ctx context.Context, root, instanceUUID string, paths instance.Paths, settingManager *settings.Manager, packageStore *workspacepackages.Store, router *mainnetwork.Manager, authentication *auth.Manager, systemDatabase *database.Manager, adminBus callback.AdminBus, consoleManager *platformconsole.Manager, nodeManager *nodes.Manager, logger *slog.Logger) (*services.RuntimeServices, runtimeCleanupFunc) {
 	cleanup := &runtimeCleanup{policy: manager.ShutdownDestroy}
 	closeRuntime := cleanup.Close
 	versions, err := runtimehost.LoadVersionsFile(paths.RuntimeVersionsFile)
@@ -238,7 +239,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		}
 		callbackAdvertise = gateway.String()
 	}
-	callbackServer, err := callback.New(callback.Config{Store: stateStore, ProtocolVersion: versions.RuntimeProtocolVersion, BindAddress: callbackBind, AdvertiseAddress: callbackAdvertise, AllowedNetwork: allowedNetwork, EndpointState: callbackState, Authentication: authentication, RuntimeRequests: authentication, AdminBus: adminBus})
+	callbackServer, err := callback.New(callback.Config{Store: stateStore, ProtocolVersion: versions.RuntimeProtocolVersion, BindAddress: callbackBind, AdvertiseAddress: callbackAdvertise, AllowedNetwork: allowedNetwork, EndpointState: callbackState, Authentication: authentication, RuntimeRequests: authentication, Database: systemDatabase, AdminBus: adminBus})
 	if err != nil {
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime

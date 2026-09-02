@@ -111,6 +111,7 @@ Deno.test("stateless service Worker bridges WebSocket routes without buffering m
     serviceGeneration: 4,
     canonicalBasePath: "/example/websocket/service",
     originalUrl: "https://example.test/example/websocket/service/echo/main",
+    client: { ipAddress: "203.0.113.4", networkScope: "public" },
     execution: {
       nodeId: workerMetadata.nodeId,
       runtimeGroupId: workerMetadata.runtimeGroupId,
@@ -204,15 +205,26 @@ Deno.test("service Worker bridges typed kernel authentication calls", async () =
           result: { services: [{ service_id: "core/example/service" }] },
         });
       }
+      if (call.operation === "database.query") {
+        return Promise.resolve({
+          columns: ["value"],
+          rows: [[7]],
+          truncated: false,
+        });
+      }
+      if (call.operation === "database.execute") {
+        return Promise.resolve({ rows_affected: 1 });
+      }
       return Promise.resolve({ setCookie: "the8020_auth=; Max-Age=0" });
     },
   });
-  const requestMetadata = {
+  const requestMetadata: ServiceRequestMetadata = {
     requestId: "request-auth-1",
     serviceId: "example/auth/login",
     serviceGeneration: 1,
     canonicalBasePath: "/example/auth/login",
     originalUrl: "https://example.test/example/auth/login",
+    client: { ipAddress: "203.0.113.4", networkScope: "public" },
     execution: {
       nodeId: worker.metadata.nodeId,
       runtimeGroupId: worker.metadata.runtimeGroupId,
@@ -258,6 +270,22 @@ Deno.test("service Worker bridges typed kernel authentication calls", async () =
       command_id: "service.list",
       arguments: {},
     });
+    const query = await worker.dispatchService(
+      new Request("http://service/database-query"),
+      { ...requestMetadata, requestId: "request-database-query" },
+    );
+    assertEquals(await query.json(), {
+      columns: ["value"],
+      rows: [[7]],
+      truncated: false,
+    });
+    assertEquals(calls[3]?.operation, "database.query");
+    const execute = await worker.dispatchService(
+      new Request("http://service/database-execute"),
+      { ...requestMetadata, requestId: "request-database-execute" },
+    );
+    assertEquals(await execute.json(), { rows_affected: 1 });
+    assertEquals(calls[4]?.operation, "database.execute");
   } finally {
     await worker.stop();
   }

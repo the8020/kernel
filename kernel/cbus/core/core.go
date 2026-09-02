@@ -32,6 +32,8 @@ const (
 	CodeConflict            = "conflict"
 	CodeTimeout             = "timeout"
 	CodeRuntimeOperation    = "runtime_operation_failed"
+	CodeDatabaseUnavailable = "database_unavailable"
+	CodeDatabaseOperation   = "database_operation_failed"
 	CodeInternal            = "internal_error"
 )
 

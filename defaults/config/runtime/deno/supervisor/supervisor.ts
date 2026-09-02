@@ -1268,6 +1268,10 @@ function trustedServiceMetadata(
       worker.service?.canonicalBasePath || "/",
     originalUrl: headers.get("x-80-20-internal-original-url") ||
       headers.get("x-80-20-url") || "http://service/",
+    client: {
+      ipAddress: headers.get("x-80-20-internal-client-ip-address") || "",
+      networkScope: clientNetworkScope(headers),
+    },
     persistentExecutionId: headers.get(
       "x-80-20-internal-persistent-execution-id",
     ) || undefined,
@@ -1289,6 +1293,16 @@ function trustedServiceMetadata(
     authenticatedUser: headers.get("x-80-20-internal-auth-username") ||
       undefined,
   };
+}
+
+function clientNetworkScope(
+  headers: Headers,
+): ServiceRequestMetadata["client"]["networkScope"] {
+  const value = headers.get("x-80-20-internal-client-network-scope");
+  return value === "loopback" || value === "private" ||
+      value === "link_local" || value === "public" || value === "special"
+    ? value
+    : "special";
 }
 
 function positiveIntegerHeader(

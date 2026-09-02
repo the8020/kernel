@@ -11,8 +11,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/textproto"
 	"net/url"
 	"os"
@@ -1528,6 +1530,7 @@ func (m *Manager) dispatch(writer http.ResponseWriter, request *http.Request, id
 	forwarded.Header.Set(internalHeaderPrefix+"Original-Path", request.URL.RequestURI())
 	forwarded.Header.Set(internalHeaderPrefix+"Original-Host", request.Host)
 	forwarded.Header.Set(internalHeaderPrefix+"Original-Scheme", requestScheme(request))
+	setClientMetadata(forwarded.Header, request.RemoteAddr)
 	if persistent != nil {
 		forwarded.Header.Set(internalHeaderPrefix+"Persistent-Execution-ID", persistent.record.ExecutionID)
 		forwarded.Header.Set(internalHeaderPrefix+"Persistent-Keep-Alive-MS", strconv.FormatInt(persistent.record.KeepAlive.Milliseconds(), 10))
@@ -1686,6 +1689,7 @@ func (m *Manager) dispatchWebSocket(writer http.ResponseWriter, request *http.Re
 	forwarded.Header.Set(internalHeaderPrefix+"Original-Path", request.URL.RequestURI())
 	forwarded.Header.Set(internalHeaderPrefix+"Original-Host", request.Host)
 	forwarded.Header.Set(internalHeaderPrefix+"Original-Scheme", requestScheme(request))
+	setClientMetadata(forwarded.Header, request.RemoteAddr)
 	if persistent != nil {
 		forwarded.Header.Set(internalHeaderPrefix+"Persistent-Execution-ID", persistent.record.ExecutionID)
 		forwarded.Header.Set(internalHeaderPrefix+"Persistent-Keep-Alive-MS", strconv.FormatInt(persistent.record.KeepAlive.Milliseconds(), 10))
@@ -1722,6 +1726,35 @@ func (m *Manager) dispatchWebSocket(writer http.ResponseWriter, request *http.Re
 		return false
 	}
 	return true
+}
+
+func setClientMetadata(header http.Header, remoteAddress string) {
+	host, _, err := net.SplitHostPort(remoteAddress)
+	if err != nil {
+		host = remoteAddress
+	}
+	address, err := netip.ParseAddr(strings.TrimSpace(host))
+	if err != nil {
+		return
+	}
+	address = address.Unmap()
+	header.Set(internalHeaderPrefix+"Client-IP-Address", address.String())
+	header.Set(internalHeaderPrefix+"Client-Network-Scope", clientNetworkScope(address))
+}
+
+func clientNetworkScope(address netip.Addr) string {
+	switch {
+	case address.IsLoopback():
+		return "loopback"
+	case address.IsPrivate():
+		return "private"
+	case address.IsLinkLocalUnicast() || address.IsLinkLocalMulticast():
+		return "link_local"
+	case address.IsUnspecified() || address.IsMulticast():
+		return "special"
+	default:
+		return "public"
+	}
 }
 
 func (m *Manager) authenticate(request *http.Request) (auth.AuthContext, bool) {

@@ -119,6 +119,14 @@ Default section order:
 When the user requests a durable behavior change, record it here or in the
 relevant child AGENTS.md
 
+- User-visible descriptions, hints, placeholders, notices, and empty-state copy
+  must help the user act or understand a user-visible outcome. Never add copy
+  solely to explain internal architecture, storage, persistence, sessions,
+  transport, or implementation details; omit it entirely and keep those details
+  in DOX or developer documentation. For example, never show
+  `Value is stored per-session in the user storage.` or
+  `The value is sent directly to kernel secret storage and is not shown again.`
+  in the UI.
 - `run.sh` and the kernel binary may run from any current directory. `run.sh`
   initializes an absent instance with its default mapped roots before building
   images; direct kernel invocation retains guided initialization for selecting
@@ -454,7 +462,9 @@ relevant child AGENTS.md
   `config/runtime/`; `state/` owns shared operational state, including
   kernel-owned `state/package-index/` and package-owned `state/package-data/`;
   `users/<username>/` owns that user's durable
-  data; and `node/` owns every node-local artifact. Global setting overrides live in
+  data; the private top-level `database/` owns the default single-node SQLite
+  system database and is never sandbox-mounted; and `node/` owns every
+  node-local artifact. Global setting overrides live in
   `config/settings.toml`, node setting overrides live in
   `node/kernel/settings.toml`, and authentication/configuration material is never
   mounted into sandboxes.

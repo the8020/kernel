@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"the8020/kernel/cbus/client"
+	databasecheck "the8020/kernel/cbus/commands/database/check"
 	shutdowncommand "the8020/kernel/cbus/commands/system/shutdown"
 	statuscommand "the8020/kernel/cbus/commands/system/status"
 	"the8020/kernel/cbus/core"
@@ -28,6 +29,10 @@ func controlPlaneDefinitions() []settings.Definition {
 		{Key: "logging.split_period", Type: settings.TypeEnum, Storage: settings.StorageNode, Default: "day", Environment: "TEST_CONTROL_LOGGING_SPLIT", Allowed: []string{"none", "minute", "hour", "day", "week", "month", "year"}, RuntimeMutable: true, Description: "Test log split period."},
 		{Key: "logging.max_file_size", Type: settings.TypeByteSize, Storage: settings.StorageNode, Default: "1GB", Environment: "TEST_CONTROL_LOGGING_FILE", RuntimeMutable: true, Description: "Test log file limit."},
 		{Key: "logging.max_total_size", Type: settings.TypeByteSize, Storage: settings.StorageNode, Default: "10GB", Environment: "TEST_CONTROL_LOGGING_TOTAL", RuntimeMutable: true, Description: "Test total log limit."},
+		{Key: "database.backend", Type: settings.TypeEnum, Storage: settings.StorageGlobal, Default: "sqlite", Environment: "TEST_CONTROL_DATABASE_BACKEND", Allowed: []string{"sqlite", "postgresql"}, RestartRequired: true, Description: "Test database backend."},
+		{Key: "database.location", Type: settings.TypeString, Storage: settings.StorageGlobal, Default: "${INSTANCE_ROOT}/database/system.db", Environment: "TEST_CONTROL_DATABASE_LOCATION", RestartRequired: true, Description: "Test database location."},
+		{Key: "database.username", Type: settings.TypeString, Storage: settings.StorageGlobal, Default: "", Environment: "TEST_CONTROL_DATABASE_USERNAME", RestartRequired: true, Description: "Test database username."},
+		{Key: "database.password", Type: settings.TypeString, Storage: settings.StorageGlobal, Default: "", Environment: "TEST_CONTROL_DATABASE_PASSWORD", RestartRequired: true, Description: "Test database password."},
 	}
 }
 
@@ -38,6 +43,7 @@ func registerControlPlaneCommands(registry *core.Registry, serviceSet *services.
 	}{
 		{core.Command{Version: 1, ID: "system.status", Path: []string{"system", "status"}}, statuscommand.New(serviceSet)},
 		{core.Command{Version: 1, ID: "system.shutdown", Path: []string{"system", "shutdown"}}, shutdowncommand.New(serviceSet)},
+		{core.Command{Version: 1, ID: "database.check", Path: []string{"database", "check"}}, databasecheck.New(serviceSet)},
 	}
 	for _, command := range commands {
 		if err := registry.Register(command.definition, command.handler); err != nil {
@@ -45,6 +51,67 @@ func registerControlPlaneCommands(registry *core.Registry, serviceSet *services.
 		}
 	}
 	return nil
+}
+
+func TestDatabaseFailureDoesNotBlockControlPlane(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := instance.WriteLayout(root, instance.Layout{
+		Packages: filepath.Join(root, "packages"), Config: filepath.Join(root, "config"),
+		State: filepath.Join(root, "state"), Users: filepath.Join(root, "users"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	config := Config{
+		Root: root,
+		Startup: map[string]string{
+			"network.main_port": strconv.Itoa(controlPlanePort(t)),
+			"network.ssh_port":  strconv.Itoa(controlPlanePort(t)),
+			"database.backend":  "postgresql",
+			"database.location": "postgresql://127.0.0.1:1/missing?sslmode=disable&connect_timeout=1",
+			"database.username": "missing",
+			"database.password": "wrong",
+		},
+		Definitions: controlPlaneDefinitions(), Register: registerControlPlaneCommands,
+		initialize: func(context.Context) (*services.RuntimeServices, runtimeCleanupFunc) {
+			return &services.RuntimeServices{Failure: "test runtime unavailable"}, func(context.Context, shutdownProgressFunc) error { return nil }
+		},
+	}
+	done := make(chan error, 1)
+	go func() { done <- Run(context.Background(), config) }()
+	commandClient := client.New(instance.NewPaths(root).Socket)
+	defer commandClient.Close()
+	var status core.Response
+	var err error
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		status, err = commandClient.Execute(context.Background(), core.Request{CommandID: "system.status"})
+		if err == nil && status.Success {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil || !status.Success || status.Result["database_status"] != "UNAVAILABLE" || status.Result["database_error"] == "" {
+		t.Fatalf("degraded database status=%#v error=%v", status, err)
+	}
+	check, err := commandClient.Execute(context.Background(), core.Request{CommandID: "database.check"})
+	if err != nil || check.Success || check.Error == nil || check.Error.Code != core.CodeDatabaseUnavailable {
+		t.Fatalf("database check=%#v error=%v", check, err)
+	}
+	shutdown, err := commandClient.Execute(context.Background(), core.Request{CommandID: "system.shutdown"})
+	if err != nil || !shutdown.Success {
+		t.Fatalf("shutdown=%#v error=%v", shutdown, err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("kernel did not stop")
+	}
 }
 
 func TestAdministrativeSocketPrecedesRuntimeInitialization(t *testing.T) {
@@ -118,6 +185,12 @@ func TestAdministrativeSocketPrecedesRuntimeInitialization(t *testing.T) {
 	}
 	if status.Result["runtime_ready"] != false || status.Result["runtime_failure"] != "runtime initialization is in progress" {
 		t.Fatalf("initializing status=%#v", status.Result)
+	}
+	if status.Result["database_backend"] != "sqlite" || status.Result["database_status"] != "READY" || status.Result["database_location"] != filepath.Join(root, "database", "system.db") || status.Result["database_error"] != nil {
+		t.Fatalf("database status=%#v", status.Result)
+	}
+	if _, err := os.Stat(filepath.Join(root, "database", "system.db")); err != nil {
+		t.Fatalf("default SQLite database was not created: %v", err)
 	}
 	close(releaseRuntime)
 	deadline = time.Now().Add(3 * time.Second)

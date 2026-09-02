@@ -21,6 +21,7 @@ import (
 	"the8020/kernel/cbus/core"
 	"the8020/kernel/cbus/server"
 	platformconsole "the8020/kernel/console"
+	"the8020/kernel/database"
 	"the8020/kernel/development"
 	"the8020/kernel/instance"
 	"the8020/kernel/lifecycle"
@@ -281,6 +282,20 @@ func Run(parent context.Context, config Config) error {
 	}
 	defer loggingManager.Close()
 	logger := loggingManager.Logger()
+	databaseManager := database.New(database.Config{
+		Backend:      activeString(settingManager, "database.backend", database.BackendSQLite),
+		Location:     activeString(settingManager, "database.location", database.InstanceRootPlaceholder+"/database/system.db"),
+		Username:     activeString(settingManager, "database.username", ""),
+		Password:     activeString(settingManager, "database.password", ""),
+		InstanceRoot: root,
+	})
+	defer databaseManager.Close()
+	databaseContext, cancelDatabaseCheck := context.WithTimeout(parent, 3*time.Second)
+	databaseStatus, databaseErr := databaseManager.Check(databaseContext)
+	cancelDatabaseCheck()
+	if databaseErr != nil {
+		logger.Warn("system database unavailable", "backend", databaseStatus.Backend, "location", databaseStatus.Location, "error", databaseErr)
+	}
 	authManager, err := auth.New(auth.Config{
 		UsersFile:       filepath.Join(paths.ConfigAuth, "bootstrap-users.toml"),
 		SessionsRoot:    paths.BootstrapSessions,
@@ -421,6 +436,7 @@ func Run(parent context.Context, config Config) error {
 	lifecycleManager.ConfigureShutdown(gracefulShutdownSteps)
 	serviceSet := services.New(settingManager, networkManager, loggingManager, lifecycleManager, authManager, packageStore, developmentManager, uuid, paths, startedAt, config.BuildID, &services.RuntimeServices{Failure: "runtime initialization is in progress"})
 	serviceSet.Secrets = secretManager
+	serviceSet.Database = databaseManager
 	serviceSet.Layout = instance.NewLayoutManager(root)
 	serviceSet.Nodes = nodeManager
 	if config.Register == nil {
@@ -438,7 +454,7 @@ func Run(parent context.Context, config Config) error {
 	initialize := config.initialize
 	if initialize == nil {
 		initialize = func(ctx context.Context) (*services.RuntimeServices, runtimeCleanupFunc) {
-			return initializeRuntime(ctx, root, uuid, paths, settingManager, packageStore, networkManager, authManager, registry, consoleManager, nodeManager, logger.With("node_id", uuid))
+			return initializeRuntime(ctx, root, uuid, paths, settingManager, packageStore, networkManager, authManager, databaseManager, registry, consoleManager, nodeManager, logger.With("node_id", uuid))
 		}
 	}
 	type runtimeResult struct {

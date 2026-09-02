@@ -3,7 +3,7 @@ id = "system.status"
 path = ["system", "status"]
 aliases = [["status"]]
 summary = "Show kernel status"
-description = "Returns identity, process, listener, logging, runtime isolation mode, uptime, graceful shutdown/restart progress, and build information for the running kernel."
+description = "Returns identity, process, listeners, logging, database readiness, runtime isolation mode, uptime, graceful shutdown/restart progress, and build information for the running kernel."
 mutates_state = false
 restart_behavior = "none"
 [handler]
@@ -44,6 +44,18 @@ name = "runtime_mode"
 type = "string"
 [[result]]
 name = "runtime_failure"
+type = "string"
+[[result]]
+name = "database_backend"
+type = "string"
+[[result]]
+name = "database_location"
+type = "string"
+[[result]]
+name = "database_status"
+type = "string"
+[[result]]
+name = "database_error"
 type = "string"
 [[result]]
 name = "shutdown_requested"

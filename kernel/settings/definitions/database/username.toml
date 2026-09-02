@@ -1,0 +1,8 @@
+key = "database.username"
+type = "string"
+storage = "global"
+default = ""
+environment = "KERNEL_DATABASE_USERNAME"
+runtime_mutable = false
+restart_required = true
+description = "PostgreSQL username; ignored by SQLite."

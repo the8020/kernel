@@ -34,11 +34,17 @@ export interface ServiceRequestMetadata {
   serviceGeneration: number;
   canonicalBasePath: string;
   originalUrl: string;
+  client: ClientConnectionMetadata;
   persistentExecutionId?: string;
   persistentKeepAliveMilliseconds?: number;
   execution: CurrentExecutionMetadata;
   auth: AuthContext;
   authenticatedUser?: string;
+}
+
+export interface ClientConnectionMetadata {
+  ipAddress: string;
+  networkScope: "loopback" | "private" | "link_local" | "public" | "special";
 }
 
 export interface CurrentExecutionMetadata {
@@ -62,6 +68,8 @@ export type KernelOperation =
   | "auth.bootstrapLogin"
   | "auth.logoutCurrent"
   | "admin.execute"
+  | "database.query"
+  | "database.execute"
   | "worker.invoke"
   | "execution.completePersistent";
 

@@ -5,8 +5,8 @@
 # Ownership
 
 - Own `Services`, `RuntimeServices`, immutable `InstanceInfo`, and narrow
-  handler-facing authentication, secrets, package, development, and web-service
-  interfaces only.
+  handler-facing authentication, database, secrets, package, development, and
+  web-service interfaces only.
 - Do not perform lookup, lifecycle behavior, validation, or domain operations.
 
 # Local Contracts
@@ -14,7 +14,8 @@
 - Public API: `InstanceInfo`, `Services`, `RuntimeServices`, `RuntimeSnapshot`, `PublishRuntime`, narrow handler-facing domain interfaces, and `New`.
 - Fields are limited to settings, network, shared node topology/capacity,
   logging, lifecycle, bootstrap
-  authentication, instance status, named-secret list/get/set, package
+  authentication, instance status, system-database check/query/execute,
+  named-secret list/get/set, package
   discovery/index/synchronization/repository operations, development
   image/workspace/activation operations, selected isolation
   diagnostics, low-level runtime pools, and exact operations used by current

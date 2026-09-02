@@ -210,6 +210,8 @@ export class RuntimeWorker {
         (payload.operation !== "auth.bootstrapLogin" &&
           payload.operation !== "auth.logoutCurrent" &&
           payload.operation !== "admin.execute" &&
+          payload.operation !== "database.query" &&
+          payload.operation !== "database.execute" &&
           payload.operation !== "worker.invoke" &&
           payload.operation !== "execution.completePersistent") ||
         payload.arguments === null || typeof payload.arguments !== "object" ||
@@ -313,6 +315,7 @@ export class RuntimeWorker {
       serviceGeneration: this.metadata.service?.generation ?? 0,
       canonicalBasePath: this.metadata.service?.canonicalBasePath ?? "/",
       originalUrl: request.url,
+      client: { ipAddress: "", networkScope: "special" },
       execution: {
         nodeId: this.metadata.nodeId,
         runtimeGroupId: this.metadata.runtimeGroupId,

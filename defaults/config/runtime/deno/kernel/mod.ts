@@ -176,11 +176,25 @@ export class AdminCommandError extends Error {
   }
 }
 
+export type DatabaseValue = null | boolean | number | string;
+
+export interface DatabaseQueryResult {
+  columns: string[];
+  rows: DatabaseValue[][];
+  truncated: boolean;
+}
+
+export interface DatabaseExecuteResult {
+  rows_affected: number;
+}
+
 export type KernelOperation =
   | "auth.currentUser"
   | "auth.bootstrapLogin"
   | "auth.logoutCurrent"
   | "admin.execute"
+  | "database.query"
+  | "database.execute"
   | "worker.invoke"
   | "execution.completePersistent";
 
@@ -286,6 +300,29 @@ function optionalArguments(
   );
 }
 
+function databaseArguments(
+  statement: string,
+  parameters: DatabaseValue[],
+): Record<string, unknown> {
+  if (typeof statement !== "string" || statement.trim().length === 0) {
+    throw new TypeError("SQL statement is required");
+  }
+  if (new TextEncoder().encode(statement).byteLength > 1_048_576) {
+    throw new TypeError("SQL statement exceeds 1 MiB");
+  }
+  if (
+    !Array.isArray(parameters) ||
+    parameters.some((value) =>
+      value !== null && typeof value !== "boolean" &&
+      (typeof value !== "number" || !Number.isFinite(value)) &&
+      typeof value !== "string"
+    )
+  ) {
+    throw new TypeError("SQL parameters must be scalar values");
+  }
+  return { statement, parameters };
+}
+
 export const kernel = Object.freeze({
   auth: Object.freeze({
     currentUser(): Promise<BootstrapUser | undefined> {
@@ -330,6 +367,26 @@ export const kernel = Object.freeze({
   execution: Object.freeze({
     completePersistent(): Promise<void> {
       return invoke<void>("execution.completePersistent", {});
+    },
+  }),
+  database: Object.freeze({
+    query(
+      statement: string,
+      parameters: DatabaseValue[] = [],
+    ): Promise<DatabaseQueryResult> {
+      return invoke<DatabaseQueryResult>(
+        "database.query",
+        databaseArguments(statement, parameters),
+      );
+    },
+    execute(
+      statement: string,
+      parameters: DatabaseValue[] = [],
+    ): Promise<DatabaseExecuteResult> {
+      return invoke<DatabaseExecuteResult>(
+        "database.execute",
+        databaseArguments(statement, parameters),
+      );
     },
   }),
   secrets: Object.freeze({

@@ -37,6 +37,7 @@ type Paths struct {
 	RuntimeFullImage      string
 	DevelopmentImage      string
 	RuntimeVersionsFile   string
+	Database              string
 	SharedState           string
 	StateAuth             string
 	BootstrapSessions     string
@@ -190,6 +191,7 @@ func NewPathsForLayout(root string, layout Layout) Paths {
 		Config: layout.Config, ConfigAuth: filepath.Join(layout.Config, "auth"), ConfigSecrets: filepath.Join(layout.Config, "secrets"), SecretsFile: filepath.Join(layout.Config, "secrets", "secrets.toml"),
 		RuntimeRootlessImage: filepath.Join(runtimeImages, "rootless"), RuntimeFullImage: filepath.Join(runtimeImages, "full"),
 		DevelopmentImage: filepath.Join(runtimeImages, "development"), RuntimeVersionsFile: filepath.Join(layout.Config, "runtime", "versions.toml"),
+		Database:    filepath.Join(root, "database"),
 		SharedState: layout.State, StateAuth: filepath.Join(layout.State, "auth"), BootstrapSessions: filepath.Join(layout.State, "auth", "bootstrap-sessions"), StateServices: filepath.Join(layout.State, "services"), StatePackageIndex: filepath.Join(layout.State, "package-index"), StatePackageData: filepath.Join(layout.State, "package-data"),
 		InstanceFile:     filepath.Join(kernel, "instance.toml"),
 		NodeSettingsFile: filepath.Join(kernel, "settings.toml"), GlobalSettingsFile: filepath.Join(layout.Config, "settings.toml"), Run: run,
@@ -443,7 +445,7 @@ func Initialize(paths Paths) (string, error) {
 	if err := os.Chmod(paths.BootstrapSessions, 0o700); err != nil {
 		return "", fmt.Errorf("restrict bootstrap authentication-session directory %s: %w", paths.BootstrapSessions, err)
 	}
-	for _, dir := range []string{paths.Kernel, paths.Bin, paths.RuntimeRootlessImage, paths.RuntimeFullImage, paths.DevelopmentImage, paths.Run, paths.Logs, paths.Runtime, paths.RuntimeGroups, paths.RuntimeSandboxHistory, paths.RuntimePorts, paths.RuntimeServices, paths.RuntimeServicePools, paths.RuntimeAttachments, paths.RuntimeTemporary, paths.RuntimeDevelopment, paths.SSH} {
+	for _, dir := range []string{paths.Kernel, paths.Bin, paths.Database, paths.RuntimeRootlessImage, paths.RuntimeFullImage, paths.DevelopmentImage, paths.Run, paths.Logs, paths.Runtime, paths.RuntimeGroups, paths.RuntimeSandboxHistory, paths.RuntimePorts, paths.RuntimeServices, paths.RuntimeServicePools, paths.RuntimeAttachments, paths.RuntimeTemporary, paths.RuntimeDevelopment, paths.SSH} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return "", fmt.Errorf("create runtime directory %s: %w", dir, err)
 		}

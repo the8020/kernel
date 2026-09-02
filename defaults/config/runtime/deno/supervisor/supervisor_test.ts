@@ -58,6 +58,27 @@ Deno.test("kernel callback payloads contain only operation-owned fields", () => 
       persistent_execution_id: "persistent-test",
     },
   );
+  assertEquals(
+    kernelCallbackRequest({
+      ...base,
+      operation: "database.query",
+      arguments: { statement: "SELECT $1", parameters: [1] },
+    }, "sbx-source01"),
+    {
+      path: "/v1/runtime/database/query",
+      messageType: "database_query",
+      responseMessageType: "database_result",
+      payload: {
+        statement: "SELECT $1",
+        parameters: [1],
+        execution_id: "execution-test",
+        worker_id: "wrk-source01",
+        service_id: "example/persistent",
+        request_id: "request-test",
+        sandbox_id: "sbx-source01",
+      },
+    },
+  );
 });
 
 Deno.test("service type checking uses supported dependency-mode arguments", () => {

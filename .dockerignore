@@ -3,6 +3,7 @@
 /.env
 /.DS_Store
 /config
+/database
 /node
 /packages
 /state

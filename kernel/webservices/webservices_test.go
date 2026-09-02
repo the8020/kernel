@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1051,6 +1052,7 @@ func TestCanonicalBoundaryRereadsDiskStripsPrefixAndUsesTrustedMetadata(t *testi
 	}
 	request := httptest.NewRequest(http.MethodPatch, "http://example.test/the8020/demo/variables/orders/7?expand=yes", bytes.NewBufferString("stream me"))
 	request.Header.Set("X-80-20-Internal-Service-ID", "attacker/service/value")
+	request.Header.Set("X-80-20-Internal-Client-IP-Address", "198.51.100.99")
 	request.Header.Set("X-Custom", "preserved")
 	response := httptest.NewRecorder()
 	manager.ServeHTTP(response, request)
@@ -1063,6 +1065,9 @@ func TestCanonicalBoundaryRereadsDiskStripsPrefixAndUsesTrustedMetadata(t *testi
 	}
 	if dispatched.header.Get("X-80-20-Internal-Service-Id") != "the8020/demo/variables" || dispatched.header.Get("X-80-20-Internal-Canonical-Base-Path") != "/the8020/demo/variables" || dispatched.header.Get("X-80-20-Internal-Original-Host") != "example.test" {
 		t.Fatalf("trusted headers = %#v", dispatched.header)
+	}
+	if dispatched.header.Get("X-80-20-Internal-Client-Ip-Address") != "192.0.2.1" || dispatched.header.Get("X-80-20-Internal-Client-Network-Scope") != "public" {
+		t.Fatalf("trusted client metadata = %#v", dispatched.header)
 	}
 	adminResult, err := manager.Request(context.Background(), "the8020/demo/variables", http.MethodGet, "/admin", RequestOptions{})
 	if err != nil || adminResult.StatusCode != http.StatusTeapot || adminResult.Body != "service-body" {
@@ -1087,6 +1092,27 @@ func TestCanonicalBoundaryRereadsDiskStripsPrefixAndUsesTrustedMetadata(t *testi
 	case request := <-pools.dispatched:
 		t.Fatalf("request with unreadable current access policy reached a Worker: %#v", request)
 	default:
+	}
+}
+
+func TestClientNetworkScope(t *testing.T) {
+	tests := map[string]string{
+		"127.0.0.1":    "loopback",
+		"::1":          "loopback",
+		"172.17.0.1":   "private",
+		"192.168.1.10": "private",
+		"fe80::1":      "link_local",
+		"0.0.0.0":      "special",
+		"8.8.8.8":      "public",
+	}
+	for input, want := range tests {
+		address, err := netip.ParseAddr(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := clientNetworkScope(address); got != want {
+			t.Errorf("clientNetworkScope(%q) = %q, want %q", input, got, want)
+		}
 	}
 }
 
