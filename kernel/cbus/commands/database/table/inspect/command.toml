@@ -1,0 +1,22 @@
+version = 1
+id = "database.table.inspect"
+path = ["database", "table", "inspect"]
+aliases = [["database", "table", "status"], ["db", "table", "inspect"]]
+summary = "Inspect one database table"
+description = "Shows its stored logical descriptor, catalog columns, physical columns, and detected drift."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/database/table/inspect/inspect.go"
+symbol = "New"
+[[parameters]]
+name = "table_id"
+type = "string"
+position = 0
+required = true
+description = "Canonical table identifier."
+[[result]]
+name = "table"
+type = "object"
+[[examples]]
+command = "database table inspect the8020__db__example"

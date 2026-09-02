@@ -130,7 +130,7 @@ func (m *Manager) restoreOverlayLocked(ctx context.Context, sandbox *Sandbox) er
 				"git -C " + shellQuote("/workspace/packages/"+id) + " reset --mixed --quiet HEAD\n" +
 				"exit \"$status\""
 		}
-		applyErr := m.driver.ExecStream(ctx, sandbox.SandboxID, command, patch, io.Discard)
+		applyErr := m.driver.ExecCommand(ctx, sandbox.SandboxID, []string{"/bin/sh", "-c", command}, patch, io.Discard)
 		closeErr := patch.Close()
 		if applyErr != nil || closeErr != nil {
 			return fmt.Errorf("restore development overlay package %s: %w", id, errors.Join(applyErr, closeErr))

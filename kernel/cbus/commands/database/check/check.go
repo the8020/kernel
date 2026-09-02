@@ -21,6 +21,11 @@ func New(serviceSet *services.Services) core.Handler {
 			failure.Details = map[string]any{"backend": status.Backend, "location": status.Location, "status": status.State}
 			return nil, failure
 		}
-		return core.Result{"backend": status.Backend, "location": status.Location, "status": status.State}, nil
+		return core.Result{
+			"backend": status.Backend, "location": status.Location, "status": status.State,
+			"catalog_version": status.CatalogVersion, "initialized": status.Initialized,
+			"pending_deployment": status.PendingDeployment, "catalog_error": status.CatalogError,
+			"last_deployment_at": status.LastDeploymentAt, "last_deployment_error": status.LastDeploymentError,
+		}, nil
 	}
 }

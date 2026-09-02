@@ -29,7 +29,7 @@ type Control interface {
 	StartWorker(context.Context, model.SandboxSpec, supervisor.StartWorkerRequest) (supervisor.WorkerStatus, error)
 	StopWorker(context.Context, model.SandboxSpec, string, bool) error
 	InvokeWorker(context.Context, model.SandboxSpec, string, string, any) (supervisor.WorkerInvocationResult, error)
-	RunJob(context.Context, model.SandboxSpec, string, any) (supervisor.JobResult, error)
+	RunJob(context.Context, model.SandboxSpec, string, any, []string) (supervisor.JobResult, error)
 	ConfigureService(context.Context, model.SandboxSpec, string, []string, int) error
 	ServiceOpenAPI(context.Context, model.SandboxSpec, string) (map[string]any, error)
 	DispatchService(context.Context, model.SandboxSpec, string, *http.Request) (*http.Response, error)
@@ -241,7 +241,7 @@ func (m *Manager) InvokeLocalWorker(ctx context.Context, input nodes.WorkerInvoc
 func invocationFailure(code, message string) nodes.WorkerInvocationResult {
 	return nodes.WorkerInvocationResult{Error: &nodes.WorkerInvocationError{Code: code, Message: message}}
 }
-func (m *Manager) RunJob(ctx context.Context, workerID string, input any) (supervisor.JobResult, error) {
+func (m *Manager) RunJob(ctx context.Context, workerID string, input any, checkModules []string) (supervisor.JobResult, error) {
 	record, spec, err := m.find(ctx, workerID)
 	if err != nil {
 		return supervisor.JobResult{}, err
@@ -249,7 +249,12 @@ func (m *Manager) RunJob(ctx context.Context, workerID string, input any) (super
 	if record.WorkloadType != model.WorkloadJob {
 		return supervisor.JobResult{}, errors.New("Worker is not a job")
 	}
-	return m.control.RunJob(ctx, spec, workerID, input)
+	for _, module := range checkModules {
+		if err := validateEntrypoint(spec, module); err != nil {
+			return supervisor.JobResult{}, fmt.Errorf("type-check module: %w", err)
+		}
+	}
+	return m.control.RunJob(ctx, spec, workerID, input, checkModules)
 }
 func (m *Manager) ConfigureService(ctx context.Context, runtimeGroupID, serviceID string, workerIDs []string, concurrencyPerWorker int) error {
 	inspection, err := m.sandboxes.Inspect(ctx, runtimeGroupID)

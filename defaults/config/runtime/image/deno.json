@@ -10,6 +10,9 @@
     "@the8020/http": "./http/the8020_http.js",
     "@the8020/kernel": "./kernel/mod.ts",
     "@the8020/protocol": "./protocol.ts",
-    "@packages/": "file:///workspace/packages/"
+    "@the8020/db": "file:///workspace/packages/the8020/db/mod.ts",
+    "@the8020/db/types": "file:///workspace/packages/the8020/db/types.ts",
+    "@packages/": "file:///workspace/packages/",
+    "kysely": "file:///workspace/packages/the8020/db/vendor/kysely/dist/index.js"
   }
 }

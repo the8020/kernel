@@ -29,6 +29,7 @@ type SandboxDriver interface {
 	Start(context.Context, SandboxStart) error
 	Exec(context.Context, string, string) ([]byte, error)
 	ExecStream(context.Context, string, string, io.Reader, io.Writer) error
+	ExecCommand(context.Context, string, []string, io.Reader, io.Writer) error
 	Pause(context.Context, string) error
 	Resume(context.Context, string) error
 	Stop(context.Context, string) error

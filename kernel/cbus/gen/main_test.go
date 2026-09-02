@@ -264,7 +264,7 @@ func TestRepositoryCatalogContainsEveryAcceptedPhase1Command(t *testing.T) {
 	expected := []string{
 		"auth.bootstrap_admin.add", "auth.bootstrap_admin.disable", "auth.bootstrap_admin.enable", "auth.bootstrap_admin.invalidate_sessions", "auth.bootstrap_admin.list", "auth.bootstrap_admin.remove", "auth.bootstrap_admin.set_password",
 		"auth.session.cleanup", "auth.session.list", "auth.session.revoke", "auth.session.revoke_user",
-		"database.check", "database.sql",
+		"database.check", "database.sql", "database.table.definitions", "database.table.inspect", "database.table.list", "database.table.sync", "database.table.sync_all", "database.table.trim",
 		"debug.close", "debug.open", "debug.targets",
 		"development.activate.preview", "development.activate.run",
 		"development.image.status",

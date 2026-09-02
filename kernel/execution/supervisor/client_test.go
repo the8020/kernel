@@ -82,7 +82,7 @@ func TestStatusWorkersAndControlRoutes(t *testing.T) {
 	if worker, err := client.StartWorker(context.Background(), spec, request); err != nil || worker.WorkerID != "worker" {
 		t.Fatalf("start=%#v err=%v", worker, err)
 	}
-	result, err := client.RunJob(context.Background(), spec, "worker", map[string]any{"value": 1})
+	result, err := client.RunJob(context.Background(), spec, "worker", map[string]any{"value": 1}, nil)
 	if err != nil || result.Result.(map[string]any)["ok"] != true || len(result.Logs) != 1 || result.Logs[0].Message != "ran" {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}

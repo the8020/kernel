@@ -23,6 +23,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"the8020/kernel/auth"
+	"the8020/kernel/deployment"
 	"the8020/kernel/sandbox/backend"
 )
 
@@ -49,12 +50,26 @@ type Manager struct {
 	sandboxMu     sync.Map
 	imageMu       sync.RWMutex
 	repositoryMu  *sync.RWMutex
+	deploymentMu  sync.RWMutex
+	deployment    deployment.SchemaHook
 	owned         sync.Map
 	server        *http.Server
 	listener      net.Listener
 	endpoint      string
 	cleanupCancel context.CancelFunc
 	cleanupDone   chan struct{}
+}
+
+func (m *Manager) SetSchemaDeployment(hook deployment.SchemaHook) {
+	m.deploymentMu.Lock()
+	m.deployment = hook
+	m.deploymentMu.Unlock()
+}
+
+func (m *Manager) schemaDeployment() deployment.SchemaHook {
+	m.deploymentMu.RLock()
+	defer m.deploymentMu.RUnlock()
+	return m.deployment
 }
 
 const sandboxSchema = 1

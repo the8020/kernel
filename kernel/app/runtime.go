@@ -20,7 +20,9 @@ import (
 	"the8020/kernel/auth"
 	platformconsole "the8020/kernel/console"
 	"the8020/kernel/database"
+	databaseevaluator "the8020/kernel/database/evaluator"
 	"the8020/kernel/debugging"
+	"the8020/kernel/development"
 	"the8020/kernel/execution/adminrun"
 	"the8020/kernel/execution/coordinator"
 	"the8020/kernel/execution/jobs"
@@ -146,9 +148,12 @@ func (c *runtimeCleanup) Close(ctx context.Context, report shutdownProgressFunc)
 	return c.err
 }
 
-func initializeRuntime(ctx context.Context, root, instanceUUID string, paths instance.Paths, settingManager *settings.Manager, packageStore *workspacepackages.Store, router *mainnetwork.Manager, authentication *auth.Manager, systemDatabase *database.Manager, adminBus callback.AdminBus, consoleManager *platformconsole.Manager, nodeManager *nodes.Manager, logger *slog.Logger) (*services.RuntimeServices, runtimeCleanupFunc) {
+func initializeRuntime(ctx context.Context, root, instanceUUID string, paths instance.Paths, settingManager *settings.Manager, packageStore *workspacepackages.Store, developmentManager *development.Manager, router *mainnetwork.Manager, authentication *auth.Manager, systemDatabase *database.Manager, adminBus callback.AdminBus, consoleManager *platformconsole.Manager, nodeManager *nodes.Manager, logger *slog.Logger) (*services.RuntimeServices, runtimeCleanupFunc) {
 	cleanup := &runtimeCleanup{policy: manager.ShutdownDestroy}
 	closeRuntime := cleanup.Close
+	if _, err := systemDatabase.InitializeCatalog(ctx); err != nil {
+		return &services.RuntimeServices{Failure: "database catalog initialization failed: " + err.Error()}, closeRuntime
+	}
 	versions, err := runtimehost.LoadVersionsFile(paths.RuntimeVersionsFile)
 	if err != nil {
 		return &services.RuntimeServices{Failure: err.Error()}, closeRuntime
@@ -374,7 +379,9 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	serviceProfile := runtimeProfile(model.WorkloadService, imageDigest, serviceMounts, serviceResources, egressAllowed)
 	serviceProfile.Permissions.ReadPaths = append(serviceProfile.Permissions.ReadPaths, "/opt/runtime", "/workspace/packages", "/state/package-data")
 	serviceProfile.Permissions.WritePaths = append(serviceProfile.Permissions.WritePaths, "/state/package-data")
-	jobProfile := runtimeProfile(model.WorkloadJob, imageDigest, baseMounts, jobResources, egressAllowed)
+	jobProfile := runtimeProfile(model.WorkloadJob, imageDigest, serviceMounts, jobResources, egressAllowed)
+	jobProfile.Permissions.ReadPaths = append(jobProfile.Permissions.ReadPaths, "/opt/runtime", "/workspace/packages", "/state/package-data")
+	jobProfile.Permissions.WritePaths = append(jobProfile.Permissions.WritePaths, "/state/package-data")
 	workspaceMounts, err := sandboxmounts.NewPolicy([]string{root}, paths.Kernel, socket, true)
 	if err != nil {
 		runtimeServices.Failure = "initialize development workspace policy: " + err.Error()
@@ -430,6 +437,34 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		return runtimeServices, closeRuntime
 	}
 	cleanup.jobs = jobManager
+	tableEvaluator, err := databaseevaluator.New(databaseevaluator.Config{Packages: packageStore, Jobs: jobManager, Database: systemDatabase})
+	if err != nil {
+		runtimeServices.Failure = err.Error()
+		return runtimeServices, closeRuntime
+	}
+	systemDatabase.SetDefinitionEvaluator(tableEvaluator.Evaluate)
+	systemDatabase.SetFullSynchronizer(tableEvaluator.SynchronizeAll)
+	systemDatabase.SetSourceInspector(tableEvaluator.InspectSources)
+	systemDatabase.SetSourceEvaluator(tableEvaluator.InspectDefinition)
+	packageStore.SetSchemaDeployment(tableEvaluator)
+	developmentManager.SetSchemaDeployment(tableEvaluator)
+	_, pendingDeployment, err := systemDatabase.PendingDeployment(ctx)
+	if err != nil {
+		runtimeServices.Failure = "inspect pending database schema deployment: " + err.Error()
+		return runtimeServices, closeRuntime
+	}
+	if pendingDeployment || !systemDatabase.Status().Initialized {
+		var synchronizationErr error
+		if pendingDeployment {
+			_, synchronizationErr = tableEvaluator.RecoverAll(ctx)
+		} else {
+			_, synchronizationErr = tableEvaluator.SynchronizeAll(ctx, true)
+		}
+		if synchronizationErr != nil {
+			runtimeServices.Failure = "initial database schema synchronization failed: " + synchronizationErr.Error()
+			return runtimeServices, closeRuntime
+		}
+	}
 	adminManager, err := adminrun.New(adminrun.Config{InstanceRoot: root, ArtifactsRoot: paths.RuntimeAttachments, Jobs: jobManager, Metrics: sandboxManager})
 	if err != nil {
 		runtimeServices.Failure = err.Error()

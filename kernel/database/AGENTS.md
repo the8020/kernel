@@ -1,42 +1,62 @@
 # Purpose
 
-- Own the kernel's system database connection pool and bounded SQL boundary.
+- Own the kernel system-database pool, built-in 80|20 catalog, physical schema
+  synchronization, runtime SQL execution, and transaction scopes.
 
 # Ownership
 
-- Resolve database configuration, open SQLite or PostgreSQL through
-  `database/sql`, apply pool policy, check connectivity, report pool pressure,
-  normalize query values, and bound results.
-- The Go kernel is the only database client. Sandboxed code reaches this owner
-  only through the authenticated runtime callback API.
+- Open SQLite or PostgreSQL, apply pool/result policy, expose credential-free
+  status, bootstrap `_8020_*`, introspect physical schemas, and store normalized
+  package table descriptors.
+- The Go kernel is the only holder of database credentials. Sandboxed code uses
+  the authenticated runtime callback API.
 
 # Local Contracts
 
-- SQLite is the zero-configuration single-node default and stores
-  `system.db` in the instance-owned `database/` directory. It uses WAL to allow
-  readers alongside its one writer and therefore requires local filesystem
-  semantics.
-- PostgreSQL uses a credential-free connection URL plus separately configured
-  username and password. Configuration is global and restart-required.
-- Both backends use the node-local runtime-mutable maximum-open and
-  maximum-idle pool policy, defaulting to 32 and 8. Pools open connections on
-  demand; the idle limit retains warm connections but does not cap active use.
-- Connection failure never prevents the kernel control plane from starting.
-- Status performs no database I/O: it combines cached readiness with local
-  `database/sql` open, in-use, idle, wait-count, and wait-duration counters.
-- `Query` and `Execute` accept one statement and scalar parameters. Query
-  results are ordered column/row arrays and are bounded by row and byte limits.
-- `$1`, `$2`, and so on are the portable positional-parameter form supported by
-  both configured backends; the kernel does not rewrite SQL.
-
-# Non-Responsibilities
-
-- No schema ownership, migrations, ORM behavior, application table naming,
-  sandbox placement, or runtime lifecycle policy.
+- SQLite is the single-node default. It stores `system.db` beneath the mapped
+  instance database root, uses strict tables and WAL, and serializes schema work
+  locally. PostgreSQL uses one database advisory lock across initialization and
+  deployment.
+- Readiness distinguishes `UNAVAILABLE`, `CONNECTED`, `INITIALIZING`, `READY`,
+  and `DEGRADED`. Catalog failure blocks the service plane but never the command
+  socket or raw SQL recovery path.
+- Embedded engine SQL owns only `_8020_catalog`, `_8020_tables`,
+  `_8020_columns`, `_8020_dependencies`, and `_8020_pending_deployment`.
+  Every non-catalog table comes from an activated package TypeScript descriptor.
+- A fresh database synchronizes all installed definitions in bounded batches
+  before becoming initialized. An initialized ordinary boot validates only the
+  small catalog contract and pending deployment state; full definition and drift
+  checks are explicit operations.
+- Canonical table IDs are also physical names. Synchronization creates missing
+  structures and safe additions, retires removals without deleting data, and
+  returns `migration_required` for unsupported changes. Only confirmed `Trim`
+  deletes selected retired objects. Raw administrative DDL remains available.
+- Package/schema switching uses one durable pending record. Candidate schema is
+  prepared before source replacement; completion records the active commit set.
+  Restart recovery aligns catalog state to the package tree that is actually
+  active. The last failed deployment remains visible without degrading an
+  otherwise ready database.
+- Runtime SQL has one unified row/non-row operation and opaque kernel-held
+  transactions bound to an exact execution scope. Scope cleanup rolls back all
+  remaining transactions. Values use explicit lossless tags for bigint,
+  decimal, datetime, bytes, and JSON.
+- Query results fail, rather than truncate, above the runtime-mutable per-node
+  row/byte limits. Defaults are 10,000 rows and 10 MiB. Pool defaults are 32
+  open and 8 idle connections; pools grow on demand.
+- Decimals are canonical strings in TypeScript and signed scaled 64-bit integers
+  in both engines. Integers are physically signed 64-bit but limited to the
+  JavaScript safe range. Datetimes are UTC milliseconds. Physical foreign keys,
+  streaming, savepoints, destructive automatic migration, and a generalized
+  migration framework are intentionally deferred.
 
 # Verification
 
-- Tests cover configuration, SQLite WAL read/write concurrency, creation and
-  permissions, live pool resizing and pressure reporting, parameterized
-  query/execute behavior, value normalization, and result bounds. Benchmarks
-  compare read-only and mixed traffic at 8, 16, 32, and 64 connections.
+- Tests cover catalog readiness/idempotence/failure, SQLite WAL and schema
+  synchronization, naming and descriptors, safe/unsafe changes, drift,
+  retirement/trim, pending recovery, deployment outcome visibility, logical
+  references, exact values, transaction isolation/cleanup, pool pressure, and
+  configurable result bounds.
+
+# Child DOX Index
+
+- `evaluator/AGENTS.md`: sandboxed activated-package definition evaluation.

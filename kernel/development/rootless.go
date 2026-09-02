@@ -270,7 +270,18 @@ func (d *RunscDriver) ExecStream(ctx context.Context, sandboxID, commandText str
 	if strings.TrimSpace(commandText) == "" {
 		commandText = "exec /bin/bash"
 	}
-	args := append(d.flags(sandboxID, "exec"), "--cwd=/workspace", "--env=HOME=/root", "--env=USER=root", "--env=LOGNAME=root", "--env=PATH="+developmentPath, sandboxID, "/bin/bash", "-lc", commandText)
+	return d.ExecCommand(ctx, sandboxID, []string{"/bin/bash", "-lc", commandText}, input, output)
+}
+
+// ExecCommand runs an exact argument vector without loading the interactive
+// login environment. Kernel-owned helpers use it so their behavior and cost do
+// not depend on a developer's shell profile.
+func (d *RunscDriver) ExecCommand(ctx context.Context, sandboxID string, arguments []string, input io.Reader, output io.Writer) error {
+	if len(arguments) == 0 || strings.TrimSpace(arguments[0]) == "" {
+		return errors.New("development sandbox command requires an executable")
+	}
+	args := append(d.flags(sandboxID, "exec"), "--cwd=/workspace", "--env=HOME=/root", "--env=USER=root", "--env=LOGNAME=root", "--env=PATH="+developmentPath, sandboxID)
+	args = append(args, arguments...)
 	command := d.commandContext(ctx, args...)
 	diagnostics := &boundedBuffer{limit: commandOutputLimit}
 	command.Stdin, command.Stdout, command.Stderr = input, output, diagnostics
@@ -382,7 +393,10 @@ func (d *RunscDriver) simple(ctx context.Context, id, operation string) error {
 	return nil
 }
 func (d *RunscDriver) flags(id, operation string) []string {
-	flags := []string{"--root=" + d.config.RuntimeRoot, "--rootless=" + strconv.FormatBool(d.config.Rootless), "--platform=systrap", "--directfs=false", "--file-access=exclusive", "--file-access-mounts=shared", "--network=host", "--overlay2=none", "--log=" + filepath.Join(d.config.LogRoot, id, "runsc-"+operation+".log")}
+	// Directfs keeps the configured mount-descriptor boundary enforced by
+	// gVisor while avoiding a sentry-to-gofer RPC for each filesystem operation.
+	// This is upstream runsc's default and materially reduces package-tree scans.
+	flags := []string{"--root=" + d.config.RuntimeRoot, "--rootless=" + strconv.FormatBool(d.config.Rootless), "--platform=systrap", "--directfs=true", "--file-access=exclusive", "--file-access-mounts=shared", "--network=host", "--overlay2=none", "--log=" + filepath.Join(d.config.LogRoot, id, "runsc-"+operation+".log")}
 	if d.config.ignoreCgroups {
 		flags = append(flags, "--ignore-cgroups=true")
 	}

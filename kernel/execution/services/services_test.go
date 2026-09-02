@@ -212,7 +212,7 @@ func TestServiceStopPersistsProgressAndResumes(t *testing.T) {
 	}
 	workersFake.stopErrors[record.WorkerIDs[1]] = errors.New("temporary stop failure")
 	workersFake.lifecycle = nil
-	if err := manager.Stop(context.Background(), record.ServiceID); err == nil {
+	if _, err := manager.Stop(context.Background(), record.ServiceID); err == nil {
 		t.Fatal("partial stop unexpectedly succeeded")
 	}
 	draining, err := manager.Inspect(record.ServiceID)
@@ -224,12 +224,48 @@ func TestServiceStopPersistsProgressAndResumes(t *testing.T) {
 	}
 
 	delete(workersFake.stopErrors, record.WorkerIDs[1])
-	if err := manager.Stop(context.Background(), record.ServiceID); err != nil {
+	if stopped, err := manager.Stop(context.Background(), record.ServiceID); err != nil || !stopped {
 		t.Fatal(err)
 	}
 	stopped, err := manager.Inspect(record.ServiceID)
 	if err != nil || stopped.State != "STOPPED" || len(stopped.WorkerIDs) != 0 {
 		t.Fatalf("stopped=%#v err=%v", stopped, err)
+	}
+}
+
+func TestServiceStopDrainsOccupiedWorkersWithoutError(t *testing.T) {
+	store, _ := records.New(t.TempDir())
+	workersFake := &fakeWorkers{inFlight: map[string]int{}}
+	manager, err := New(&fakeCoordinator{}, workersFake, store, Policy{Strategy: model.GroupingOwner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := manager.Start(context.Background(), "api", "file:///programs/api.ts", testOptions(1, 1, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerID := record.WorkerIDs[0]
+	workersFake.inFlight[workerID] = 1
+	workersFake.lifecycle = nil
+
+	stopped, err := manager.Stop(context.Background(), record.ServiceID)
+	if err != nil || stopped {
+		t.Fatalf("stopped=%t err=%v", stopped, err)
+	}
+	draining, err := manager.Inspect(record.ServiceID)
+	if err != nil || draining.State != "DRAINING" || draining.Failure != "" || len(draining.WorkerIDs) != 1 || len(workersFake.stops) != 0 {
+		t.Fatalf("draining=%#v stops=%#v err=%v", draining, workersFake.stops, err)
+	}
+	if len(workersFake.lifecycle) == 0 || workersFake.lifecycle[0] != "configure:" {
+		t.Fatalf("pool was not excluded before drain: %#v", workersFake.lifecycle)
+	}
+
+	workersFake.inFlight[workerID] = 0
+	if stopped, err = manager.Stop(context.Background(), record.ServiceID); err != nil || !stopped {
+		t.Fatalf("stopped=%t err=%v", stopped, err)
+	}
+	if len(workersFake.stops) != 1 || workersFake.stops[0] != workerID {
+		t.Fatalf("stops=%#v", workersFake.stops)
 	}
 }
 
@@ -247,7 +283,7 @@ func TestServiceStopRetiresMissingRuntimeGroupAndRecord(t *testing.T) {
 	if err := store.Save(record.ServiceID, record); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.Stop(context.Background(), record.ServiceID); err != nil {
+	if stopped, err := manager.Stop(context.Background(), record.ServiceID); err != nil || !stopped {
 		t.Fatal(err)
 	}
 	stopped, err := manager.Inspect(record.ServiceID)
@@ -310,7 +346,7 @@ func TestServiceStopTreatsAnAlreadyRemovedRuntimeGroupAsReleased(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.Stop(context.Background(), record.ServiceID); err != nil {
+	if stopped, err := manager.Stop(context.Background(), record.ServiceID); err != nil || !stopped {
 		t.Fatal(err)
 	}
 	stopped, err := manager.Inspect(record.ServiceID)
@@ -448,7 +484,7 @@ func TestServicePoolScaleStreamingDispatchAndStop(t *testing.T) {
 	if len(workersFake.websocketCalls) != 1 || workersFake.websocketCalls[0] != "group:api" {
 		t.Fatalf("request-service WebSocket calls = %#v", workersFake.websocketCalls)
 	}
-	if err := manager.Stop(context.Background(), "api"); err != nil {
+	if stopped, err := manager.Stop(context.Background(), "api"); err != nil || !stopped {
 		t.Fatal(err)
 	}
 	stopped, _ := manager.Inspect("api")
@@ -530,7 +566,7 @@ func TestRuntimeGroupFailureMarksLiveServiceFailed(t *testing.T) {
 		t.Fatalf("failed=%#v", failed)
 	}
 	workersFake.listErr = errors.New("dead supervisor must not be queried")
-	if err := manager.Stop(context.Background(), record.ServiceID); err != nil {
+	if stopped, err := manager.Stop(context.Background(), record.ServiceID); err != nil || !stopped {
 		t.Fatal(err)
 	}
 	stopped, err := manager.Inspect(record.ServiceID)

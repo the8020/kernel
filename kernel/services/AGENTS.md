@@ -14,7 +14,8 @@
 - Public API: `InstanceInfo`, `Services`, `RuntimeServices`, `RuntimeSnapshot`, `PublishRuntime`, narrow handler-facing domain interfaces, and `New`.
 - Fields are limited to settings, network, shared node topology/capacity,
   logging, lifecycle, bootstrap
-  authentication, instance status, system-database check/query/execute,
+  authentication, instance status, system-database status/raw SQL/catalog/
+  synchronization operations,
   named-secret list/get/set, package
   discovery/index/synchronization/repository operations, development
   image/workspace/activation operations, selected isolation

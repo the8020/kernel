@@ -13,6 +13,7 @@ export interface ExecutionMetadata {
   entrypoint: string;
   debuggerName: string;
   validateEntrypoint?: boolean;
+  databaseAccess?: "full" | "metadata" | "none";
   service?: ServiceExecutionMetadata;
 }
 
@@ -68,16 +69,20 @@ export type KernelOperation =
   | "auth.bootstrapLogin"
   | "auth.logoutCurrent"
   | "admin.execute"
-  | "database.query"
+  | "database.info"
   | "database.execute"
+  | "database.scope.close"
+  | "database.transaction.begin"
+  | "database.transaction.commit"
+  | "database.transaction.rollback"
   | "worker.invoke"
   | "execution.completePersistent";
 
 export interface KernelCallRequest {
   operation: KernelOperation;
   arguments: Record<string, unknown>;
-  requestId: string;
-  serviceId: string;
+  requestId?: string;
+  serviceId?: string;
   executionId: string;
   workerId: string;
   persistentExecutionId?: string;

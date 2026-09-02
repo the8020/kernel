@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,7 +14,31 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"the8020/kernel/deployment"
 )
+
+type recordingSchemaHook struct {
+	prepared  []deployment.Candidate
+	completed []bool
+	failure   error
+	inspect   func([]deployment.Candidate) error
+}
+
+func (h *recordingSchemaHook) Prepare(_ context.Context, candidates []deployment.Candidate) error {
+	h.prepared = append([]deployment.Candidate(nil), candidates...)
+	if h.inspect != nil {
+		if err := h.inspect(candidates); err != nil {
+			return err
+		}
+	}
+	return h.failure
+}
+
+func (h *recordingSchemaHook) Complete(_ context.Context, activated bool) error {
+	h.completed = append(h.completed, activated)
+	return nil
+}
 
 type testSecretResolver map[string]string
 
@@ -99,12 +124,17 @@ func TestPackageIndexRemoteInspectionSynchronizationAndVersionSelection(t *testi
 	runTestGit(t, gitPath, working, "push", "-q", bare, "main", "--tags")
 	runTestGit(t, gitPath, bare, "update-server-info")
 
+	hook := &recordingSchemaHook{}
+	store.SetSchemaDeployment(hook)
 	results, err = store.SynchronizePackages(ctx, []string{"the8020/demo"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(results) != 1 || !results[0].Success || results[0].PreviousCommit != firstCommit || results[0].Commit != secondCommit || !slices.Equal(results[0].PreviousServices, []string{"the8020/demo/old"}) || !slices.Equal(results[0].Services, []string{"the8020/demo/new"}) {
 		t.Fatalf("updated synchronization = %#v", results)
+	}
+	if len(hook.prepared) != 1 || hook.prepared[0].PackageID != "the8020/demo" || hook.prepared[0].Commit != secondCommit || !slices.Equal(hook.completed, []bool{true}) {
+		t.Fatalf("schema hook = prepared %#v completed %#v", hook.prepared, hook.completed)
 	}
 	versions, err := store.ListPackageVersions(ctx, "the8020/demo", 20)
 	if err != nil {
@@ -119,6 +149,15 @@ func TestPackageIndexRemoteInspectionSynchronizationAndVersionSelection(t *testi
 	}); err != nil {
 		t.Fatal(err)
 	}
+	hook.failure = errors.New("schema rejected")
+	results, err = store.SynchronizePackages(ctx, []string{"the8020/demo"})
+	if err != nil || len(results) != 1 || results[0].Success || !strings.Contains(results[0].Error, "schema rejected") {
+		t.Fatalf("rejected schema synchronization = %#v, %v", results, err)
+	}
+	if repository, inspectErr := store.InspectPackageRepository(ctx, "the8020/demo"); inspectErr != nil || repository.Head != secondCommit {
+		t.Fatalf("schema rejection changed active package: %#v, %v", repository, inspectErr)
+	}
+	hook.failure = nil
 	results, err = store.SynchronizePackages(ctx, []string{"the8020/demo"})
 	if err != nil {
 		t.Fatal(err)
@@ -223,10 +262,32 @@ func TestPackageRepositoryPullCheckoutAndPush(t *testing.T) {
 	second := runTestGit(t, gitPath, upstream, "rev-parse", "HEAD")
 	runTestGit(t, gitPath, upstream, "push", "-q", bare, "main")
 
+	hook := &recordingSchemaHook{inspect: func(candidates []deployment.Candidate) error {
+		if len(candidates) != 1 || candidates[0].Root == installed {
+			return errors.New("candidate was not staged")
+		}
+		if head := runTestGit(t, gitPath, installed, "rev-parse", "HEAD"); head != first {
+			return fmt.Errorf("active checkout moved before schema preparation: %s", head)
+		}
+		return nil
+	}}
+	store.SetSchemaDeployment(hook)
 	pulled, err := store.PullPackageRepository(context.Background(), "example/repo")
 	if err != nil || !pulled.Changed || pulled.Repository.Head != second || !slices.Equal(pulled.PreviousServices, []string{"example/repo/old"}) || !slices.Equal(pulled.Services, []string{"example/repo/new"}) {
 		t.Fatalf("pull = %#v, %v", pulled, err)
 	}
+	if !slices.Equal(hook.completed, []bool{true}) {
+		t.Fatalf("schema completion = %#v", hook.completed)
+	}
+	hook.inspect = nil
+	hook.failure = errors.New("schema rejected")
+	if _, err := store.CheckoutPackageRepository(context.Background(), "example/repo", "", first); err == nil || !strings.Contains(err.Error(), "schema rejected") {
+		t.Fatalf("rejected checkout error = %v", err)
+	}
+	if active := runTestGit(t, gitPath, installed, "rev-parse", "HEAD"); active != second {
+		t.Fatalf("schema rejection moved active checkout to %s", active)
+	}
+	hook.failure = nil
 	detached, err := store.CheckoutPackageRepository(context.Background(), "example/repo", "", first)
 	if err != nil || !detached.Changed || detached.Repository.Branch != "" || detached.Repository.Head != first {
 		t.Fatalf("commit checkout = %#v, %v", detached, err)

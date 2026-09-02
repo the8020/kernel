@@ -66,6 +66,12 @@ type DatabaseService interface {
 	Check(context.Context) (database.Status, error)
 	Query(context.Context, string, []any) (database.QueryResult, error)
 	Execute(context.Context, string, []any) (database.ExecuteResult, error)
+	ListTables(context.Context) ([]database.TableSummary, error)
+	ListDefinitions(context.Context) ([]database.DefinitionSummary, error)
+	InspectTable(context.Context, string) (database.TableDetail, error)
+	SynchronizeDefinition(context.Context, string, string) (database.SynchronizationResult, error)
+	SynchronizeDefinitions(context.Context, []string, bool) ([]database.SynchronizationResult, error)
+	Trim(context.Context, string, []string, bool) error
 }
 
 // SecretService is the handler-facing global named-secret contract.

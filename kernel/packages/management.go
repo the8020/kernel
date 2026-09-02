@@ -20,6 +20,8 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 	"golang.org/x/sys/unix"
+
+	"the8020/kernel/deployment"
 )
 
 const (
@@ -403,36 +405,71 @@ func (s *Store) synchronizePackage(ctx context.Context, packageID string) (Packa
 		}
 		return result, nil
 	}
-	backup := filepath.Join(namespaceRoot, "."+identity.Repository+"-previous")
-	if _, statErr := os.Lstat(backup); statErr == nil {
-		return result, fmt.Errorf("package backup path already exists: %s", backup)
-	} else if !errors.Is(statErr, os.ErrNotExist) {
-		return result, statErr
-	}
-	if exists {
-		if err := os.Rename(destination, backup); err != nil {
-			return result, fmt.Errorf("stage previous package: %w", err)
+	hook := s.schemaDeployment()
+	preparedSchema := false
+	sourceSwitched := false
+	if hook != nil {
+		if err := hook.Prepare(ctx, []deployment.Candidate{{PackageID: packageID, Root: stage, Commit: commit}}); err != nil {
+			return result, fmt.Errorf("prepare package database schema: %w", err)
 		}
+		preparedSchema = true
+		defer func() {
+			if preparedSchema && !sourceSwitched {
+				_ = hook.Complete(context.Background(), false)
+			}
+		}()
 	}
-	if err := os.Rename(stage, destination); err != nil {
-		if exists {
-			_ = os.Rename(backup, destination)
-		}
+	sourceSwitched, err = replacePackageDirectory(destination, stage)
+	if err != nil {
 		return result, fmt.Errorf("activate synchronized package: %w", err)
 	}
-	if exists {
-		if err := os.RemoveAll(backup); err != nil {
-			return result, fmt.Errorf("remove previous package: %w", err)
+	if hook != nil {
+		if err := hook.Complete(ctx, true); err != nil {
+			return result, fmt.Errorf("complete package database schema deployment: %w", err)
 		}
-	}
-	if err := syncPackageDirectory(namespaceRoot); err != nil {
-		return result, err
+		preparedSchema = false
 	}
 	result.Changed, result.Cloned = true, !exists
 	if s.logger != nil {
 		s.logger.Log(ctx, slog.LevelInfo, "package synchronized", "package_id", packageID, "source", entry.Source, "requested", result.Requested, "previous_commit", result.PreviousCommit, "commit", result.Commit, "cloned", result.Cloned)
 	}
 	return result, nil
+}
+
+// replacePackageDirectory exposes a validated staged tree with one atomic
+// rename and keeps the previous tree recoverable until that rename succeeds.
+func replacePackageDirectory(destination, stage string) (bool, error) {
+	backup := destination + ".previous"
+	if _, err := os.Lstat(backup); err == nil {
+		return false, fmt.Errorf("package backup path already exists: %s", backup)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	_, destinationErr := os.Lstat(destination)
+	exists := destinationErr == nil
+	if destinationErr != nil && !errors.Is(destinationErr, os.ErrNotExist) {
+		return false, destinationErr
+	}
+	if exists {
+		if err := os.Rename(destination, backup); err != nil {
+			return false, fmt.Errorf("stage previous package: %w", err)
+		}
+	}
+	if err := os.Rename(stage, destination); err != nil {
+		if exists {
+			_ = os.Rename(backup, destination)
+		}
+		return false, err
+	}
+	if err := syncPackageDirectory(filepath.Dir(destination)); err != nil {
+		return true, err
+	}
+	if exists {
+		if err := os.RemoveAll(backup); err != nil {
+			return true, fmt.Errorf("remove previous package: %w", err)
+		}
+	}
+	return true, syncPackageDirectory(filepath.Dir(destination))
 }
 
 func (s *Store) CreateLocalPackage(ctx context.Context, author, repository, description string) (LocalPackage, error) {

@@ -176,16 +176,72 @@ export class AdminCommandError extends Error {
   }
 }
 
-export type DatabaseValue = null | boolean | number | string;
+export type TaggedDatabaseValue =
+  | { type: "bigint"; value: string }
+  | { type: "decimal"; value: string; precision: number; scale: number }
+  | { type: "datetime"; value: string }
+  | { type: "bytes"; value: string }
+  | { type: "json"; value: unknown };
 
-export interface DatabaseQueryResult {
-  columns: string[];
-  rows: DatabaseValue[][];
-  truncated: boolean;
+export type DatabaseValue =
+  | null
+  | boolean
+  | number
+  | string
+  | TaggedDatabaseValue;
+
+export interface DatabaseInfo {
+  backend: "sqlite" | "postgresql";
+  location: string;
+  state:
+    | "UNAVAILABLE"
+    | "CONNECTED"
+    | "INITIALIZING"
+    | "READY"
+    | "DEGRADED";
+  initialized: boolean;
+  catalog_version: number;
 }
 
 export interface DatabaseExecuteResult {
-  rows_affected: number;
+  columns: string[];
+  rows: DatabaseValue[][];
+  affected_rows?: DatabaseValue;
+  insert_id?: DatabaseValue;
+}
+
+export interface DatabaseTableSummary {
+  table_id: string;
+  source_package: string;
+  source_commit: string;
+  source_module: string;
+  state: string;
+  synchronization_state: string;
+  descriptor_hash: string;
+  synchronized_at?: string;
+  active_columns: number;
+  retired_columns: number;
+  error?: string;
+  definition_state?: string;
+  current_source_commit?: string;
+}
+
+export interface DatabaseDefinitionSummary {
+  table_id: string;
+  source_package: string;
+  source_commit: string;
+  source_module: string;
+  descriptor_hash: string;
+  catalog_state: string;
+  catalog_hash?: string;
+  synchronization_state: string;
+  error?: string;
+}
+
+export interface DatabaseSynchronizationResult {
+  table_id: string;
+  state: string;
+  error?: string;
 }
 
 export type KernelOperation =
@@ -193,8 +249,12 @@ export type KernelOperation =
   | "auth.bootstrapLogin"
   | "auth.logoutCurrent"
   | "admin.execute"
-  | "database.query"
+  | "database.info"
   | "database.execute"
+  | "database.scope.close"
+  | "database.transaction.begin"
+  | "database.transaction.commit"
+  | "database.transaction.rollback"
   | "worker.invoke"
   | "execution.completePersistent";
 
@@ -303,6 +363,7 @@ function optionalArguments(
 function databaseArguments(
   statement: string,
   parameters: DatabaseValue[],
+  options: { returnRows?: boolean; transaction?: string } = {},
 ): Record<string, unknown> {
   if (typeof statement !== "string" || statement.trim().length === 0) {
     throw new TypeError("SQL statement is required");
@@ -312,15 +373,31 @@ function databaseArguments(
   }
   if (
     !Array.isArray(parameters) ||
-    parameters.some((value) =>
-      value !== null && typeof value !== "boolean" &&
-      (typeof value !== "number" || !Number.isFinite(value)) &&
-      typeof value !== "string"
-    )
+    parameters.some((value) => !validDatabaseValue(value))
   ) {
-    throw new TypeError("SQL parameters must be scalar values");
+    throw new TypeError("SQL parameters must be an array");
   }
-  return { statement, parameters };
+  return {
+    statement,
+    parameters,
+    ...(options.returnRows === undefined
+      ? {}
+      : { return_rows: options.returnRows }),
+    ...(options.transaction === undefined
+      ? {}
+      : { transaction: options.transaction }),
+  };
+}
+
+function validDatabaseValue(value: unknown): value is DatabaseValue {
+  if (
+    value === null || typeof value === "boolean" || typeof value === "string"
+  ) return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value !== "object" || Array.isArray(value)) return false;
+  const type = (value as { type?: unknown }).type;
+  return type === "bigint" || type === "decimal" || type === "datetime" ||
+    type === "bytes" || type === "json";
 }
 
 export const kernel = Object.freeze({
@@ -370,24 +447,89 @@ export const kernel = Object.freeze({
     },
   }),
   database: Object.freeze({
-    query(
-      statement: string,
-      parameters: DatabaseValue[] = [],
-    ): Promise<DatabaseQueryResult> {
-      return invoke<DatabaseQueryResult>(
-        "database.query",
-        databaseArguments(statement, parameters),
-      );
+    info(): Promise<DatabaseInfo> {
+      return invoke<DatabaseInfo>("database.info", {});
     },
     execute(
       statement: string,
       parameters: DatabaseValue[] = [],
+      options: { returnRows?: boolean; transaction?: string } = {},
     ): Promise<DatabaseExecuteResult> {
       return invoke<DatabaseExecuteResult>(
         "database.execute",
-        databaseArguments(statement, parameters),
+        databaseArguments(statement, parameters, options),
       );
     },
+    transaction: Object.freeze({
+      begin(
+        settings: { isolationLevel?: string; readOnly?: boolean } = {},
+      ): Promise<{ transaction: string }> {
+        return invoke("database.transaction.begin", { settings });
+      },
+      commit(transaction: string): Promise<void> {
+        return invoke("database.transaction.commit", { transaction });
+      },
+      rollback(transaction: string): Promise<void> {
+        return invoke("database.transaction.rollback", { transaction });
+      },
+    }),
+    tables: Object.freeze({
+      async list(): Promise<DatabaseTableSummary[]> {
+        const result = await executeAdminCommand<
+          { tables: DatabaseTableSummary[] }
+        >("database.table.list");
+        return result.tables;
+      },
+      async definitions(): Promise<DatabaseDefinitionSummary[]> {
+        const result = await executeAdminCommand<
+          { definitions: DatabaseDefinitionSummary[] }
+        >("database.table.definitions");
+        return result.definitions;
+      },
+      async inspect(tableId: string): Promise<Record<string, unknown>> {
+        const result = await executeAdminCommand<
+          { table: Record<string, unknown> }
+        >("database.table.inspect", { table_id: tableId });
+        return result.table;
+      },
+      async synchronize(
+        tableId: string,
+        sourcePackage?: string,
+      ): Promise<DatabaseSynchronizationResult> {
+        const result = await executeAdminCommand<
+          { table: DatabaseSynchronizationResult }
+        >(
+          "database.table.sync",
+          optionalArguments({
+            table_id: tableId,
+            source_package: sourcePackage,
+          }),
+        );
+        return result.table;
+      },
+      async synchronizeAll(): Promise<DatabaseSynchronizationResult[]> {
+        const result = await executeAdminCommand<
+          { tables: DatabaseSynchronizationResult[] }
+        >("database.table.sync_all");
+        return result.tables;
+      },
+      async trim(input: {
+        tableId: string;
+        columns?: string[];
+        dropTable?: boolean;
+        confirm: true;
+      }): Promise<void> {
+        await executeAdminCommand(
+          "database.table.trim",
+          optionalArguments({
+            table_id: input.tableId,
+            columns: input.columns?.join(","),
+            drop_table: input.dropTable,
+            confirm: input.confirm,
+          }),
+        );
+      },
+    }),
   }),
   secrets: Object.freeze({
     async list(): Promise<SecretSummary[]> {

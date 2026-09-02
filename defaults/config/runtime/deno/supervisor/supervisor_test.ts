@@ -61,16 +61,17 @@ Deno.test("kernel callback payloads contain only operation-owned fields", () => 
   assertEquals(
     kernelCallbackRequest({
       ...base,
-      operation: "database.query",
-      arguments: { statement: "SELECT $1", parameters: [1] },
+      operation: "database.execute",
+      arguments: { statement: "SELECT $1", parameters: [1], return_rows: true },
     }, "sbx-source01"),
     {
-      path: "/v1/runtime/database/query",
-      messageType: "database_query",
+      path: "/v1/runtime/database/execute",
+      messageType: "database_execute",
       responseMessageType: "database_result",
       payload: {
         statement: "SELECT $1",
         parameters: [1],
+        return_rows: true,
         execution_id: "execution-test",
         worker_id: "wrk-source01",
         service_id: "example/persistent",
@@ -88,10 +89,8 @@ Deno.test("service type checking uses supported dependency-mode arguments", () =
       "cached_only",
     ),
     [
-      "run",
-      "--check",
+      "check",
       "--config=/opt/runtime/deno.json",
-      "--cached-only",
       "file:///workspace/packages/service.ts",
     ],
   );
@@ -101,12 +100,78 @@ Deno.test("service type checking uses supported dependency-mode arguments", () =
       "online",
     ),
     [
-      "run",
-      "--check",
+      "check",
       "--config=/opt/runtime/deno.json",
       "file:///workspace/packages/service.ts",
     ],
   );
+});
+
+Deno.test("closing a Worker requests transaction cleanup for its scope", async () => {
+  const calls: Array<Record<string, unknown>> = [];
+  const supervisor = new Supervisor({
+    runtimeGroupId: "group-test",
+    sandboxId: "sandbox-test",
+    workloadType: "service",
+    token,
+    supervisorVersion: "test",
+    startedAt: Date.now(),
+    workerStopGraceMilliseconds: 25,
+    kernelCall: (call) => {
+      calls.push(call as unknown as Record<string, unknown>);
+      return Promise.resolve(undefined);
+    },
+  });
+  const worker = await supervisor.startWorker({
+    metadata: metadata("wrk-cleanup"),
+    permissions: { read: [examples] },
+  });
+  await supervisor.stopWorker(worker.metadata.workerId, true);
+  assertEquals(
+    calls.some((call) =>
+      call.operation === "database.scope.close" &&
+      call.executionId === "execution-wrk-cleanup" &&
+      call.workerId === "wrk-cleanup" && call.serviceId === undefined
+    ),
+    true,
+  );
+});
+
+Deno.test("metadata-only evaluator Workers cannot execute SQL or administration", async () => {
+  const supervisor = new Supervisor({
+    runtimeGroupId: "group-test",
+    sandboxId: "sandbox-test",
+    workloadType: "service",
+    token,
+    supervisorVersion: "test",
+    startedAt: Date.now(),
+    workerStopGraceMilliseconds: 25,
+    kernelCall: () => Promise.resolve({ columns: [], rows: [] }),
+  });
+  const restricted = metadata("wrk-metadata");
+  restricted.entrypoint = new URL(
+    "../examples/service_kernel.ts",
+    import.meta.url,
+  ).href;
+  restricted.databaseAccess = "metadata";
+  const worker = await supervisor.startWorker({
+    metadata: restricted,
+    permissions: { read: [examples] },
+  });
+  await assertRejects(
+    () =>
+      worker.dispatchService(
+        new Request("http://service/database-query"),
+      ),
+    Error,
+    "kernel operations other than database metadata are unavailable",
+  );
+  await assertRejects(
+    () => worker.dispatchService(new Request("http://service/admin")),
+    Error,
+    "kernel operations other than database metadata are unavailable",
+  );
+  await supervisor.drain();
 });
 
 function metadata(id: string): ExecutionMetadata {
@@ -740,12 +805,25 @@ Deno.test("exact Worker control invokes only explicitly registered functions", a
 });
 
 Deno.test("job dispatch returns bounded structured and console logs", async () => {
+  const checked: string[][] = [];
+  const analyzed: string[][] = [];
   const supervisor = new Supervisor({
     runtimeGroupId: "group-job",
     sandboxId: "sandbox-job",
     workloadType: "job",
     token,
     supervisorVersion: "test",
+    entrypointValidator: (modules) => {
+      checked.push(modules);
+      return Promise.resolve();
+    },
+    moduleAnalyzer: (modules) => {
+      analyzed.push(modules);
+      return Promise.resolve(Object.fromEntries(modules.map((module) => [
+        module,
+        [module, "/workspace/packages/the8020/demo/src/shared.ts"],
+      ])));
+    },
   });
   const job = metadata("worker-job");
   job.workloadType = "job";
@@ -762,7 +840,10 @@ Deno.test("job dispatch returns bounded structured and console logs", async () =
         authorization: `Bearer ${token}`,
         "content-type": "application/json",
       },
-      body: controlEnvelope("job_start", { input: { value: 1 } }),
+      body: controlEnvelope("job_start", {
+        input: { value: 1 },
+        check_modules: [job.entrypoint],
+      }),
     }),
   );
   const body = await response.json();
@@ -772,6 +853,14 @@ Deno.test("job dispatch returns bounded structured and console logs", async () =
   assertEquals(body.payload.result, {
     input: { value: 1 },
     executionCount: 1,
+  });
+  assertEquals(checked, [[job.entrypoint]]);
+  assertEquals(analyzed, [[job.entrypoint]]);
+  assertEquals(body.payload.module_dependencies, {
+    [job.entrypoint]: [
+      job.entrypoint,
+      "/workspace/packages/the8020/demo/src/shared.ts",
+    ],
   });
   assertEquals(
     body.payload.logs.map((event: { message: string }) => event.message),

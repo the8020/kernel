@@ -100,6 +100,7 @@ type ExecutionMetadata struct {
 	Entrypoint         string                    `json:"entrypoint"`
 	DebuggerName       string                    `json:"debuggerName"`
 	ValidateEntrypoint bool                      `json:"validateEntrypoint,omitempty"`
+	DatabaseAccess     string                    `json:"databaseAccess,omitempty"`
 	Service            *ServiceExecutionMetadata `json:"service,omitempty"`
 }
 
@@ -144,8 +145,9 @@ type LogEvent struct {
 }
 
 type JobResult struct {
-	Result any        `json:"result"`
-	Logs   []LogEvent `json:"logs,omitempty"`
+	Result             any                 `json:"result"`
+	Logs               []LogEvent          `json:"logs,omitempty"`
+	ModuleDependencies map[string][]string `json:"module_dependencies,omitempty"`
 }
 
 type StartWorkerRequest struct {
@@ -262,11 +264,12 @@ func (c *Client) InvokeWorker(ctx context.Context, spec model.SandboxSpec, worke
 	return result, nil
 }
 
-func (c *Client) RunJob(ctx context.Context, spec model.SandboxSpec, workerID string, input any) (JobResult, error) {
+func (c *Client) RunJob(ctx context.Context, spec model.SandboxSpec, workerID string, input any, checkModules []string) (JobResult, error) {
 	var response JobResult
 	if err := c.control(ctx, spec, "/v1/jobs/"+url.PathEscape(workerID)+"/run", protocol.MessageJobStart, struct {
-		Input any `json:"input"`
-	}{Input: input}, protocol.MessageJobResult, &response); err != nil {
+		Input        any      `json:"input"`
+		CheckModules []string `json:"check_modules,omitempty"`
+	}{Input: input, CheckModules: append([]string(nil), checkModules...)}, protocol.MessageJobResult, &response); err != nil {
 		return JobResult{}, err
 	}
 	return response, nil

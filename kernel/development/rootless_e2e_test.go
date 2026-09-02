@@ -134,6 +134,9 @@ func runDevelopmentE2E(t *testing.T, rootless bool) {
 		packageRoot := filepath.Join(packages, filepath.FromSlash(id))
 		writeTestFile(t, filepath.Join(packageRoot, "package.toml"), "schema = 1\n")
 		writeTestFile(t, filepath.Join(packageRoot, "src", "message.ts"), "export const message = \"shared\";\n")
+		if id == "the8020/dev-core" {
+			writeTestFile(t, filepath.Join(packageRoot, ".gitignore"), "ignored/\n")
+		}
 	}
 	driver := NewRunscDriver(RunscConfig{RunscPath: runsc, RuntimeRoot: filepath.Join(runtimeRoot, "runsc"), SandboxRoot: filepath.Join(runtimeRoot, "sandboxes"), LogRoot: filepath.Join(runtimeRoot, "logs"), Rootless: rootless, ignoreCgroups: !rootless && os.Getenv("THE8020_DEVELOPMENT_ROOTFUL_IGNORE_CGROUPS") == "1"})
 	registry := core.NewRegistry(nil)
@@ -173,7 +176,7 @@ func runDevelopmentE2E(t *testing.T, rootless bool) {
 	shell(t, manager, sandbox.UserID, "test \"$(stat -c %a /run/lock)\" = 1777 && test \"$(readlink /var/lock)\" = /run/lock && printf lock-ok > /var/lock/the8020-proof && rm /var/lock/the8020-proof && printf transient > /run/the8020-transient")
 	shell(t, manager, sandbox.UserID, "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends aptitude && aptitude --version")
 	shell(t, manager, sandbox.UserID, "install -o 42 -g 4 -m 0640 /dev/null /var/tmp/the8020-idmap-proof && test \"$(stat -c %u:%g /var/tmp/the8020-idmap-proof)\" = 42:4 && rm /var/tmp/the8020-idmap-proof")
-	shell(t, manager, sandbox.UserID, "mkdir -p /tmp/the8020-proof/DEBIAN /tmp/the8020-proof/usr/local/bin /tmp/the8020-proof/usr/share/the8020-proof /root/.config/editor && printf 'Package: the8020-proof\\nVersion: 1\\nArchitecture: all\\nMaintainer: 80|20 Test <test@example.test>\\nDescription: proof\\n' > /tmp/the8020-proof/DEBIAN/control && printf '#!/bin/sh\\necho system-ok\\n' > /tmp/the8020-proof/usr/local/bin/the8020-proof && printf 'directory-ok\\n' > /tmp/the8020-proof/usr/share/the8020-proof/value && chmod 755 /tmp/the8020-proof/usr/local/bin/the8020-proof && dpkg-deb --build /tmp/the8020-proof /tmp/the8020-proof.deb && /usr/bin/dpkg --unpack /tmp/the8020-proof.deb && /usr/bin/dpkg --configure the8020-proof && grep -F directory-ok /usr/share/the8020-proof/value && printf 'home-ok\\n' > /root/.config/editor/proof && printf 'private\\n' > /workspace/packages/the8020/dev-core/src/message.ts")
+	shell(t, manager, sandbox.UserID, "mkdir -p /tmp/the8020-proof/DEBIAN /tmp/the8020-proof/usr/local/bin /tmp/the8020-proof/usr/share/the8020-proof /root/.config/editor /workspace/packages/the8020/dev-core/ignored && printf 'Package: the8020-proof\\nVersion: 1\\nArchitecture: all\\nMaintainer: 80|20 Test <test@example.test>\\nDescription: proof\\n' > /tmp/the8020-proof/DEBIAN/control && printf '#!/bin/sh\\necho system-ok\\n' > /tmp/the8020-proof/usr/local/bin/the8020-proof && printf 'directory-ok\\n' > /tmp/the8020-proof/usr/share/the8020-proof/value && chmod 755 /tmp/the8020-proof/usr/local/bin/the8020-proof && dpkg-deb --build /tmp/the8020-proof /tmp/the8020-proof.deb && /usr/bin/dpkg --unpack /tmp/the8020-proof.deb && /usr/bin/dpkg --configure the8020-proof && grep -F directory-ok /usr/share/the8020-proof/value && printf 'home-ok\\n' > /root/.config/editor/proof && printf 'private\\n' > /workspace/packages/the8020/dev-core/src/message.ts && printf 'generated\\n' > /workspace/packages/the8020/dev-core/ignored/generated.dat")
 	if shared, _ := os.ReadFile(filepath.Join(packages, "the8020", "dev-core", "src", "message.ts")); strings.Contains(string(shared), "private") {
 		t.Fatal("private package edit changed the shared repository before activation")
 	}
@@ -192,7 +195,7 @@ func runDevelopmentE2E(t *testing.T, rootless bool) {
 	if _, err := os.Stat(oldLogMarker); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("restarted sandbox retained disposable logs: %v", err)
 	}
-	shell(t, manager, sandbox.UserID, "test ! -e /run/the8020-transient && grep -F private /workspace/packages/the8020/dev-core/src/message.ts && grep -F home-ok /root/.config/editor/proof && test \"$(the8020-proof)\" = system-ok && dpkg-query -W the8020-proof && aptitude --version")
+	shell(t, manager, sandbox.UserID, "test ! -e /run/the8020-transient && test ! -e /workspace/packages/the8020/dev-core/ignored/generated.dat && grep -F private /workspace/packages/the8020/dev-core/src/message.ts && grep -F home-ok /root/.config/editor/proof && test \"$(the8020-proof)\" = system-ok && dpkg-query -W the8020-proof && aptitude --version")
 
 	previewJSON := shell(t, manager, sandbox.UserID, "activate --preview --message Preview")
 	var preview ActivationPreview

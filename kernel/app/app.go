@@ -22,6 +22,7 @@ import (
 	"the8020/kernel/cbus/server"
 	platformconsole "the8020/kernel/console"
 	"the8020/kernel/database"
+	"the8020/kernel/deployment"
 	"the8020/kernel/development"
 	"the8020/kernel/instance"
 	"the8020/kernel/lifecycle"
@@ -290,6 +291,8 @@ func Run(parent context.Context, config Config) error {
 		InstanceRoot:           root,
 		MaximumOpenConnections: activeInt(settingManager, "database.maximum_open_connections", 0),
 		MaximumIdleConnections: activeInt(settingManager, "database.maximum_idle_connections", 0),
+		MaximumResultRows:      activeInt(settingManager, "database.maximum_result_rows", database.DefaultMaximumResultRows),
+		MaximumResultBytes:     activeInt(settingManager, "database.maximum_result_bytes", database.DefaultMaximumResultBytes),
 	})
 	defer databaseManager.Close()
 	databaseContext, cancelDatabaseCheck := context.WithTimeout(parent, 3*time.Second)
@@ -386,6 +389,9 @@ func Run(parent context.Context, config Config) error {
 	if err != nil {
 		return fmt.Errorf("initialize development sandboxes: %w", err)
 	}
+	schemaUnavailable := deployment.Unavailable("database schema evaluator is not ready")
+	packageStore.SetSchemaDeployment(schemaUnavailable)
+	developmentManager.SetSchemaDeployment(schemaUnavailable)
 	portValue, ok := settingManager.Active("network.main_port")
 	if !ok {
 		return errors.New("network.main_port is not registered")
@@ -434,7 +440,10 @@ func Run(parent context.Context, config Config) error {
 	if err := settingManager.RegisterApplier([]string{"logging.enabled", "logging.split_period", "logging.max_file_size", "logging.max_total_size"}, loggingManager); err != nil {
 		return err
 	}
-	if err := settingManager.RegisterApplier([]string{"database.maximum_open_connections", "database.maximum_idle_connections"}, databaseManager); err != nil {
+	if err := settingManager.RegisterApplier([]string{
+		"database.maximum_open_connections", "database.maximum_idle_connections",
+		"database.maximum_result_rows", "database.maximum_result_bytes",
+	}, databaseManager); err != nil {
 		return err
 	}
 	lifecycleManager := lifecycle.New()
@@ -459,7 +468,7 @@ func Run(parent context.Context, config Config) error {
 	initialize := config.initialize
 	if initialize == nil {
 		initialize = func(ctx context.Context) (*services.RuntimeServices, runtimeCleanupFunc) {
-			return initializeRuntime(ctx, root, uuid, paths, settingManager, packageStore, networkManager, authManager, databaseManager, registry, consoleManager, nodeManager, logger.With("node_id", uuid))
+			return initializeRuntime(ctx, root, uuid, paths, settingManager, packageStore, developmentManager, networkManager, authManager, databaseManager, registry, consoleManager, nodeManager, logger.With("node_id", uuid))
 		}
 	}
 	type runtimeResult struct {

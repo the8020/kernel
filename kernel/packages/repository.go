@@ -5,12 +5,15 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"the8020/kernel/deployment"
 )
 
 const maximumRepositoryCommits = 100
@@ -100,6 +103,10 @@ func (s *Store) inspectPackageRepositoryUnlocked(ctx context.Context, packageID 
 	if !exists {
 		return Repository{}, fmt.Errorf("package is not installed: %s", packageID)
 	}
+	return s.inspectPackageRepositoryAt(ctx, packageID, path)
+}
+
+func (s *Store) inspectPackageRepositoryAt(ctx context.Context, packageID, path string) (Repository, error) {
 	result := Repository{
 		PackageID: packageID, Path: path, Status: "not-initialized",
 		Branches: []RepositoryBranch{}, Commits: []RepositoryCommit{},
@@ -380,10 +387,19 @@ func (s *Store) mutatePackageRepository(ctx context.Context, packageID string, m
 		return RepositoryMutation{}, err
 	}
 	previousHead := repository.Head
-	if err := mutate(repository.Path, repository); err != nil {
+	stageRoot, err := os.MkdirTemp(filepath.Dir(repository.Path), "."+filepath.Base(repository.Path)+"-mutation-")
+	if err != nil {
+		return RepositoryMutation{}, fmt.Errorf("create package mutation stage: %w", err)
+	}
+	defer os.RemoveAll(stageRoot)
+	stage := filepath.Join(stageRoot, "repository")
+	if err := copyRepository(repository.Path, stage); err != nil {
+		return RepositoryMutation{}, fmt.Errorf("stage package repository: %w", err)
+	}
+	if err := mutate(stage, repository); err != nil {
 		return RepositoryMutation{}, err
 	}
-	updated, err := s.inspectPackageRepositoryUnlocked(ctx, packageID)
+	updated, err := s.inspectPackageRepositoryAt(ctx, packageID, stage)
 	if err != nil {
 		return RepositoryMutation{}, err
 	}
@@ -391,10 +407,77 @@ func (s *Store) mutatePackageRepository(ctx context.Context, packageID string, m
 	if err != nil {
 		return RepositoryMutation{}, err
 	}
+	changed := previousHead != updated.Head
+	prepared := false
+	sourceSwitched := false
+	hook := s.schemaDeployment()
+	if changed && hook != nil {
+		if err := hook.Prepare(ctx, []deployment.Candidate{{PackageID: packageID, Root: updated.Path, Commit: updated.Head}}); err != nil {
+			return RepositoryMutation{}, fmt.Errorf("prepare package database schema: %w", err)
+		}
+		prepared = true
+		defer func() {
+			if prepared && !sourceSwitched {
+				_ = hook.Complete(context.Background(), false)
+			}
+		}()
+	}
+	sourceSwitched, err = replacePackageDirectory(repository.Path, stage)
+	if err != nil {
+		return RepositoryMutation{}, fmt.Errorf("activate package repository mutation: %w", err)
+	}
+	updated.Path = repository.Path
+	if prepared && hook != nil {
+		if err := hook.Complete(ctx, true); err != nil {
+			return RepositoryMutation{}, fmt.Errorf("complete package database schema deployment: %w", err)
+		}
+		prepared = false
+	}
 	return RepositoryMutation{
-		Repository: updated, Changed: previousHead != updated.Head,
+		Repository: updated, Changed: changed,
 		PreviousServices: previousServices, Services: services,
 	}, nil
+}
+
+func copyRepository(source, destination string) error {
+	return filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(destination, relative)
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		switch {
+		case entry.IsDir():
+			return os.MkdirAll(target, info.Mode().Perm())
+		case entry.Type()&os.ModeSymlink != 0:
+			link, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			return os.Symlink(link, target)
+		case entry.Type().IsRegular():
+			input, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			output, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, info.Mode().Perm())
+			if err != nil {
+				_ = input.Close()
+				return err
+			}
+			_, copyErr := io.Copy(output, input)
+			return errors.Join(copyErr, output.Sync(), output.Close(), input.Close())
+		default:
+			return fmt.Errorf("unsupported repository entry %s", relative)
+		}
+	})
 }
 
 func (s *Store) repositoryAuthentication(packageID, remoteURL string) ([]string, error) {

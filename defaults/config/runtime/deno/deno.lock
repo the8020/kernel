@@ -4,6 +4,7 @@
     "jsr:@hono/hono@4.9.8": "4.9.8",
     "jsr:@std/assert@1.0.14": "1.0.14",
     "jsr:@std/internal@^1.0.10": "1.0.14",
+    "npm:@types/node@*": "24.2.0",
     "npm:zod@4.1.5": "4.1.5"
   },
   "jsr": {
@@ -21,6 +22,15 @@
     }
   },
   "npm": {
+    "@types/node@24.2.0": {
+      "integrity": "sha512-3xyG3pMCq3oYCNg7/ZP+E1ooTaGB4cG8JWRsqqOYQdbWNY4zbaV0Ennrd7stjiJEFZCaybcIgpTjJWHRfBSIDw==",
+      "dependencies": [
+        "undici-types"
+      ]
+    },
+    "undici-types@7.10.0": {
+      "integrity": "sha512-t5Fy/nfn+14LuOc2KNYg75vZqClpAiqscVvMygNnlsHBFpSXdJaYtXMcdNLpl/Qvc3P2cB3s6lOV51nqsFq4ag=="
+    },
     "zod@4.1.5": {
       "integrity": "sha512-rcUUZqlLJgBC33IT3PNMgsCq6TzLQEG/Ei/KTCU0PedSWRMAXoOUN+4t/0H+Q8bdnLPdqUYnvboJT0bn/229qg=="
     }

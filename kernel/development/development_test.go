@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -17,14 +19,32 @@ import (
 	"testing"
 	"time"
 
+	"the8020/kernel/deployment"
+
 	"the8020/kernel/cbus/core"
 )
 
+type recordingActivationSchemaHook struct {
+	prepared  []deployment.Candidate
+	completed []bool
+}
+
+func (h *recordingActivationSchemaHook) Prepare(_ context.Context, candidates []deployment.Candidate) error {
+	h.prepared = append([]deployment.Candidate(nil), candidates...)
+	return nil
+}
+
+func (h *recordingActivationSchemaHook) Complete(_ context.Context, activated bool) error {
+	h.completed = append(h.completed, activated)
+	return nil
+}
+
 type fakeView struct {
-	start    SandboxStart
-	packages string
-	paused   bool
-	running  bool
+	start     SandboxStart
+	packages  string
+	temporary string
+	paused    bool
+	running   bool
 }
 
 type fakeDriver struct {
@@ -69,11 +89,16 @@ func (d *fakeDriver) Start(ctx context.Context, start SandboxStart) error {
 	if err := os.Remove(private); err != nil {
 		return err
 	}
+	temporary, err := os.MkdirTemp(filepath.Dir(start.RootFS), ".fake-temporary-")
+	if err != nil {
+		return err
+	}
 	if err := copyDirectory(ctx, start.Packages, private); err != nil {
+		_ = os.RemoveAll(temporary)
 		return err
 	}
 	d.starts++
-	d.views[start.SandboxID] = &fakeView{start: start, packages: private, running: true}
+	d.views[start.SandboxID] = &fakeView{start: start, packages: private, temporary: temporary, running: true}
 	return nil
 }
 
@@ -138,6 +163,10 @@ func (d *fakeDriver) Exec(_ context.Context, id, command string) ([]byte, error)
 }
 
 func (d *fakeDriver) ExecStream(ctx context.Context, id, command string, input io.Reader, output io.Writer) error {
+	return d.ExecCommand(ctx, id, []string{"/bin/bash", "-lc", command}, input, output)
+}
+
+func (d *fakeDriver) ExecCommand(ctx context.Context, id string, arguments []string, input io.Reader, output io.Writer) error {
 	d.mu.Lock()
 	d.execs++
 	view := d.views[id]
@@ -147,6 +176,7 @@ func (d *fakeDriver) ExecStream(ctx context.Context, id, command string, input i
 	}
 	packages := view.packages
 	sharedPackages := view.start.Packages
+	temporary := view.temporary
 	d.mu.Unlock()
 	for _, packageID := range packageDirectories(sharedPackages) {
 		shared := filepath.Join(sharedPackages, filepath.FromSlash(packageID))
@@ -156,8 +186,15 @@ func (d *fakeDriver) ExecStream(ctx context.Context, id, command string, input i
 			_, _ = gitCommand(ctx, private, nil, "fetch", "--no-tags", shared, head)
 		}
 	}
-	command = strings.ReplaceAll(command, "/workspace/packages", packages)
-	process := exec.CommandContext(ctx, "/bin/bash", "-lc", command)
+	if len(arguments) == 0 {
+		return errors.New("fake sandbox command requires an executable")
+	}
+	arguments = append([]string(nil), arguments...)
+	for index := range arguments {
+		arguments[index] = strings.ReplaceAll(arguments[index], "/workspace/packages", packages)
+		arguments[index] = strings.ReplaceAll(arguments[index], sandboxActivationIndexRoot, filepath.Join(temporary, "activation-index"))
+	}
+	process := exec.CommandContext(ctx, arguments[0], arguments[1:]...)
 	diagnostics := &boundedBuffer{limit: commandOutputLimit}
 	process.Stdin, process.Stdout, process.Stderr = input, output, diagnostics
 	if err := process.Run(); err != nil {
@@ -202,6 +239,7 @@ func (d *fakeDriver) Delete(_ context.Context, id string) error {
 	defer d.mu.Unlock()
 	if view := d.views[id]; view != nil && view.packages != "" {
 		_ = os.RemoveAll(view.packages)
+		_ = os.RemoveAll(view.temporary)
 	}
 	delete(d.views, id)
 	return nil
@@ -758,21 +796,30 @@ func TestSandboxOverlayUsesSharedLowerAndPersistsCheckpoints(t *testing.T) {
 
 func TestActivationScansOnlyOnDemandCommitsAndResetsOverlay(t *testing.T) {
 	platform := newTestPlatform(t)
+	hook := &recordingActivationSchemaHook{}
+	platform.manager.SetSchemaDeployment(hook)
 	sandbox, err := platform.manager.Create(context.Background(), "developer")
 	if err != nil {
 		t.Fatal(err)
 	}
 	shell(t, platform.manager, sandbox.UserID, "write packages/the8020/dev-core/src/message.ts private-a")
 	shell(t, platform.manager, sandbox.UserID, "write packages/the8020/demo/notes.txt private-b")
+	execs := platform.driver.execs
 	preview, err := platform.manager.Preview(context.Background(), sandbox.UserID, ActivationOptions{SelectedPackages: []string{"the8020/dev-core"}})
 	if err != nil || len(preview.Packages) != 2 {
 		t.Fatalf("preview = %#v, %v", preview, err)
+	}
+	if platform.driver.execs != execs+1 {
+		t.Fatalf("preview used %d sandbox commands, want one batched scan", platform.driver.execs-execs)
 	}
 	starts := platform.driver.starts
 	oldSandbox := sandbox.SandboxID
 	result, err := platform.manager.Activate(context.Background(), sandbox.UserID, ActivationOptions{Description: "Common", SelectedPackages: []string{"the8020/dev-core"}, AuthorName: "Developer", AuthorEmail: "developer@example.test", Metadata: map[string]string{"client": "unit-test"}})
 	if err != nil || !result.Success || packageResult(result, "the8020/dev-core").Status != "committed" {
 		t.Fatalf("activation = %#v, %v", result, err)
+	}
+	if len(hook.prepared) != 1 || hook.prepared[0].PackageID != "the8020/dev-core" || !slices.Equal(hook.completed, []bool{true}) {
+		t.Fatalf("schema activation hook = prepared %#v completed %#v", hook.prepared, hook.completed)
 	}
 	current, _ := platform.manager.Inspect(sandbox.UserID)
 	if platform.driver.starts != starts+1 || current.SandboxID != oldSandbox || !result.OverlayReset {
@@ -811,6 +858,188 @@ func TestActivationScansOnlyOnDemandCommitsAndResetsOverlay(t *testing.T) {
 	author, _ := gitOutput(filepath.Join(platform.root, "packages", "the8020", "demo"), "log", "-1", "--pretty=%an <%ae>")
 	if author != "developer <developer@development.local>" {
 		t.Fatalf("default activation author = %q", author)
+	}
+}
+
+func TestActivationCapturesRenamesDeletionsAndBinaryButExcludesIgnoredFiles(t *testing.T) {
+	platform := newTestPlatform(t)
+	shared := filepath.Join(platform.root, "packages", "the8020", "dev-core")
+	writeTestFile(t, filepath.Join(shared, ".gitignore"), "ignored.dat\n")
+	if output, err := gitCommand(context.Background(), shared, gitIdentity("Test Developer", "developer@example.test"), "add", ".gitignore"); err != nil {
+		t.Fatalf("stage ignore file: %v: %s", err, output)
+	}
+	if output, err := gitCommand(context.Background(), shared, gitIdentity("Test Developer", "developer@example.test"), "commit", "-q", "--no-gpg-sign", "-m", "Ignore generated data"); err != nil {
+		t.Fatalf("commit ignore file: %v: %s", err, output)
+	}
+	sandbox, err := platform.manager.Create(context.Background(), "developer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	private := filepath.Join(platform.driver.views[sandbox.SandboxID].packages, "the8020", "dev-core")
+	if err := os.Rename(filepath.Join(private, "notes.txt"), filepath.Join(private, "renamed.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(private, "src", "message.ts")); err != nil {
+		t.Fatal(err)
+	}
+	binary := []byte{0, 1, 2, 3, 0xff}
+	if err := os.WriteFile(filepath.Join(private, "binary.dat"), binary, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(private, "ignored.dat"), []byte("generated\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	unusualPath := "line\nand\ttab.txt"
+	if err := os.WriteFile(filepath.Join(private, unusualPath), []byte("unusual\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	execs := platform.driver.execs
+	preview, err := platform.manager.Preview(context.Background(), sandbox.UserID, ActivationOptions{})
+	if err != nil || len(preview.Packages) != 1 {
+		t.Fatalf("preview = %#v, %v", preview, err)
+	}
+	if platform.driver.execs != execs+1 {
+		t.Fatalf("preview used %d sandbox commands, want one batched scan", platform.driver.execs-execs)
+	}
+	item := preview.Packages[0]
+	if item.PackageID != "the8020/dev-core" || item.ChangedFiles != 4 || item.AddedRows != 1 || item.RemovedRows != 1 {
+		t.Fatalf("package summary = %#v", item)
+	}
+	files := map[string]string{}
+	for _, file := range item.Files {
+		files[file.Path] = file.Change
+	}
+	wantFiles := map[string]string{
+		"binary.dat":     "new",
+		unusualPath:      "new",
+		"renamed.txt":    "renamed from notes.txt",
+		"src/message.ts": "deleted",
+	}
+	if !maps.Equal(files, wantFiles) {
+		t.Fatalf("files = %#v, want %#v", files, wantFiles)
+	}
+
+	index, _ := sandboxIndexPaths("the8020/dev-core")
+	index = strings.Replace(index, sandboxActivationIndexRoot, filepath.Join(platform.driver.views[sandbox.SandboxID].temporary, "activation-index"), 1)
+	if err := os.WriteFile(index, []byte("corrupt index"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := platform.manager.Preview(context.Background(), sandbox.UserID, ActivationOptions{}); err != nil {
+		t.Fatalf("preview did not rebuild a disposable corrupt index: %v", err)
+	}
+
+	result, err := platform.manager.Activate(context.Background(), sandbox.UserID, ActivationOptions{Description: "Capture every Git change type"})
+	if err != nil || !result.Success {
+		t.Fatalf("activation = %#v, %v", result, err)
+	}
+	if contents, err := os.ReadFile(filepath.Join(shared, "binary.dat")); err != nil || !bytes.Equal(contents, binary) {
+		t.Fatalf("activated binary = %v, %v", contents, err)
+	}
+	if _, err := os.Stat(filepath.Join(shared, "ignored.dat")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("activation published ignored artifact: %v", err)
+	}
+	if contents, err := os.ReadFile(filepath.Join(shared, "renamed.txt")); err != nil || string(contents) != "the8020/dev-core notes\n" {
+		t.Fatalf("activated rename = %q, %v", contents, err)
+	}
+	if contents, err := os.ReadFile(filepath.Join(shared, unusualPath)); err != nil || string(contents) != "unusual\n" {
+		t.Fatalf("activated unusual path = %q, %v", contents, err)
+	}
+	for _, path := range []string{"notes.txt", filepath.Join("src", "message.ts")} {
+		if _, err := os.Stat(filepath.Join(shared, path)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("activated deletion retained %s: %v", path, err)
+		}
+	}
+}
+
+func TestActivationWarmIndexDropsNewlyIgnoredArtifact(t *testing.T) {
+	platform := newTestPlatform(t)
+	sandbox, err := platform.manager.Create(context.Background(), "developer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	private := filepath.Join(platform.driver.views[sandbox.SandboxID].packages, "the8020", "dev-core")
+	writeTestFile(t, filepath.Join(private, "generated.dat"), "generated\n")
+	preview, err := platform.manager.Preview(context.Background(), sandbox.UserID, ActivationOptions{})
+	if err != nil || len(preview.Packages) != 1 || preview.Packages[0].ChangedFiles != 1 || preview.Packages[0].Files[0].Path != "generated.dat" {
+		t.Fatalf("preview before ignore = %#v, %v", preview, err)
+	}
+	writeTestFile(t, filepath.Join(private, ".gitignore"), "generated.dat\n")
+	preview, err = platform.manager.Preview(context.Background(), sandbox.UserID, ActivationOptions{})
+	if err != nil || len(preview.Packages) != 1 || preview.Packages[0].ChangedFiles != 1 || preview.Packages[0].Files[0].Path != ".gitignore" {
+		t.Fatalf("preview after ignore = %#v, %v", preview, err)
+	}
+	result, err := platform.manager.Activate(context.Background(), sandbox.UserID, ActivationOptions{Description: "Ignore generated artifacts"})
+	if err != nil || !result.Success {
+		t.Fatalf("activation = %#v, %v", result, err)
+	}
+	shared := filepath.Join(platform.root, "packages", "the8020", "dev-core")
+	if contents, err := os.ReadFile(filepath.Join(shared, ".gitignore")); err != nil || string(contents) != "generated.dat\n" {
+		t.Fatalf("activated ignore rules = %q, %v", contents, err)
+	}
+	if _, err := os.Stat(filepath.Join(shared, "generated.dat")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("activation published newly ignored artifact: %v", err)
+	}
+}
+
+func TestActivationStillCapturesTrackedFileMatchedByIgnoreRule(t *testing.T) {
+	platform := newTestPlatform(t)
+	shared := filepath.Join(platform.root, "packages", "the8020", "dev-core")
+	writeTestFile(t, filepath.Join(shared, ".gitignore"), "tracked.dat\n")
+	writeTestFile(t, filepath.Join(shared, "tracked.dat"), "shared\n")
+	if output, err := gitCommand(context.Background(), shared, nil, "add", ".gitignore"); err != nil {
+		t.Fatalf("stage ignore rule: %v: %s", err, output)
+	}
+	if output, err := gitCommand(context.Background(), shared, nil, "add", "-f", "tracked.dat"); err != nil {
+		t.Fatalf("stage tracked ignored file: %v: %s", err, output)
+	}
+	if output, err := gitCommand(context.Background(), shared, gitIdentity("Test Developer", "developer@example.test"), "commit", "-q", "--no-gpg-sign", "-m", "Track ignored file"); err != nil {
+		t.Fatalf("commit tracked ignored file: %v: %s", err, output)
+	}
+	sandbox, err := platform.manager.Create(context.Background(), "developer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	private := filepath.Join(platform.driver.views[sandbox.SandboxID].packages, "the8020", "dev-core")
+	writeTestFile(t, filepath.Join(private, "tracked.dat"), "private\n")
+	preview, err := platform.manager.Preview(context.Background(), sandbox.UserID, ActivationOptions{})
+	if err != nil || len(preview.Packages) != 1 || preview.Packages[0].ChangedFiles != 1 || preview.Packages[0].Files[0].Path != "tracked.dat" {
+		t.Fatalf("tracked ignored preview = %#v, %v", preview, err)
+	}
+	result, err := platform.manager.Activate(context.Background(), sandbox.UserID, ActivationOptions{Description: "Update tracked ignored file"})
+	if err != nil || !result.Success {
+		t.Fatalf("activation = %#v, %v", result, err)
+	}
+	if contents, err := os.ReadFile(filepath.Join(shared, "tracked.dat")); err != nil || string(contents) != "private\n" {
+		t.Fatalf("activated tracked ignored file = %q, %v", contents, err)
+	}
+}
+
+func TestActivationCaptureScanWriterAcceptsOnlyChangedMarkers(t *testing.T) {
+	packages := []sandboxPackageScan{{PackageID: "the8020/a", Base: strings.Repeat("a", 40)}, {PackageID: "the8020/b", Base: strings.Repeat("b", 40)}}
+	writer := &activationScanWriter{packages: packages, changes: []packageChanges{}}
+	if _, err := writer.Write([]byte("changed\x00\x00\x00")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.finish(); err != nil || len(writer.changes) != 1 || writer.changes[0].PackageID != "the8020/a" || len(writer.changes[0].Files) != 0 {
+		t.Fatalf("capture markers = %#v, %v", writer.changes, err)
+	}
+	malformed := &activationScanWriter{packages: packages[:1], changes: []packageChanges{}}
+	_, _ = malformed.Write([]byte("unexpected\x00\x00"))
+	if err := malformed.finish(); err == nil {
+		t.Fatal("malformed capture marker was accepted")
+	}
+}
+
+func TestParseRawNumstatRejectsMalformedRecords(t *testing.T) {
+	for _, value := range [][]byte{
+		[]byte("not terminated"),
+		[]byte(":100644 100644 abc def M\x00"),
+		[]byte(":100644 100644 abc def M\x00file.ts\x00bad numstat\x00"),
+	} {
+		if _, _, _, err := parseRawNumstat(value); err == nil {
+			t.Fatalf("malformed Git output was accepted: %q", value)
+		}
 	}
 }
 
@@ -1041,8 +1270,8 @@ func TestDevelopmentSpecOverlaysOnlySandboxPackages(t *testing.T) {
 	}
 	driver := &RunscDriver{config: RunscConfig{RuntimeRoot: filepath.Join(root, "runtime"), SandboxRoot: filepath.Join(root, "sandboxes"), LogRoot: filepath.Join(root, "logs")}}
 	flags := strings.Join(driver.flags(start.SandboxID, "run"), " ")
-	if !strings.Contains(flags, "--overlay2=none") || strings.Contains(flags, "overlay2=all") || strings.Contains(flags, "overlay2=root") || strings.Contains(flags, "rootfs-tar") {
-		t.Fatalf("development driver still configures snapshots or overlays: %s", flags)
+	if !strings.Contains(flags, "--directfs=true") || !strings.Contains(flags, "--overlay2=none") || strings.Contains(flags, "overlay2=all") || strings.Contains(flags, "overlay2=root") || strings.Contains(flags, "rootfs-tar") {
+		t.Fatalf("development driver filesystem flags = %s", flags)
 	}
 }
 

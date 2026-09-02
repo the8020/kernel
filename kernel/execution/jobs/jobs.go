@@ -25,7 +25,7 @@ type GroupCoordinator interface {
 }
 type WorkerManager interface {
 	Start(context.Context, string, supervisor.StartWorkerRequest) (workers.Record, error)
-	RunJob(context.Context, string, any) (supervisor.JobResult, error)
+	RunJob(context.Context, string, any, []string) (supervisor.JobResult, error)
 	Stop(context.Context, string, bool) error
 }
 type Policy struct {
@@ -54,31 +54,37 @@ type Options struct {
 	ReleaseID         string
 	Workspace         string
 	WorkspaceWritable bool
+	DatabaseAccess    string
+	CheckModules      []string
+	Mounts            []model.Mount
 }
 type Record struct {
-	ExecutionID    string                       `json:"execution_id"`
-	JobID          string                       `json:"job_id"`
-	OwnerID        string                       `json:"owner_id"`
-	ProfileHash    string                       `json:"profile_hash"`
-	Entrypoint     string                       `json:"entrypoint"`
-	RuntimeGroupID string                       `json:"runtime_group_id,omitempty"`
-	SandboxID      string                       `json:"sandbox_id,omitempty"`
-	WorkerID       string                       `json:"worker_id"`
-	ReleaseID      string                       `json:"release_id"`
-	State          string                       `json:"state"`
-	Detached       bool                         `json:"detached"`
-	Reuse          bool                         `json:"reuse"`
-	Input          any                          `json:"input,omitempty"`
-	Result         any                          `json:"result,omitempty"`
-	Logs           []supervisor.LogEvent        `json:"logs,omitempty"`
-	Failure        string                       `json:"failure,omitempty"`
-	QueuedAt       time.Time                    `json:"queued_at,omitempty"`
-	StartedAt      time.Time                    `json:"started_at"`
-	FinishedAt     time.Time                    `json:"finished_at,omitempty"`
-	Timeout        time.Duration                `json:"timeout"`
-	Parallelism    int                          `json:"parallelism"`
-	Duration       time.Duration                `json:"duration"`
-	Permissions    supervisor.WorkerPermissions `json:"permissions"`
+	ExecutionID        string                       `json:"execution_id"`
+	JobID              string                       `json:"job_id"`
+	OwnerID            string                       `json:"owner_id"`
+	ProfileHash        string                       `json:"profile_hash"`
+	Entrypoint         string                       `json:"entrypoint"`
+	RuntimeGroupID     string                       `json:"runtime_group_id,omitempty"`
+	SandboxID          string                       `json:"sandbox_id,omitempty"`
+	WorkerID           string                       `json:"worker_id"`
+	ReleaseID          string                       `json:"release_id"`
+	State              string                       `json:"state"`
+	Detached           bool                         `json:"detached"`
+	Reuse              bool                         `json:"reuse"`
+	Input              any                          `json:"input,omitempty"`
+	Result             any                          `json:"result,omitempty"`
+	Logs               []supervisor.LogEvent        `json:"logs,omitempty"`
+	Failure            string                       `json:"failure,omitempty"`
+	QueuedAt           time.Time                    `json:"queued_at,omitempty"`
+	StartedAt          time.Time                    `json:"started_at"`
+	FinishedAt         time.Time                    `json:"finished_at,omitempty"`
+	Timeout            time.Duration                `json:"timeout"`
+	Parallelism        int                          `json:"parallelism"`
+	Duration           time.Duration                `json:"duration"`
+	Permissions        supervisor.WorkerPermissions `json:"permissions"`
+	DatabaseAccess     string                       `json:"database_access,omitempty"`
+	CheckModules       []string                     `json:"check_modules,omitempty"`
+	ModuleDependencies map[string][]string          `json:"module_dependencies,omitempty"`
 }
 type Manager struct {
 	mu          sync.Mutex
@@ -141,6 +147,20 @@ func (m *Manager) Run(ctx context.Context, jobID, entrypoint string, options Opt
 	if err != nil {
 		return Record{}, err
 	}
+	for _, requested := range options.Mounts {
+		if m.policy.WorkspaceMounts == nil {
+			return Record{}, errors.New("job mounts are unavailable")
+		}
+		mount, err := m.policy.WorkspaceMounts.Validate(requested)
+		if err != nil {
+			return Record{}, fmt.Errorf("job mount: %w", err)
+		}
+		if !mount.ReadOnly {
+			return Record{}, errors.New("additional job mounts must be read-only")
+		}
+		profile.Mounts = append(profile.Mounts, mount)
+		profile.Permissions.ReadPaths = append(profile.Permissions.ReadPaths, mount.Target)
+	}
 	profileHash, err := profile.Hash()
 	if err != nil {
 		return Record{}, err
@@ -172,7 +192,14 @@ func (m *Manager) Run(ctx context.Context, jobID, entrypoint string, options Opt
 	if timeout <= 0 {
 		timeout = m.policy.ExecutionTimeout
 	}
-	record := Record{ExecutionID: executionID, JobID: jobID, OwnerID: ownerID, ProfileHash: profileHash, Entrypoint: entrypoint, WorkerID: workerID, ReleaseID: options.ReleaseID, State: "STARTING", Detached: options.Detached, Reuse: reuse, Input: options.Input, Timeout: timeout, Parallelism: limit, Permissions: permissions}
+	databaseAccess := options.DatabaseAccess
+	if databaseAccess == "" {
+		databaseAccess = "full"
+	}
+	if databaseAccess != "full" && databaseAccess != "metadata" && databaseAccess != "none" {
+		return Record{}, errors.New("job database access must be full, metadata, or none")
+	}
+	record := Record{ExecutionID: executionID, JobID: jobID, OwnerID: ownerID, ProfileHash: profileHash, Entrypoint: entrypoint, WorkerID: workerID, ReleaseID: options.ReleaseID, State: "STARTING", Detached: options.Detached, Reuse: reuse, Input: options.Input, Timeout: timeout, Parallelism: limit, Permissions: permissions, DatabaseAccess: databaseAccess, CheckModules: append([]string(nil), options.CheckModules...)}
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -234,7 +261,7 @@ func (m *Manager) start(ctx context.Context, prepared submission) (Record, error
 	}
 	record = current
 	if record.Reuse {
-		if reusable, ok := m.reusable(record.JobID, record.Entrypoint, record.OwnerID, record.ReleaseID, record.ProfileHash, record.Permissions); ok {
+		if reusable, ok := m.reusable(record.JobID, record.Entrypoint, record.OwnerID, record.ReleaseID, record.ProfileHash, record.DatabaseAccess, record.Permissions); ok {
 			m.stopIdleTimerLocked(reusable.ExecutionID)
 			available := reusable
 			available.State = "SUCCEEDED"
@@ -263,7 +290,7 @@ func (m *Manager) start(ctx context.Context, prepared submission) (Record, error
 	if current, proceed := m.starting(record.ExecutionID); !proceed {
 		return current, fmt.Errorf("job execution entered %s before Worker startup", current.State)
 	}
-	started, err := m.workers.Start(ctx, group.Spec.RuntimeGroupID, supervisor.StartWorkerRequest{Metadata: supervisor.ExecutionMetadata{WorkerID: record.WorkerID, ExecutionID: record.ExecutionID, WorkloadType: model.WorkloadJob, OwnerID: record.OwnerID, WorkloadID: record.JobID, ReleaseID: record.ReleaseID, Entrypoint: record.Entrypoint, DebuggerName: "job:" + record.OwnerID + ":" + record.ExecutionID + ":" + record.WorkerID}, Permissions: record.Permissions})
+	started, err := m.workers.Start(ctx, group.Spec.RuntimeGroupID, supervisor.StartWorkerRequest{Metadata: supervisor.ExecutionMetadata{WorkerID: record.WorkerID, ExecutionID: record.ExecutionID, WorkloadType: model.WorkloadJob, OwnerID: record.OwnerID, WorkloadID: record.JobID, ReleaseID: record.ReleaseID, Entrypoint: record.Entrypoint, DebuggerName: "job:" + record.OwnerID + ":" + record.ExecutionID + ":" + record.WorkerID, DatabaseAccess: record.DatabaseAccess}, Permissions: record.Permissions})
 	if err != nil {
 		return m.fail(record, err)
 	}
@@ -361,12 +388,13 @@ func (m *Manager) starting(executionID string) (Record, bool) {
 
 func (m *Manager) execute(parent context.Context, record Record) (Record, error) {
 	run := func(ctx context.Context, running Record) (Record, error) {
-		result, err := m.workers.RunJob(ctx, running.WorkerID, running.Input)
+		result, err := m.workers.RunJob(ctx, running.WorkerID, running.Input, running.CheckModules)
 		if err != nil {
 			return m.failAndStop(running, err)
 		}
 		running.Result = result.Result
 		running.Logs = append([]supervisor.LogEvent(nil), result.Logs...)
+		running.ModuleDependencies = cloneDependencies(result.ModuleDependencies)
 		running.FinishedAt = m.now()
 		running.Duration = running.FinishedAt.Sub(running.StartedAt)
 		if running.Reuse {
@@ -405,6 +433,17 @@ func (m *Manager) execute(parent context.Context, record Record) (Record, error)
 	ctx, cancel := context.WithTimeout(parent, record.Timeout)
 	defer cancel()
 	return run(ctx, record)
+}
+
+func cloneDependencies(source map[string][]string) map[string][]string {
+	if len(source) == 0 {
+		return nil
+	}
+	result := make(map[string][]string, len(source))
+	for module, dependencies := range source {
+		result[module] = append([]string(nil), dependencies...)
+	}
+	return result
 }
 func (m *Manager) List() ([]Record, error) {
 	ids, err := m.store.IDs()
@@ -645,13 +684,13 @@ func (m *Manager) launch(run func(context.Context)) error {
 	}()
 	return nil
 }
-func (m *Manager) reusable(jobID, entrypoint, ownerID, releaseID, profileHash string, permissions supervisor.WorkerPermissions) (Record, bool) {
+func (m *Manager) reusable(jobID, entrypoint, ownerID, releaseID, profileHash, databaseAccess string, permissions supervisor.WorkerPermissions) (Record, bool) {
 	items, err := m.List()
 	if err != nil {
 		return Record{}, false
 	}
 	for _, item := range items {
-		if item.JobID == jobID && item.OwnerID == ownerID && item.ReleaseID == releaseID && item.ProfileHash == profileHash && reflect.DeepEqual(item.Permissions, permissions) && item.Entrypoint == entrypoint && item.State == "IDLE" && item.Reuse {
+		if item.JobID == jobID && item.OwnerID == ownerID && item.ReleaseID == releaseID && item.ProfileHash == profileHash && item.DatabaseAccess == databaseAccess && reflect.DeepEqual(item.Permissions, permissions) && item.Entrypoint == entrypoint && item.State == "IDLE" && item.Reuse {
 			return item, true
 		}
 	}

@@ -5,7 +5,7 @@
 # Ownership
 
 - Own startup/shutdown order, generic settings arguments,
-  system-database pool composition and non-fatal readiness checking,
+  system-database pool composition and catalog-gated service readiness,
   bootstrap-authentication composition and cleanup lifecycle,
   full-versus-rootless runtime selection, degraded diagnostics,
   mapped package/state-store composition, service-package mounts, and
@@ -41,17 +41,25 @@
   record validation and runtime diagnostics/composition → initial terminal
   sandbox-history cleanup →
   configured fast inherited-sandbox destruction or explicit reconciliation →
-  workload-record cleanup → one-time filesystem-service discovery plus
+  workload-record cleanup → initialize/validate the database catalog → compose
+  the job runtime and table evaluator → recover a pending schema deployment or
+  fully synchronize an uninitialized database → one-time filesystem-service discovery plus
   active-runtime-only maintenance → heartbeat/OOM and hourly history-retention
   monitoring.
 - The command socket publishes `runtime initialization is in progress` until one
   complete runtime dependency snapshot is ready; runtime commands fail safely
   during that interval while system/settings/authentication administration
   remains available.
-- Database connection failure is logged and cached in `system status` but never
-  prevents the administrative command socket from starting. An explicit
-  `database check` retries connectivity after operators change or repair the
-  configured backend.
+- Database connection, catalog, or first full-table synchronization failure is
+  logged and cached in status. It never prevents the administrative command
+  socket or raw SQL recovery from running, but it prevents ordinary services and
+  UUI from starting. An explicit `database check` retries connectivity after
+  operators change or repair the configured backend.
+- A fresh database synchronizes every installed package table in bounded
+  evaluator batches and becomes `READY` only after all succeed. A normal boot
+  trusts the initialized marker and does not scan definitions. The deliberate
+  future insertion point for idempotent package data bootstrap is after table
+  synchronization and before service discovery; no seed framework exists yet.
 - Database pool limits are node-local runtime settings applied transactionally
   to the already running pool; backend, location, and credentials remain global
   restart settings.
@@ -120,7 +128,7 @@
   into the package manager; command services separately expose authenticated
   secret administration. Deno and application packages never receive the
   secret file path.
-- Service runtime profiles mount the configured package root read-only at
+- Service and job runtime profiles mount the configured package root read-only at
   `/workspace/packages` and shared package state read-write at
   `/state/package-data`, grant Workers read-only access to the bundled generic
   `/opt/runtime` modules, and keep portable dependency mode in runtime-group

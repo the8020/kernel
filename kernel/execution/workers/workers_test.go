@@ -65,7 +65,7 @@ func (f *fakeControl) InvokeWorker(_ context.Context, spec model.SandboxSpec, wo
 	}
 	return supervisor.WorkerInvocationResult{OK: true, Output: "controlled"}, nil
 }
-func (f *fakeControl) RunJob(context.Context, model.SandboxSpec, string, any) (supervisor.JobResult, error) {
+func (f *fakeControl) RunJob(context.Context, model.SandboxSpec, string, any, []string) (supervisor.JobResult, error) {
 	return supervisor.JobResult{Result: "job"}, nil
 }
 func (f *fakeControl) ConfigureService(context.Context, model.SandboxSpec, string, []string, int) error {
@@ -188,7 +188,7 @@ func TestWorkerJobDelegationUsesTheExactWorker(t *testing.T) {
 	spec := model.SandboxSpec{SandboxID: "sandbox", RuntimeGroupID: "group", WorkloadType: model.WorkloadJob}
 	control := &fakeControl{workers: map[string][]supervisor.WorkerStatus{"group": {{WorkerID: "worker"}}}}
 	manager, _ := New(&fakeSandboxes{items: []manager.Inspection{{Spec: spec}}}, control, 0, 64)
-	if output, err := manager.RunJob(context.Background(), "worker", nil); err != nil || output.Result != "job" {
+	if output, err := manager.RunJob(context.Background(), "worker", nil, nil); err != nil || output.Result != "job" {
 		t.Fatalf("job=%#v err=%v", output, err)
 	}
 }

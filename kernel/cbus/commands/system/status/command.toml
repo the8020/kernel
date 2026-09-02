@@ -55,6 +55,21 @@ type = "string"
 name = "database_status"
 type = "string"
 [[result]]
+name = "database_catalog_version"
+type = "integer"
+[[result]]
+name = "database_initialized"
+type = "boolean"
+[[result]]
+name = "database_pending_deployment"
+type = "boolean"
+[[result]]
+name = "database_result_maximum_rows"
+type = "integer"
+[[result]]
+name = "database_result_maximum_bytes"
+type = "integer"
+[[result]]
 name = "database_pool_maximum_open_connections"
 type = "integer"
 [[result]]
@@ -77,6 +92,15 @@ name = "database_pool_wait_duration_milliseconds"
 type = "integer"
 [[result]]
 name = "database_error"
+type = "string"
+[[result]]
+name = "database_catalog_error"
+type = "string"
+[[result]]
+name = "database_last_deployment_at"
+type = "string"
+[[result]]
+name = "database_last_deployment_error"
 type = "string"
 [[result]]
 name = "shutdown_requested"

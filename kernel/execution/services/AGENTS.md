@@ -47,12 +47,15 @@
   headroom, excludes Workers from supervisor scheduling before graceful stop,
   and never removes an occupied persistent slot. Full streams retain ownership
   through end/cancel.
-- Pool shutdown excludes every Worker from dispatch, durably removes each
-  terminated Worker, releases its sandbox owner, and destroys the sandbox when
-  that was its final owner. Failed startup also releases partial ownership. If
-  the runtime group was already removed, shutdown retires the recoverable pool
-  index without contacting missing Workers. `RemoveStopped` deletes only a pool
-  that is durably `STOPPED` with no recorded Workers.
+- Pool shutdown marks the pool `DRAINING` and excludes it from dispatch. It
+  stops idle Workers, returns incomplete without error while any Worker reports
+  occupied execution slots, and leaves that ownership durable for
+  reconciliation. Once empty, it removes every Worker, releases its sandbox
+  owner, and destroys the sandbox when that was its final owner. Failed startup
+  also releases partial ownership. If the runtime group was already removed,
+  shutdown retires the recoverable pool index without contacting missing
+  Workers. `RemoveStopped` deletes only a pool that is durably `STOPPED` with no
+  recorded Workers.
 - A start failure before group ownership is acquired removes its provisional
   pool record immediately; it must not leave an empty-group artifact for the
   filesystem reconciler to retry.
@@ -85,8 +88,8 @@
   target-headroom scale-down and growth fallback, exclude-before-stop ordering,
   failed-Worker repair, streamed dispatch, exact-Worker routing, resumable stop,
   owner release, group failure, mixed valid/corrupt recovery, isolated
-  restoration, missing-group retirement, terminal-record removal, and
-  rejected-definition cleanup, idempotent already-absent group release, and
-  rollback.
+  restoration, occupied-Worker draining, missing-group retirement,
+  terminal-record removal, rejected-definition cleanup, idempotent
+  already-absent group release, and rollback.
 
 # Child DOX Index

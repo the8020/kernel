@@ -1,0 +1,9 @@
+key = "database.maximum_result_bytes"
+type = "integer"
+storage = "node"
+default = 10485760
+environment = "THE8020_DATABASE_MAXIMUM_RESULT_BYTES"
+minimum = 1024
+runtime_mutable = true
+restart_required = false
+description = "Maximum encoded bytes returned by one sandbox database call before it fails and requires pagination."

@@ -27,8 +27,11 @@ export interface SupervisorOptions {
   workerStopGraceMilliseconds?: number;
   kernelCall?: KernelCall;
   nodeId?: string;
-  entrypointValidator?: (entrypoint: string) => Promise<void>;
+  entrypointValidator?: (entrypoints: string[]) => Promise<void>;
+  moduleAnalyzer?: (entrypoints: string[]) => Promise<ModuleDependencies>;
 }
+
+export type ModuleDependencies = Record<string, string[]>;
 
 export interface StartWorkerOptions {
   metadata: ExecutionMetadata;
@@ -83,7 +86,7 @@ export class Supervisor {
     & Required<
       Omit<
         SupervisorOptions,
-        "kernelCall" | "nodeId" | "entrypointValidator"
+        "kernelCall" | "nodeId" | "entrypointValidator" | "moduleAnalyzer"
       >
     >
     & {
@@ -111,7 +114,8 @@ export class Supervisor {
   #workerStops = new Map<string, Promise<void>>();
   #lastReservationRelease = new Map<string, number>();
   #capacityWaiters = new Set<() => void>();
-  #entrypointValidator: (entrypoint: string) => Promise<void>;
+  #entrypointValidator: (entrypoints: string[]) => Promise<void>;
+  #moduleAnalyzer: (entrypoints: string[]) => Promise<ModuleDependencies>;
 
   constructor(options: SupervisorOptions) {
     if (
@@ -122,7 +126,7 @@ export class Supervisor {
         "runtime-group ID, sandbox ID, and high-entropy token are required",
       );
     }
-    const { entrypointValidator, ...runtimeOptions } = options;
+    const { entrypointValidator, moduleAnalyzer, ...runtimeOptions } = options;
     this.options = {
       ...runtimeOptions,
       denoVersion: options.denoVersion ?? Deno.version.deno,
@@ -131,7 +135,8 @@ export class Supervisor {
       workerStopGraceMilliseconds: options.workerStopGraceMilliseconds ?? 1_000,
       nodeId: options.nodeId ?? options.runtimeGroupId,
     };
-    this.#entrypointValidator = entrypointValidator ?? validateEntrypoint;
+    this.#entrypointValidator = entrypointValidator ?? validateEntrypoints;
+    this.#moduleAnalyzer = moduleAnalyzer ?? analyzeModules;
     if (
       !Number.isSafeInteger(this.options.workerStopGraceMilliseconds) ||
       this.options.workerStopGraceMilliseconds < 10
@@ -197,7 +202,7 @@ export class Supervisor {
     fingerprint: string,
   ): Promise<RuntimeWorker> {
     if (options.metadata.validateEntrypoint === true) {
-      await this.#entrypointValidator(options.metadata.entrypoint);
+      await this.#entrypointValidator([options.metadata.entrypoint]);
     }
     if (this.#draining) throw new Error("runtime group is draining");
     const worker = new RuntimeWorker({
@@ -205,13 +210,44 @@ export class Supervisor {
       metadata,
       now: this.options.now,
       onCapacityChange: () => this.#notifyCapacity(),
+      onClose: () => {
+        void this.options.kernelCall?.({
+          operation: "database.scope.close",
+          arguments: {},
+          executionId: metadata.executionId,
+          workerId: metadata.workerId,
+        }).catch(() => {});
+      },
       kernelCall: this.options.kernelCall === undefined
         ? undefined
         : async (call) => {
+          const databaseAccess = metadata.databaseAccess ?? "full";
+          if (
+            databaseAccess === "metadata" &&
+            call.operation !== "database.info" &&
+            call.operation !== "database.scope.close"
+          ) {
+            throw new Error(
+              "kernel operations other than database metadata are unavailable to this Worker",
+            );
+          }
+          if (
+            call.operation.startsWith("database.") &&
+            call.operation !== "database.scope.close" &&
+            !(
+              call.operation === "database.info" &&
+              databaseAccess === "metadata"
+            ) && databaseAccess !== "full"
+          ) {
+            throw new Error(
+              "database SQL is not available to this Worker",
+            );
+          }
           const result = await this.options.kernelCall!(call);
           if (
             call.operation === "execution.completePersistent" &&
-            call.persistentExecutionId !== undefined
+            call.persistentExecutionId !== undefined &&
+            call.serviceId !== undefined
           ) {
             this.completePersistentExecution(
               call.serviceId,
@@ -673,7 +709,7 @@ export class Supervisor {
       delay = delay === undefined ? remaining : Math.min(delay, remaining);
     }
     await new Promise<void>((resolve) => {
-      let timer: number | undefined;
+      let timer: ReturnType<typeof setTimeout> | undefined;
       const wake = (): void => {
         this.#capacityWaiters.delete(wake);
         signal.removeEventListener("abort", wake);
@@ -881,12 +917,28 @@ export class Supervisor {
         "job_start",
         "job_result",
         async (payload) => {
+          const checkModules = Array.isArray(payload.check_modules) &&
+              payload.check_modules.every((module) =>
+                typeof module === "string"
+              )
+            ? payload.check_modules as string[]
+            : [];
+          if (checkModules.length > 0) {
+            await this.#entrypointValidator(checkModules);
+          }
+          const moduleDependencies = checkModules.length === 0
+            ? {}
+            : await this.#moduleAnalyzer(checkModules);
           const worker = this.#requireWorker(
             decodeURIComponent(jobRun[1]!),
             "job",
           );
           const result = await worker.runJob(payload.input);
-          return { result, logs: worker.logs };
+          return {
+            result,
+            logs: worker.logs,
+            module_dependencies: moduleDependencies,
+          };
         },
       );
     }
@@ -1337,10 +1389,10 @@ function trustedAuthContext(
   };
 }
 
-async function validateEntrypoint(entrypoint: string): Promise<void> {
+async function validateEntrypoints(entrypoints: string[]): Promise<void> {
   const command = new Deno.Command(Deno.execPath(), {
     args: serviceCheckArguments(
-      entrypoint,
+      entrypoints,
       Deno.env.get("DEPENDENCY_MODE") ?? "cached_only",
     ),
     stdout: "piped",
@@ -1352,16 +1404,100 @@ async function validateEntrypoint(entrypoint: string): Promise<void> {
       0,
       8192,
     );
-    throw new TypeError(`service type check failed: ${detail}`);
+    throw new TypeError(`module type check failed: ${detail}`);
+  }
+}
+
+interface DenoInfoModule {
+  specifier?: string;
+  dependencies?: Array<{
+    code?: { specifier?: string };
+    type?: { specifier?: string };
+  }>;
+}
+
+async function analyzeModules(
+  entrypoints: string[],
+): Promise<ModuleDependencies> {
+  const roots = entrypoints.map((entrypoint) =>
+    new URL(entrypoint, "file:///").href
+  );
+  const aggregator = await Deno.makeTempFile({
+    prefix: "the8020-table-graph-",
+    suffix: ".ts",
+  });
+  try {
+    await Deno.writeTextFile(
+      aggregator,
+      roots.map((root) => `import ${JSON.stringify(root)};`).join("\n"),
+    );
+    const output = await new Deno.Command(Deno.execPath(), {
+      args: [
+        "info",
+        "--json",
+        "--config=/opt/runtime/deno.json",
+        aggregator,
+      ],
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    if (!output.success) {
+      const detail = new TextDecoder().decode(output.stderr).trim().slice(
+        0,
+        8192,
+      );
+      throw new TypeError(`module graph failed: ${detail}`);
+    }
+    if (output.stdout.byteLength > 16 * 1024 * 1024) {
+      throw new TypeError("module graph exceeds 16 MiB");
+    }
+    const graph = JSON.parse(new TextDecoder().decode(output.stdout)) as {
+      modules?: DenoInfoModule[];
+    };
+    if (!Array.isArray(graph.modules)) {
+      throw new TypeError("module graph result is invalid");
+    }
+    const modules = new Map(
+      graph.modules.filter((item) => typeof item.specifier === "string").map(
+        (item) => [item.specifier!, item],
+      ),
+    );
+    return Object.fromEntries(entrypoints.map((entrypoint, index) => {
+      const pending = [roots[index]!];
+      const visited = new Set<string>();
+      const dependencies = new Set<string>();
+      while (pending.length > 0) {
+        const specifier = pending.pop()!;
+        if (visited.has(specifier)) continue;
+        visited.add(specifier);
+        if (specifier.startsWith("file:///workspace/packages/")) {
+          dependencies.add(decodeURIComponent(new URL(specifier).pathname));
+        }
+        for (const dependency of modules.get(specifier)?.dependencies ?? []) {
+          for (
+            const resolved of [
+              dependency.code?.specifier,
+              dependency.type?.specifier,
+            ]
+          ) {
+            if (typeof resolved === "string" && !visited.has(resolved)) {
+              pending.push(resolved);
+            }
+          }
+        }
+      }
+      return [entrypoint, [...dependencies].sort()];
+    }));
+  } finally {
+    await Deno.remove(aggregator).catch(() => undefined);
   }
 }
 
 export function serviceCheckArguments(
-  entrypoint: string,
-  dependencyMode: string,
+  entrypoint: string | string[],
+  _dependencyMode: string,
 ): string[] {
-  const args = ["run", "--check", "--config=/opt/runtime/deno.json"];
-  if (dependencyMode === "cached_only") args.push("--cached-only");
-  args.push(entrypoint);
+  const args = ["check", "--config=/opt/runtime/deno.json"];
+  args.push(...(Array.isArray(entrypoint) ? entrypoint : [entrypoint]));
   return args;
 }

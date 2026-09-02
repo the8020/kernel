@@ -18,15 +18,19 @@
   count, and any validation failure. `package inspect` owns filesystem paths,
   complete package metadata, fixed-depth service/program metadata, and the
   bounded non-Git file inventory for one selected package.
-- Package commands remain available even when the Deno runtime is degraded.
+- Package commands remain visible when the Deno runtime is degraded. Mutations
+  fail closed until the schema evaluator is installed, except for the deliberate
+  pre-database offline first-install synchronization path.
 - Index list/inspect/set manage kernel-owned desired package records. Source
   inspection lists bounded refs without cloning; version listing fetches
   and reports bounded commit history. Synchronization accepts one, several, or
   all indexed packages and reports only package ID, resolved commit, and
   success for each result; Git and service-refresh details remain internal.
 - A changed synchronized package retires removed service capacity and increments
-  the generations of its current services so active Workers reload. Offline
-  dispatch performs only the package transaction because no runtime exists.
+  the generations of its current services so active Workers reload. A completed
+  generation switch remains a successful synchronization while occupied old
+  Workers drain asynchronously. Offline dispatch performs only the package
+  transaction because no runtime exists.
 - Local creation writes a minimal valid manifest, initializes an independent
   Git repository and first commit, and records a source-free local index entry.
 - Repository initialization is explicit, never inferred from discovery, and

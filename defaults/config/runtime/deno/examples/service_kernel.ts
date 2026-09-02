@@ -10,11 +10,33 @@ export const fetch: ServiceEntrypoint = async (request) => {
     return Response.json(await kernel.admin.execute("service.list"));
   }
   if (path === "/database-query") {
-    return Response.json(await kernel.database.query("SELECT $1", [7]));
+    return Response.json(
+      await kernel.database.execute("SELECT $1", [7], { returnRows: true }),
+    );
   }
   if (path === "/database-execute") {
     return Response.json(
       await kernel.database.execute("DELETE FROM example WHERE id = $1", [7]),
+    );
+  }
+  if (path === "/database-stream") {
+    let complete = false;
+    return new Response(
+      new ReadableStream({
+        async pull(controller) {
+          if (complete) {
+            controller.close();
+            return;
+          }
+          complete = true;
+          const result = await kernel.database.execute(
+            "SELECT $1",
+            [9],
+            { returnRows: true },
+          );
+          controller.enqueue(new TextEncoder().encode(JSON.stringify(result)));
+        },
+      }),
     );
   }
   const credentials = await request.json() as {

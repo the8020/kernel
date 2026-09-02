@@ -45,7 +45,7 @@ func (f *queueWorkers) Start(_ context.Context, group string, request supervisor
 	return workers.Record{RuntimeGroupID: group, Worker: supervisor.WorkerStatus{WorkerID: request.Metadata.WorkerID}}, nil
 }
 
-func (f *queueWorkers) RunJob(_ context.Context, _ string, input any) (supervisor.JobResult, error) {
+func (f *queueWorkers) RunJob(_ context.Context, _ string, input any, _ []string) (supervisor.JobResult, error) {
 	return supervisor.JobResult{Result: input}, nil
 }
 
@@ -66,7 +66,7 @@ func (f *fakeWorkers) Start(_ context.Context, group string, request supervisor.
 	f.starts = append(f.starts, request)
 	return workers.Record{RuntimeGroupID: group, Worker: supervisor.WorkerStatus{WorkerID: request.Metadata.WorkerID}}, nil
 }
-func (f *fakeWorkers) RunJob(_ context.Context, workerID string, input any) (supervisor.JobResult, error) {
+func (f *fakeWorkers) RunJob(_ context.Context, workerID string, input any, _ []string) (supervisor.JobResult, error) {
 	f.runs = append(f.runs, workerID)
 	if f.failure != nil {
 		return supervisor.JobResult{}, f.failure

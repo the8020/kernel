@@ -81,16 +81,17 @@
   clears the rejection and attempts it once. Capacity and infrastructure
   failures remain retryable `PENDING_CAPACITY` behavior.
 - Startup performs one fixed-depth package/service discovery. Periodic
-  maintenance reads only services with live runtime sandboxes or pending
-  capacity; it never rediscovers the complete package catalog. Explicit service
-  mutations, requests, and `ReconcileAll` reconcile immediately.
+  maintenance reads only services with live runtime sandboxes, draining pools,
+  or pending capacity; it never rediscovers the complete package catalog.
+  Explicit service mutations, requests, and `ReconcileAll` reconcile
+  immediately.
 - Repeated identical maintenance failures neither increment failure counters nor
   emit duplicate logs until the failure changes or clears.
-- Replacement capacity is validated before a version switch. Persistent
-  routes may retain old-version pools until their executions expire; all
-  other stale pools drain and are retried on cleanup failure. Fully stopped
-  stale-version pool records are removed so destroyed prior-version
-  sandboxes cannot cause permanent reconciliation retries.
+- Replacement capacity is validated before a version switch. HTTP, WebSocket,
+  and persistent follow-up routing select only sandboxes from the loaded
+  generation. Every stale pool follows the same drain workflow: it receives no
+  new routed work, occupied Workers remain `DRAINING` without making the switch
+  fail, and maintenance retries until it can remove the fully stopped record.
 - Package synchronization increments every current service version through
   `Reload` and uses `Retire` to stop and forget runtime capacity for services no
   longer declared by the package. Shared service desired state remains intact
@@ -98,11 +99,9 @@
 - Entrypoint/OpenAPI validation uses an isolated temporary pool and removes its
   terminal record after validation; reconciliation garbage-collects stopped
   validation records left by earlier kernels.
-- Service status is one logical row per service. It aggregates current and
-  retained session versions, counts physical sandboxes and Workers by unique
-  identity, reports the number of live versions, and includes each sandbox's
-  version. A serving retained version prevents the logical service from being
-  reported as idle.
+- Service status is one logical row per service. It reports current-generation
+  sandboxes and Workers by unique identity and includes each sandbox's version;
+  draining prior generations are lifecycle state, not serving capacity.
 - This package forwards no application settings and performs no application
   inventory or Worker scan. Package-owned administration may use the generic
   exact-Worker invocation capability through the kernel SDK.
@@ -126,13 +125,13 @@
   Worker reuse, shared token-safe routes, crash expiry, node forwarding,
   assigned sandbox indexes, reserved-demand Worker scaling, finite maximums,
   fake-clock Worker keepalive, minimum Worker and sandbox floors, compatible
-  sandbox packing and Worker-limit-triggered minimum spillover, per-service capacity
-  locking, failed cold-start rollback,
-  idle sandbox scale-down,
-  version replacement, aggregate retained-version visibility, degraded cold-start routing, in-place missing-capacity
-  recovery, capacity states, stale-pool cleanup, terminal pool-record removal,
+  sandbox packing and Worker-limit-triggered minimum spillover, per-service
+  capacity locking, failed cold-start rollback, idle sandbox scale-down,
+  version replacement, current-generation-only routing with prior-version
+  draining, degraded cold-start routing, in-place missing-capacity recovery,
+  capacity states, stale-pool cleanup, terminal pool-record removal,
   validation-pool cleanup, stale persistent-Worker rejection, exact persistent
-  completion, one-time catalog discovery, active-only background maintenance,
+  completion, one-time catalog discovery, bounded background maintenance,
   stable rejected-version suppression with explicit retry, and duplicate
   failure suppression.
 

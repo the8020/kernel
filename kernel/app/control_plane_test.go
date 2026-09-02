@@ -35,6 +35,8 @@ func controlPlaneDefinitions() []settings.Definition {
 		{Key: "database.password", Type: settings.TypeString, Storage: settings.StorageGlobal, Default: "", Environment: "THE8020_TEST_CONTROL_DATABASE_PASSWORD", RestartRequired: true, Description: "Test database password."},
 		{Key: "database.maximum_open_connections", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(32), Environment: "THE8020_TEST_CONTROL_DATABASE_MAXIMUM_OPEN_CONNECTIONS", Minimum: &minimum, RuntimeMutable: true, Description: "Test maximum open database connections."},
 		{Key: "database.maximum_idle_connections", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(8), Environment: "THE8020_TEST_CONTROL_DATABASE_MAXIMUM_IDLE_CONNECTIONS", Minimum: &zero, RuntimeMutable: true, Description: "Test maximum idle database connections."},
+		{Key: "database.maximum_result_rows", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(10_000), Environment: "THE8020_TEST_CONTROL_DATABASE_MAXIMUM_RESULT_ROWS", Minimum: &minimum, RuntimeMutable: true, Description: "Test maximum database result rows."},
+		{Key: "database.maximum_result_bytes", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(10 << 20), Environment: "THE8020_TEST_CONTROL_DATABASE_MAXIMUM_RESULT_BYTES", Minimum: &minimum, RuntimeMutable: true, Description: "Test maximum database result bytes."},
 	}
 }
 
@@ -188,7 +190,7 @@ func TestAdministrativeSocketPrecedesRuntimeInitialization(t *testing.T) {
 	if status.Result["runtime_ready"] != false || status.Result["runtime_failure"] != "runtime initialization is in progress" {
 		t.Fatalf("initializing status=%#v", status.Result)
 	}
-	if status.Result["database_backend"] != "sqlite" || status.Result["database_status"] != "READY" || status.Result["database_location"] != filepath.Join(root, "database", "system.db") || status.Result["database_error"] != nil || status.Result["database_pool_maximum_open_connections"] != json.Number("32") || status.Result["database_pool_maximum_idle_connections"] != json.Number("8") {
+	if status.Result["database_backend"] != "sqlite" || status.Result["database_status"] != "CONNECTED" || status.Result["database_location"] != filepath.Join(root, "database", "system.db") || status.Result["database_error"] != nil || status.Result["database_pool_maximum_open_connections"] != json.Number("32") || status.Result["database_pool_maximum_idle_connections"] != json.Number("8") {
 		t.Fatalf("database status=%#v", status.Result)
 	}
 	if _, err := os.Stat(filepath.Join(root, "database", "system.db")); err != nil {

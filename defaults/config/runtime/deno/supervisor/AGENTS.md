@@ -19,7 +19,8 @@
 - Worker/job/service-pool/drain controls use generated versioned envelopes and
   validate message type, runtime-group identity, and correlation.
 - Service validation invokes pinned in-sandbox Deno with the configured
-  cached-only/online dependency mode before readiness.
+  cached-only/online dependency mode before readiness. Jobs may supply a bounded
+  list of additional modules to type-check through the same validation path.
 - Service pools are `stateless` or `persistent`, with hard bounded per-Worker
   in-flight capacity and a bounded queue.
 - Persistent initial requests reserve an exact Worker binding; follow-ups reuse
@@ -37,6 +38,10 @@
   crash remains isolated and unschedulable. Each Worker also reports its exact
   idle-since timestamp so the kernel can apply Worker keepalive with a
   deterministic clock.
+- Kernel database callbacks carry the supervisor's exact service-request or job
+  execution identity. Worker policy selects full, metadata-only, or no database
+  access; metadata-only permits only `database.info`. Request completion and
+  Worker shutdown close corresponding kernel transaction scopes.
 
 # Lifecycle
 

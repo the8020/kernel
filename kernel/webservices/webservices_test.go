@@ -401,7 +401,7 @@ func (p *fakePools) ProxyWebSocket(_ context.Context, serviceID string, _ http.R
 	return nil
 }
 
-func (p *fakePools) Stop(_ context.Context, serviceID string) error {
+func (p *fakePools) Stop(_ context.Context, serviceID string) (bool, error) {
 	p.mu.Lock()
 	stopEntered, stopRelease := p.stopEntered, p.stopRelease
 	p.mu.Unlock()
@@ -415,16 +415,21 @@ func (p *fakePools) Stop(_ context.Context, serviceID string) error {
 	defer p.mu.Unlock()
 	p.events = append(p.events, "stop:"+serviceID)
 	if err := p.failStop[serviceID]; err != nil {
-		return err
+		return false, err
 	}
 	record, exists := p.records[serviceID]
 	if !exists {
-		return os.ErrNotExist
+		return false, os.ErrNotExist
+	}
+	if p.occupiedSlots[serviceID] > 0 {
+		record.State = "DRAINING"
+		p.records[serviceID] = record
+		return false, nil
 	}
 	record.State = "STOPPED"
 	record.WorkerIDs = nil
 	p.records[serviceID] = record
-	return nil
+	return true, nil
 }
 
 func (p *fakePools) RemoveStopped(serviceID string) error {
@@ -1353,82 +1358,12 @@ func TestObservedSandboxesCountUniqueResourcesAndVersions(t *testing.T) {
 	}
 }
 
-func TestServiceStatusAggregatesRetainedSessionVersionWithIdleCurrentVersion(t *testing.T) {
+func TestReloadRoutesOnlyToCurrentGenerationWhileOldPoolDrains(t *testing.T) {
 	root := t.TempDir()
 	store := writeTestService(t, root, "example/realtime/channel", persistentServiceManifest)
 	pools, router := newFakePools(), &fakeRouter{}
 	manager := newTestManager(t, store, pools, router, filepath.Join(root, "node", "kernel", "services"))
 	manager.authentication = &fakeAuthentication{}
-	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
-	manager.persistentRoutes.now = func() time.Time { return base }
-
-	statePath := filepath.Join(root, "state", "services", "example", "realtime", "channel", "state.toml")
-	writeTestFile(t, statePath, "schema = 2\nenabled = true\ngeneration = 0\n")
-	if err := manager.ReconcileAll(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	initial, err := manager.Inspect("example/realtime/channel")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if initial.LoadedVersion != 0 || initial.VersionCount != 1 {
-		t.Fatalf("initial zero version = %#v", initial)
-	}
-	pools.dispatched = make(chan dispatchedRequest, 1)
-	establish := httptest.NewRequest(http.MethodPost, "/example/realtime/channel/connect", nil)
-	establish.AddCookie(&http.Cookie{Name: "the8020_auth", Value: "valid-opaque-cookie"})
-	established := httptest.NewRecorder()
-	manager.ServeHTTP(established, establish)
-	route := established.Header().Get(RouteHeader)
-	dispatched := <-pools.dispatched
-	if established.Code != http.StatusOK || route == "" {
-		t.Fatalf("establishment status=%d route=%q", established.Code, route)
-	}
-
-	zero := 0
-	current, err := manager.Scale(context.Background(), "example/realtime/channel", ScaleOptions{MinimumWorkers: &zero, MinimumSandboxes: &zero})
-	if err != nil || current.State != StateIdle || current.SandboxCount != 0 || current.WorkerCount != 0 {
-		t.Fatalf("idle current version=%#v err=%v", current, err)
-	}
-	status, err := manager.Inspect("example/realtime/channel")
-	if err != nil || status.State != StateReady || status.VersionCount != 2 || status.SandboxCount != 1 || status.WorkerCount != 1 {
-		t.Fatalf("aggregate status=%#v err=%v", status, err)
-	}
-	for _, sandbox := range status.Sandboxes {
-		if sandbox.Version != initial.LoadedVersion {
-			t.Fatalf("retained sandbox version=%d want=%d: %#v", sandbox.Version, initial.LoadedVersion, status.Sandboxes)
-		}
-	}
-	statuses, err := manager.List()
-	if err != nil || len(statuses) != 1 || statuses[0].VersionCount != 2 || statuses[0].SandboxCount != 1 || statuses[0].WorkerCount != 1 {
-		t.Fatalf("service list=%#v err=%v", statuses, err)
-	}
-
-	resume := websocketRequest("/example/realtime/channel/connect?route="+route, "")
-	resume.AddCookie(&http.Cookie{Name: "the8020_auth", Value: "valid-opaque-cookie"})
-	manager.ServeHTTP(httptest.NewRecorder(), resume)
-	if got := pools.websockets[len(pools.websockets)-1].poolID; got != dispatched.poolID {
-		t.Fatalf("route selected %s, want retained pool %s", got, dispatched.poolID)
-	}
-
-	manager.persistentRoutes.now = func() time.Time { return base.Add(3 * time.Minute) }
-	if err := manager.ReconcileAll(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	status, err = manager.Inspect("example/realtime/channel")
-	if err != nil || status.State != StateIdle || status.VersionCount != 1 || status.SandboxCount != 0 || status.WorkerCount != 0 {
-		t.Fatalf("retired aggregate status=%#v err=%v", status, err)
-	}
-}
-
-func TestPersistentRouteKeepsOldVersionUntilKeepaliveExpires(t *testing.T) {
-	root := t.TempDir()
-	store := writeTestService(t, root, "example/realtime/channel", persistentServiceManifest)
-	pools, router := newFakePools(), &fakeRouter{}
-	manager := newTestManager(t, store, pools, router, filepath.Join(root, "node", "kernel", "services"))
-	manager.authentication = &fakeAuthentication{}
-	base := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
-	manager.persistentRoutes.now = func() time.Time { return base }
 	initial, err := manager.Start(context.Background(), "example/realtime/channel")
 	if err != nil {
 		t.Fatal(err)
@@ -1445,27 +1380,37 @@ func TestPersistentRouteKeepsOldVersionUntilKeepaliveExpires(t *testing.T) {
 	if route == "" {
 		t.Fatal("persistent establishment did not return a route")
 	}
+	pools.occupiedSlots[oldPool] = 1
 
-	restarted, err := manager.Restart(context.Background(), "example/realtime/channel")
+	reloaded, err := manager.Reload(context.Background(), "example/realtime/channel")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restarted.LoadedVersion == initial.LoadedVersion || restarted.Sandboxes[0].PoolID == oldPool {
-		t.Fatalf("restart did not switch version: initial=%#v restarted=%#v", initial, restarted)
+	if reloaded.LoadedVersion == initial.LoadedVersion || reloaded.Sandboxes[0].PoolID == oldPool {
+		t.Fatalf("reload did not switch version: initial=%#v reloaded=%#v", initial, reloaded)
 	}
-	if pools.records[oldPool].State != "READY" {
-		t.Fatalf("old persistent replica was not retained: %#v", pools.records[oldPool])
+	if pools.records[oldPool].State != "DRAINING" {
+		t.Fatalf("old occupied pool was not draining: %#v", pools.records[oldPool])
 	}
 
 	resume := websocketRequest("/example/realtime/channel/connect?route="+route, "")
 	resume.AddCookie(&http.Cookie{Name: "the8020_auth", Value: "valid-opaque-cookie"})
-	manager.ServeHTTP(httptest.NewRecorder(), resume)
-	if got := pools.websockets[len(pools.websockets)-1].poolID; got != oldPool {
-		t.Fatalf("route selected %s, want old replica %s", got, oldPool)
+	response := httptest.NewRecorder()
+	manager.ServeHTTP(response, resume)
+	if response.Code != http.StatusConflict || len(pools.websockets) != 0 {
+		t.Fatalf("old route status=%d proxies=%#v", response.Code, pools.websockets)
 	}
 
-	manager.persistentRoutes.now = func() time.Time { return base.Add(3 * time.Minute) }
-	if err := manager.ReconcileAll(context.Background()); err != nil {
+	pools.dispatched = make(chan dispatchedRequest, 1)
+	currentRequest := httptest.NewRequest(http.MethodPost, "/example/realtime/channel/connect", nil)
+	currentRequest.AddCookie(&http.Cookie{Name: "the8020_auth", Value: "valid-opaque-cookie"})
+	manager.ServeHTTP(httptest.NewRecorder(), currentRequest)
+	if dispatched := <-pools.dispatched; dispatched.poolID == oldPool {
+		t.Fatalf("new request reached draining pool %s", oldPool)
+	}
+
+	pools.occupiedSlots[oldPool] = 0
+	if err := manager.reconcileMaintained(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if _, exists := pools.records[oldPool]; exists {

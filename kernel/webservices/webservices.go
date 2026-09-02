@@ -48,7 +48,7 @@ type RuntimePools interface {
 	OpenAPI(context.Context, string) (map[string]any, error)
 	Dispatch(context.Context, string, *http.Request) (*http.Response, error)
 	ProxyWebSocket(context.Context, string, http.ResponseWriter, *http.Request) error
-	Stop(context.Context, string) error
+	Stop(context.Context, string) (bool, error)
 	RemoveStopped(string) error
 }
 
@@ -186,9 +186,8 @@ type RequestResult struct {
 }
 
 type runtimeSandbox struct {
-	status    ServiceSandboxStatus
-	active    int
-	serviceID string
+	status ServiceSandboxStatus
+	active int
 }
 
 type runtimeService struct {
@@ -217,14 +216,13 @@ type Manager struct {
 	runtimeRequests RuntimeRequestRegistrar
 	nodes           NodeRouter
 
-	mu                  sync.Mutex
-	services            map[string]*runtimeService
-	persistentSandboxes map[string]*runtimeSandbox
-	persistentRoutes    *persistentRouteRegistry
-	reconcile           sync.Mutex
-	capacityLocks       sync.Map
-	cancel              context.CancelFunc
-	wait                sync.WaitGroup
+	mu               sync.Mutex
+	services         map[string]*runtimeService
+	persistentRoutes *persistentRouteRegistry
+	reconcile        sync.Mutex
+	capacityLocks    sync.Map
+	cancel           context.CancelFunc
+	wait             sync.WaitGroup
 }
 
 func New(config Config) (*Manager, error) {
@@ -243,7 +241,7 @@ func New(config Config) (*Manager, error) {
 	if config.StartupTimeout <= 0 {
 		config.StartupTimeout = 30 * time.Second
 	}
-	manager := &Manager{definitions: config.Definitions, pools: config.Pools, observed: config.ObservedRoot, interval: config.ReconcileInterval, startup: config.StartupTimeout, logger: config.Logger, authentication: config.Authentication, runtimeRequests: config.RuntimeRequests, nodes: config.Nodes, services: map[string]*runtimeService{}, persistentSandboxes: map[string]*runtimeSandbox{}, persistentRoutes: newPersistentRouteRegistry(config.NodeID, config.PersistentRouteStatePath)}
+	manager := &Manager{definitions: config.Definitions, pools: config.Pools, observed: config.ObservedRoot, interval: config.ReconcileInterval, startup: config.StartupTimeout, logger: config.Logger, authentication: config.Authentication, runtimeRequests: config.RuntimeRequests, nodes: config.Nodes, services: map[string]*runtimeService{}, persistentRoutes: newPersistentRouteRegistry(config.NodeID, config.PersistentRouteStatePath)}
 	if err := config.Router.RegisterServiceBoundary(manager); err != nil {
 		return nil, err
 	}
@@ -324,6 +322,22 @@ func (m *Manager) reconcileAll(ctx context.Context, provision bool) error {
 func (m *Manager) reconcileMaintained(ctx context.Context) error {
 	m.reconcile.Lock()
 	defer m.reconcile.Unlock()
+	records, err := m.pools.List()
+	if err != nil {
+		return err
+	}
+	var joined error
+	for _, record := range records {
+		switch record.State {
+		case "DRAINING":
+			_, err := m.pools.Stop(ctx, record.ServiceID)
+			joined = errors.Join(joined, err)
+		case "STOPPED":
+			if err := m.pools.RemoveStopped(record.ServiceID); err != nil && !errors.Is(err, os.ErrNotExist) {
+				joined = errors.Join(joined, err)
+			}
+		}
+	}
 	m.mu.Lock()
 	ids := make([]string, 0, len(m.services))
 	for serviceID, runtime := range m.services {
@@ -333,7 +347,6 @@ func (m *Manager) reconcileMaintained(ctx context.Context) error {
 	}
 	m.mu.Unlock()
 	sort.Strings(ids)
-	var joined error
 	for _, serviceID := range ids {
 		if ctx.Err() != nil {
 			return errors.Join(joined, ctx.Err())
@@ -423,24 +436,21 @@ func (m *Manager) Retire(ctx context.Context, serviceID string) error {
 	poolIDs := map[string]bool{}
 	for _, record := range records {
 		if record.LogicalServiceID == serviceID {
-			poolIDs[serviceID+"\x00"+record.ServiceID] = true
+			poolIDs[record.ServiceID] = true
 		}
 	}
 	m.mu.Lock()
 	delete(m.services, serviceID)
-	for poolID, sandbox := range m.persistentSandboxes {
-		if sandbox.serviceID == serviceID {
-			poolIDs[serviceID+"\x00"+poolID] = true
-			delete(m.persistentSandboxes, poolID)
-		}
-	}
 	m.mu.Unlock()
 	m.persistentRoutes.discardService(serviceID)
 	var joined error
-	for key := range poolIDs {
-		_, poolID, _ := strings.Cut(key, "\x00")
-		if stopErr := m.pools.Stop(ctx, poolID); stopErr != nil && !errors.Is(stopErr, os.ErrNotExist) {
+	for poolID := range poolIDs {
+		stopped, stopErr := m.pools.Stop(ctx, poolID)
+		if stopErr != nil && !errors.Is(stopErr, os.ErrNotExist) {
 			joined = errors.Join(joined, stopErr)
+			continue
+		}
+		if !stopped {
 			continue
 		}
 		if removeErr := m.pools.RemoveStopped(poolID); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
@@ -618,12 +628,15 @@ func (m *Manager) reconcileOneLocked(ctx context.Context, serviceID string, prov
 			if previousPools[sandbox.status.PoolID] {
 				continue
 			}
-			if err := m.pools.Stop(context.Background(), sandbox.status.PoolID); err != nil && !errors.Is(err, os.ErrNotExist) {
+			stopped, err := m.pools.Stop(context.Background(), sandbox.status.PoolID)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
 				cleanupErr = errors.Join(cleanupErr, err)
 				continue
 			}
-			if err := m.pools.RemoveStopped(sandbox.status.PoolID); err != nil && !errors.Is(err, os.ErrNotExist) {
-				cleanupErr = errors.Join(cleanupErr, err)
+			if stopped {
+				if err := m.pools.RemoveStopped(sandbox.status.PoolID); err != nil && !errors.Is(err, os.ErrNotExist) {
+					cleanupErr = errors.Join(cleanupErr, err)
+				}
 			}
 		}
 		cleanupErr = errors.Join(cleanupErr, m.cleanupStaleVersionPools(ctx, definition, previous))
@@ -639,7 +652,7 @@ func (m *Manager) reconcileOneLocked(ctx context.Context, serviceID string, prov
 		}
 		for _, sandbox := range prepared {
 			if !previousPools[sandbox.status.PoolID] {
-				_ = m.pools.Stop(context.Background(), sandbox.status.PoolID)
+				_, _ = m.pools.Stop(context.Background(), sandbox.status.PoolID)
 			}
 		}
 		return m.retainFailedVersion(serviceID, definition.State.Generation, errors.Join(preparationErrors...))
@@ -677,11 +690,6 @@ func (m *Manager) reconcileOneLocked(ctx context.Context, serviceID string, prov
 		}
 	}
 	m.mu.Lock()
-	if isSessionService(definition) && existing != nil && existing.status.VersionCount > 0 && existing.status.LoadedVersion != status.LoadedVersion {
-		for _, sandbox := range previous {
-			m.persistentSandboxes[sandbox.status.PoolID] = sandbox
-		}
-	}
 	m.services[serviceID] = &runtimeService{status: status, sandboxes: prepared}
 	m.mu.Unlock()
 	_ = m.writeObserved(status)
@@ -718,34 +726,18 @@ func (m *Manager) cleanupStaleVersionPools(ctx context.Context, definition works
 				joined = errors.Join(joined, fmt.Errorf("remove retired pool %s version %d: %w", record.ServiceID, record.Generation, removeErr))
 				continue
 			}
-			m.mu.Lock()
-			delete(m.persistentSandboxes, record.ServiceID)
-			m.mu.Unlock()
 			continue
 		}
-		if isSessionService(definition) && definition.State.Enabled {
-			if m.persistentRoutes.hasPool(record.ServiceID) {
-				m.mu.Lock()
-				if _, exists := m.persistentSandboxes[record.ServiceID]; !exists {
-					m.persistentSandboxes[record.ServiceID] = &runtimeSandbox{serviceID: record.LogicalServiceID, status: ServiceSandboxStatus{Index: record.SandboxIndex, Version: record.Generation, PoolID: record.ServiceID, RuntimeGroupID: record.RuntimeGroupID, SandboxID: record.SandboxID, WorkerIDs: append([]string{}, record.WorkerIDs...)}}
-				}
-				m.mu.Unlock()
-				continue
-			}
-		}
 		drainContext, cancel := context.WithTimeout(ctx, definition.Effective.Timeouts.Drain)
-		stopErr := m.pools.Stop(drainContext, record.ServiceID)
+		stopped, stopErr := m.pools.Stop(drainContext, record.ServiceID)
 		cancel()
 		if stopErr != nil {
 			joined = errors.Join(joined, fmt.Errorf("retire pool %s version %d: %w", record.ServiceID, record.Generation, stopErr))
-		} else {
+		} else if stopped {
 			if removeErr := m.pools.RemoveStopped(record.ServiceID); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 				joined = errors.Join(joined, fmt.Errorf("remove retired pool %s version %d: %w", record.ServiceID, record.Generation, removeErr))
 				continue
 			}
-			m.mu.Lock()
-			delete(m.persistentSandboxes, record.ServiceID)
-			m.mu.Unlock()
 		}
 	}
 	return joined
@@ -937,7 +929,7 @@ func (m *Manager) scaleDownSandbox(ctx context.Context, definition workspacepack
 	var joined error
 	for candidate := range candidates {
 		drainContext, cancel := context.WithTimeout(ctx, definition.Effective.Timeouts.Drain)
-		err := m.pools.Stop(drainContext, candidate.status.PoolID)
+		_, err := m.pools.Stop(drainContext, candidate.status.PoolID)
 		cancel()
 		if err != nil {
 			joined = errors.Join(joined, fmt.Errorf("remove service sandbox %d: %w", candidate.status.Index, err))
@@ -1121,9 +1113,9 @@ func (m *Manager) prepareSandbox(ctx context.Context, definition workspacepackag
 	if err != nil {
 		if acquired {
 			drainContext, cancel := context.WithTimeout(context.Background(), definition.Effective.Timeouts.Drain)
-			stopErr := m.pools.Stop(drainContext, poolID)
+			stopped, stopErr := m.pools.Stop(drainContext, poolID)
 			cancel()
-			if stopErr == nil || errors.Is(stopErr, os.ErrNotExist) {
+			if stopped || errors.Is(stopErr, os.ErrNotExist) {
 				removeErr := m.pools.RemoveStopped(poolID)
 				if errors.Is(removeErr, os.ErrNotExist) {
 					removeErr = nil
@@ -1135,7 +1127,7 @@ func (m *Manager) prepareSandbox(ctx context.Context, definition workspacepackag
 		}
 		return nil, err
 	}
-	return &runtimeSandbox{serviceID: definition.Identity.ServiceID(), status: ServiceSandboxStatus{Index: index, Version: record.Generation, PoolID: poolID, RuntimeGroupID: record.RuntimeGroupID, SandboxID: record.SandboxID, WorkerIDs: append([]string{}, record.WorkerIDs...)}}, nil
+	return &runtimeSandbox{status: ServiceSandboxStatus{Index: index, Version: record.Generation, PoolID: poolID, RuntimeGroupID: record.RuntimeGroupID, SandboxID: record.SandboxID, WorkerIDs: append([]string{}, record.WorkerIDs...)}}, nil
 }
 
 func (m *Manager) stopRuntime(ctx context.Context, definition workspacepackages.Definition) (Status, error) {
@@ -1160,12 +1152,27 @@ func (m *Manager) stopRuntime(ctx context.Context, definition workspacepackages.
 	m.mu.Unlock()
 	_ = m.writeObserved(status)
 	var joined error
+	remaining := make([]*runtimeSandbox, 0, len(sandboxes))
 	for _, sandbox := range sandboxes {
 		drainContext, cancel := context.WithTimeout(ctx, definition.Effective.Timeouts.Drain)
-		joined = errors.Join(joined, m.pools.Stop(drainContext, sandbox.status.PoolID))
+		stopped, stopErr := m.pools.Stop(drainContext, sandbox.status.PoolID)
 		cancel()
+		joined = errors.Join(joined, stopErr)
+		if stopErr == nil && !stopped {
+			remaining = append(remaining, sandbox)
+		}
 	}
-	joined = errors.Join(joined, m.cleanupStaleVersionPools(ctx, definition, nil))
+	joined = errors.Join(joined, m.cleanupStaleVersionPools(ctx, definition, remaining))
+	if joined == nil && len(remaining) > 0 {
+		status.State = StateDraining
+		status.Sandboxes = statusesOf(remaining)
+		status.SandboxCount, status.WorkerCount, status.VersionCount = len(remaining), workerCount(remaining), 1
+		m.mu.Lock()
+		m.services[definition.Identity.ServiceID()] = &runtimeService{status: status, sandboxes: remaining}
+		m.mu.Unlock()
+		_ = m.writeObserved(status)
+		return cloneStatus(status), nil
+	}
 	status.State, status.LoadedVersion = StateStopped, 0
 	status.Sandboxes, status.SandboxCount, status.WorkerCount, status.VersionCount = nil, 0, 0, 0
 	if joined != nil {
@@ -1301,10 +1308,14 @@ func (m *Manager) Validate(ctx context.Context, serviceID string) ValidationResu
 }
 
 func (m *Manager) retireValidationPool(poolID string) {
-	if err := m.pools.Stop(context.Background(), poolID); err != nil && !errors.Is(err, os.ErrNotExist) {
+	stopped, err := m.pools.Stop(context.Background(), poolID)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		if m.logger != nil {
 			m.logger.Error("stop service validation pool", "service_pool_id", poolID, "error", err)
 		}
+		return
+	}
+	if !stopped {
 		return
 	}
 	if err := m.pools.RemoveStopped(poolID); err != nil && !errors.Is(err, os.ErrNotExist) && m.logger != nil {
@@ -1827,7 +1838,12 @@ func (m *Manager) selectCapacitySandbox(ctx context.Context, runtime *runtimeSer
 		workers int
 	}
 	m.mu.Lock()
-	sandboxes := append([]*runtimeSandbox(nil), sandboxesOf(runtime)...)
+	var sandboxes []*runtimeSandbox
+	for _, sandbox := range sandboxesOf(runtime) {
+		if sandbox.status.Version == runtime.status.LoadedVersion {
+			sandboxes = append(sandboxes, sandbox)
+		}
+	}
 	totalWorkers := workerCount(sandboxes)
 	candidates := make([]candidate, len(sandboxes))
 	for index, sandbox := range sandboxes {
@@ -1939,7 +1955,7 @@ func (m *Manager) addCapacitySandboxLocked(ctx context.Context, runtime *runtime
 	m.mu.Lock()
 	if current != m.services[definition.Identity.ServiceID()] {
 		m.mu.Unlock()
-		_ = m.pools.Stop(context.Background(), sandbox.status.PoolID)
+		_, _ = m.pools.Stop(context.Background(), sandbox.status.PoolID)
 		return nil, errors.New("service version changed while adding capacity")
 	}
 	current.sandboxes = append(current.sandboxes, sandbox)
@@ -1987,7 +2003,7 @@ func (m *Manager) nextOwnedSandboxIndex(used map[int]bool) int {
 func (m *Manager) activateSandbox(runtime *runtimeService, sandbox *runtimeSandbox, workerIDs []string) *runtimeSandbox {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if runtime == nil || sandbox == nil || m.services[runtime.status.ServiceID] != runtime || !slices.Contains(runtime.sandboxes, sandbox) {
+	if runtime == nil || sandbox == nil || sandbox.status.Version != runtime.status.LoadedVersion || m.services[runtime.status.ServiceID] != runtime || !slices.Contains(runtime.sandboxes, sandbox) {
 		return nil
 	}
 	sandbox.status.WorkerIDs = append([]string(nil), workerIDs...)
@@ -2107,10 +2123,7 @@ func (m *Manager) selectPersistentSandbox(runtime *runtimeService, poolID, worke
 			break
 		}
 	}
-	if selected == nil {
-		selected = m.persistentSandboxes[poolID]
-	}
-	if selected == nil || workerID != "" && !slices.Contains(selected.status.WorkerIDs, workerID) {
+	if selected == nil || selected.status.Version != runtime.status.LoadedVersion || workerID != "" && !slices.Contains(selected.status.WorkerIDs, workerID) {
 		return nil
 	}
 	selected.active++
@@ -2270,14 +2283,6 @@ func coalesce(values ...string) string {
 	}
 	return ""
 }
-func containsPool(sandboxes []*runtimeSandbox, poolID string) bool {
-	for _, sandbox := range sandboxes {
-		if sandbox.status.PoolID == poolID {
-			return true
-		}
-	}
-	return false
-}
 func sandboxesOf(service *runtimeService) []*runtimeSandbox {
 	if service == nil {
 		return nil
@@ -2285,13 +2290,7 @@ func sandboxesOf(service *runtimeService) []*runtimeSandbox {
 	return service.sandboxes
 }
 func (m *Manager) observedStatusLocked(status Status, current []*runtimeSandbox) Status {
-	all := append([]*runtimeSandbox(nil), current...)
-	for _, sandbox := range m.persistentSandboxes {
-		if sandbox.serviceID == status.ServiceID {
-			all = append(all, sandbox)
-		}
-	}
-	status.Sandboxes, status.WorkerCount, status.VersionCount = observedSandboxes(all, status)
+	status.Sandboxes, status.WorkerCount, status.VersionCount = observedSandboxes(current, status)
 	status.SandboxCount = len(status.Sandboxes)
 	if status.WorkerCount > 0 {
 		switch status.State {

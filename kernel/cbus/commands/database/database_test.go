@@ -32,6 +32,22 @@ func (f *fakeDatabase) Execute(_ context.Context, statement string, parameters [
 	f.statement, f.parameters, f.executed = statement, parameters, true
 	return database.ExecuteResult{RowsAffected: 2}, nil
 }
+func (f *fakeDatabase) ListTables(context.Context) ([]database.TableSummary, error) {
+	return nil, nil
+}
+func (f *fakeDatabase) ListDefinitions(context.Context) ([]database.DefinitionSummary, error) {
+	return nil, nil
+}
+func (f *fakeDatabase) InspectTable(context.Context, string) (database.TableDetail, error) {
+	return database.TableDetail{}, nil
+}
+func (f *fakeDatabase) SynchronizeDefinition(context.Context, string, string) (database.SynchronizationResult, error) {
+	return database.SynchronizationResult{}, nil
+}
+func (f *fakeDatabase) SynchronizeDefinitions(context.Context, []string, bool) ([]database.SynchronizationResult, error) {
+	return nil, nil
+}
+func (f *fakeDatabase) Trim(context.Context, string, []string, bool) error { return nil }
 
 func TestCheckReportsConnectivityAndStructuredFailure(t *testing.T) {
 	fake := &fakeDatabase{status: database.Status{Backend: database.BackendPostgreSQL, Location: "postgresql://localhost/system", State: database.StateReady}}

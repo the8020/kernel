@@ -166,6 +166,54 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
     port.postMessage({ type: "log", payload: logEvent });
   installConsoleCapture(log);
   const base: BaseContext = { metadata, signal: controller.signal, log };
+  const closeDatabaseScope = async (): Promise<void> => {
+    try {
+      await kernelBridge.closeExecution();
+    } catch {
+      // Abrupt Worker cleanup repeats this at Worker scope.
+    }
+  };
+  const closeRequestDatabaseScope = (
+    request: ServiceRequestMetadata,
+  ): Promise<void> => kernelBridge.withRequest(request, closeDatabaseScope);
+  const responseBody = (
+    body: ReadableStream<Uint8Array>,
+    request: ServiceRequestMetadata,
+  ): ReadableStream<Uint8Array> => {
+    const reader = body.getReader();
+    let closed = false;
+    const close = async () => {
+      if (closed) return;
+      closed = true;
+      await closeRequestDatabaseScope(request);
+    };
+    return new ReadableStream({
+      async pull(controller) {
+        try {
+          const next = await kernelBridge.withRequest(
+            request,
+            () => reader.read(),
+          );
+          if (next.done) {
+            controller.close();
+            await close();
+          } else {
+            controller.enqueue(next.value);
+          }
+        } catch (error) {
+          controller.error(error);
+          await close();
+        }
+      },
+      async cancel(reason) {
+        try {
+          await kernelBridge.withRequest(request, () => reader.cancel(reason));
+        } finally {
+          await close();
+        }
+      },
+    });
+  };
 
   try {
     const module = await import(metadata.entrypoint) as Record<string, unknown>;
@@ -224,7 +272,19 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
           case "job_run": {
             executionCount++;
             const context: JobContext = { ...base, executionCount };
-            const result = await jobEntrypoint!(message.payload, context);
+            const result = await kernelBridge.withExecution(
+              {
+                requestId: message.correlationId,
+                serviceId: metadata.workloadId,
+              },
+              async () => {
+                try {
+                  return await jobEntrypoint!(message.payload, context);
+                } finally {
+                  await closeDatabaseScope();
+                }
+              },
+            );
             port.postMessage({
               type: "job_result",
               correlationId: message.correlationId,
@@ -260,10 +320,22 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
             const control = new AbortController();
             activeControls.set(message.correlationId, control);
             try {
-              const output = await handler(input.input, {
-                ...base,
-                signal: control.signal,
-              });
+              const output = await kernelBridge.withExecution(
+                {
+                  requestId: message.correlationId,
+                  serviceId: metadata.workloadId,
+                },
+                async () => {
+                  try {
+                    return await handler(input.input, {
+                      ...base,
+                      signal: control.signal,
+                    });
+                  } finally {
+                    await closeDatabaseScope();
+                  }
+                },
+              );
               assertJSONValue(output);
               port.postMessage({
                 type: "worker_result",
@@ -325,10 +397,9 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
                 auth: { authenticated: false },
               },
             };
-            kernelBridge.beginPersistentRequest(context.meta);
             let response: Response;
             try {
-              const responsePromise = kernelBridge.withRequest(
+              response = await kernelBridge.withRequest(
                 context.meta,
                 () =>
                   platformService === undefined
@@ -339,7 +410,9 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
                       log,
                     }),
               );
-              response = await responsePromise;
+            } catch (error) {
+              await closeRequestDatabaseScope(context.meta);
+              throw error;
             } finally {
               activeRequests.delete(message.correlationId);
               if (request.body !== null && !request.body.locked) {
@@ -348,11 +421,10 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
                 );
               }
             }
-            kernelBridge.endPersistentRequest(
-              context.meta,
-              response.status >= 200 && response.status < 400,
-            );
-            const body = response.body;
+            const body = response.body === null
+              ? null
+              : responseBody(response.body, context.meta);
+            if (body === null) await closeRequestDatabaseScope(context.meta);
             port.postMessage(
               {
                 type: "service_response",
@@ -417,7 +489,6 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
               headers: message.headers,
               signal: socket.signal,
             });
-            kernelBridge.beginPersistentRequest(input.meta);
             let response: Response;
             try {
               response = await kernelBridge.withRequest(
@@ -430,14 +501,14 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
                   }, socket),
               );
             } catch (error) {
-              kernelBridge.endPersistentRequest(input.meta, false);
+              await closeRequestDatabaseScope(input.meta);
               throw error;
             }
             if (
               response.status !== 204 ||
               response.headers.get("x-80-20-websocket-accepted") !== "true"
             ) {
-              kernelBridge.endPersistentRequest(input.meta, false);
+              await closeRequestDatabaseScope(input.meta);
               socket.remoteClose(1008, "WebSocket route rejected");
               port.postMessage({
                 type: "service_websocket_rejected",
@@ -450,7 +521,7 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
               break;
             }
             socket.signal.addEventListener("abort", () => {
-              kernelBridge.endPersistentRequest(input.meta!, true);
+              void closeRequestDatabaseScope(input.meta!);
             }, { once: true });
             port.postMessage({
               type: "service_websocket_ready",

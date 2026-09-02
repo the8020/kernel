@@ -44,8 +44,10 @@ const postCallback = async (path: string, body: unknown): Promise<Response> => {
     body: JSON.stringify(body),
   });
   if (!response.ok) {
-    await response.body?.cancel();
-    throw new Error(`kernel callback returned ${response.status}`);
+    const detail = (await response.text()).trim();
+    throw new Error(
+      detail || `kernel callback returned ${response.status}`,
+    );
   }
   return response;
 };

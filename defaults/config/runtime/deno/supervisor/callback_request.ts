@@ -20,6 +20,29 @@ export function kernelCallbackRequest(
     sandbox_id: sandboxId,
   };
   switch (call.operation) {
+    case "database.info":
+      return {
+        path: "/v1/runtime/database/info",
+        messageType: "database_execute",
+        responseMessageType: "database_result",
+        payload: identity,
+      };
+    case "database.transaction.begin":
+    case "database.transaction.commit":
+    case "database.transaction.rollback":
+      return {
+        path: "/v1/runtime/database/transaction",
+        messageType: "database_execute",
+        responseMessageType: "database_result",
+        payload: { operation: call.operation, ...call.arguments, ...identity },
+      };
+    case "database.scope.close":
+      return {
+        path: "/v1/runtime/database/scope",
+        messageType: "database_execute",
+        responseMessageType: "database_result",
+        payload: identity,
+      };
     case "worker.invoke":
       return {
         path: "/v1/runtime/worker/invoke",
@@ -49,13 +72,6 @@ export function kernelCallbackRequest(
         path: "/v1/runtime/admin/execute",
         messageType: "admin_command",
         responseMessageType: "admin_result",
-        payload: { ...call.arguments, ...identity },
-      };
-    case "database.query":
-      return {
-        path: "/v1/runtime/database/query",
-        messageType: "database_query",
-        responseMessageType: "database_result",
         payload: { ...call.arguments, ...identity },
       };
     case "database.execute":

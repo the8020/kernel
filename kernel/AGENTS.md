@@ -34,12 +34,13 @@
   backend PTY exec boundary. It owns the SSH listener and protocol adapter while
   authentication, development, and sandbox packages retain their domain
   behavior. Deno programs own application routes, handlers, UUI
-  screen/program behavior, and browser assets; future phases add data
-  definitions, versions, broader identities/roles, workflow, connections,
+  screen/program behavior, browser assets, and authored TypeScript table
+  definitions; future phases add schema versions, broader identities/roles, workflow, connections,
   certificates, and other application behavior.
-- Applications, application-owned database schemas, broader remote
-  administration, TLS termination, checkpoint/restore, and the final virtual
-  filesystem remain outside the current kernel scope; initial
+- Application query behavior, broader remote administration, TLS termination,
+  checkpoint/restore, and the final virtual filesystem remain outside the
+  current kernel scope; the kernel owns physical database synchronization while
+  packages remain the authored schema source. Initial
   application-server topology, capacity advertisement, allocation-index
   partitioning, and service forwarding are kernel-owned.
 
@@ -69,7 +70,7 @@
   state lives under `state/services/`, while node-local observations
   live under `node/kernel/runtime/services/`. Startup or explicit full
   reconciliation discovers the fixed-depth catalog; periodic maintenance is
-  restricted to live or capacity-pending services.
+  restricted to live, draining, or capacity-pending services.
 - Setting TOML is authoritative for keys, types, node/global storage, defaults,
   environment inputs, validation, and runtime/restart metadata.
 - One runtime group is one gVisor sandbox with exactly one workload type—service
@@ -83,7 +84,8 @@
   admission, and scale-down; Deno owns only exact local Worker lifecycle and
   utilization observation. Internal persistent execution binding implements
   session services independently of HTTP or WebSocket transport and never
-  interprets UUI messages.
+  interprets UUI messages. Routing selects only the loaded service generation;
+  occupied prior-generation Workers drain without failing a version switch.
 - UUI sessions are ordinary persistent service executions. UUI establishment,
   replay, heartbeats, reconnect, and program recovery live in the UUI service
   handler and do not introduce a UUI-specific sandbox or supervisor category.
@@ -123,6 +125,13 @@
   maximum open and retained-idle connections are runtime-mutable node policy,
   defaulting to 32 and 8. SQLite uses WAL in its private local database
   directory; PostgreSQL remains the shared multi-node backend.
+- The built-in `_8020_*` catalog, readiness state, physical introspection,
+  additive synchronization, deployment locking/recovery, bounded query bridge,
+  and execution-scoped transactions are kernel-owned. A fresh database loads
+  every installed package table before services start; normal boots do not
+  rescan definitions. Package changes synchronize only affected definitions
+  before source activation. Ordinary removals retire data until an explicit
+  confirmed trim.
 - The Go kernel owns backend selection, containerd access when available, direct
   runsc lifecycle otherwise, host ports, network state, cgroups, mounts, and
   runtime reconciliation. Neither Deno nor program Workers receive the
@@ -198,8 +207,8 @@
 - `services/AGENTS.md`: typed handler dependencies.
 - `settings/AGENTS.md`: definitions, precedence, persistence, queries, and
   runtime transactions.
-- `database/AGENTS.md`: the SQLite/PostgreSQL system connection pool and
-  bounded SQL operations.
+- `database/AGENTS.md`: connection pool, catalog, schema synchronization,
+  runtime SQL, values, and transaction scopes.
 - `network/AGENTS.md`: proof HTTP listener and port replacement.
 - `logging/AGENTS.md`: slog writer, rotation, retention, and policy replacement.
 - `cbus/AGENTS.md`: typed administrative command bus and generation hierarchy.

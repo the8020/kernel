@@ -92,7 +92,7 @@ Deno.test("typed kernel auth bridge correlates login and logout", async () => {
   }
 });
 
-Deno.test("current user reads trusted persistent context locally", async () => {
+Deno.test("current user uses only the exact asynchronous request context", async () => {
   const channel = new MessageChannel();
   const bridge = createKernelBridge(channel.port1);
   const calls: unknown[] = [];
@@ -117,12 +117,11 @@ Deno.test("current user reads trusted persistent context locally", async () => {
       await bridge.withRequest(metadata, () => kernel.auth.currentUser()),
       undefined,
     );
-    bridge.beginPersistentRequest(authenticated);
-    assertEquals(await kernel.auth.currentUser(), {
-      id: "user-1",
-      username: "Admin",
-      realm: "bootstrap-admin",
-    });
+    await assertRejects(
+      () => kernel.auth.currentUser(),
+      Error,
+      "inside an execution",
+    );
     await new Promise((resolve) => setTimeout(resolve, 0));
     assertEquals(calls, []);
   } finally {
@@ -137,15 +136,20 @@ Deno.test("persistent completion and exact Worker calls use the generic bridge",
   const bridge = createKernelBridge(channel.port1);
   const calls = createCallQueue(channel.port2);
   try {
-    bridge.beginPersistentRequest(persistentMetadata);
-    const completion = kernel.execution.completePersistent();
-    const invocation = kernel.worker.invoke({
-      nodeId: "node-2",
-      sandboxId: "sbx-target01",
-      workerId: "wrk-target01",
-      function: "package.inspect",
-      input: { id: "one" },
-    });
+    const [completion, invocation] = bridge.withRequest(
+      persistentMetadata,
+      () =>
+        [
+          kernel.execution.completePersistent(),
+          kernel.worker.invoke({
+            nodeId: "node-2",
+            sandboxId: "sbx-target01",
+            workerId: "wrk-target01",
+            function: "package.inspect",
+            input: { id: "one" },
+          }),
+        ] as const,
+    );
     const completionCall = await calls.next();
     const invocationCall = await calls.next();
     assertEquals(
@@ -191,8 +195,10 @@ Deno.test("typed kernel admin bridge returns results and command errors", async 
     },
   };
   try {
-    bridge.beginPersistentRequest(authenticated);
-    const list = kernel.admin.execute<{ services: unknown[] }>("service.list");
+    const list = bridge.withRequest(
+      authenticated,
+      () => kernel.admin.execute<{ services: unknown[] }>("service.list"),
+    );
     const listCall = await calls.next();
     assertEquals(
       (listCall.payload as { operation: string }).operation,
@@ -216,9 +222,13 @@ Deno.test("typed kernel admin bridge returns results and command errors", async 
       services: [{ service_id: "core/example/service" }],
     });
 
-    const missing = kernel.admin.execute("service.inspect", {
-      service_id: "missing/service/id",
-    });
+    const missing = bridge.withRequest(
+      authenticated,
+      () =>
+        kernel.admin.execute("service.inspect", {
+          service_id: "missing/service/id",
+        }),
+    );
     const missingCall = await calls.next();
     bridge.handle({
       type: "kernel_result",
@@ -245,33 +255,32 @@ Deno.test("typed kernel admin bridge returns results and command errors", async 
   }
 });
 
-Deno.test("typed database bridge sends bounded SQL and scalar parameters", async () => {
+Deno.test("typed database bridge uses one execute operation", async () => {
   const channel = new MessageChannel();
   const bridge = createKernelBridge(channel.port1);
   const calls = createCallQueue(channel.port2);
   try {
     const query = bridge.withRequest(
       metadata,
-      () => kernel.database.query("SELECT $1", [7]),
+      () => kernel.database.execute("SELECT $1", [7], { returnRows: true }),
     );
     const queryCall = await calls.next();
     assertEquals(
       (queryCall.payload as { operation: string }).operation,
-      "database.query",
+      "database.execute",
     );
     assertEquals(
       (queryCall.payload as { arguments: unknown }).arguments,
-      { statement: "SELECT $1", parameters: [7] },
+      { statement: "SELECT $1", parameters: [7], return_rows: true },
     );
     bridge.handle({
       type: "kernel_result",
       correlationId: queryCall.correlationId as string,
-      payload: { columns: ["value"], rows: [[7]], truncated: false },
+      payload: { columns: ["value"], rows: [[7]] },
     });
     assertEquals(await query, {
       columns: ["value"],
       rows: [[7]],
-      truncated: false,
     });
 
     const execute = bridge.withRequest(
@@ -286,11 +295,11 @@ Deno.test("typed database bridge sends bounded SQL and scalar parameters", async
     bridge.handle({
       type: "kernel_result",
       correlationId: executeCall.correlationId as string,
-      payload: { rows_affected: 2 },
+      payload: { columns: [], rows: [], affected_rows: 2 },
     });
-    assertEquals(await execute, { rows_affected: 2 });
+    assertEquals(await execute, { columns: [], rows: [], affected_rows: 2 });
     await assertRejects(
-      () => bridge.withRequest(metadata, () => kernel.database.query("", [])),
+      () => bridge.withRequest(metadata, () => kernel.database.execute("", [])),
       TypeError,
       "SQL statement is required",
     );
@@ -298,11 +307,64 @@ Deno.test("typed database bridge sends bounded SQL and scalar parameters", async
       () =>
         bridge.withRequest(
           metadata,
-          () => kernel.database.query("SELECT $1", [{}] as never),
+          () => kernel.database.execute("SELECT $1", [{}] as never),
         ),
       TypeError,
-      "SQL parameters must be scalar values",
+      "SQL parameters must be an array",
     );
+  } finally {
+    bridge.close();
+    channel.port1.close();
+    channel.port2.close();
+  }
+});
+
+Deno.test("interleaved asynchronous calls retain their exact request", async () => {
+  const channel = new MessageChannel();
+  const bridge = createKernelBridge(channel.port1);
+  const calls = createCallQueue(channel.port2);
+  let releaseFirst!: () => void;
+  let releaseSecond!: () => void;
+  const firstGate = new Promise<void>((resolve) => releaseFirst = resolve);
+  const secondGate = new Promise<void>((resolve) => releaseSecond = resolve);
+  const firstMetadata = { ...metadata, requestId: "request-first" };
+  const secondMetadata = { ...metadata, requestId: "request-second" };
+  try {
+    const first = bridge.withRequest(firstMetadata, async () => {
+      await firstGate;
+      return await kernel.database.execute("SELECT 'first'", [], {
+        returnRows: true,
+      });
+    });
+    const second = bridge.withRequest(secondMetadata, async () => {
+      await secondGate;
+      await Promise.resolve();
+      return await kernel.database.execute("SELECT 'second'", [], {
+        returnRows: true,
+      });
+    });
+    releaseSecond();
+    const secondCall = await calls.next();
+    releaseFirst();
+    const firstCall = await calls.next();
+    assertEquals(
+      (secondCall.payload as { request: { requestId: string } }).request
+        .requestId,
+      "request-second",
+    );
+    assertEquals(
+      (firstCall.payload as { request: { requestId: string } }).request
+        .requestId,
+      "request-first",
+    );
+    for (const call of [secondCall, firstCall]) {
+      bridge.handle({
+        type: "kernel_result",
+        correlationId: call.correlationId as string,
+        payload: { columns: ["value"], rows: [[1]] },
+      });
+    }
+    await Promise.all([first, second]);
   } finally {
     bridge.close();
     channel.port1.close();
@@ -315,7 +377,7 @@ Deno.test("typed secret and package APIs delegate to generic administrative comm
   const bridge = createKernelBridge(channel.port1);
   const calls = createCallQueue(channel.port2);
   try {
-    bridge.beginPersistentRequest({
+    const authenticated: ServiceRequestMetadata = {
       ...persistentMetadata,
       auth: {
         authenticated: true,
@@ -323,7 +385,9 @@ Deno.test("typed secret and package APIs delegate to generic administrative comm
         userId: "user-1",
         username: "Admin",
       },
-    });
+    };
+    const inContext = <Result>(callback: () => Promise<Result>) =>
+      bridge.withRequest(authenticated, callback);
     const respond = async (
       promise: Promise<unknown>,
       commandId: string,
@@ -345,7 +409,7 @@ Deno.test("typed secret and package APIs delegate to generic administrative comm
 
     assertEquals(
       await respond(
-        kernel.secrets.list(),
+        inContext(() => kernel.secrets.list()),
         "secret.list",
         {},
         { secrets: [{ name: "github", updated_at: "2026-09-01T00:00:00Z" }] },
@@ -354,7 +418,9 @@ Deno.test("typed secret and package APIs delegate to generic administrative comm
     );
     assertEquals(
       await respond(
-        kernel.secrets.set({ name: "github", value: "replacement" }),
+        inContext(() =>
+          kernel.secrets.set({ name: "github", value: "replacement" })
+        ),
         "secret.set",
         { name: "github", value: "replacement" },
         { secret: { name: "github", updated_at: "2026-09-01T00:01:00Z" } },
@@ -363,7 +429,7 @@ Deno.test("typed secret and package APIs delegate to generic administrative comm
     );
     assertEquals(
       await respond(
-        kernel.secrets.get("github"),
+        inContext(() => kernel.secrets.get("github")),
         "secret.get",
         { name: "github" },
         {
@@ -383,7 +449,9 @@ Deno.test("typed secret and package APIs delegate to generic administrative comm
 
     assertEquals(
       await respond(
-        kernel.packages.source.inspect("https://github.com/the8020/uui"),
+        inContext(() =>
+          kernel.packages.source.inspect("https://github.com/the8020/uui")
+        ),
         "package.source.inspect",
         { source: "https://github.com/the8020/uui" },
         {
@@ -417,11 +485,13 @@ Deno.test("typed secret and package APIs delegate to generic administrative comm
     };
     assertEquals(
       await respond(
-        kernel.packages.index.set({
-          author: "the8020",
-          repository: "uui",
-          source: "https://github.com/the8020/uui.git",
-        }),
+        inContext(() =>
+          kernel.packages.index.set({
+            author: "the8020",
+            repository: "uui",
+            source: "https://github.com/the8020/uui.git",
+          })
+        ),
         "package.index.set",
         {
           author: "the8020",
@@ -434,7 +504,7 @@ Deno.test("typed secret and package APIs delegate to generic administrative comm
     );
     assertEquals(
       await respond(
-        kernel.packages.versions.list("the8020/uui", 25),
+        inContext(() => kernel.packages.versions.list("the8020/uui", 25)),
         "package.version.list",
         { package_id: "the8020/uui", limit: 25 },
         {
@@ -449,7 +519,7 @@ Deno.test("typed secret and package APIs delegate to generic administrative comm
     );
     assertEquals(
       await respond(
-        kernel.packages.synchronize(["the8020/uui"]),
+        inContext(() => kernel.packages.synchronize(["the8020/uui"])),
         "package.synchronize",
         { packages: "the8020/uui" },
         { packages: [{ package_id: "the8020/uui", success: true }] },
@@ -458,10 +528,12 @@ Deno.test("typed secret and package APIs delegate to generic administrative comm
     );
     assertEquals(
       await respond(
-        kernel.packages.local.create({
-          author: "example",
-          repository: "tools",
-        }),
+        inContext(() =>
+          kernel.packages.local.create({
+            author: "example",
+            repository: "tools",
+          })
+        ),
         "package.local.create",
         { author: "example", repository: "tools" },
         { package: { commit: "abcdef1" } },
@@ -489,7 +561,7 @@ Deno.test("typed secret and package APIs delegate to generic administrative comm
     };
     assertEquals(
       await respond(
-        kernel.packages.repository.inspect("the8020/uui"),
+        inContext(() => kernel.packages.repository.inspect("the8020/uui")),
         "package.repository.inspect",
         { package_id: "the8020/uui" },
         { repository },
@@ -498,7 +570,7 @@ Deno.test("typed secret and package APIs delegate to generic administrative comm
     );
     assertEquals(
       await respond(
-        kernel.packages.repository.pull("the8020/uui"),
+        inContext(() => kernel.packages.repository.pull("the8020/uui")),
         "package.repository.pull",
         { package_id: "the8020/uui" },
         { repository },
@@ -507,7 +579,7 @@ Deno.test("typed secret and package APIs delegate to generic administrative comm
     );
     assertEquals(
       await respond(
-        kernel.packages.repository.push("the8020/uui"),
+        inContext(() => kernel.packages.repository.push("the8020/uui")),
         "package.repository.push",
         { package_id: "the8020/uui" },
         { repository },
@@ -516,10 +588,12 @@ Deno.test("typed secret and package APIs delegate to generic administrative comm
     );
     assertEquals(
       await respond(
-        kernel.packages.repository.checkout({
-          packageId: "the8020/uui",
-          branch: "main",
-        }),
+        inContext(() =>
+          kernel.packages.repository.checkout({
+            packageId: "the8020/uui",
+            branch: "main",
+          })
+        ),
         "package.repository.checkout",
         { package_id: "the8020/uui", branch: "main" },
         { repository },
@@ -540,7 +614,7 @@ Deno.test("kernel auth call outside request context fails safely", async () => {
     await assertRejects(
       () => kernel.auth.logoutCurrent(),
       Error,
-      "inside a service request",
+      "inside an execution",
     );
   } finally {
     bridge.close();

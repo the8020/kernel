@@ -28,8 +28,15 @@ func TestSQLiteCreatesPrivateInstanceDatabaseAndExecutesSQL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if status.State != StateConnected {
+		t.Fatalf("pre-catalog status = %#v", status)
+	}
+	status, err = manager.InitializeCatalog(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	path := filepath.Join(root, "database", "system.db")
-	if status.State != StateReady || status.Backend != BackendSQLite || status.Location != path {
+	if status.State != StateConnected || status.Backend != BackendSQLite || status.Location != path {
 		t.Fatalf("status = %#v", status)
 	}
 	if status.MaximumOpenConnections != 32 || status.MaximumIdleConnections != 8 || status.OpenConnections != 1 || status.IdleConnections != 1 {
@@ -105,6 +112,23 @@ func TestSQLiteWALAllowsAWriterAlongsideAReader(t *testing.T) {
 	}
 }
 
+func TestConnectivityCheckPreservesCatalogFailureState(t *testing.T) {
+	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "database.db")))
+	t.Cleanup(func() { _ = manager.Close() })
+	ctx := context.Background()
+	if _, err := manager.InitializeCatalog(ctx); err != nil {
+		t.Fatal(err)
+	}
+	manager.SetInitializationFailure(ctx, fmt.Errorf("invalid package table"))
+	status, err := manager.Check(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.State != StateDegraded || status.CatalogError != "invalid package table" {
+		t.Fatalf("status = %#v", status)
+	}
+}
+
 func TestPoolPolicyAppliesLiveAndReportsPressure(t *testing.T) {
 	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "database.db")))
 	t.Cleanup(func() { _ = manager.Close() })
@@ -166,6 +190,22 @@ func TestPoolPolicyAppliesLiveAndReportsPressure(t *testing.T) {
 	}); err == nil {
 		t.Fatal("accepted idle connections above open connections")
 	}
+	prepared, err = manager.Prepare(context.Background(), settings.Values{
+		"database.maximum_open_connections": int64(64),
+		"database.maximum_idle_connections": int64(16),
+		"database.maximum_result_rows":      int64(1),
+		"database.maximum_result_bytes":     int64(64),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared.Commit()
+	if status := manager.Status(); status.MaximumResultRows != 1 || status.MaximumResultBytes != 64 {
+		t.Fatalf("live result limits = %#v", status)
+	}
+	if _, err := manager.Query(context.Background(), "SELECT 1 UNION ALL SELECT 2", nil); err == nil || !strings.Contains(err.Error(), "paginate") {
+		t.Fatalf("live row limit error = %v", err)
+	}
 }
 
 func TestSQLiteDoesNotChangeExistingParentPermissions(t *testing.T) {
@@ -188,22 +228,17 @@ func TestSQLiteDoesNotChangeExistingParentPermissions(t *testing.T) {
 }
 
 func TestQueryResultsAreBounded(t *testing.T) {
-	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "database.db")))
+	config := sqliteConfig(filepath.Join(t.TempDir(), "database.db"))
+	config.MaximumResultRows = 10
+	config.MaximumResultBytes = 128
+	manager := New(config)
 	t.Cleanup(func() { _ = manager.Close() })
 	ctx := context.Background()
-	result, err := manager.Query(ctx, "WITH RECURSIVE n(value) AS (VALUES(1) UNION ALL SELECT value + 1 FROM n WHERE value <= 1000) SELECT value FROM n", nil)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := manager.Query(ctx, "WITH RECURSIVE n(value) AS (VALUES(1) UNION ALL SELECT value + 1 FROM n WHERE value <= 10) SELECT value FROM n", nil); err == nil || !strings.Contains(err.Error(), "paginate") {
+		t.Fatalf("oversized row result error = %v", err)
 	}
-	if len(result.Rows) != maxResultRows || !result.Truncated {
-		t.Fatalf("rows=%d truncated=%t", len(result.Rows), result.Truncated)
-	}
-	result, err = manager.Query(ctx, "SELECT $1", []any{strings.Repeat("x", maxResultBytes)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.Rows) != 0 || !result.Truncated {
-		t.Fatalf("oversized row count=%d truncated=%t", len(result.Rows), result.Truncated)
+	if _, err := manager.Query(ctx, "SELECT $1", []any{strings.Repeat("x", 129)}); err == nil || !strings.Contains(err.Error(), "paginate") {
+		t.Fatalf("oversized byte result error = %v", err)
 	}
 }
 

@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,7 +17,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -31,13 +29,16 @@ const (
 	BackendSQLite     = "sqlite"
 	BackendPostgreSQL = "postgresql"
 
-	InstanceRootPlaceholder = "${INSTANCE_ROOT}"
-	maxStatementBytes       = 1 << 20
-	maxResultBytes          = 1 << 20
-	maxResultRows           = 1_000
+	InstanceRootPlaceholder   = "${INSTANCE_ROOT}"
+	maxStatementBytes         = 1 << 20
+	DefaultMaximumResultBytes = 10 << 20
+	DefaultMaximumResultRows  = 10_000
 
-	StateReady       = "READY"
-	StateUnavailable = "UNAVAILABLE"
+	StateConnected    = "CONNECTED"
+	StateInitializing = "INITIALIZING"
+	StateReady        = "READY"
+	StateDegraded     = "DEGRADED"
+	StateUnavailable  = "UNAVAILABLE"
 )
 
 // Config selects the one system database used by this kernel.
@@ -49,6 +50,8 @@ type Config struct {
 	InstanceRoot           string
 	MaximumOpenConnections int
 	MaximumIdleConnections int
+	MaximumResultRows      int
+	MaximumResultBytes     int
 }
 
 // Status is a credential-free connectivity snapshot.
@@ -59,11 +62,22 @@ type Status struct {
 	Error                    string `json:"error,omitempty"`
 	MaximumOpenConnections   int    `json:"maximum_open_connections"`
 	MaximumIdleConnections   int    `json:"maximum_idle_connections"`
+	MaximumResultRows        int    `json:"maximum_result_rows"`
+	MaximumResultBytes       int    `json:"maximum_result_bytes"`
 	OpenConnections          int    `json:"open_connections"`
 	InUseConnections         int    `json:"in_use_connections"`
 	IdleConnections          int    `json:"idle_connections"`
 	WaitCount                int64  `json:"wait_count"`
 	WaitDurationMilliseconds int64  `json:"wait_duration_milliseconds"`
+	CatalogVersion           int    `json:"catalog_version"`
+	Initialized              bool   `json:"initialized"`
+	PendingDeployment        bool   `json:"pending_deployment"`
+	PackageSetHash           string `json:"package_set_hash,omitempty"`
+	DescriptorSetHash        string `json:"descriptor_set_hash,omitempty"`
+	InitializedAt            string `json:"initialized_at,omitempty"`
+	CatalogError             string `json:"catalog_error,omitempty"`
+	LastDeploymentAt         string `json:"last_deployment_at,omitempty"`
+	LastDeploymentError      string `json:"last_deployment_error,omitempty"`
 }
 
 type poolPolicy struct {
@@ -86,28 +100,50 @@ type ExecuteResult struct {
 // Manager owns a database/sql pool. A failed initial connection remains
 // retryable through Check, Query, and Execute.
 type Manager struct {
-	file     string
-	db       *sql.DB
-	openErr  error
-	statusMu sync.RWMutex
-	status   Status
+	file             string
+	db               *sql.DB
+	openErr          error
+	statusMu         sync.RWMutex
+	status           Status
+	schemaMu         sync.Mutex
+	transactionsMu   sync.Mutex
+	transactions     map[string]*transaction
+	evaluatorMu      sync.RWMutex
+	evaluator        DefinitionEvaluator
+	fullSynchronizer FullSynchronizer
+	sourceInspector  SourceInspector
+	sourceEvaluator  SourceEvaluator
 }
 
 // New prepares the configured database without requiring it to be reachable.
 func New(config Config) *Manager {
 	policy, policyErr := newPoolPolicy(config.MaximumOpenConnections, config.MaximumIdleConnections)
+	if config.MaximumResultRows <= 0 {
+		config.MaximumResultRows = DefaultMaximumResultRows
+	}
+	if config.MaximumResultBytes <= 0 {
+		config.MaximumResultBytes = DefaultMaximumResultBytes
+	}
 	manager := &Manager{
+		transactions: map[string]*transaction{},
 		status: Status{
 			Backend:                config.Backend,
 			Location:               displayLocation(config.Backend, config.Location),
 			State:                  StateUnavailable,
 			MaximumOpenConnections: policy.maximumOpen,
 			MaximumIdleConnections: policy.maximumIdle,
+			MaximumResultRows:      config.MaximumResultRows,
+			MaximumResultBytes:     config.MaximumResultBytes,
 		},
 	}
 	if policyErr != nil {
 		manager.openErr = policyErr
 		manager.status.Error = policyErr.Error()
+		return manager
+	}
+	if config.MaximumResultRows < 1 || config.MaximumResultBytes < 1 {
+		manager.openErr = errors.New("database result limits must be positive")
+		manager.status.Error = manager.openErr.Error()
 		return manager
 	}
 	location, err := resolveLocation(config.Location, config.InstanceRoot)
@@ -220,12 +256,20 @@ func (m *Manager) applyPool(policy poolPolicy) {
 }
 
 type preparedPool struct {
-	manager *Manager
-	policy  poolPolicy
+	manager            *Manager
+	policy             poolPolicy
+	maximumResultRows  int
+	maximumResultBytes int
 }
 
-func (p preparedPool) Commit() { p.manager.applyPool(p.policy) }
-func (preparedPool) Discard()  {}
+func (p preparedPool) Commit() {
+	p.manager.applyPool(p.policy)
+	p.manager.statusMu.Lock()
+	p.manager.status.MaximumResultRows = p.maximumResultRows
+	p.manager.status.MaximumResultBytes = p.maximumResultBytes
+	p.manager.statusMu.Unlock()
+}
+func (preparedPool) Discard() {}
 
 // Prepare validates a live connection-pool policy change.
 func (m *Manager) Prepare(_ context.Context, values settings.Values) (settings.Prepared, error) {
@@ -233,7 +277,31 @@ func (m *Manager) Prepare(_ context.Context, values settings.Values) (settings.P
 	if err != nil {
 		return nil, err
 	}
-	return preparedPool{manager: m, policy: policy}, nil
+	status := m.Status()
+	maximumRows, err := resultLimit(values, "database.maximum_result_rows", status.MaximumResultRows)
+	if err != nil {
+		return nil, err
+	}
+	maximumBytes, err := resultLimit(values, "database.maximum_result_bytes", status.MaximumResultBytes)
+	if err != nil {
+		return nil, err
+	}
+	return preparedPool{
+		manager: m, policy: policy,
+		maximumResultRows: maximumRows, maximumResultBytes: maximumBytes,
+	}, nil
+}
+
+func resultLimit(values settings.Values, key string, current int) (int, error) {
+	value, exists := values[key]
+	if !exists {
+		return current, nil
+	}
+	integer, ok := value.(int64)
+	if !ok || integer < 1 || uint64(integer) > uint64(^uint(0)>>1) {
+		return 0, fmt.Errorf("%s must be a positive supported integer", key)
+	}
+	return int(integer), nil
 }
 
 func displayLocation(backend, location string) string {
@@ -299,7 +367,13 @@ func (m *Manager) Check(ctx context.Context) (Status, error) {
 	m.status.State = StateUnavailable
 	m.status.Error = ""
 	if err == nil {
-		m.status.State = StateReady
+		if m.status.CatalogError != "" {
+			m.status.State = StateDegraded
+		} else if m.status.CatalogVersion > 0 && m.status.Initialized {
+			m.status.State = StateReady
+		} else {
+			m.status.State = StateConnected
+		}
 	} else {
 		m.status.Error = err.Error()
 	}
@@ -343,11 +417,11 @@ func (m *Manager) Query(ctx context.Context, statement string, parameters []any)
 		return QueryResult{}, err
 	}
 	result := QueryResult{Columns: columns, Rows: make([][]any, 0)}
+	maximumRows, maximumBytes := m.resultLimits()
 	used := 0
 	for rows.Next() {
-		if len(result.Rows) == maxResultRows {
-			result.Truncated = true
-			break
+		if len(result.Rows) == maximumRows {
+			return QueryResult{}, fmt.Errorf("database result exceeds %d rows; paginate the query", maximumRows)
 		}
 		values := make([]any, len(columns))
 		targets := make([]any, len(columns))
@@ -357,16 +431,12 @@ func (m *Manager) Query(ctx context.Context, statement string, parameters []any)
 		if err := rows.Scan(targets...); err != nil {
 			return QueryResult{}, err
 		}
-		for index := range values {
-			values[index] = normalizeValue(values[index])
-		}
 		encoded, err := json.Marshal(values)
 		if err != nil {
 			return QueryResult{}, fmt.Errorf("encode database row: %w", err)
 		}
-		if used+len(encoded) > maxResultBytes {
-			result.Truncated = true
-			break
+		if used+len(encoded) > maximumBytes {
+			return QueryResult{}, fmt.Errorf("database result exceeds %d bytes; paginate the query", maximumBytes)
 		}
 		used += len(encoded)
 		result.Rows = append(result.Rows, values)
@@ -375,6 +445,12 @@ func (m *Manager) Query(ctx context.Context, statement string, parameters []any)
 		return QueryResult{}, err
 	}
 	return result, nil
+}
+
+func (m *Manager) resultLimits() (int, int) {
+	m.statusMu.RLock()
+	defer m.statusMu.RUnlock()
+	return m.status.MaximumResultRows, m.status.MaximumResultBytes
 }
 
 // Execute runs one SQL statement that does not return rows.
@@ -414,20 +490,6 @@ func (m *Manager) ready(statement string, parameters []any) error {
 		}
 	}
 	return nil
-}
-
-func normalizeValue(value any) any {
-	switch typed := value.(type) {
-	case []byte:
-		if utf8.Valid(typed) {
-			return string(typed)
-		}
-		return "base64:" + base64.StdEncoding.EncodeToString(typed)
-	case time.Time:
-		return typed.UTC().Format(time.RFC3339Nano)
-	default:
-		return typed
-	}
 }
 
 // DecodeParameters parses a JSON array of scalar SQL parameters while
@@ -482,5 +544,6 @@ func (m *Manager) Close() error {
 	if m == nil || m.db == nil {
 		return nil
 	}
+	m.rollbackTransactions()
 	return m.db.Close()
 }

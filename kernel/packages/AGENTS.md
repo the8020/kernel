@@ -78,6 +78,13 @@
   repository by rename. Existing repositories with tracked or untracked changes
   are preserved and rejected. One failed package does not prevent other
   selected packages from synchronizing.
+- Package synchronization, pull, and checkout use the same optional schema
+  deployment handshake. The staged exact commit is prepared before its source
+  becomes visible, then the atomic source switch is completed in the catalog.
+  Schema rejection leaves the old tree active; a failure after the rename keeps
+  the durable pending deployment for startup recovery.
+- The package owner passes candidate roots and exact commits but never evaluates
+  TypeScript or emits DDL. An unchanged commit bypasses schema preparation.
 - An index may retain one validated global secret name for Git authentication,
   including for a local package later given a remote. The value is resolved
   through the narrow injected secret resolver only during a network operation.
@@ -95,6 +102,8 @@
   catalog discovery or a persistent definition cache.
 - Return invalid discovered entries with precise path-scoped validation errors
   instead of aborting the complete scan.
+- Keep package mutations targeted. Do not turn an installed-package fingerprint
+  update into a full table or Worker scan.
 
 # Verification
 
@@ -107,7 +116,7 @@
   mutations, cross-process advisory locking, index validation and permissions,
   real HTTPS Git ref/version discovery, latest/tag synchronization,
   pull/push/branch/commit checkout, transient named-secret authentication,
-  service-set changes, dirty-worktree preservation, and local repository
-  creation.
+  service-set changes, schema-before-source ordering and rejection, dirty-
+  worktree preservation, and local repository creation.
 
 # Child DOX Index

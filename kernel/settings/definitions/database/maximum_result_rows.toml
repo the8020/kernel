@@ -1,0 +1,9 @@
+key = "database.maximum_result_rows"
+type = "integer"
+storage = "node"
+default = 10000
+environment = "THE8020_DATABASE_MAXIMUM_RESULT_ROWS"
+minimum = 1
+runtime_mutable = true
+restart_required = false
+description = "Maximum rows returned by one sandbox database call before it fails and requires pagination."

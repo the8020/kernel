@@ -41,6 +41,11 @@ func New(serviceSet *services.Services) core.Handler {
 			result["database_backend"] = database.Backend
 			result["database_location"] = database.Location
 			result["database_status"] = database.State
+			result["database_catalog_version"] = database.CatalogVersion
+			result["database_initialized"] = database.Initialized
+			result["database_pending_deployment"] = database.PendingDeployment
+			result["database_result_maximum_rows"] = database.MaximumResultRows
+			result["database_result_maximum_bytes"] = database.MaximumResultBytes
 			result["database_pool_maximum_open_connections"] = database.MaximumOpenConnections
 			result["database_pool_maximum_idle_connections"] = database.MaximumIdleConnections
 			result["database_pool_open_connections"] = database.OpenConnections
@@ -50,6 +55,15 @@ func New(serviceSet *services.Services) core.Handler {
 			result["database_pool_wait_duration_milliseconds"] = database.WaitDurationMilliseconds
 			if database.Error != "" {
 				result["database_error"] = database.Error
+			}
+			if database.CatalogError != "" {
+				result["database_catalog_error"] = database.CatalogError
+			}
+			if database.LastDeploymentAt != "" {
+				result["database_last_deployment_at"] = database.LastDeploymentAt
+			}
+			if database.LastDeploymentError != "" {
+				result["database_last_deployment_error"] = database.LastDeploymentError
 			}
 		}
 		return result, nil

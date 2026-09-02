@@ -13,6 +13,7 @@ interface RuntimeWorkerOptions {
   kernelCall?: KernelCall;
   now?: () => number;
   onCapacityChange?: () => void;
+  onClose?: () => void;
 }
 
 interface WorkerMessage {
@@ -35,7 +36,7 @@ interface Pending {
 interface KernelCallPayload {
   operation: KernelOperation;
   arguments: Record<string, unknown>;
-  request: {
+  request?: {
     requestId: string;
     serviceId: string;
     persistentExecutionId?: string;
@@ -84,12 +85,14 @@ export class RuntimeWorker {
   #webSockets = new Map<string, ServiceWebSocketCallbacks>();
   #now: () => number;
   #onCapacityChange?: () => void;
+  #onClose?: () => void;
 
   constructor(options: RuntimeWorkerOptions) {
     this.metadata = options.metadata;
     this.#kernelCall = options.kernelCall;
     this.#now = options.now ?? Date.now;
     this.#onCapacityChange = options.onCapacityChange;
+    this.#onClose = options.onClose;
     const channel = new MessageChannel();
     this.#port = channel.port1;
     const workerOptions: WorkerOptions & {
@@ -210,25 +213,52 @@ export class RuntimeWorker {
         (payload.operation !== "auth.bootstrapLogin" &&
           payload.operation !== "auth.logoutCurrent" &&
           payload.operation !== "admin.execute" &&
-          payload.operation !== "database.query" &&
+          payload.operation !== "database.info" &&
           payload.operation !== "database.execute" &&
+          payload.operation !== "database.scope.close" &&
+          payload.operation !== "database.transaction.begin" &&
+          payload.operation !== "database.transaction.commit" &&
+          payload.operation !== "database.transaction.rollback" &&
           payload.operation !== "worker.invoke" &&
           payload.operation !== "execution.completePersistent") ||
-        payload.arguments === null || typeof payload.arguments !== "object" ||
-        payload.request === undefined ||
-        typeof payload.request.requestId !== "string" ||
-        typeof payload.request.serviceId !== "string"
+        payload.arguments === null || typeof payload.arguments !== "object"
       ) {
         throw new Error("invalid kernel API call");
+      }
+      const databaseOperation = payload.operation.startsWith("database.");
+      const access = this.metadata.databaseAccess ?? "full";
+      if (
+        access === "metadata" && payload.operation !== "database.info" &&
+        payload.operation !== "database.scope.close"
+      ) {
+        throw new Error(
+          "kernel operations other than database metadata are unavailable in this Worker",
+        );
+      }
+      if (
+        databaseOperation &&
+        payload.operation !== "database.scope.close" &&
+        (access === "none" ||
+          access === "metadata" && payload.operation !== "database.info")
+      ) {
+        throw new Error("database SQL is not available to this Worker");
+      }
+      if (
+        payload.operation !== "database.info" &&
+        (payload.request === undefined ||
+          typeof payload.request.requestId !== "string" ||
+          typeof payload.request.serviceId !== "string")
+      ) {
+        throw new Error("kernel API call requires an execution context");
       }
       const result = await this.#kernelCall({
         operation: payload.operation,
         arguments: payload.arguments as Record<string, unknown>,
-        requestId: payload.request.requestId,
-        serviceId: payload.request.serviceId,
+        requestId: payload.request?.requestId,
+        serviceId: payload.request?.serviceId,
         executionId: this.metadata.executionId,
         workerId: this.metadata.workerId,
-        persistentExecutionId: payload.request.persistentExecutionId,
+        persistentExecutionId: payload.request?.persistentExecutionId,
       });
       this.#port.postMessage({
         type: "kernel_result",
@@ -462,6 +492,7 @@ export class RuntimeWorker {
     this.#closed = true;
     this.#worker.terminate();
     this.#port.close();
+    this.#closedNotification();
     this.#closeWebSockets("Worker terminated");
     this.#rejectAll("Worker terminated");
   }
@@ -564,6 +595,7 @@ export class RuntimeWorker {
     this.#closed = true;
     this.#worker.terminate();
     this.#port.close();
+    this.#closedNotification();
     this.#closeWebSockets(reason);
     this.#rejectAll(reason);
   }
@@ -573,5 +605,11 @@ export class RuntimeWorker {
       callbacks.close(1011, reason.slice(0, 123));
     }
     this.#webSockets.clear();
+  }
+
+  #closedNotification(): void {
+    const notify = this.#onClose;
+    this.#onClose = undefined;
+    notify?.();
   }
 }

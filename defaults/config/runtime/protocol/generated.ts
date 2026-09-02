@@ -24,7 +24,6 @@ export const MESSAGE_TYPES = [
   "auth_result",
   "admin_command",
   "admin_result",
-  "database_query",
   "database_execute",
   "database_result",
   "error_response",

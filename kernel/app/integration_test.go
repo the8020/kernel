@@ -41,6 +41,8 @@ func definitions() []settings.Definition {
 		{Key: "logging.max_total_size", Type: settings.TypeByteSize, Storage: settings.StorageNode, Default: "10GB", Environment: "THE8020_LOGGING_MAX_TOTAL_SIZE", RuntimeMutable: true, Description: "Total size."},
 		{Key: "database.maximum_open_connections", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(32), Environment: "THE8020_DATABASE_MAXIMUM_OPEN_CONNECTIONS", Minimum: pointer(1), RuntimeMutable: true, Description: "Maximum open database connections."},
 		{Key: "database.maximum_idle_connections", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(8), Environment: "THE8020_DATABASE_MAXIMUM_IDLE_CONNECTIONS", Minimum: pointer(0), RuntimeMutable: true, Description: "Maximum idle database connections."},
+		{Key: "database.maximum_result_rows", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(10_000), Environment: "THE8020_DATABASE_MAXIMUM_RESULT_ROWS", Minimum: pointer(1), RuntimeMutable: true, Description: "Maximum database result rows."},
+		{Key: "database.maximum_result_bytes", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(10 << 20), Environment: "THE8020_DATABASE_MAXIMUM_RESULT_BYTES", Minimum: pointer(1), RuntimeMutable: true, Description: "Maximum database result bytes."},
 		{Key: "network.root_alias", Type: settings.TypeString, Storage: settings.StorageGlobal, Default: "the8020/uui/shell/", Environment: "THE8020_NETWORK_ROOT_ALIAS", Pattern: `^[A-Za-z0-9_-]+(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*/?$`, RestartRequired: true, Description: "Root alias."},
 	}
 }

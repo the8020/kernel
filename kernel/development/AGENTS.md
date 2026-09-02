@@ -41,7 +41,9 @@
   malformed roots, and never creates, starts, restarts, or mutates a sandbox.
 - Development sandboxes run as Linux root and have no `developer` account or
   `/home/developer`. Rootless runsc processes use the kernel-created identity
-  mapping for Linux UID/GID `0..65535`.
+  mapping for Linux UID/GID `0..65535`. Runsc directfs avoids gofer round trips
+  while retaining gVisor's exact donated-mount boundary and the private package
+  overlay.
 - Manager startup never waits for inherited runsc cleanup or scans sandbox
   records. User lifecycle calls load only
   `users/<user_id>/dev-sandbox/sandbox.toml`; list is the sole operation that
@@ -51,6 +53,21 @@
   checkpointing. Activation creates one commit per selected changed package,
   uses Git merge/cherry-pick machinery, never pushes, preserves unselected
   changes, and recreates the same deterministic sandbox with a clean overlay.
+  Local edits never affect the database. After candidate commits are staged,
+  the shared schema deployment hook validates and synchronizes affected tables
+  before Git references/source are published; failure leaves shared code and
+  unrelated private changes intact.
+- One kernel-owned non-login sandbox command scans all initialized package
+  repositories in a preview or activation. Disposable per-package indexes live
+  only in the sandbox's `/tmp`, reset when the shared base changes or an index
+  is invalid, and refresh incrementally across scans; patch capture reads the
+  exact index produced by its scan instead of rebuilding the package tree. New
+  untracked files excluded by the repository's standard Git ignore rules are
+  never previewed, checkpointed, or activated; already tracked paths retain
+  normal Git modification and deletion behavior even if later ignore rules
+  match them. Preview computes detailed raw and line statistics; activation and
+  lifecycle capture use a cheap changed/not-changed comparison before exporting
+  patches because those paths do not return file statistics.
 - Preview always returns an array, including `packages = []` after reset. It
   reports every changed Git package with file and added/removed-row counts;
   changes remain visible but blocked when the shared worktree is not clean and
@@ -82,15 +99,20 @@
   migrations, background reconciliation, or per-file persistence exceptions.
 - Keep temporary runtime files temporary and durable sandbox files beneath the
   one `dev-sandbox` root.
+- `ACTIVATION_PERFORMANCE.md` records the representative scan matrix and the
+  evidence behind retained and rejected activation optimizations.
 
 # Verification
 
 - Unit tests cover deterministic IDs, direct ensure/reuse/restart, bounded and
   confined authorized-key reads without lifecycle mutation, user
-  isolation, overlay checkpoint/restore, explicit Git scans, activation/reset
-  boundaries, repository-lock separation, inherited-cleanup races,
+  isolation, overlay checkpoint/restore, explicit batched Git scans,
+  ignored-artifact exclusion, disposable-index recovery, schema-before-source
+  activation and rollback, activation/reset boundaries,
+  repository-lock separation, inherited-cleanup races,
   bounded diagnostics, and OCI mount policy.
 - The real gVisor E2E covers SSH/PTY behavior, APT/dpkg persistence across
-  restart, temporary `/run`, read-only helper mounting, repeated helper
-  activation and clean overlay resets, source and factory reset, root identity,
-  and absence of a developer account.
+  restart, temporary `/run`, directfs package isolation, ignored-artifact
+  exclusion, read-only helper mounting, repeated helper activation and clean
+  overlay resets, source and factory reset, root identity, and absence of a
+  developer account.

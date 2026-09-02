@@ -385,28 +385,58 @@ func contains(values []string, candidate string) bool {
 	return false
 }
 
-func (m *Manager) Stop(ctx context.Context, serviceID string) error {
+// Stop removes idle Workers and reports whether the pool is fully retired.
+// Occupied Workers remain durably DRAINING for a later reconciliation pass.
+func (m *Manager) Stop(ctx context.Context, serviceID string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	record, err := m.inspect(serviceID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if record.State == "STOPPED" && len(record.WorkerIDs) == 0 {
-		return m.releaseSandbox(ctx, record)
+		if err := m.releaseSandbox(ctx, record); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 	if record.State == "FAILED" && record.RuntimeUnavailable {
 		record.WorkerIDs = nil
 		record.State = "STOPPED"
 		if err := m.store.Save(serviceID, record); err != nil {
-			return err
+			return false, err
 		}
-		return m.releaseSandbox(ctx, record)
+		if err := m.releaseSandbox(ctx, record); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	record.State = "DRAINING"
+	record.Failure = ""
+	if err := m.store.Save(serviceID, record); err != nil {
+		return false, err
+	}
+	if err := m.workers.ConfigureService(ctx, record.RuntimeGroupID, serviceID, nil, record.ConcurrencyPerWorker); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			record.Failure = err.Error()
+			_ = m.store.Save(serviceID, record)
+			return false, err
+		}
+		record.WorkerIDs = nil
+		record.State = "STOPPED"
+		record.Failure = ""
+		if err := m.store.Save(serviceID, record); err != nil {
+			return false, err
+		}
+		if err := m.releaseSandbox(ctx, record); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 	live, err := m.workers.List(ctx, record.RuntimeGroupID)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
-			return err
+			return false, err
 		}
 		// Runtime records are recoverable indexes, not authority over a
 		// sandbox. Startup may already have removed the inherited group, so
@@ -415,31 +445,33 @@ func (m *Manager) Stop(ctx context.Context, serviceID string) error {
 		record.State = "STOPPED"
 		record.Failure = ""
 		if err := m.store.Save(serviceID, record); err != nil {
-			return err
+			return false, err
 		}
-		return m.releaseSandbox(ctx, record)
+		if err := m.releaseSandbox(ctx, record); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
-	liveIDs := make(map[string]bool, len(live))
+	liveByID := make(map[string]workers.Record, len(live))
 	for _, item := range live {
-		liveIDs[item.Worker.WorkerID] = true
+		liveByID[item.Worker.WorkerID] = item
 	}
 	remaining := record.WorkerIDs[:0]
 	for _, id := range record.WorkerIDs {
-		if liveIDs[id] {
+		if _, exists := liveByID[id]; exists {
 			remaining = append(remaining, id)
 		}
 	}
 	record.WorkerIDs = append([]string(nil), remaining...)
-	if err := m.workers.ConfigureService(ctx, record.RuntimeGroupID, serviceID, nil, record.ConcurrencyPerWorker); err != nil {
-		return err
-	}
-	record.State = "DRAINING"
 	if err := m.store.Save(serviceID, record); err != nil {
-		return err
+		return false, err
 	}
 	var joined error
 	remaining = append([]string(nil), record.WorkerIDs...)
 	for _, id := range append([]string(nil), record.WorkerIDs...) {
+		if liveByID[id].Worker.InFlight > 0 {
+			continue
+		}
 		if stopErr := m.workers.StopInGroup(ctx, record.RuntimeGroupID, id, false); stopErr != nil {
 			joined = errors.Join(joined, fmt.Errorf("stop Worker %s: %w", id, stopErr))
 			continue
@@ -454,15 +486,21 @@ func (m *Manager) Stop(ctx context.Context, serviceID string) error {
 	if joined != nil {
 		record.Failure = joined.Error()
 		_ = m.store.Save(serviceID, record)
-		return joined
+		return false, joined
+	}
+	if len(record.WorkerIDs) > 0 {
+		return false, nil
 	}
 	record.WorkerIDs = nil
 	record.State = "STOPPED"
 	record.Failure = ""
 	if err := m.store.Save(serviceID, record); err != nil {
-		return err
+		return false, err
 	}
-	return m.releaseSandbox(ctx, record)
+	if err := m.releaseSandbox(ctx, record); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // RemoveStopped deletes one fully retired pool record. It deliberately refuses

@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"the8020/kernel/deployment"
 )
 
 type packageChanges struct {
@@ -21,6 +23,33 @@ type packageChanges struct {
 	AddedRows   int
 	RemovedRows int
 	PatchPath   string
+}
+
+type sandboxPackageScan struct {
+	PackageID string
+	Base      string
+}
+
+const (
+	// Indexes are derivable sandbox-lifetime state. Keeping them in the
+	// ephemeral mount makes later previews incremental without persisting a
+	// second source of truth.
+	sandboxActivationIndexRoot = "/tmp/.the8020-activation-index-v2"
+	activationScanSectionLimit = 4 << 20
+)
+
+// activationScanWriter consumes one NUL-terminated payload per package. A
+// preview carries raw/numstat records; capture only carries a fixed changed
+// marker because activation and checkpointing do not return file statistics.
+// The script appends one extra NUL, so the first empty path record ends a
+// section; Git paths themselves cannot be empty.
+type activationScanWriter struct {
+	packages []sandboxPackageScan
+	changes  []packageChanges
+	section  []byte
+	index    int
+	details  bool
+	err      error
 }
 
 type preparedActivation struct {
@@ -187,6 +216,32 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 		return result, errors.New("one or more packages failed activation")
 	}
 
+	hook := m.schemaDeployment()
+	preparedSchema := false
+	sourceSwitched := false
+	if hook != nil {
+		candidates := make([]deployment.Candidate, 0, len(prepared))
+		for _, item := range prepared {
+			if item.commit == "" || len(item.worktrees) == 0 {
+				continue
+			}
+			candidates = append(candidates, deployment.Candidate{
+				PackageID: item.changes.PackageID,
+				Root:      item.worktrees[len(item.worktrees)-1],
+				Commit:    item.commit,
+			})
+		}
+		if err := hook.Prepare(ctx, candidates); err != nil {
+			return result, fmt.Errorf("prepare database schema: %w", err)
+		}
+		preparedSchema = len(candidates) > 0
+		defer func() {
+			if preparedSchema && !sourceSwitched {
+				returnErr = errors.Join(returnErr, hook.Complete(context.Background(), false))
+			}
+		}()
+	}
+
 	byID := map[string]ActivationPackageResult{}
 	for index := range prepared {
 		item := &prepared[index]
@@ -205,6 +260,7 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 			byID[item.changes.PackageID] = item.result
 			continue
 		}
+		sourceSwitched = true
 		item.result.Status, item.result.ResultingHead = "committed", item.commit
 		byID[item.changes.PackageID] = item.result
 	}
@@ -216,6 +272,12 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 	if failed {
 		result.Status = "failed"
 		return result, errors.New("one or more packages failed activation")
+	}
+	if preparedSchema {
+		if err := hook.Complete(ctx, true); err != nil {
+			return result, fmt.Errorf("complete database schema activation: %w", err)
+		}
+		preparedSchema = false
 	}
 
 	remaining := make([]packageChanges, 0, len(changes))
@@ -244,37 +306,39 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 }
 
 func (m *Manager) scanChanges(ctx context.Context, sandbox Sandbox) ([]packageChanges, error) {
+	return m.scanPackageChanges(ctx, sandbox, true)
+}
+
+func (m *Manager) scanPackageChanges(ctx context.Context, sandbox Sandbox, details bool) ([]packageChanges, error) {
 	if _, active := m.owned.Load(sandbox.SandboxID); !active {
 		return nil, errors.New("development sandbox is not running")
 	}
-	result := []packageChanges{}
+	packages := []sandboxPackageScan{}
 	for _, id := range packageDirectories(m.config.PackagesRoot) {
 		m.repositoryMu.RLock()
-		repository, inspectErr := m.inspectRepository(id)
+		head, headErr := m.repositoryHead(id)
 		m.repositoryMu.RUnlock()
-		if inspectErr != nil || repository.Head == "" {
+		if headErr != nil || head == "" {
 			continue
 		}
-		status, err := m.driver.Exec(ctx, sandbox.SandboxID, sandboxIndexCommand(id, repository.Head, "diff", "--cached", "--name-status", "-z", "--find-renames", repository.Head))
-		if err != nil {
-			return nil, fmt.Errorf("inspect development package %s: %w", id, err)
-		}
-		files := parseNameStatus(string(status))
-		if len(files) == 0 {
-			continue
-		}
-		numstat, err := m.driver.Exec(ctx, sandbox.SandboxID, sandboxIndexCommand(id, repository.Head, "diff", "--cached", "--numstat", "-z", repository.Head))
-		if err != nil {
-			return nil, fmt.Errorf("measure development package %s: %w", id, err)
-		}
-		added, removed := parseNumstat(string(numstat))
-		result = append(result, packageChanges{PackageID: id, Base: repository.Head, Shared: repository.Head, Files: files, AddedRows: added, RemovedRows: removed})
+		packages = append(packages, sandboxPackageScan{PackageID: id, Base: head})
 	}
-	return result, nil
+	if len(packages) == 0 {
+		return []packageChanges{}, nil
+	}
+	output := &activationScanWriter{packages: packages, changes: []packageChanges{}, details: details}
+	execErr := m.driver.ExecCommand(ctx, sandbox.SandboxID, []string{"/bin/sh", "-c", sandboxScanCommand(packages, details)}, nil, output)
+	if execErr != nil {
+		return nil, fmt.Errorf("inspect development packages: %w", execErr)
+	}
+	if err := output.finish(); err != nil {
+		return nil, fmt.Errorf("decode development package scan: %w", err)
+	}
+	return output.changes, nil
 }
 
 func (m *Manager) captureChanges(ctx context.Context, sandbox Sandbox, root string) ([]packageChanges, error) {
-	changes, err := m.scanChanges(ctx, sandbox)
+	changes, err := m.scanPackageChanges(ctx, sandbox, false)
 	if err != nil {
 		return nil, err
 	}
@@ -288,81 +352,243 @@ func (m *Manager) captureChanges(ctx context.Context, sandbox Sandbox, root stri
 		if err != nil {
 			return nil, err
 		}
-		command := sandboxIndexCommand(change.PackageID, change.Base, "diff", "--cached", "--binary", "--full-index", "--no-ext-diff", change.Base)
-		exportErr := m.driver.ExecStream(ctx, sandbox.SandboxID, command, nil, patch)
+		command := sandboxCachedIndexCommand(change.PackageID, change.Base, "diff", "--cached", "--binary", "--full-index", "--no-ext-diff", change.Base)
+		exportErr := m.driver.ExecCommand(ctx, sandbox.SandboxID, []string{"/bin/sh", "-c", command}, nil, patch)
 		closeErr := patch.Close()
 		if exportErr != nil || closeErr != nil {
-			return nil, errors.Join(exportErr, closeErr)
+			return nil, fmt.Errorf("capture development package %s: %w", change.PackageID, errors.Join(exportErr, closeErr))
 		}
 	}
 	return changes, nil
 }
 
-func sandboxIndexCommand(id, base string, arguments ...string) string {
+func sandboxScanCommand(packages []sandboxPackageScan, details bool) string {
+	var command strings.Builder
+	command.WriteString(`set -eu
+umask 077
+activation_package=
+trap 'activation_status=$?; trap - 0; if [ "$activation_status" -ne 0 ]; then printf "activation scan failed for package %s\n" "$activation_package" >&2; fi; exit "$activation_status"' 0
+reset_activation_index() {
+	rm -f -- "$activation_index" "$activation_index.lock" "$activation_base_file" "$activation_added_file" "$activation_ignored_file"
+	GIT_INDEX_FILE="$activation_index" git -C "$activation_repository" read-tree "$activation_base" >/dev/null
+	GIT_INDEX_FILE="$activation_index" git -C "$activation_repository" add -A -- . >/dev/null
+	printf '%s\n' "$activation_base" > "$activation_base_file"
+}
+refresh_activation_index() {
+	rm -f -- "$activation_added_file" "$activation_ignored_file"
+	GIT_INDEX_FILE="$activation_index" git -C "$activation_repository" diff --cached --name-only --diff-filter=A -z "$activation_base" > "$activation_added_file"
+	if [ -s "$activation_added_file" ]; then
+		activation_ignore_status=0
+		git -C "$activation_repository" check-ignore --no-index --stdin -z < "$activation_added_file" > "$activation_ignored_file" || activation_ignore_status=$?
+		if [ "$activation_ignore_status" -gt 1 ]; then
+			return "$activation_ignore_status"
+		fi
+		if [ -s "$activation_ignored_file" ]; then
+			GIT_INDEX_FILE="$activation_index" git -C "$activation_repository" update-index --force-remove -z --stdin < "$activation_ignored_file"
+		fi
+	fi
+	rm -f -- "$activation_added_file" "$activation_ignored_file"
+	GIT_INDEX_FILE="$activation_index" git -C "$activation_repository" add -A -- . >/dev/null
+}
+prepare_activation_index() {
+	activation_repository=$1
+	activation_index=$2
+	activation_base_file=$3
+	activation_base=$4
+	activation_added_file=$activation_index.added
+	activation_ignored_file=$activation_index.ignored
+	activation_cached_base=
+	if [ -f "$activation_base_file" ]; then
+		IFS= read -r activation_cached_base < "$activation_base_file" || activation_cached_base=
+	fi
+	if [ "$activation_cached_base" != "$activation_base" ] || [ ! -f "$activation_index" ]; then
+		reset_activation_index
+	elif ! refresh_activation_index; then
+		reset_activation_index
+	fi
+}
+`)
+	cacheDirectories := map[string]bool{sandboxActivationIndexRoot: true}
+	for _, item := range packages {
+		cacheDirectories[sandboxActivationIndexRoot+"/"+item.PackageID] = true
+	}
+	directories := make([]string, 0, len(cacheDirectories))
+	for directory := range cacheDirectories {
+		directories = append(directories, directory)
+	}
+	sort.Strings(directories)
+	command.WriteString("mkdir -p --")
+	for _, directory := range directories {
+		command.WriteByte(' ')
+		command.WriteString(shellQuote(directory))
+	}
+	command.WriteByte('\n')
+	for _, item := range packages {
+		index, baseFile := sandboxIndexPaths(item.PackageID)
+		repository := "/workspace/packages/" + item.PackageID
+		command.WriteString("activation_package=" + shellQuote(item.PackageID) + "\n")
+		command.WriteString("prepare_activation_index " + shellQuote(repository) + " " + shellQuote(index) + " " + shellQuote(baseFile) + " " + shellQuote(item.Base) + "\n")
+		if details {
+			command.WriteString("GIT_INDEX_FILE=" + shellQuote(index) + " GIT_OPTIONAL_LOCKS=0 git -C " + shellQuote(repository) + " diff --cached --raw --numstat -z --find-renames --no-ext-diff --no-textconv " + shellQuote(item.Base) + "\n")
+		} else {
+			command.WriteString("activation_diff_status=0\n")
+			command.WriteString("GIT_INDEX_FILE=" + shellQuote(index) + " GIT_OPTIONAL_LOCKS=0 git -C " + shellQuote(repository) + " diff --cached --quiet --no-renames --no-ext-diff --no-textconv " + shellQuote(item.Base) + " || activation_diff_status=$?\n")
+			command.WriteString("if [ \"$activation_diff_status\" -eq 1 ]; then printf 'changed\\0'; elif [ \"$activation_diff_status\" -ne 0 ]; then exit \"$activation_diff_status\"; fi\n")
+		}
+		command.WriteString("printf '\\0'\n")
+	}
+	return command.String()
+}
+
+func sandboxIndexPaths(id string) (string, string) {
+	directory := sandboxActivationIndexRoot + "/" + id
+	return directory + "/index", directory + "/base"
+}
+
+func sandboxCachedIndexCommand(id, base string, arguments ...string) string {
 	repository := "/workspace/packages/" + id
+	index, baseFile := sandboxIndexPaths(id)
 	parts := []string{"git", "-C", shellQuote(repository)}
 	for _, argument := range arguments {
 		parts = append(parts, shellQuote(argument))
 	}
 	return "set -eu\n" +
-		"index=$(mktemp /tmp/.the8020-activation-index.XXXXXX)\n" +
-		"trap 'rm -f \"$index\"' EXIT\n" +
-		"export GIT_INDEX_FILE=\"$index\"\n" +
-		"git -C " + shellQuote(repository) + " read-tree " + shellQuote(base) + "\n" +
-		"git -C " + shellQuote(repository) + " add -A -f -- .\n" +
-		strings.Join(parts, " ")
+		"cached_base=\n" +
+		"if [ -f " + shellQuote(baseFile) + " ]; then IFS= read -r cached_base < " + shellQuote(baseFile) + " || cached_base=; fi\n" +
+		"if [ \"$cached_base\" != " + shellQuote(base) + " ] || [ ! -f " + shellQuote(index) + " ]; then\n" +
+		"\tprintf 'activation index is unavailable for package %s\\n' " + shellQuote(id) + " >&2\n" +
+		"\texit 1\n" +
+		"fi\n" +
+		"export GIT_INDEX_FILE=" + shellQuote(index) + " GIT_OPTIONAL_LOCKS=0\n" +
+		"exec " + strings.Join(parts, " ")
 }
 
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
-func parseNameStatus(value string) []ActivationFile {
-	fields := strings.Split(value, "\x00")
-	result := []ActivationFile{}
-	for index := 0; index < len(fields) && fields[index] != ""; {
-		status := fields[index]
-		index++
-		if status == "" || index >= len(fields) {
-			break
+func (w *activationScanWriter) Write(value []byte) (int, error) {
+	for _, character := range value {
+		if w.err != nil {
+			continue
 		}
+		if w.index >= len(w.packages) {
+			w.err = errors.New("activation scan returned unexpected trailing output")
+			continue
+		}
+		if character == 0 && (len(w.section) == 0 || w.section[len(w.section)-1] == 0) {
+			w.finishSection()
+			continue
+		}
+		if len(w.section) >= activationScanSectionLimit {
+			w.err = fmt.Errorf("activation scan output for package %s exceeds %d bytes", w.packages[w.index].PackageID, activationScanSectionLimit)
+			continue
+		}
+		w.section = append(w.section, character)
+	}
+	return len(value), nil
+}
+
+func (w *activationScanWriter) finishSection() {
+	item := w.packages[w.index]
+	if !w.details {
+		if len(w.section) > 0 && string(w.section) != "changed\x00" {
+			w.err = fmt.Errorf("package %s: Git change marker is malformed", item.PackageID)
+			return
+		}
+		if len(w.section) > 0 {
+			w.changes = append(w.changes, packageChanges{PackageID: item.PackageID, Base: item.Base, Shared: item.Base})
+		}
+		w.index++
+		w.section = w.section[:0]
+		return
+	}
+	files, added, removed, err := parseRawNumstat(w.section)
+	if err != nil {
+		w.err = fmt.Errorf("package %s: %w", item.PackageID, err)
+		return
+	}
+	if len(files) > 0 {
+		w.changes = append(w.changes, packageChanges{PackageID: item.PackageID, Base: item.Base, Shared: item.Base, Files: files, AddedRows: added, RemovedRows: removed})
+	}
+	w.index++
+	w.section = w.section[:0]
+}
+
+func (w *activationScanWriter) finish() error {
+	if w.err != nil {
+		return w.err
+	}
+	if w.index != len(w.packages) || len(w.section) != 0 {
+		return fmt.Errorf("activation scan returned %d of %d package records", w.index, len(w.packages))
+	}
+	return nil
+}
+
+func parseRawNumstat(value []byte) ([]ActivationFile, int, int, error) {
+	if len(value) == 0 {
+		return []ActivationFile{}, 0, 0, nil
+	}
+	fields := strings.Split(string(value), "\x00")
+	if fields[len(fields)-1] != "" {
+		return nil, 0, 0, errors.New("Git scan output is not NUL-terminated")
+	}
+	fields = fields[:len(fields)-1]
+	files := []ActivationFile{}
+	index := 0
+	for index < len(fields) && strings.HasPrefix(fields[index], ":") {
+		header := strings.Fields(strings.TrimPrefix(fields[index], ":"))
+		index++
+		if len(header) != 5 || header[4] == "" || index >= len(fields) || fields[index] == "" {
+			return nil, 0, 0, errors.New("Git raw diff record is malformed")
+		}
+		status := header[4][0]
 		path := fields[index]
 		index++
 		change := "modified"
-		switch status[0] {
+		switch status {
 		case 'A':
 			change = "new"
 		case 'D':
 			change = "deleted"
 		case 'R', 'C':
-			if index >= len(fields) {
-				break
+			if index >= len(fields) || fields[index] == "" {
+				return nil, 0, 0, errors.New("Git rename record is malformed")
 			}
-			newPath := fields[index]
+			change, path = "renamed from "+path, fields[index]
 			index++
-			change, path = "renamed from "+path, newPath
 		}
-		result = append(result, ActivationFile{Path: path, Change: change})
+		files = append(files, ActivationFile{Path: path, Change: change})
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].Path < result[j].Path })
-	return result
-}
-
-func parseNumstat(value string) (int, int) {
 	added, removed := 0, 0
-	for _, record := range strings.Split(value, "\x00") {
-		fields := strings.SplitN(record, "\t", 3)
-		if len(fields) < 2 {
-			continue
+	for index < len(fields) {
+		record := strings.SplitN(fields[index], "\t", 3)
+		index++
+		if len(record) != 3 {
+			return nil, 0, 0, errors.New("Git numstat record is malformed")
 		}
-		if count, err := strconv.Atoi(fields[0]); err == nil {
-			added += count
+		for column, total := range []struct {
+			value string
+			total *int
+		}{{record[0], &added}, {record[1], &removed}} {
+			if total.value == "-" {
+				continue
+			}
+			count, err := strconv.Atoi(total.value)
+			if err != nil || count < 0 {
+				return nil, 0, 0, fmt.Errorf("Git numstat column %d is invalid", column+1)
+			}
+			*total.total += count
 		}
-		if count, err := strconv.Atoi(fields[1]); err == nil {
-			removed += count
+		if record[2] == "" {
+			if index+1 >= len(fields) || fields[index] == "" || fields[index+1] == "" {
+				return nil, 0, 0, errors.New("Git numstat rename record is malformed")
+			}
+			index += 2
 		}
 	}
-	return added, removed
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	return files, added, removed, nil
 }
 
 func (m *Manager) preparePackage(ctx context.Context, sandbox Sandbox, changes packageChanges, message, authorName, authorEmail string, metadata map[string]string, activationRoot string) (preparedActivation, error) {

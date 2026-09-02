@@ -50,6 +50,13 @@ type recordingDatabase struct {
 	queries    []string
 	executions []string
 	parameters []any
+	statements []database.StatementRequest
+	closed     []string
+	prefixes   []string
+}
+
+func (d *recordingDatabase) Status() database.Status {
+	return database.Status{Backend: database.BackendSQLite, State: database.StateReady, MaximumResultBytes: database.DefaultMaximumResultBytes}
 }
 
 func (d *recordingDatabase) Query(_ context.Context, statement string, parameters []any) (database.QueryResult, error) {
@@ -61,6 +68,24 @@ func (d *recordingDatabase) Execute(_ context.Context, statement string, paramet
 	d.executions, d.parameters = append(d.executions, statement), parameters
 	return database.ExecuteResult{RowsAffected: 1}, nil
 }
+
+func (d *recordingDatabase) RunStatement(_ context.Context, _ string, request database.StatementRequest) (database.StatementResult, error) {
+	d.statements = append(d.statements, request)
+	d.executions = append(d.executions, request.Statement)
+	return database.StatementResult{Columns: []string{}, Rows: [][]any{}, AffectedRows: map[string]any{"type": "bigint", "value": "1"}}, nil
+}
+
+func (d *recordingDatabase) BeginTransaction(context.Context, string, database.TransactionSettings) (string, error) {
+	return "transaction-1", nil
+}
+
+func (d *recordingDatabase) FinishTransaction(context.Context, string, string, bool) error {
+	return nil
+}
+
+func (d *recordingDatabase) CloseScope(scope string) { d.closed = append(d.closed, scope) }
+
+func (d *recordingDatabase) CloseScopePrefix(scope string) { d.prefixes = append(d.prefixes, scope) }
 
 func (c *recordingPersistentCompleter) CompletePersistentExecution(_ context.Context, target PersistentExecutionTarget) error {
 	c.calls = append(c.calls, target)
@@ -315,25 +340,58 @@ func TestActiveServiceRequestCanUseKernelOwnedDatabase(t *testing.T) {
 	payload := databaseCallPayload{
 		ExecutionID: "execution-1", WorkerID: "worker-1", ServiceID: active.ServiceID,
 		RequestID: active.RequestID, SandboxID: spec.SandboxID,
-		Statement: "SELECT $1", Parameters: json.RawMessage(`[3]`),
+		Statement: "SELECT $1", Parameters: json.RawMessage(`[3]`), ReturnRows: true,
 	}
-	response := runtimeControlCall(t, server, spec, "/v1/runtime/database/query", protocol.MessageDatabaseQuery, payload)
-	if response.Code != http.StatusOK || len(databaseService.queries) != 1 || databaseService.parameters[0] != int64(3) {
+	response := runtimeControlCall(t, server, spec, "/v1/runtime/database/execute", protocol.MessageDatabaseExecute, payload)
+	if response.Code != http.StatusOK || len(databaseService.statements) != 1 || !databaseService.statements[0].ReturnRows || string(databaseService.statements[0].Parameters) != `[3]` {
 		t.Fatalf("query status=%d body=%q database=%#v", response.Code, response.Body.String(), databaseService)
 	}
 	var envelope protocol.Envelope
 	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil || envelope.MessageType != protocol.MessageDatabaseResult {
 		t.Fatalf("query envelope=%#v error=%v", envelope, err)
 	}
-	payload.Statement, payload.Parameters = "DELETE FROM example", nil
+	payload.Statement, payload.Parameters, payload.ReturnRows = "DELETE FROM example", nil, false
 	response = runtimeControlCall(t, server, spec, "/v1/runtime/database/execute", protocol.MessageDatabaseExecute, payload)
-	if response.Code != http.StatusOK || len(databaseService.executions) != 1 {
+	if response.Code != http.StatusOK || len(databaseService.statements) != 2 || databaseService.statements[1].ReturnRows {
 		t.Fatalf("execute status=%d body=%q database=%#v", response.Code, response.Body.String(), databaseService)
 	}
 	payload.RequestID = "inactive"
-	response = runtimeControlCall(t, server, spec, "/v1/runtime/database/query", protocol.MessageDatabaseQuery, payload)
-	if response.Code != http.StatusConflict || len(databaseService.queries) != 1 {
+	response = runtimeControlCall(t, server, spec, "/v1/runtime/database/execute", protocol.MessageDatabaseExecute, payload)
+	if response.Code != http.StatusConflict || len(databaseService.statements) != 2 {
 		t.Fatalf("inactive status=%d database=%#v", response.Code, databaseService)
+	}
+}
+
+func TestDatabaseScopeCleanupUsesExactExecutionIdentity(t *testing.T) {
+	store, _ := state.New(t.TempDir())
+	spec, _ := callbackFixtureForWorkload(t, store, model.WorkloadService)
+	_, network, _ := net.ParseCIDR("10.88.0.0/16")
+	active := platformauth.RuntimeRequest{
+		RequestID: "request-database", ServiceID: "example/data/service",
+		RuntimeGroupID: spec.RuntimeGroupID, SandboxID: spec.SandboxID,
+	}
+	runtimeRequests := fixedRuntimeRequests{requests: map[string]platformauth.RuntimeRequest{active.RequestID: active}}
+	databaseService := &recordingDatabase{}
+	server, err := New(Config{Store: store, ProtocolVersion: 1, AdvertiseAddress: "10.88.0.1", AllowedNetwork: network, RuntimeRequests: runtimeRequests, Database: databaseService})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := databaseCallPayload{
+		ExecutionID: "execution-1", WorkerID: "worker-1", ServiceID: active.ServiceID,
+		RequestID: active.RequestID, SandboxID: spec.SandboxID,
+	}
+	response := runtimeControlCall(t, server, spec, "/v1/runtime/database/scope", protocol.MessageDatabaseExecute, payload)
+	if response.Code != http.StatusOK || len(databaseService.closed) != 1 {
+		t.Fatalf("exact cleanup status=%d database=%#v", response.Code, databaseService)
+	}
+	wantedWorker := databaseScope(spec.RuntimeGroupID, spec.SandboxID, payload.WorkerID, payload.ExecutionID)
+	if databaseService.closed[0] != wantedWorker+"\x00"+active.ServiceID+"\x00"+active.RequestID {
+		t.Fatalf("closed scope = %q", databaseService.closed[0])
+	}
+	payload.RequestID, payload.ServiceID = "", ""
+	response = runtimeControlCall(t, server, spec, "/v1/runtime/database/scope", protocol.MessageDatabaseExecute, payload)
+	if response.Code != http.StatusOK || len(databaseService.prefixes) != 1 || databaseService.prefixes[0] != wantedWorker {
+		t.Fatalf("Worker cleanup status=%d database=%#v", response.Code, databaseService)
 	}
 }
 

@@ -205,15 +205,10 @@ Deno.test("service Worker bridges typed kernel authentication calls", async () =
           result: { services: [{ service_id: "core/example/service" }] },
         });
       }
-      if (call.operation === "database.query") {
-        return Promise.resolve({
-          columns: ["value"],
-          rows: [[7]],
-          truncated: false,
-        });
-      }
       if (call.operation === "database.execute") {
-        return Promise.resolve({ rows_affected: 1 });
+        return call.arguments.return_rows === true
+          ? Promise.resolve({ columns: ["value"], rows: [[7]] })
+          : Promise.resolve({ columns: [], rows: [], affected_rows: 1 });
       }
       return Promise.resolve({ setCookie: "the8020_auth=; Max-Age=0" });
     },
@@ -256,8 +251,10 @@ Deno.test("service Worker bridges typed kernel authentication calls", async () =
       new Request("http://service/logout"),
       { ...requestMetadata, requestId: "request-auth-2" },
     );
-    assertEquals(calls[1]?.operation, "auth.logoutCurrent");
-    assertEquals(calls[1]?.requestId, "request-auth-2");
+    const applicationCalls = () =>
+      calls.filter((call) => call.operation !== "database.scope.close");
+    assertEquals(applicationCalls()[1]?.operation, "auth.logoutCurrent");
+    assertEquals(applicationCalls()[1]?.requestId, "request-auth-2");
     const admin = await worker.dispatchService(
       new Request("http://service/admin"),
       { ...requestMetadata, requestId: "request-admin-1" },
@@ -265,8 +262,8 @@ Deno.test("service Worker bridges typed kernel authentication calls", async () =
     assertEquals(await admin.json(), {
       services: [{ service_id: "core/example/service" }],
     });
-    assertEquals(calls[2]?.operation, "admin.execute");
-    assertEquals(calls[2]?.arguments, {
+    assertEquals(applicationCalls()[2]?.operation, "admin.execute");
+    assertEquals(applicationCalls()[2]?.arguments, {
       command_id: "service.list",
       arguments: {},
     });
@@ -277,15 +274,41 @@ Deno.test("service Worker bridges typed kernel authentication calls", async () =
     assertEquals(await query.json(), {
       columns: ["value"],
       rows: [[7]],
-      truncated: false,
     });
-    assertEquals(calls[3]?.operation, "database.query");
+    assertEquals(applicationCalls()[3]?.operation, "database.execute");
     const execute = await worker.dispatchService(
       new Request("http://service/database-execute"),
       { ...requestMetadata, requestId: "request-database-execute" },
     );
-    assertEquals(await execute.json(), { rows_affected: 1 });
-    assertEquals(calls[4]?.operation, "database.execute");
+    assertEquals(await execute.json(), {
+      columns: [],
+      rows: [],
+      affected_rows: 1,
+    });
+    assertEquals(applicationCalls()[4]?.operation, "database.execute");
+    const streamed = await worker.dispatchService(
+      new Request("http://service/database-stream"),
+      { ...requestMetadata, requestId: "request-database-stream" },
+    );
+    assertEquals(await streamed.json(), {
+      columns: ["value"],
+      rows: [[7]],
+    });
+    assertEquals(applicationCalls()[5]?.operation, "database.execute");
+    assertEquals(applicationCalls()[5]?.requestId, "request-database-stream");
+    assertEquals(
+      calls.filter((call) => call.operation === "database.scope.close").map(
+        (call) => call.requestId,
+      ),
+      [
+        "request-auth-1",
+        "request-auth-2",
+        "request-admin-1",
+        "request-database-query",
+        "request-database-execute",
+        "request-database-stream",
+      ],
+    );
   } finally {
     await worker.stop();
   }

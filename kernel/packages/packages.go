@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
+
+	"the8020/kernel/deployment"
 )
 
 const (
@@ -315,6 +317,8 @@ type Store struct {
 	indexMu       sync.RWMutex
 	defaults      FrameworkDefaults
 	logger        *slog.Logger
+	deploymentMu  sync.RWMutex
+	deployment    deployment.SchemaHook
 }
 
 func New(config Config) (*Store, error) {
@@ -381,6 +385,18 @@ func (s *Store) PackagesRoot() string { return s.packagesRoot }
 func (s *Store) StateRoot() string    { return s.stateRoot }
 func (s *Store) IndexRoot() string    { return s.indexRoot }
 
+func (s *Store) SetSchemaDeployment(hook deployment.SchemaHook) {
+	s.deploymentMu.Lock()
+	s.deployment = hook
+	s.deploymentMu.Unlock()
+}
+
+func (s *Store) schemaDeployment() deployment.SchemaHook {
+	s.deploymentMu.RLock()
+	defer s.deploymentMu.RUnlock()
+	return s.deployment
+}
+
 func (s *Store) ListPackages() ([]Package, error) {
 	namespaces, err := os.ReadDir(s.packagesRoot)
 	if err != nil {
@@ -441,6 +457,19 @@ func (s *Store) InspectPackage(packageID string) (Package, error) {
 	result.Files, result.ContentsTruncated, err = inspectPackageFiles(result.Path)
 	if err != nil {
 		result.InspectionErrors = append(result.InspectionErrors, err.Error())
+	}
+	return result, nil
+}
+
+// ResolvePackage reads only one fixed package manifest without recursive inspection.
+func (s *Store) ResolvePackage(packageID string) (Package, error) {
+	identity, err := ParsePackageID(packageID)
+	if err != nil {
+		return Package{}, err
+	}
+	result := s.inspectPackage(identity)
+	if !result.Valid {
+		return result, fmt.Errorf("package %s is invalid: %s", packageID, strings.Join(result.ValidationErrors, "; "))
 	}
 	return result, nil
 }

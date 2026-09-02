@@ -24,12 +24,16 @@
 - Request metadata carries trusted authentication and current generic execution
   identity plus the kernel-observed client IP address and network scope, without
   cookies, route tokens, or application settings.
-- The kernel bridge retains one request context for an HTTP stream or WebSocket
-  lifetime and relays only declared generic kernel operations.
+- The kernel bridge uses `AsyncLocalStorage` to retain an exact request/job
+  context for every asynchronous continuation and relays only declared generic
+  kernel operations. `database.info` may run during module import; all other
+  database calls require that active context.
 - An entrypoint may export a validated `workerFunctions` map. Only those named
   functions receive bounded JSON input and generic execution context; arbitrary
   exports and `eval` are never callable.
-- Job logs and state reset between compatible reused invocations.
+- Job logs, execution context, and state reset between compatible reused
+  invocations. Finalization closes the request/job database scope; Worker
+  shutdown also requests prefix cleanup as a leak-safe fallback.
 
 # Lifecycle
 

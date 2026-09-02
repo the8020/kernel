@@ -57,8 +57,13 @@ type AdminBus interface {
 }
 
 type Database interface {
-	Query(context.Context, string, []any) (database.QueryResult, error)
+	Status() database.Status
 	Execute(context.Context, string, []any) (database.ExecuteResult, error)
+	RunStatement(context.Context, string, database.StatementRequest) (database.StatementResult, error)
+	BeginTransaction(context.Context, string, database.TransactionSettings) (string, error)
+	FinishTransaction(context.Context, string, string, bool) error
+	CloseScope(string)
+	CloseScopePrefix(string)
 }
 
 type WorkerInvoker interface {
@@ -151,6 +156,10 @@ type databaseCallPayload struct {
 	SandboxID   string          `json:"sandbox_id"`
 	Statement   string          `json:"statement"`
 	Parameters  json.RawMessage `json:"parameters,omitempty"`
+	ReturnRows  bool            `json:"return_rows,omitempty"`
+	Transaction string          `json:"transaction,omitempty"`
+	Operation   string          `json:"operation,omitempty"`
+	Settings    json.RawMessage `json:"settings,omitempty"`
 }
 
 type workerCallPayload struct {
@@ -381,7 +390,7 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 		s.handleAdministration(writer, request, message, spec)
 		return
 	}
-	if wantType == protocol.MessageDatabaseQuery || wantType == protocol.MessageDatabaseExecute {
+	if wantType == protocol.MessageDatabaseExecute {
 		s.handleDatabase(writer, request, message, spec)
 		return
 	}
@@ -432,7 +441,7 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 
 func validCallbackPath(path string) bool {
 	switch path {
-	case "/v1/runtime/register", "/v1/runtime/heartbeat", "/v1/runtime/auth/bootstrap-login", "/v1/runtime/auth/logout-current", "/v1/runtime/admin/execute", "/v1/runtime/database/query", "/v1/runtime/database/execute", "/v1/runtime/worker/invoke", "/v1/runtime/execution/complete":
+	case "/v1/runtime/register", "/v1/runtime/heartbeat", "/v1/runtime/auth/bootstrap-login", "/v1/runtime/auth/logout-current", "/v1/runtime/admin/execute", "/v1/runtime/database/info", "/v1/runtime/database/execute", "/v1/runtime/database/transaction", "/v1/runtime/database/scope", "/v1/runtime/worker/invoke", "/v1/runtime/execution/complete":
 		return true
 	default:
 		return false
@@ -449,9 +458,7 @@ func callbackMessageType(path string) protocol.MessageType {
 		return protocol.MessageAuthLogoutCurrent
 	case "/v1/runtime/admin/execute":
 		return protocol.MessageAdminCommand
-	case "/v1/runtime/database/query":
-		return protocol.MessageDatabaseQuery
-	case "/v1/runtime/database/execute":
+	case "/v1/runtime/database/info", "/v1/runtime/database/execute", "/v1/runtime/database/transaction", "/v1/runtime/database/scope":
 		return protocol.MessageDatabaseExecute
 	case "/v1/runtime/worker/invoke":
 		return protocol.MessageWorkerInvoke
@@ -467,39 +474,88 @@ func (s *Server) handleDatabase(writer http.ResponseWriter, request *http.Reques
 		http.Error(writer, "system database is unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	if spec.WorkloadType != model.WorkloadService || message.CorrelationID == "" {
+	if (spec.WorkloadType != model.WorkloadService && spec.WorkloadType != model.WorkloadJob) || message.CorrelationID == "" {
 		http.Error(writer, "runtime database identity mismatch", http.StatusBadRequest)
 		return
 	}
 	var payload databaseCallPayload
-	if err := decodePayload(message.Payload, &payload); err != nil || payload.Statement == "" {
+	if err := decodePayload(message.Payload, &payload); err != nil || payload.ExecutionID == "" || payload.WorkerID == "" || payload.SandboxID != spec.SandboxID {
 		http.Error(writer, "invalid runtime database payload", http.StatusBadRequest)
 		return
 	}
-	active, exists := s.runtimeRequests.RuntimeRequest(payload.RequestID)
-	if !exists || payload.ExecutionID == "" || payload.WorkerID == "" || payload.ServiceID != active.ServiceID || payload.SandboxID != spec.SandboxID || active.RuntimeGroupID != spec.RuntimeGroupID || active.SandboxID != spec.SandboxID {
-		http.Error(writer, "runtime database request is not active", http.StatusConflict)
+	if request.URL.Path == "/v1/runtime/database/info" {
+		s.writeDatabaseResult(writer, message, spec, s.database.Status())
 		return
 	}
-	parameters, err := database.DecodeParameters(payload.Parameters)
-	if err != nil {
-		http.Error(writer, err.Error(), http.StatusBadRequest)
+	workerScope := databaseScope(spec.RuntimeGroupID, spec.SandboxID, payload.WorkerID, payload.ExecutionID)
+	if request.URL.Path == "/v1/runtime/database/scope" && payload.RequestID == "" && payload.ServiceID == "" {
+		s.database.CloseScopePrefix(workerScope)
+		s.writeDatabaseResult(writer, message, spec, map[string]any{"closed": true})
+		return
+	}
+	if payload.RequestID == "" || payload.ServiceID == "" {
+		http.Error(writer, "runtime database execution context is required", http.StatusConflict)
+		return
+	}
+	if spec.WorkloadType == model.WorkloadService {
+		active, exists := s.runtimeRequests.RuntimeRequest(payload.RequestID)
+		if !exists || payload.ServiceID != active.ServiceID || active.RuntimeGroupID != spec.RuntimeGroupID || active.SandboxID != spec.SandboxID {
+			http.Error(writer, "runtime database request is not active", http.StatusConflict)
+			return
+		}
+	}
+	scope := workerScope + "\x00" + payload.ServiceID + "\x00" + payload.RequestID
+	if request.URL.Path == "/v1/runtime/database/scope" {
+		s.database.CloseScope(scope)
+		s.writeDatabaseResult(writer, message, spec, map[string]any{"closed": true})
 		return
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), 30*time.Second)
 	defer cancel()
 	var result any
-	if message.MessageType == protocol.MessageDatabaseQuery {
-		result, err = s.database.Query(ctx, payload.Statement, parameters)
-	} else {
-		result, err = s.database.Execute(ctx, payload.Statement, parameters)
+	var err error
+	switch request.URL.Path {
+	case "/v1/runtime/database/execute":
+		result, err = s.database.RunStatement(ctx, scope, database.StatementRequest{
+			Statement: payload.Statement, Parameters: payload.Parameters, ReturnRows: payload.ReturnRows, Transaction: payload.Transaction,
+		})
+	case "/v1/runtime/database/transaction":
+		switch payload.Operation {
+		case "database.transaction.begin":
+			var settings database.TransactionSettings
+			if len(payload.Settings) != 0 {
+				err = json.Unmarshal(payload.Settings, &settings)
+			}
+			if err == nil {
+				var token string
+				token, err = s.database.BeginTransaction(ctx, scope, settings)
+				result = map[string]any{"transaction": token}
+			}
+		case "database.transaction.commit", "database.transaction.rollback":
+			err = s.database.FinishTransaction(ctx, scope, payload.Transaction, payload.Operation == "database.transaction.commit")
+			result = map[string]any{"completed": err == nil}
+		default:
+			err = errors.New("unknown database transaction operation")
+		}
 	}
 	if err != nil {
 		http.Error(writer, "database operation failed: "+err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
+	s.writeDatabaseResult(writer, message, spec, result)
+}
+
+func databaseScope(runtimeGroupID, sandboxID, workerID, executionID string) string {
+	return strings.Join([]string{runtimeGroupID, sandboxID, workerID, executionID}, "\x00")
+}
+
+func (s *Server) writeDatabaseResult(writer http.ResponseWriter, message protocol.Envelope, spec model.SandboxSpec, result any) {
 	data, err := json.Marshal(result)
-	if err != nil || len(data) > 2<<20 {
+	limit := 2 << 20
+	if s.database != nil && s.database.Status().MaximumResultBytes > limit {
+		limit = s.database.Status().MaximumResultBytes + 1<<20
+	}
+	if err != nil || len(data) > limit {
 		http.Error(writer, "encode database result", http.StatusInternalServerError)
 		return
 	}
