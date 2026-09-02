@@ -2318,7 +2318,10 @@ func (m *Manager) InspectTable(ctx context.Context, tableID string) (TableDetail
 	if tableID == "" || len(tableID) > 255 || strings.ContainsRune(tableID, '\x00') {
 		return TableDetail{}, errors.New("valid table name is required")
 	}
-	var detail TableDetail
+	detail := TableDetail{
+		Columns: []CatalogColumn{}, Physical: []PhysicalColumn{},
+		PhysicalIndexes: []PhysicalIndex{}, PhysicalChecks: []string{}, Differences: []string{},
+	}
 	err := m.db.QueryRowContext(ctx, `SELECT table_id, source_package, source_commit, source_module, state,
 		synchronization_state, descriptor_hash, descriptor_json, synchronized_at, error FROM _8020_tables WHERE table_id = $1`, tableID).
 		Scan(&detail.TableID, &detail.SourcePackage, &detail.SourceCommit, &detail.SourceModule, &detail.State,
@@ -2385,7 +2388,7 @@ func (m *Manager) InspectTable(ctx context.Context, tableID string) (TableDetail
 	if err != nil {
 		return TableDetail{}, err
 	}
-	detail.Differences = compareCatalog(detail)
+	detail.Differences = append(detail.Differences, compareCatalog(detail)...)
 	detail.Differences = append(detail.Differences, comparePhysical(m.status.Backend, detail.Descriptor, detail.Physical)...)
 	retiredColumns := map[string]bool{}
 	for _, column := range detail.Columns {

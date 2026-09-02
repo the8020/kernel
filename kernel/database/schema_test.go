@@ -67,6 +67,9 @@ func TestCatalogBootstrapAndAdditiveSynchronization(t *testing.T) {
 	if detail.SynchronizationState != "synchronized" || len(detail.Differences) != 0 || len(detail.Physical) != 4 {
 		t.Fatalf("table detail = %#v", detail)
 	}
+	if detail.Columns == nil || detail.PhysicalIndexes == nil || detail.PhysicalChecks == nil || detail.Differences == nil {
+		t.Fatalf("table detail contains non-canonical null collections: %#v", detail)
+	}
 	descriptor.Columns = append(descriptor.Columns, ColumnDescriptor{Name: "note", LogicalType: "text", Nullable: true})
 	if _, err := manager.Synchronize(ctx, []EvaluatedTable{evaluatedTable(t, descriptor)}, SynchronizationOptions{RetireMissingPackages: []string{"acme/orders"}}); err != nil {
 		t.Fatal(err)
@@ -391,6 +394,9 @@ func TestManualMatchingTableIsAdoptedAndUncataloguedTablesAreVisible(t *testing.
 	detail, err := manager.InspectTable(ctx, "manual_notes")
 	if err != nil || len(detail.Physical) != 2 || detail.State != "uncatalogued" {
 		t.Fatalf("uncatalogued detail = %#v, %v", detail, err)
+	}
+	if detail.Columns == nil || detail.PhysicalIndexes == nil || detail.PhysicalChecks == nil || detail.Differences == nil {
+		t.Fatalf("uncatalogued detail contains non-canonical null collections: %#v", detail)
 	}
 }
 
