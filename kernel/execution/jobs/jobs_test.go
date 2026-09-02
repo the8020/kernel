@@ -38,6 +38,13 @@ type queueWorkers struct {
 	stops  []string
 }
 
+type blockingWorkers struct{ fakeWorkers }
+
+func (f *blockingWorkers) Start(ctx context.Context, _ string, _ supervisor.StartWorkerRequest) (workers.Record, error) {
+	<-ctx.Done()
+	return workers.Record{}, ctx.Err()
+}
+
 func (f *queueWorkers) Start(_ context.Context, group string, request supervisor.StartWorkerRequest) (workers.Record, error) {
 	f.mu.Lock()
 	f.starts = append(f.starts, request.Metadata.ExecutionID)
@@ -179,6 +186,19 @@ func TestJobNoReuseStopsWorkerFailureAndCancelPersist(t *testing.T) {
 	cancelled, _ := manager.Inspect(active.ExecutionID)
 	if cancelled.State != "CANCELLED" {
 		t.Fatalf("cancelled=%#v", cancelled)
+	}
+}
+
+func TestJobTimeoutIncludesWorkerStartup(t *testing.T) {
+	store, _ := records.New(t.TempDir())
+	manager, err := New(&fakeCoordinator{}, &blockingWorkers{}, store, testPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	record, err := manager.Run(context.Background(), "slow", "file:///programs/slow.ts", Options{Timeout: 20 * time.Millisecond})
+	if !errors.Is(err, context.DeadlineExceeded) || record.State != "FAILED" || time.Since(started) > time.Second {
+		t.Fatalf("startup timeout record=%#v elapsed=%s err=%v", record, time.Since(started), err)
 	}
 }
 

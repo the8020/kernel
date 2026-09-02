@@ -237,14 +237,22 @@ func (m *Manager) Run(ctx context.Context, jobID, entrypoint string, options Opt
 	prepared := submission{record: record, profile: profile, groupKey: options.GroupKey, namespace: options.Namespace}
 	if record.State == "QUEUED" {
 		if record.Detached {
-			if err := m.launch(func(background context.Context) { _, _ = m.awaitQueued(background, prepared) }); err != nil {
+			if err := m.launch(func(background context.Context) {
+				bounded, cancel := context.WithTimeout(background, record.Timeout)
+				defer cancel()
+				_, _ = m.awaitQueued(bounded, prepared)
+			}); err != nil {
 				return m.failQueued(record, err)
 			}
 			return record, nil
 		}
-		return m.awaitQueued(ctx, prepared)
+		bounded, cancel := context.WithTimeout(ctx, record.Timeout)
+		defer cancel()
+		return m.awaitQueued(bounded, prepared)
 	}
-	return m.start(ctx, prepared)
+	bounded, cancel := context.WithTimeout(ctx, record.Timeout)
+	defer cancel()
+	return m.start(bounded, prepared)
 }
 
 func (m *Manager) start(ctx context.Context, prepared submission) (Record, error) {

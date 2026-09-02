@@ -12,6 +12,9 @@
 - Public API: `Client`, `New`, `Execute`, and `Close`.
 - Requests and responses use `core` envelopes and protocol version 1.
 - Response decoding preserves JSON numbers as `json.Number` so human output never changes large integers into scientific notation or loses integer precision.
+- The five-minute client deadline exceeds bounded package-download and
+  sandboxed schema-evaluation deadlines; do not reintroduce a shorter global
+  timeout that cancels valid commands.
 - Extend transport addressing only when a future accepted administration transport exists.
 
 # Work Guidance

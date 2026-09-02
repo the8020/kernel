@@ -23,6 +23,8 @@
   this is the small reusable seam used by the table evaluator, not a separate
   job scheduler.
 - Parallel saturation persists submissions as `QUEUED` up to `QueuedExecutionLimit`; admission follows durable submission order, detached runs return immediately, and synchronous runs wait under their caller context.
+- An execution timeout bounds queueing, sandbox acquisition, Worker validation
+  and startup, and program execution as one lifecycle.
 - Cancelling queued work persists `CANCELLED` without touching a Worker. Detached work uses a bounded background context and persists every state transition. Non-reused Workers stop after completion or failure; reuse requires the same owner, job, entrypoint, release, runtime profile, and permissions, with one available record consumed atomically and retired after the configured idle timeout.
 - Group failure fails active jobs while preserving completed results and retiring lost idle reuse capacity.
 - Startup recovery never replays queued or ambiguous active work: it fails queued records, terminates active Workers, and marks those executions failed, while healthy idle reusable Workers regain their remaining retirement timer.

@@ -13,6 +13,8 @@ import (
 	"the8020/kernel/cbus/core"
 )
 
+const commandTimeout = 5 * time.Minute
+
 // Client is a reusable command-bus client bound to one Unix socket.
 type Client struct {
 	http      *http.Client
@@ -25,7 +27,7 @@ func New(socketPath string) *Client {
 		dialer := net.Dialer{Timeout: 5 * time.Second}
 		return dialer.DialContext(ctx, "unix", socketPath)
 	}}
-	return &Client{http: &http.Client{Transport: transport, Timeout: 30 * time.Second}, transport: transport}
+	return &Client{http: &http.Client{Transport: transport, Timeout: commandTimeout}, transport: transport}
 }
 
 // Execute sends one typed request and returns its complete response envelope.
