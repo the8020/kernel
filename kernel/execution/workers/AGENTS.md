@@ -20,6 +20,8 @@
 - Worker permissions must be a subset of the parent sandbox envelope.
   Cached-only groups accept local file entrypoints; online entrypoints still
   require an explicitly allowed import host.
+- Additional job type-check modules may use absolute sandbox paths, but each
+  path must remain beneath the parent read envelope.
 - Worker lookup is reconstructed from supervisor state rather than treated as
   container process state; immediate stop terminates only the selected Worker.
 - A filtered `List` resolves the exact sandbox/runtime group directly and asks

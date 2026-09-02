@@ -255,7 +255,7 @@ func (m *Manager) RunJob(ctx context.Context, workerID string, input any, checkM
 		return supervisor.JobResult{}, errors.New("Worker is not a job")
 	}
 	for _, module := range checkModules {
-		if err := validateEntrypoint(spec, module); err != nil {
+		if err := validateCheckModule(spec, module); err != nil {
 			return supervisor.JobResult{}, fmt.Errorf("type-check module: %w", err)
 		}
 	}
@@ -310,6 +310,19 @@ func (m *Manager) find(ctx context.Context, workerID string) (Record, model.Sand
 		return Record{}, model.SandboxSpec{}, err
 	}
 	return record, inspection.Spec, nil
+}
+
+func validateCheckModule(spec model.SandboxSpec, module string) error {
+	if !filepath.IsAbs(module) {
+		return validateEntrypoint(spec, module)
+	}
+	path := filepath.Clean(module)
+	for _, allowed := range spec.Permissions.ReadPaths {
+		if beneath(path, allowed) {
+			return nil
+		}
+	}
+	return fmt.Errorf("module %q is outside the parent read envelope", module)
 }
 
 func validateEntrypoint(spec model.SandboxSpec, entrypoint string) error {

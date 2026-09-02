@@ -185,11 +185,14 @@ func TestResourceObservationsDoNotRejectWorkerAdmission(t *testing.T) {
 }
 
 func TestWorkerJobDelegationUsesTheExactWorker(t *testing.T) {
-	spec := model.SandboxSpec{SandboxID: "sandbox", RuntimeGroupID: "group", WorkloadType: model.WorkloadJob}
+	spec := model.SandboxSpec{SandboxID: "sandbox", RuntimeGroupID: "group", WorkloadType: model.WorkloadJob, Permissions: model.Permissions{ReadPaths: []string{"/workspace/packages"}}}
 	control := &fakeControl{workers: map[string][]supervisor.WorkerStatus{"group": {{WorkerID: "worker"}}}}
 	manager, _ := New(&fakeSandboxes{items: []manager.Inspection{{Spec: spec}}}, control, 0, 64, "sqlite")
-	if output, err := manager.RunJob(context.Background(), "worker", nil, nil); err != nil || output.Result != "job" {
+	if output, err := manager.RunJob(context.Background(), "worker", nil, []string{"/workspace/packages/example/table.ts"}); err != nil || output.Result != "job" {
 		t.Fatalf("job=%#v err=%v", output, err)
+	}
+	if _, err := manager.RunJob(context.Background(), "worker", nil, []string{"/private/table.ts"}); err == nil {
+		t.Fatal("out-of-envelope type-check module accepted")
 	}
 }
 
