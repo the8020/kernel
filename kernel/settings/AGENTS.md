@@ -35,6 +35,9 @@
 - A global setting cannot be runtime mutable until cross-node live-application
   coordination exists; current global settings are restart required.
 - `logging.max_total_size` is never below `logging.max_file_size`.
+- Database maximum-idle connections never exceed maximum-open connections.
+  Both are runtime-mutable node settings because every kernel owns its own
+  dynamic pool; maximum open defaults to 32 and maximum idle defaults to 8.
 - String definitions may declare a compiled regular-expression `pattern`; the
   same constraint validates defaults, environment/startup inputs, and persisted
   mutations before they become configured state.

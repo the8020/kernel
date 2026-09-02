@@ -37,11 +37,11 @@
   screen/program behavior, and browser assets; future phases add data
   definitions, versions, broader identities/roles, workflow, connections,
   certificates, and other application behavior.
-- Applications, databases, broader remote administration, TLS termination,
-  checkpoint/restore, and the final virtual filesystem remain outside the
-  current kernel scope; initial application-server topology, capacity
-  advertisement, allocation-index partitioning, and service forwarding are
-  kernel-owned.
+- Applications, application-owned database schemas, broader remote
+  administration, TLS termination, checkpoint/restore, and the final virtual
+  filesystem remain outside the current kernel scope; initial
+  application-server topology, capacity advertisement, allocation-index
+  partitioning, and service forwarding are kernel-owned.
 
 # Local Contracts
 
@@ -118,6 +118,11 @@
   granular capability system yet; authentication calls retain request identity
   rules, while administrative command execution additionally requires a
   kernel-trusted active bootstrap-administrator request.
+- The kernel owns one dynamically opened `database/sql` pool. Backend,
+  location, and PostgreSQL credentials are restart-required global policy;
+  maximum open and retained-idle connections are runtime-mutable node policy,
+  defaulting to 32 and 8. SQLite uses WAL in its private local database
+  directory; PostgreSQL remains the shared multi-node backend.
 - The Go kernel owns backend selection, containerd access when available, direct
   runsc lifecycle otherwise, host ports, network state, cgroups, mounts, and
   runtime reconciliation. Neither Deno nor program Workers receive the
@@ -193,7 +198,7 @@
 - `services/AGENTS.md`: typed handler dependencies.
 - `settings/AGENTS.md`: definitions, precedence, persistence, queries, and
   runtime transactions.
-- `database/AGENTS.md`: the single SQLite/PostgreSQL system connection and
+- `database/AGENTS.md`: the SQLite/PostgreSQL system connection pool and
   bounded SQL operations.
 - `network/AGENTS.md`: proof HTTP listener and port replacement.
 - `logging/AGENTS.md`: slog writer, rotation, retention, and policy replacement.

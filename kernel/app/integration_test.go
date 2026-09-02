@@ -39,6 +39,8 @@ func definitions() []settings.Definition {
 		{Key: "logging.split_period", Type: settings.TypeEnum, Storage: settings.StorageNode, Default: "day", Environment: "KERNEL_LOGGING_SPLIT_PERIOD", Allowed: []string{"none", "minute", "hour", "day", "week", "month", "year"}, RuntimeMutable: true, Description: "Split period."},
 		{Key: "logging.max_file_size", Type: settings.TypeByteSize, Storage: settings.StorageNode, Default: "1GB", Environment: "KERNEL_LOGGING_MAX_FILE_SIZE", RuntimeMutable: true, Description: "File size."},
 		{Key: "logging.max_total_size", Type: settings.TypeByteSize, Storage: settings.StorageNode, Default: "10GB", Environment: "KERNEL_LOGGING_MAX_TOTAL_SIZE", RuntimeMutable: true, Description: "Total size."},
+		{Key: "database.maximum_open_connections", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(32), Environment: "KERNEL_DATABASE_MAXIMUM_OPEN_CONNECTIONS", Minimum: pointer(1), RuntimeMutable: true, Description: "Maximum open database connections."},
+		{Key: "database.maximum_idle_connections", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(8), Environment: "KERNEL_DATABASE_MAXIMUM_IDLE_CONNECTIONS", Minimum: pointer(0), RuntimeMutable: true, Description: "Maximum idle database connections."},
 		{Key: "network.root_alias", Type: settings.TypeString, Storage: settings.StorageGlobal, Default: "the8020/uui/shell/", Environment: "KERNEL_NETWORK_ROOT_ALIAS", Pattern: `^[A-Za-z0-9_-]+(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*/?$`, RestartRequired: true, Description: "Root alias."},
 	}
 }
@@ -192,7 +194,7 @@ func TestFullCommandBusLifecycleAndAdministrativeModes(t *testing.T) {
 	commandClient := client.New(paths.Socket)
 	defer func() { commandClient.Close() }()
 	status := execute(t, commandClient, "system.status", nil)
-	if !status.Success || status.Result["main_port"] != json.Number(stringInt(startupPort)) || status.Result["build_id"] != "integration-test" {
+	if !status.Success || status.Result["main_port"] != json.Number(stringInt(startupPort)) || status.Result["build_id"] != "integration-test" || status.Result["database_pool_maximum_open_connections"] != json.Number("32") || status.Result["database_pool_maximum_idle_connections"] != json.Number("8") {
 		t.Fatalf("status: %#v", status)
 	}
 	get := execute(t, commandClient, "settings.get", map[string]any{"key": "network.main_port"})
@@ -319,6 +321,20 @@ func TestFullCommandBusLifecycleAndAdministrativeModes(t *testing.T) {
 			t.Fatalf("change %s: %#v", key, change)
 		}
 	}
+	for key, value := range map[string]string{"database.maximum_open_connections": "64", "database.maximum_idle_connections": "16"} {
+		change := execute(t, commandClient, "settings.set", map[string]any{"key": key, "value": value})
+		if !change.Success || change.Result["setting"].(map[string]any)["restart_pending"] != false {
+			t.Fatalf("change %s: %#v", key, change)
+		}
+	}
+	poolStatus := execute(t, commandClient, "system.status", nil)
+	if poolStatus.Result["database_pool_maximum_open_connections"] != json.Number("64") || poolStatus.Result["database_pool_maximum_idle_connections"] != json.Number("16") {
+		t.Fatalf("resized database pool status: %#v", poolStatus)
+	}
+	invalidPool := execute(t, commandClient, "settings.set", map[string]any{"key": "database.maximum_idle_connections", "value": "65"})
+	if invalidPool.Success || invalidPool.Error.Code != core.CodeInvalidSettingValue {
+		t.Fatalf("invalid database pool response: %#v", invalidPool)
+	}
 	rootAliasChange := execute(t, commandClient, "settings.set", map[string]any{"key": "network.root_alias", "value": "example/auth/login/"})
 	if !rootAliasChange.Success {
 		t.Fatalf("set global root alias: %#v", rootAliasChange)
@@ -339,7 +355,7 @@ func TestFullCommandBusLifecycleAndAdministrativeModes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(nodeData), "main_port = ") || !strings.Contains(string(nodeData), "ssh_port = ") || !strings.Contains(string(globalData), `root_alias = "example/auth/login/"`) || strings.Contains(string(globalData), "main_port") || strings.Contains(string(globalData), "ssh_port") {
+	if !strings.Contains(string(nodeData), "main_port = ") || !strings.Contains(string(nodeData), "ssh_port = ") || !strings.Contains(string(nodeData), "maximum_open_connections = 64") || !strings.Contains(string(nodeData), "maximum_idle_connections = 16") || !strings.Contains(string(globalData), `root_alias = "example/auth/login/"`) || strings.Contains(string(globalData), "main_port") || strings.Contains(string(globalData), "ssh_port") || strings.Contains(string(globalData), "maximum_open_connections") {
 		t.Fatalf("node settings=%q global settings=%q", nodeData, globalData)
 	}
 	shutdownAndWait(t, commandClient, done)
@@ -360,6 +376,10 @@ func TestFullCommandBusLifecycleAndAdministrativeModes(t *testing.T) {
 	restartedSSHSetting := restartedSSH.Result["setting"].(map[string]any)
 	if restartedSSHSetting["configured_value"] != json.Number(stringInt(runtimeSSHPort)) || restartedSSHSetting["active_value"] != json.Number(stringInt(runtimeSSHPort)) || restartedSSHSetting["source"] != "persisted" || restartedSSHSetting["restart_pending"] != false {
 		t.Fatalf("persisted SSH restart: %#v", restartedSSH)
+	}
+	restartedPool := execute(t, commandClient, "system.status", nil)
+	if restartedPool.Result["database_pool_maximum_open_connections"] != json.Number("64") || restartedPool.Result["database_pool_maximum_idle_connections"] != json.Number("16") {
+		t.Fatalf("persisted database pool status: %#v", restartedPool)
 	}
 	sshConnection, err = net.DialTimeout("tcp", "127.0.0.1:"+stringInt(runtimeSSHPort), time.Second)
 	if err != nil {

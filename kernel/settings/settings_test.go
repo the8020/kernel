@@ -17,6 +17,8 @@ func testDefinitions() []Definition {
 		{Key: "logging.split_period", Type: TypeEnum, Storage: StorageNode, Default: "day", Environment: "KERNEL_LOGGING_SPLIT_PERIOD", Allowed: []string{"none", "day"}, RuntimeMutable: true, Description: "period"},
 		{Key: "logging.max_file_size", Type: TypeByteSize, Storage: StorageNode, Default: "1GB", Environment: "KERNEL_LOGGING_MAX_FILE_SIZE", RuntimeMutable: true, Description: "file"},
 		{Key: "logging.max_total_size", Type: TypeByteSize, Storage: StorageNode, Default: "10GB", Environment: "KERNEL_LOGGING_MAX_TOTAL_SIZE", RuntimeMutable: true, Description: "total"},
+		{Key: "database.maximum_open_connections", Type: TypeInteger, Storage: StorageNode, Default: int64(32), Environment: "KERNEL_DATABASE_MAXIMUM_OPEN_CONNECTIONS", Minimum: integerPointer(1), RuntimeMutable: true, Description: "open database connections"},
+		{Key: "database.maximum_idle_connections", Type: TypeInteger, Storage: StorageNode, Default: int64(8), Environment: "KERNEL_DATABASE_MAXIMUM_IDLE_CONNECTIONS", Minimum: integerPointer(0), RuntimeMutable: true, Description: "idle database connections"},
 		{Key: "network.root_alias", Type: TypeString, Storage: StorageGlobal, Default: "the8020/uui/shell/", Environment: "KERNEL_NETWORK_ROOT_ALIAS", Pattern: `^[A-Za-z0-9_-]+(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*/?$`, RestartRequired: true, Description: "root alias"},
 		{Key: "platform.display_name", Type: TypeString, Storage: StorageGlobal, Default: "80|20", Environment: "KERNEL_PLATFORM_DISPLAY_NAME", RestartRequired: true, Description: "display name"},
 	}
@@ -422,6 +424,16 @@ func TestConversionsAndCrossValidation(t *testing.T) {
 	serviceDefaults["services.default_maximum_workers"] = int64(0)
 	if err := validateSnapshot(serviceDefaults); err != nil {
 		t.Fatalf("unlimited service maximum rejected: %v", err)
+	}
+	databasePool := Values{
+		"database.maximum_open_connections": int64(32), "database.maximum_idle_connections": int64(8),
+	}
+	if err := validateSnapshot(databasePool); err != nil {
+		t.Fatalf("valid database pool: %v", err)
+	}
+	databasePool["database.maximum_idle_connections"] = int64(33)
+	if err := validateSnapshot(databasePool); err == nil || !strings.Contains(err.Error(), "less than or equal") {
+		t.Fatalf("invalid database pool error = %v", err)
 	}
 }
 

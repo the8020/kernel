@@ -15,7 +15,7 @@
   grouping, canonical service defaults, reconciliation, and job policy; and
   `auth/` owns bootstrap authentication-session, cookie, and Argon2id settings;
   `database/` owns the global backend, location, and plain development-phase
-  PostgreSQL credentials.
+  PostgreSQL credentials plus the node-local live connection-pool limits.
 - No definition subtree or setting may describe an application protocol,
   application program, application state schema, or UUI behavior.
 

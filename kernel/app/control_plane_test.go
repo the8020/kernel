@@ -21,7 +21,7 @@ import (
 )
 
 func controlPlaneDefinitions() []settings.Definition {
-	minimum, maximum := int64(1), int64(65535)
+	zero, minimum, maximum := int64(0), int64(1), int64(65535)
 	return []settings.Definition{
 		{Key: "network.main_port", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(8080), Environment: "TEST_CONTROL_NETWORK_PORT", Minimum: &minimum, Maximum: &maximum, RuntimeMutable: true, Description: "Test HTTP port."},
 		{Key: "network.ssh_port", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(2222), Environment: "TEST_CONTROL_SSH_PORT", Minimum: &minimum, Maximum: &maximum, RuntimeMutable: true, Description: "Test SSH port."},
@@ -33,6 +33,8 @@ func controlPlaneDefinitions() []settings.Definition {
 		{Key: "database.location", Type: settings.TypeString, Storage: settings.StorageGlobal, Default: "${INSTANCE_ROOT}/database/system.db", Environment: "TEST_CONTROL_DATABASE_LOCATION", RestartRequired: true, Description: "Test database location."},
 		{Key: "database.username", Type: settings.TypeString, Storage: settings.StorageGlobal, Default: "", Environment: "TEST_CONTROL_DATABASE_USERNAME", RestartRequired: true, Description: "Test database username."},
 		{Key: "database.password", Type: settings.TypeString, Storage: settings.StorageGlobal, Default: "", Environment: "TEST_CONTROL_DATABASE_PASSWORD", RestartRequired: true, Description: "Test database password."},
+		{Key: "database.maximum_open_connections", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(32), Environment: "TEST_CONTROL_DATABASE_MAXIMUM_OPEN_CONNECTIONS", Minimum: &minimum, RuntimeMutable: true, Description: "Test maximum open database connections."},
+		{Key: "database.maximum_idle_connections", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(8), Environment: "TEST_CONTROL_DATABASE_MAXIMUM_IDLE_CONNECTIONS", Minimum: &zero, RuntimeMutable: true, Description: "Test maximum idle database connections."},
 	}
 }
 
@@ -186,7 +188,7 @@ func TestAdministrativeSocketPrecedesRuntimeInitialization(t *testing.T) {
 	if status.Result["runtime_ready"] != false || status.Result["runtime_failure"] != "runtime initialization is in progress" {
 		t.Fatalf("initializing status=%#v", status.Result)
 	}
-	if status.Result["database_backend"] != "sqlite" || status.Result["database_status"] != "READY" || status.Result["database_location"] != filepath.Join(root, "database", "system.db") || status.Result["database_error"] != nil {
+	if status.Result["database_backend"] != "sqlite" || status.Result["database_status"] != "READY" || status.Result["database_location"] != filepath.Join(root, "database", "system.db") || status.Result["database_error"] != nil || status.Result["database_pool_maximum_open_connections"] != json.Number("32") || status.Result["database_pool_maximum_idle_connections"] != json.Number("8") {
 		t.Fatalf("database status=%#v", status.Result)
 	}
 	if _, err := os.Stat(filepath.Join(root, "database", "system.db")); err != nil {

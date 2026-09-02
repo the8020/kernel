@@ -463,7 +463,10 @@ relevant child AGENTS.md
   kernel-owned `state/package-index/` and package-owned `state/package-data/`;
   `users/<username>/` owns that user's durable
   data; the private top-level `database/` owns the default single-node SQLite
-  system database and is never sandbox-mounted; and `node/` owns every
+  system database and is never sandbox-mounted. SQLite uses WAL so readers can
+  run alongside its single writer; each kernel owns a dynamically opened
+  `database/sql` pool with runtime-mutable node-local open/idle limits defaulting
+  to 32/8 and exposes pool pressure through `system status`. `node/` owns every
   node-local artifact. Global setting overrides live in
   `config/settings.toml`, node setting overrides live in
   `node/kernel/settings.toml`, and authentication/configuration material is never

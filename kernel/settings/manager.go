@@ -369,6 +369,11 @@ func validateSnapshot(values Values) error {
 	if minimumOK && maximumOK && maximum != 0 && minimum > maximum {
 		return errors.New("services.default_maximum_workers must be zero or greater than or equal to services.default_minimum_workers")
 	}
+	maximumOpenConnections, openOK := values["database.maximum_open_connections"].(int64)
+	maximumIdleConnections, idleOK := values["database.maximum_idle_connections"].(int64)
+	if openOK && idleOK && maximumIdleConnections > maximumOpenConnections {
+		return errors.New("database.maximum_idle_connections must be less than or equal to database.maximum_open_connections")
+	}
 	return nil
 }
 

@@ -1,4 +1,4 @@
-// Package database owns the kernel's single system database connection.
+// Package database owns the kernel's system database connection pool.
 package database
 
 import (
@@ -23,6 +23,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 	"modernc.org/sqlite"
+
+	"the8020/kernel/settings"
 )
 
 const (
@@ -40,19 +42,33 @@ const (
 
 // Config selects the one system database used by this kernel.
 type Config struct {
-	Backend      string
-	Location     string
-	Username     string
-	Password     string
-	InstanceRoot string
+	Backend                string
+	Location               string
+	Username               string
+	Password               string
+	InstanceRoot           string
+	MaximumOpenConnections int
+	MaximumIdleConnections int
 }
 
 // Status is a credential-free connectivity snapshot.
 type Status struct {
-	Backend  string `json:"backend"`
-	Location string `json:"location"`
-	State    string `json:"state"`
-	Error    string `json:"error,omitempty"`
+	Backend                  string `json:"backend"`
+	Location                 string `json:"location"`
+	State                    string `json:"state"`
+	Error                    string `json:"error,omitempty"`
+	MaximumOpenConnections   int    `json:"maximum_open_connections"`
+	MaximumIdleConnections   int    `json:"maximum_idle_connections"`
+	OpenConnections          int    `json:"open_connections"`
+	InUseConnections         int    `json:"in_use_connections"`
+	IdleConnections          int    `json:"idle_connections"`
+	WaitCount                int64  `json:"wait_count"`
+	WaitDurationMilliseconds int64  `json:"wait_duration_milliseconds"`
+}
+
+type poolPolicy struct {
+	maximumOpen int
+	maximumIdle int
 }
 
 // QueryResult preserves SQL column order and duplicate column names.
@@ -79,12 +95,20 @@ type Manager struct {
 
 // New prepares the configured database without requiring it to be reachable.
 func New(config Config) *Manager {
+	policy, policyErr := newPoolPolicy(config.MaximumOpenConnections, config.MaximumIdleConnections)
 	manager := &Manager{
 		status: Status{
-			Backend:  config.Backend,
-			Location: displayLocation(config.Backend, config.Location),
-			State:    StateUnavailable,
+			Backend:                config.Backend,
+			Location:               displayLocation(config.Backend, config.Location),
+			State:                  StateUnavailable,
+			MaximumOpenConnections: policy.maximumOpen,
+			MaximumIdleConnections: policy.maximumIdle,
 		},
+	}
+	if policyErr != nil {
+		manager.openErr = policyErr
+		manager.status.Error = policyErr.Error()
+		return manager
 	}
 	location, err := resolveLocation(config.Location, config.InstanceRoot)
 	if err != nil {
@@ -110,8 +134,6 @@ func New(config Config) *Manager {
 			return manager
 		}
 		manager.db = sql.OpenDB(connector)
-		manager.db.SetMaxOpenConns(1)
-		manager.db.SetMaxIdleConns(1)
 	case BackendPostgreSQL:
 		parsed, err := url.Parse(location)
 		if err != nil || (parsed.Scheme != "postgresql" && parsed.Scheme != "postgres") || parsed.Host == "" {
@@ -129,11 +151,10 @@ func New(config Config) *Manager {
 		}
 		connection.User, connection.Password = config.Username, config.Password
 		manager.db = stdlib.OpenDB(*connection)
-		manager.db.SetMaxOpenConns(16)
-		manager.db.SetMaxIdleConns(4)
 	default:
 		manager.openErr = fmt.Errorf("unsupported database backend %q", config.Backend)
 	}
+	manager.applyPool(policy)
 	if manager.openErr != nil {
 		manager.status.Error = manager.openErr.Error()
 	}
@@ -154,10 +175,65 @@ func resolveLocation(location, instanceRoot string) (string, error) {
 func sqliteDSN(path string) string {
 	location := &url.URL{Scheme: "file", Path: filepath.Clean(path)}
 	query := location.Query()
-	query.Add("_pragma", "foreign_keys(1)")
-	query.Add("_pragma", "busy_timeout(5000)")
+	query.Set("_busy_timeout", "5000")
+	query.Set("_foreign_keys", "on")
+	query.Set("_journal_mode", "wal")
 	location.RawQuery = query.Encode()
 	return location.String()
+}
+
+func newPoolPolicy(maximumOpen, maximumIdle int) (poolPolicy, error) {
+	if maximumOpen < 1 {
+		return poolPolicy{}, errors.New("database maximum open connections must be positive")
+	}
+	if maximumIdle < 0 {
+		return poolPolicy{}, errors.New("database maximum idle connections cannot be negative")
+	}
+	if maximumIdle > maximumOpen {
+		return poolPolicy{}, errors.New("database maximum idle connections cannot exceed maximum open connections")
+	}
+	return poolPolicy{maximumOpen: maximumOpen, maximumIdle: maximumIdle}, nil
+}
+
+func poolPolicyFromValues(values settings.Values) (poolPolicy, error) {
+	maximumOpen, openOK := values["database.maximum_open_connections"].(int64)
+	maximumIdle, idleOK := values["database.maximum_idle_connections"].(int64)
+	if !openOK || !idleOK {
+		return poolPolicy{}, errors.New("database connection pool settings are unavailable")
+	}
+	maximumInt := int64(^uint(0) >> 1)
+	if maximumOpen > maximumInt || maximumIdle > maximumInt {
+		return poolPolicy{}, errors.New("database connection pool setting exceeds the supported integer range")
+	}
+	return newPoolPolicy(int(maximumOpen), int(maximumIdle))
+}
+
+func (m *Manager) applyPool(policy poolPolicy) {
+	if m.db != nil {
+		m.db.SetMaxOpenConns(policy.maximumOpen)
+		m.db.SetMaxIdleConns(policy.maximumIdle)
+	}
+	m.statusMu.Lock()
+	m.status.MaximumOpenConnections = policy.maximumOpen
+	m.status.MaximumIdleConnections = policy.maximumIdle
+	m.statusMu.Unlock()
+}
+
+type preparedPool struct {
+	manager *Manager
+	policy  poolPolicy
+}
+
+func (p preparedPool) Commit() { p.manager.applyPool(p.policy) }
+func (preparedPool) Discard()  {}
+
+// Prepare validates a live connection-pool policy change.
+func (m *Manager) Prepare(_ context.Context, values settings.Values) (settings.Prepared, error) {
+	policy, err := poolPolicyFromValues(values)
+	if err != nil {
+		return nil, err
+	}
+	return preparedPool{manager: m, policy: policy}, nil
 }
 
 func displayLocation(backend, location string) string {
@@ -192,14 +268,25 @@ func hasQueryCredential(query url.Values) bool {
 	return false
 }
 
-// Status returns the last connectivity check without performing I/O.
+// Status combines the last connectivity check with local pool counters without
+// performing database I/O.
 func (m *Manager) Status() Status {
 	if m == nil {
 		return Status{State: StateUnavailable, Error: "database is unavailable"}
 	}
 	m.statusMu.RLock()
-	defer m.statusMu.RUnlock()
-	return m.status
+	status := m.status
+	m.statusMu.RUnlock()
+	if m.db != nil {
+		pool := m.db.Stats()
+		status.MaximumOpenConnections = pool.MaxOpenConnections
+		status.OpenConnections = pool.OpenConnections
+		status.InUseConnections = pool.InUse
+		status.IdleConnections = pool.Idle
+		status.WaitCount = pool.WaitCount
+		status.WaitDurationMilliseconds = pool.WaitDuration.Milliseconds()
+	}
+	return status
 }
 
 // Check verifies connectivity and updates the cached status.
@@ -216,9 +303,8 @@ func (m *Manager) Check(ctx context.Context) (Status, error) {
 	} else {
 		m.status.Error = err.Error()
 	}
-	status := m.status
 	m.statusMu.Unlock()
-	return status, err
+	return m.Status(), err
 }
 
 func (m *Manager) ping(ctx context.Context) error {

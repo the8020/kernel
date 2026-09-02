@@ -405,6 +405,7 @@ func TestRepositoryCatalogContainsEveryRequiredPlatformSetting(t *testing.T) {
 		"services.default_worker_keep_alive", "services.default_workers_per_sandbox", "services.default_minimum_sandboxes", "services.default_session_keep_alive", "services.state_lock_timeout",
 		"runtime.sandbox.maximum_workers",
 		"database.backend", "database.location", "database.username", "database.password",
+		"database.maximum_open_connections", "database.maximum_idle_connections",
 		"network.root_alias",
 	} {
 		if _, exists := found[key]; !exists {
@@ -423,6 +424,12 @@ func TestRepositoryCatalogContainsEveryRequiredPlatformSetting(t *testing.T) {
 		definition := found[key]
 		if definition.Default != "" || definition.Storage != settings.StorageGlobal || !definition.RestartRequired || definition.RuntimeMutable {
 			t.Fatalf("database credential setting %s = %#v", key, definition)
+		}
+	}
+	for key, defaultValue := range map[string]int64{"database.maximum_open_connections": 32, "database.maximum_idle_connections": 8} {
+		definition := found[key]
+		if definition.Default != defaultValue || definition.Storage != settings.StorageNode || definition.RestartRequired || !definition.RuntimeMutable || definition.Minimum == nil {
+			t.Fatalf("database pool setting %s = %#v", key, definition)
 		}
 	}
 	for _, key := range []string{

@@ -1,0 +1,9 @@
+key = "database.maximum_open_connections"
+type = "integer"
+storage = "node"
+default = 32
+environment = "KERNEL_DATABASE_MAXIMUM_OPEN_CONNECTIONS"
+minimum = 1
+runtime_mutable = true
+restart_required = false
+description = "Maximum concurrent database connections opened by this kernel."

@@ -283,11 +283,13 @@ func Run(parent context.Context, config Config) error {
 	defer loggingManager.Close()
 	logger := loggingManager.Logger()
 	databaseManager := database.New(database.Config{
-		Backend:      activeString(settingManager, "database.backend", database.BackendSQLite),
-		Location:     activeString(settingManager, "database.location", database.InstanceRootPlaceholder+"/database/system.db"),
-		Username:     activeString(settingManager, "database.username", ""),
-		Password:     activeString(settingManager, "database.password", ""),
-		InstanceRoot: root,
+		Backend:                activeString(settingManager, "database.backend", database.BackendSQLite),
+		Location:               activeString(settingManager, "database.location", database.InstanceRootPlaceholder+"/database/system.db"),
+		Username:               activeString(settingManager, "database.username", ""),
+		Password:               activeString(settingManager, "database.password", ""),
+		InstanceRoot:           root,
+		MaximumOpenConnections: activeInt(settingManager, "database.maximum_open_connections", 0),
+		MaximumIdleConnections: activeInt(settingManager, "database.maximum_idle_connections", 0),
 	})
 	defer databaseManager.Close()
 	databaseContext, cancelDatabaseCheck := context.WithTimeout(parent, 3*time.Second)
@@ -430,6 +432,9 @@ func Run(parent context.Context, config Config) error {
 		return err
 	}
 	if err := settingManager.RegisterApplier([]string{"logging.enabled", "logging.split_period", "logging.max_file_size", "logging.max_total_size"}, loggingManager); err != nil {
+		return err
+	}
+	if err := settingManager.RegisterApplier([]string{"database.maximum_open_connections", "database.maximum_idle_connections"}, databaseManager); err != nil {
 		return err
 	}
 	lifecycleManager := lifecycle.New()

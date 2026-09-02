@@ -3,7 +3,7 @@ id = "system.status"
 path = ["system", "status"]
 aliases = [["status"]]
 summary = "Show kernel status"
-description = "Returns identity, process, listeners, logging, database readiness, runtime isolation mode, uptime, graceful shutdown/restart progress, and build information for the running kernel."
+description = "Returns identity, process, listeners, logging, database readiness and pool pressure, runtime isolation mode, uptime, graceful shutdown/restart progress, and build information for the running kernel."
 mutates_state = false
 restart_behavior = "none"
 [handler]
@@ -54,6 +54,27 @@ type = "string"
 [[result]]
 name = "database_status"
 type = "string"
+[[result]]
+name = "database_pool_maximum_open_connections"
+type = "integer"
+[[result]]
+name = "database_pool_maximum_idle_connections"
+type = "integer"
+[[result]]
+name = "database_pool_open_connections"
+type = "integer"
+[[result]]
+name = "database_pool_in_use_connections"
+type = "integer"
+[[result]]
+name = "database_pool_idle_connections"
+type = "integer"
+[[result]]
+name = "database_pool_wait_count"
+type = "integer"
+[[result]]
+name = "database_pool_wait_duration_milliseconds"
+type = "integer"
 [[result]]
 name = "database_error"
 type = "string"

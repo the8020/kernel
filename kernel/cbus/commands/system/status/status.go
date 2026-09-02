@@ -41,6 +41,13 @@ func New(serviceSet *services.Services) core.Handler {
 			result["database_backend"] = database.Backend
 			result["database_location"] = database.Location
 			result["database_status"] = database.State
+			result["database_pool_maximum_open_connections"] = database.MaximumOpenConnections
+			result["database_pool_maximum_idle_connections"] = database.MaximumIdleConnections
+			result["database_pool_open_connections"] = database.OpenConnections
+			result["database_pool_in_use_connections"] = database.InUseConnections
+			result["database_pool_idle_connections"] = database.IdleConnections
+			result["database_pool_wait_count"] = database.WaitCount
+			result["database_pool_wait_duration_milliseconds"] = database.WaitDurationMilliseconds
 			if database.Error != "" {
 				result["database_error"] = database.Error
 			}

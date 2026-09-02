@@ -5,7 +5,7 @@
 # Ownership
 
 - Own startup/shutdown order, generic settings arguments,
-  system-database composition and non-fatal readiness checking,
+  system-database pool composition and non-fatal readiness checking,
   bootstrap-authentication composition and cleanup lifecycle,
   full-versus-rootless runtime selection, degraded diagnostics,
   mapped package/state-store composition, service-package mounts, and
@@ -33,7 +33,7 @@
   synchronizes packages implicitly.
 - Startup order is load the explicit shared-root mapping → initialize shared
   and node-local state roots → lock → settings → logging → system
-  database connection/readiness check →
+  database pool/readiness check →
   bootstrap-authentication store and per-node cleanup → global secret store →
   package and desired-state stores → registry and
   development manager → network → authenticated console route → SSH listener → appliers →
@@ -52,6 +52,9 @@
   prevents the administrative command socket from starting. An explicit
   `database check` retries connectivity after operators change or repair the
   configured backend.
+- Database pool limits are node-local runtime settings applied transactionally
+  to the already running pool; backend, location, and credentials remain global
+  restart settings.
 - `sandbox.startup_policy` defaults to `destroy`, which enumerates
   instance-owned metadata and force-deletes inherited backend objects without
   task, network, or supervisor health probes. `reconcile` is the explicit
