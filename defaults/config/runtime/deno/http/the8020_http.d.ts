@@ -38,6 +38,7 @@ declare namespace Zod {
   export class ZodString extends ZodType<string> {
     min(length: number): ZodString;
     max(length: number): ZodString;
+    regex(pattern: RegExp): ZodString;
     email(): ZodString;
     url(): ZodString;
   }

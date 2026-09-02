@@ -15,6 +15,9 @@ import { assert, assertEquals, assertMatch } from "@std/assert";
 type SameKeys<Left, Right> =
   [Exclude<keyof Left, keyof Right>, Exclude<keyof Right, keyof Left>] extends
     [never, never] ? true : false;
+type BundledString = ReturnType<
+  typeof import("./the8020_http.d.ts")["z"]["string"]
+>;
 
 const requestMetadataKeysMatch: SameKeys<
   RequestMetadata,
@@ -24,8 +27,13 @@ const executionMetadataKeysMatch: SameKeys<
   RequestMetadata["execution"],
   BundledCurrentExecutionMetadata
 > = true;
+const bundledStringSupportsRegex: BundledString extends {
+  regex(pattern: RegExp): BundledString;
+} ? true
+  : false = true;
 void requestMetadataKeysMatch;
 void executionMetadataKeysMatch;
+void bundledStringSupportsRegex;
 
 Deno.test("portable self-types match source request metadata", () => {
   const source = context().meta;
