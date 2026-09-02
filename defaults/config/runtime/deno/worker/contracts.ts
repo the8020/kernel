@@ -13,7 +13,8 @@ export interface ExecutionMetadata {
   entrypoint: string;
   debuggerName: string;
   validateEntrypoint?: boolean;
-  databaseAccess?: "full" | "metadata" | "none";
+  databaseBackend: "sqlite" | "postgresql";
+  databaseAccess?: "full" | "none";
   service?: ServiceExecutionMetadata;
 }
 

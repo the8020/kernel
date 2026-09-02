@@ -264,6 +264,21 @@ export type KernelInvoke = (
 ) => Promise<unknown>;
 
 export const kernelInvokeSymbol = Symbol.for("the8020.kernel.invoke");
+export const kernelDatabaseBackendSymbol = Symbol.for(
+  "the8020.kernel.databaseBackend",
+);
+
+export type DatabaseBackend = "sqlite" | "postgresql";
+
+export function kernelDatabaseBackend(): DatabaseBackend {
+  const backend = (globalThis as unknown as Record<symbol, unknown>)[
+    kernelDatabaseBackendSymbol
+  ];
+  if (backend !== "sqlite" && backend !== "postgresql") {
+    throw new Error("kernel database backend metadata is unavailable");
+  }
+  return backend;
+}
 
 function invoke<Result>(
   operation: KernelOperation,

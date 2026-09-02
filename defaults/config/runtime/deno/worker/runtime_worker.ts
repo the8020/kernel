@@ -228,18 +228,9 @@ export class RuntimeWorker {
       const databaseOperation = payload.operation.startsWith("database.");
       const access = this.metadata.databaseAccess ?? "full";
       if (
-        access === "metadata" && payload.operation !== "database.info" &&
-        payload.operation !== "database.scope.close"
-      ) {
-        throw new Error(
-          "kernel operations other than database metadata are unavailable in this Worker",
-        );
-      }
-      if (
         databaseOperation &&
         payload.operation !== "database.scope.close" &&
-        (access === "none" ||
-          access === "metadata" && payload.operation !== "database.info")
+        access === "none"
       ) {
         throw new Error("database SQL is not available to this Worker");
       }

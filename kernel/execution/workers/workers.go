@@ -41,6 +41,7 @@ type Manager struct {
 	control                  Control
 	maximumWorkers           int
 	maximumWorkersPerSandbox int
+	databaseBackend          string
 	nodes                    interface {
 		LocalNodeID() string
 		InvokeWorker(context.Context, nodes.WorkerInvocationRequest) nodes.WorkerInvocationResult
@@ -67,7 +68,7 @@ var (
 	ErrSandboxCapacity = errors.New("sandbox Worker capacity is exhausted")
 )
 
-func New(sandboxes Sandboxes, control Control, maximumWorkers, maximumWorkersPerSandbox int) (*Manager, error) {
+func New(sandboxes Sandboxes, control Control, maximumWorkers, maximumWorkersPerSandbox int, databaseBackend string) (*Manager, error) {
 	if sandboxes == nil || control == nil {
 		return nil, errors.New("sandbox catalog and supervisor control are required")
 	}
@@ -77,7 +78,10 @@ func New(sandboxes Sandboxes, control Control, maximumWorkers, maximumWorkersPer
 	if maximumWorkersPerSandbox < 1 {
 		return nil, errors.New("sandbox maximum Workers must be positive")
 	}
-	return &Manager{sandboxes: sandboxes, control: control, maximumWorkers: maximumWorkers, maximumWorkersPerSandbox: maximumWorkersPerSandbox}, nil
+	if databaseBackend != "sqlite" && databaseBackend != "postgresql" {
+		return nil, errors.New("supported database backend is required")
+	}
+	return &Manager{sandboxes: sandboxes, control: control, maximumWorkers: maximumWorkers, maximumWorkersPerSandbox: maximumWorkersPerSandbox, databaseBackend: databaseBackend}, nil
 }
 
 func (m *Manager) Start(ctx context.Context, runtimeGroupID string, request supervisor.StartWorkerRequest) (Record, error) {
@@ -109,6 +113,7 @@ func (m *Manager) Start(ctx context.Context, runtimeGroupID string, request supe
 	if request.Metadata.DebuggerName == "" {
 		request.Metadata.DebuggerName = fmt.Sprintf("%s:%s:%s:%s", request.Metadata.WorkloadType, request.Metadata.OwnerID, request.Metadata.ExecutionID, request.Metadata.WorkerID)
 	}
+	request.Metadata.DatabaseBackend = m.databaseBackend
 	if err := validateEntrypoint(inspection.Spec, request.Metadata.Entrypoint); err != nil {
 		return Record{}, err
 	}

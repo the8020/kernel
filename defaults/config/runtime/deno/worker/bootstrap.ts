@@ -155,7 +155,7 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
   if (initialized || event.data.type !== "initialize") return;
   initialized = true;
   const { metadata, port } = event.data;
-  const kernelBridge = createKernelBridge(port);
+  const kernelBridge = createKernelBridge(port, metadata.databaseBackend);
   const controller = new AbortController();
   let executionCount = 0;
   const activeRequests = new Map<string, AbortController>();

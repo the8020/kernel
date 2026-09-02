@@ -37,6 +37,8 @@
   Worker limit. CPU and RAM observations never reject Worker creation. The
   Worker-count checks apply across workload types and do not reject dispatch to
   an already running Worker.
+- Worker startup injects the configured non-secret database backend so module
+  imports can construct the correct SQL compiler without a kernel callback.
 - Node-wide and sandbox-local admission failures have distinct typed sentinels;
   service placement may spill a sandbox-local rejection into another compatible
   sandbox, while creating another local sandbox cannot evade node exhaustion.

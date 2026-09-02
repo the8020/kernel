@@ -131,7 +131,7 @@ func TestEvaluationBatchesModulesAndReusesOneRelease(t *testing.T) {
 		t.Fatalf("batch options = %#v", runner.calls)
 	}
 	for _, call := range runner.calls {
-		if call.DatabaseAccess != "metadata" || call.Reuse == nil || !*call.Reuse || call.Parallelism != 1 {
+		if call.DatabaseAccess != "none" || call.Reuse == nil || !*call.Reuse || call.Parallelism != 1 {
 			t.Fatalf("unsafe evaluator options = %#v", call)
 		}
 	}

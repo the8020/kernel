@@ -26,8 +26,9 @@
   cookies, route tokens, or application settings.
 - The kernel bridge uses `AsyncLocalStorage` to retain an exact request/job
   context for every asynchronous continuation and relays only declared generic
-  kernel operations. `database.info` may run during module import; all other
-  database calls require that active context.
+  kernel operations. The non-secret database backend is installed from trusted
+  Worker metadata before module import; every kernel call requires an active
+  request or job context.
 - An entrypoint may export a validated `workerFunctions` map. Only those named
   functions receive bounded JSON input and generic execution context; arbitrary
   exports and `eval` are never callable.

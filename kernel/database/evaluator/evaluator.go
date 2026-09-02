@@ -292,7 +292,7 @@ func (e *Evaluator) evaluateBatch(ctx context.Context, batch []evaluationItem, f
 	record, err := e.jobs.Run(ctx, "database-table-evaluator", "file:///workspace/packages/the8020/db/internal/evaluator.ts", jobs.Options{
 		OwnerID: "the8020/db", Input: evaluationRequest{PackageRoot: packageMountRoot, Tables: batch},
 		GroupKey: "database-table-evaluator", Namespace: "the8020", Timeout: 2 * time.Minute,
-		Parallelism: 1, Reuse: &reuse, ReleaseID: fingerprint, DatabaseAccess: "metadata", CheckModules: modules, Mounts: mounts,
+		Parallelism: 1, Reuse: &reuse, ReleaseID: fingerprint, DatabaseAccess: "none", CheckModules: modules, Mounts: mounts,
 		Permissions: &supervisor.WorkerPermissions{Read: []string{"/opt/runtime", packageMountRoot}},
 	})
 	if err != nil {

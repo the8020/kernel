@@ -84,7 +84,7 @@ func TestWorkerValidationLookupAndTermination(t *testing.T) {
 	spec := model.SandboxSpec{SandboxID: "sandbox", RuntimeGroupID: "group", WorkloadType: model.WorkloadJob, DependencyMode: model.DependencyCachedOnly, Permissions: model.Permissions{ReadPaths: []string{"/programs"}, WritePaths: []string{"/data"}, SystemInfo: true}}
 	sandboxes := &fakeSandboxes{items: []manager.Inspection{{Spec: spec}}}
 	control := &fakeControl{workers: map[string][]supervisor.WorkerStatus{"group": {{WorkerID: "worker", ExecutionID: "execution"}}}}
-	manager, err := New(sandboxes, control, 0, 64)
+	manager, err := New(sandboxes, control, 0, 64, "sqlite")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestWorkerValidationLookupAndTermination(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if started.Worker.WorkerID != "new-worker" || !strings.HasPrefix(control.started.Metadata.DebuggerName, "job:job:new-execution:new-worker") {
+	if started.Worker.WorkerID != "new-worker" || !strings.HasPrefix(control.started.Metadata.DebuggerName, "job:job:new-execution:new-worker") || control.started.Metadata.DatabaseBackend != "sqlite" {
 		t.Fatalf("started=%#v request=%#v", started, control.started)
 	}
 	items, err := manager.List(context.Background(), "sandbox")
@@ -122,7 +122,7 @@ func TestFilteredWorkerListResolvesOnlyTheExactRuntimeGroup(t *testing.T) {
 	spec := model.SandboxSpec{SandboxID: "sandbox", RuntimeGroupID: "group", WorkloadType: model.WorkloadService}
 	sandboxes := &fakeSandboxes{items: []manager.Inspection{{Spec: spec}}}
 	control := &fakeControl{workers: map[string][]supervisor.WorkerStatus{"group": {{WorkerID: "worker"}}}}
-	manager, err := New(sandboxes, control, 0, 64)
+	manager, err := New(sandboxes, control, 0, 64, "sqlite")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestWorkerStartEnforcesNodeMaximum(t *testing.T) {
 	spec := model.SandboxSpec{SandboxID: "sandbox", RuntimeGroupID: "group", WorkloadType: model.WorkloadJob, DependencyMode: model.DependencyCachedOnly, Permissions: model.Permissions{ReadPaths: []string{"/programs"}}}
 	sandboxes := &fakeSandboxes{items: []manager.Inspection{{Spec: spec}}}
 	control := &fakeControl{workers: map[string][]supervisor.WorkerStatus{"group": {{WorkerID: "existing"}}}}
-	manager, err := New(sandboxes, control, 1, 64)
+	manager, err := New(sandboxes, control, 1, 64, "sqlite")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +159,7 @@ func TestWorkerStartEnforcesSandboxWorkerMaximum(t *testing.T) {
 	spec := model.SandboxSpec{SandboxID: "sandbox", RuntimeGroupID: "group", WorkloadType: model.WorkloadJob, DependencyMode: model.DependencyCachedOnly, Permissions: model.Permissions{ReadPaths: []string{"/programs"}}}
 	sandboxes := &fakeSandboxes{items: []manager.Inspection{{Spec: spec}}}
 	control := &fakeControl{workers: map[string][]supervisor.WorkerStatus{"group": {{WorkerID: "first"}, {WorkerID: "second"}}}}
-	manager, err := New(sandboxes, control, 0, 2)
+	manager, err := New(sandboxes, control, 0, 2, "sqlite")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +174,7 @@ func TestResourceObservationsDoNotRejectWorkerAdmission(t *testing.T) {
 	spec := model.SandboxSpec{SandboxID: "sandbox", RuntimeGroupID: "group", WorkloadType: model.WorkloadJob, DependencyMode: model.DependencyCachedOnly, Permissions: model.Permissions{ReadPaths: []string{"/programs"}}}
 	sandboxes := &fakeSandboxes{items: []manager.Inspection{{Spec: spec, Status: model.SandboxStatus{Metrics: model.ResourceMetrics{CPUUsageMicros: 1 << 60, MemoryCurrent: 1 << 60}}}}}
 	control := &fakeControl{workers: map[string][]supervisor.WorkerStatus{"group": {{WorkerID: "existing"}}}}
-	manager, err := New(sandboxes, control, 0, 2)
+	manager, err := New(sandboxes, control, 0, 2, "sqlite")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestResourceObservationsDoNotRejectWorkerAdmission(t *testing.T) {
 func TestWorkerJobDelegationUsesTheExactWorker(t *testing.T) {
 	spec := model.SandboxSpec{SandboxID: "sandbox", RuntimeGroupID: "group", WorkloadType: model.WorkloadJob}
 	control := &fakeControl{workers: map[string][]supervisor.WorkerStatus{"group": {{WorkerID: "worker"}}}}
-	manager, _ := New(&fakeSandboxes{items: []manager.Inspection{{Spec: spec}}}, control, 0, 64)
+	manager, _ := New(&fakeSandboxes{items: []manager.Inspection{{Spec: spec}}}, control, 0, 64, "sqlite")
 	if output, err := manager.RunJob(context.Background(), "worker", nil, nil); err != nil || output.Result != "job" {
 		t.Fatalf("job=%#v err=%v", output, err)
 	}
@@ -208,7 +208,7 @@ func (f *fakeNodeRouter) InvokeWorker(_ context.Context, input nodes.WorkerInvoc
 func TestWorkerInvocationTargetsOneExactLocalWorker(t *testing.T) {
 	spec := model.SandboxSpec{SandboxID: "sandbox-a", RuntimeGroupID: "group-a", WorkloadType: model.WorkloadService}
 	control := &fakeControl{}
-	manager, _ := New(&fakeSandboxes{items: []manager.Inspection{{Spec: spec}}}, control, 0, 64)
+	manager, _ := New(&fakeSandboxes{items: []manager.Inspection{{Spec: spec}}}, control, 0, 64, "sqlite")
 	router := &fakeNodeRouter{local: "node-a"}
 	manager.SetNodeRouter(router)
 	input := nodes.WorkerInvocationRequest{NodeID: "node-a", SandboxID: "sandbox-a", WorkerID: "worker-a", Function: "example.inspect", Input: map[string]any{"id": float64(7)}}
@@ -239,7 +239,7 @@ func TestWorkerInvocationTargetsOneExactLocalWorker(t *testing.T) {
 func TestWorkerInvocationRejectsMismatchedExactTarget(t *testing.T) {
 	spec := model.SandboxSpec{SandboxID: "sandbox-a", RuntimeGroupID: "group-a", WorkloadType: model.WorkloadService}
 	control := &fakeControl{}
-	manager, _ := New(&fakeSandboxes{items: []manager.Inspection{{Spec: spec}}}, control, 0, 64)
+	manager, _ := New(&fakeSandboxes{items: []manager.Inspection{{Spec: spec}}}, control, 0, 64, "sqlite")
 	manager.SetNodeRouter(&fakeNodeRouter{local: "node-a"})
 	base := nodes.WorkerInvocationRequest{NodeID: "node-a", SandboxID: "sandbox-a", WorkerID: "worker-a", Function: "example.inspect", Input: nil}
 
@@ -270,7 +270,7 @@ func TestWorkerInvocationRejectsMismatchedExactTarget(t *testing.T) {
 
 func TestWorkerInvocationForwardsOnlyToNamedRemoteNode(t *testing.T) {
 	control := &fakeControl{}
-	manager, _ := New(&fakeSandboxes{}, control, 0, 64)
+	manager, _ := New(&fakeSandboxes{}, control, 0, 64, "sqlite")
 	router := &fakeNodeRouter{local: "node-a", result: nodes.WorkerInvocationResult{OK: true, Output: "remote"}}
 	manager.SetNodeRouter(router)
 	input := nodes.WorkerInvocationRequest{NodeID: "node-b", SandboxID: "sandbox-b", WorkerID: "worker-b", Function: "example.inspect", Input: map[string]any{"value": "opaque"}}

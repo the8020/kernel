@@ -358,7 +358,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		consoleManager.SetRuntime(sandboxManager)
 		cleanup.console = consoleManager
 	}
-	workerManager, err := workers.New(sandboxManager, supervisorClient, nodeLimits.MaximumWorkers, maximumWorkersPerSandbox)
+	workerManager, err := workers.New(sandboxManager, supervisorClient, nodeLimits.MaximumWorkers, maximumWorkersPerSandbox, systemDatabase.Status().Backend)
 	if err != nil {
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime

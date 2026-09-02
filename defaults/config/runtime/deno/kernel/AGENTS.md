@@ -33,9 +33,10 @@
   Transactions use opaque kernel-held tokens. Table administration delegates to
   the existing command bus. The SDK never opens a database connection or
   receives credentials inside the sandbox.
-- `database.info` is the sole operation allowed during module import. Other
-  database calls require an active service request or job execution; evaluator
-  Workers are metadata-only.
+- The kernel injects the non-secret SQLite/PostgreSQL backend into Worker
+  metadata before module import so database query compilation needs no bootstrap
+  callback. Every kernel operation requires an active service request or job
+  execution; evaluator Workers have database access disabled.
 - `worker.invoke` requires exact node, sandbox, and Worker IDs plus a bounded
   function name and JSON input. It returns JSON or a structured generic error;
   it never knows which application registered the function.

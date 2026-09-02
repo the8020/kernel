@@ -100,6 +100,7 @@ type ExecutionMetadata struct {
 	Entrypoint         string                    `json:"entrypoint"`
 	DebuggerName       string                    `json:"debuggerName"`
 	ValidateEntrypoint bool                      `json:"validateEntrypoint,omitempty"`
+	DatabaseBackend    string                    `json:"databaseBackend"`
 	DatabaseAccess     string                    `json:"databaseAccess,omitempty"`
 	Service            *ServiceExecutionMetadata `json:"service,omitempty"`
 }

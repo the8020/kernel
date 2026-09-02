@@ -16,7 +16,7 @@
   and participates in reuse/group compatibility.
 - Jobs use the same managed Deno image and read-only installed-package mount as
   services. Each invocation supplies an execution context to the generic kernel
-  bridge, including optional full, metadata-only, or absent database access.
+  bridge, including optional full or absent database access.
 - `Options.CheckModules` asks the existing supervisor validation path to
   type-check a bounded module list before the Worker imports its entrypoint.
   Extra mounts and permissions participate in runtime/Worker compatibility;

@@ -25,6 +25,7 @@ function metadata(
     ownerId: `owner-${suffix}`,
     workloadId: `workload-${suffix}`,
     releaseId: "test",
+    databaseBackend: "sqlite",
     entrypoint,
     debuggerName:
       `${workloadType}:owner-${suffix}:execution-${suffix}:worker-${suffix}`,

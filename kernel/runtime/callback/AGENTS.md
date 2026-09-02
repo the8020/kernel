@@ -23,14 +23,14 @@
   preserves concurrent monitor fields and rechecks terminal state before write.
 - Authentication and administrative calls additionally require service workload identity, execution/Worker/sandbox/service/request identifiers, a matching active kernel request registration, and a correlation ID; password payloads are never logged.
 - Administrative calls require the active request's kernel-trusted bootstrap-administrator identity and dispatch the existing transport-independent command registry without duplicating handlers.
-- `database.info` is available to identified service/job Workers during module
-  import and reveals no credentials. SQL and transaction calls require the
-  supervisor-provided active service request or job execution context and
-  delegate to the kernel-owned database.
+- Database calls require the supervisor-provided active service request or job
+  execution context and delegate to the kernel-owned database. The backend name
+  needed during module import travels in non-secret Worker metadata instead of a
+  callback.
 - Database transaction tokens are scoped by runtime group, sandbox, Worker,
   Worker execution, and request/job identity. Request completion closes that
   exact scope; Worker termination closes its scope prefix, rolling back leaked
-  transactions. Metadata-only evaluator Workers may call only `database.info`.
+  transactions. Evaluator Workers have database calls disabled.
 - Worker invocation additionally requires an authenticated active request,
   applies a five-second context, and forwards one exact node/sandbox/Worker
   target while treating the registered function and JSON as opaque.

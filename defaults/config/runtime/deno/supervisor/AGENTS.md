@@ -39,9 +39,10 @@
   idle-since timestamp so the kernel can apply Worker keepalive with a
   deterministic clock.
 - Kernel database callbacks carry the supervisor's exact service-request or job
-  execution identity. Worker policy selects full, metadata-only, or no database
-  access; metadata-only permits only `database.info`. Request completion and
-  Worker shutdown close corresponding kernel transaction scopes.
+  execution identity. The kernel-selected backend is available synchronously
+  before entrypoint import, while Worker policy either permits or denies
+  database operations. Request completion and Worker shutdown close
+  corresponding kernel transaction scopes.
 
 # Lifecycle
 

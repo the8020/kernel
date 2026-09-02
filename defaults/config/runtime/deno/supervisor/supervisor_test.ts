@@ -137,7 +137,7 @@ Deno.test("closing a Worker requests transaction cleanup for its scope", async (
   );
 });
 
-Deno.test("metadata-only evaluator Workers cannot execute SQL or administration", async () => {
+Deno.test("database-disabled Workers cannot execute SQL", async () => {
   const supervisor = new Supervisor({
     runtimeGroupId: "group-test",
     sandboxId: "sandbox-test",
@@ -148,12 +148,12 @@ Deno.test("metadata-only evaluator Workers cannot execute SQL or administration"
     workerStopGraceMilliseconds: 25,
     kernelCall: () => Promise.resolve({ columns: [], rows: [] }),
   });
-  const restricted = metadata("wrk-metadata");
+  const restricted = metadata("wrk-no-database");
   restricted.entrypoint = new URL(
     "../examples/service_kernel.ts",
     import.meta.url,
   ).href;
-  restricted.databaseAccess = "metadata";
+  restricted.databaseAccess = "none";
   const worker = await supervisor.startWorker({
     metadata: restricted,
     permissions: { read: [examples] },
@@ -164,12 +164,7 @@ Deno.test("metadata-only evaluator Workers cannot execute SQL or administration"
         new Request("http://service/database-query"),
       ),
     Error,
-    "kernel operations other than database metadata are unavailable",
-  );
-  await assertRejects(
-    () => worker.dispatchService(new Request("http://service/admin")),
-    Error,
-    "kernel operations other than database metadata are unavailable",
+    "database SQL is not available",
   );
   await supervisor.drain();
 });
@@ -185,6 +180,7 @@ function metadata(id: string): ExecutionMetadata {
     ownerId: "owner",
     workloadId: "service-a",
     releaseId: "test",
+    databaseBackend: "sqlite",
     entrypoint: new URL("../examples/service.ts", import.meta.url).href,
     debuggerName: `service:owner:execution-${id}:${id}`,
   };

@@ -1,6 +1,11 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { ServiceRequestMetadata } from "../worker/contracts.ts";
-import { type KernelInvoke, kernelInvokeSymbol } from "./mod.ts";
+import {
+  type DatabaseBackend,
+  kernelDatabaseBackendSymbol,
+  type KernelInvoke,
+  kernelInvokeSymbol,
+} from "./mod.ts";
 
 export interface KernelExecutionContext {
   requestId: string;
@@ -35,25 +40,16 @@ export interface KernelBridge {
   close(): void;
 }
 
-export function createKernelBridge(port: MessagePort): KernelBridge {
+export function createKernelBridge(
+  port: MessagePort,
+  databaseBackend?: DatabaseBackend,
+): KernelBridge {
   let sequence = 0;
   const requestContext = new AsyncLocalStorage<KernelExecutionContext>();
   const pending = new Map<string, Pending>();
   const invoke: KernelInvoke = (operation, input) => {
     const request = requestContext.getStore();
     if (request === undefined) {
-      if (operation === "database.info") {
-        const correlationId = `kernel-${++sequence}-${crypto.randomUUID()}`;
-        const result = new Promise<unknown>((resolve, reject) => {
-          pending.set(correlationId, { resolve, reject });
-        });
-        port.postMessage({
-          type: "kernel_call",
-          correlationId,
-          payload: { operation, arguments: input },
-        });
-        return result;
-      }
       return Promise.reject(
         new Error("kernel API call must begin inside an execution"),
       );
@@ -100,6 +96,11 @@ export function createKernelBridge(port: MessagePort): KernelBridge {
   };
   (globalThis as unknown as Record<symbol, unknown>)[kernelInvokeSymbol] =
     invoke;
+  if (databaseBackend !== undefined) {
+    (globalThis as unknown as Record<symbol, unknown>)[
+      kernelDatabaseBackendSymbol
+    ] = databaseBackend;
+  }
 
   return {
     async closeExecution(): Promise<void> {
@@ -134,6 +135,11 @@ export function createKernelBridge(port: MessagePort): KernelBridge {
       delete (globalThis as unknown as Record<symbol, unknown>)[
         kernelInvokeSymbol
       ];
+      if (databaseBackend !== undefined) {
+        delete (globalThis as unknown as Record<symbol, unknown>)[
+          kernelDatabaseBackendSymbol
+        ];
+      }
       for (const call of pending.values()) {
         call.reject(new Error("kernel API bridge closed"));
       }

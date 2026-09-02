@@ -1,7 +1,7 @@
 import { assertEquals, assertRejects } from "../test/assert.ts";
 import type { ServiceRequestMetadata } from "../worker/contracts.ts";
 import { createKernelBridge } from "./bridge.ts";
-import { AdminCommandError, kernel } from "./mod.ts";
+import { AdminCommandError, kernel, kernelDatabaseBackend } from "./mod.ts";
 
 const metadata: ServiceRequestMetadata = {
   requestId: "request-1",
@@ -607,12 +607,18 @@ Deno.test("typed secret and package APIs delegate to generic administrative comm
   }
 });
 
-Deno.test("kernel auth call outside request context fails safely", async () => {
+Deno.test("Worker metadata is synchronous and kernel calls require execution context", async () => {
   const channel = new MessageChannel();
-  const bridge = createKernelBridge(channel.port1);
+  const bridge = createKernelBridge(channel.port1, "postgresql");
   try {
+    assertEquals(kernelDatabaseBackend(), "postgresql");
     await assertRejects(
       () => kernel.auth.logoutCurrent(),
+      Error,
+      "inside an execution",
+    );
+    await assertRejects(
+      () => kernel.database.info(),
       Error,
       "inside an execution",
     );

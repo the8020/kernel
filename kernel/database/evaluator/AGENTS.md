@@ -16,7 +16,7 @@
 - Mount and read only the activated shared package tree. Private development
   overlays are never schema sources; staged activation roots temporarily replace
   only their matching package mounts.
-- Evaluator Workers have metadata-only database access, no writes, imports,
+- Evaluator Workers have no database access, no writes, imports,
   external network, administration, or direct credentials.
 - Initial and explicit full synchronization discovers all package tables.
   Ordinary deployment reevaluates only new/changed/deleted definitions and

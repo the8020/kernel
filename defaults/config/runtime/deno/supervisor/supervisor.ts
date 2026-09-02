@@ -152,6 +152,12 @@ export class Supervisor {
     if (options.metadata.workloadType !== this.options.workloadType) {
       throw new Error("Worker workload type does not match runtime group");
     }
+    if (
+      options.metadata.databaseBackend !== "sqlite" &&
+      options.metadata.databaseBackend !== "postgresql"
+    ) {
+      throw new Error("Worker database backend metadata is required");
+    }
     const metadata = {
       ...options.metadata,
       nodeId: this.options.nodeId,
@@ -223,21 +229,9 @@ export class Supervisor {
         : async (call) => {
           const databaseAccess = metadata.databaseAccess ?? "full";
           if (
-            databaseAccess === "metadata" &&
-            call.operation !== "database.info" &&
-            call.operation !== "database.scope.close"
-          ) {
-            throw new Error(
-              "kernel operations other than database metadata are unavailable to this Worker",
-            );
-          }
-          if (
             call.operation.startsWith("database.") &&
             call.operation !== "database.scope.close" &&
-            !(
-              call.operation === "database.info" &&
-              databaseAccess === "metadata"
-            ) && databaseAccess !== "full"
+            databaseAccess !== "full"
           ) {
             throw new Error(
               "database SQL is not available to this Worker",
