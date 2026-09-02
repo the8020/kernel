@@ -32,7 +32,7 @@ func TestValidateConsoleOptions(t *testing.T) {
 	}
 }
 
-func TestServiceProcessReceivesReservedDependencyModeForInSandboxValidation(t *testing.T) {
+func TestSupervisorProcessReceivesReservedValidationPermissions(t *testing.T) {
 	sandbox := model.SandboxSpec{
 		SandboxID: "sandbox", RuntimeGroupID: "group", WorkloadType: model.WorkloadService,
 		DependencyMode: model.DependencyCachedOnly,
@@ -52,8 +52,8 @@ func TestServiceProcessReceivesReservedDependencyModeForInSandboxValidation(t *t
 
 	sandbox.WorkloadType = model.WorkloadJob
 	arguments = DenoProcessArguments([]string{"deno", "run", "--cached-only", "/opt/runtime/supervisor/main.ts"}, sandbox, config)
-	if containsExact(arguments, "--allow-run=/usr/bin/deno") {
-		t.Fatalf("application workload received run permission: %#v", arguments)
+	if !containsExact(arguments, "--allow-run=/usr/bin/deno") {
+		t.Fatalf("job supervisor cannot run the pinned validator: %#v", arguments)
 	}
 }
 

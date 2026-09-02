@@ -55,6 +55,8 @@
   explicitly required administrator debugging tools.
   `stage-service-runtime.sh` excludes tests, DOX files, examples, application
   source, and unrelated files.
+- Service and job supervisors may run only the pinned Deno binary for module
+  validation; nested application Workers do not inherit subprocess permission.
 
 # Work Guidance
 

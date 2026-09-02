@@ -184,11 +184,10 @@ func DenoProcessArguments(args []string, sandbox model.SandboxSpec, config Proce
 	if sandbox.Permissions.SystemInfo {
 		result = insertBeforeEntrypoint(result, "--allow-sys=hostname,osRelease")
 	}
-	if sandbox.WorkloadType == model.WorkloadService {
-		// The infrastructure supervisor uses the pinned Deno binary only for
-		// service type checking. Program Workers never receive run permission.
-		result = insertBeforeEntrypoint(result, "--allow-run=/usr/bin/deno")
-	}
+	// The infrastructure supervisor uses only the pinned Deno binary for service
+	// validation and requested job module checks. Program Workers never inherit
+	// the supervisor's run permission.
+	result = insertBeforeEntrypoint(result, "--allow-run=/usr/bin/deno")
 	result = insertBeforeEntrypoint(result, "--inspect="+config.InspectorHost+":"+strconv.Itoa(config.InspectorPort))
 	for _, flag := range sandbox.RuntimeProfile.DenoStartupFlags {
 		result = insertBeforeEntrypoint(result, flag)
