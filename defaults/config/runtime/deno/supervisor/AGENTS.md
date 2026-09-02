@@ -29,9 +29,11 @@
   kernel completion but rejects a binding owned by another Worker. Live
   WebSockets cannot be swept.
 - Exact Worker control addresses one known Worker and invokes only a function
-  explicitly registered by its entrypoint. Request/response JSON, errors,
-  timeout, cancellation, and sizes are bounded; no Worker scan or arbitrary
-  export invocation occurs.
+  explicitly registered by its entrypoint. An optional persistent-execution
+  target must match that Worker's live binding in its version-specific service
+  pool before invocation. Request and response JSON, errors, timeout,
+  cancellation, and sizes are bounded; no Worker scan or arbitrary export
+  invocation occurs.
 - Physical WebSockets are relayed with bounded buffers. The supervisor never
   decodes the application's text or binary protocol.
 - Status exposes bounded ready/failed Worker identity, load, and logs. A Worker

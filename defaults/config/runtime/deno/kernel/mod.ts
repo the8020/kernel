@@ -297,6 +297,7 @@ export interface WorkerInvokeInput {
   nodeId: string;
   sandboxId: string;
   workerId: string;
+  persistentExecutionId?: string;
   function: string;
   input: unknown;
 }
@@ -683,6 +684,9 @@ function assertWorkerInvokeInput(
     typeof input.nodeId !== "string" || input.nodeId.length === 0 ||
     typeof input.sandboxId !== "string" || input.sandboxId.length === 0 ||
     typeof input.workerId !== "string" || input.workerId.length === 0 ||
+    (input.persistentExecutionId !== undefined &&
+      (typeof input.persistentExecutionId !== "string" ||
+        input.persistentExecutionId.length === 0)) ||
     typeof input.function !== "string" || input.function.length === 0 ||
     input.function.length > 128
   ) throw new TypeError("exact Worker target and function are required");

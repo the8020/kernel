@@ -82,11 +82,12 @@ type CapacityProvider interface {
 }
 
 type WorkerInvocationRequest struct {
-	NodeID    string `json:"node_id"`
-	SandboxID string `json:"sandbox_id"`
-	WorkerID  string `json:"worker_id"`
-	Function  string `json:"function"`
-	Input     any    `json:"input"`
+	NodeID                string `json:"node_id"`
+	SandboxID             string `json:"sandbox_id"`
+	WorkerID              string `json:"worker_id"`
+	PersistentExecutionID string `json:"persistent_execution_id,omitempty"`
+	Function              string `json:"function"`
+	Input                 any    `json:"input"`
 }
 
 type WorkerInvocationError struct {

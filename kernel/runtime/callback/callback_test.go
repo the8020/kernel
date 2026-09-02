@@ -414,13 +414,14 @@ func TestAuthenticatedServiceCanInvokeOneExactWorker(t *testing.T) {
 		ExecutionID: "source-execution", SourceWorkerID: "source-worker", ServiceID: active.ServiceID,
 		RequestID: active.RequestID, SourceSandboxID: spec.SandboxID,
 		TargetNodeID: "node-b", TargetSandboxID: "sandbox-b", TargetWorkerID: "worker-b",
-		Function: "example.inspect", Input: map[string]any{"id": "opaque"},
+		TargetPersistentExecutionID: "persistent-target",
+		Function:                    "example.inspect", Input: map[string]any{"id": "opaque"},
 	}
 	response := runtimeControlCall(t, server, spec, "/v1/runtime/worker/invoke", protocol.MessageWorkerInvoke, payload)
 	if response.Code != http.StatusOK {
 		t.Fatalf("invoke status=%d body=%q", response.Code, response.Body.String())
 	}
-	if len(invoker.calls) != 1 || invoker.calls[0].NodeID != "node-b" || invoker.calls[0].SandboxID != "sandbox-b" || invoker.calls[0].WorkerID != "worker-b" || invoker.calls[0].Function != "example.inspect" {
+	if len(invoker.calls) != 1 || invoker.calls[0].NodeID != "node-b" || invoker.calls[0].SandboxID != "sandbox-b" || invoker.calls[0].WorkerID != "worker-b" || invoker.calls[0].PersistentExecutionID != "persistent-target" || invoker.calls[0].Function != "example.inspect" {
 		t.Fatalf("exact invocation=%#v", invoker.calls)
 	}
 	var envelope protocol.Envelope

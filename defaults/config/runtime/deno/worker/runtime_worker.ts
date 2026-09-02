@@ -308,11 +308,12 @@ export class RuntimeWorker {
     functionName: string,
     input: unknown,
     signal?: AbortSignal,
+    persistentExecutionId?: string,
   ): Promise<WorkerInvocationResult> {
     const response = await this.#request(
       {
         type: "worker_invoke",
-        payload: { function: functionName, input },
+        payload: { function: functionName, input, persistentExecutionId },
       },
       [],
       signal,

@@ -89,7 +89,7 @@ func TestStatusWorkersAndControlRoutes(t *testing.T) {
 	if err := client.StopWorker(context.Background(), spec, "worker", true); err != nil {
 		t.Fatal(err)
 	}
-	if output, err := client.InvokeWorker(context.Background(), spec, "worker", "example.inspect", map[string]any{"id": 1}); err != nil || !output.OK || output.Output != "reply" {
+	if output, err := client.InvokeWorker(context.Background(), spec, "worker", "persistent-1", "example.inspect", map[string]any{"id": 1}); err != nil || !output.OK || output.Output != "reply" {
 		t.Fatalf("Worker invocation=%#v err=%v", output, err)
 	}
 	if err := client.ConfigureService(context.Background(), spec, "service-a", nil, 2); err != nil {

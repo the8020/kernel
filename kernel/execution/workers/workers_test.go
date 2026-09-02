@@ -29,17 +29,18 @@ func (f *fakeSandboxes) Inspect(_ context.Context, id string) (manager.Inspectio
 }
 
 type fakeControl struct {
-	workers   map[string][]supervisor.WorkerStatus
-	lists     int
-	immediate bool
-	stoppedIn string
-	started   supervisor.StartWorkerRequest
-	invokedIn model.SandboxSpec
-	invokedID string
-	function  string
-	input     any
-	invoke    supervisor.WorkerInvocationResult
-	invokeErr error
+	workers      map[string][]supervisor.WorkerStatus
+	lists        int
+	immediate    bool
+	stoppedIn    string
+	started      supervisor.StartWorkerRequest
+	invokedIn    model.SandboxSpec
+	invokedID    string
+	persistentID string
+	function     string
+	input        any
+	invoke       supervisor.WorkerInvocationResult
+	invokeErr    error
 }
 
 func (f *fakeControl) Workers(_ context.Context, spec model.SandboxSpec) ([]supervisor.WorkerStatus, error) {
@@ -55,8 +56,8 @@ func (f *fakeControl) StopWorker(_ context.Context, spec model.SandboxSpec, _ st
 	f.stoppedIn = spec.RuntimeGroupID
 	return nil
 }
-func (f *fakeControl) InvokeWorker(_ context.Context, spec model.SandboxSpec, workerID, function string, input any) (supervisor.WorkerInvocationResult, error) {
-	f.invokedIn, f.invokedID, f.function, f.input = spec, workerID, function, input
+func (f *fakeControl) InvokeWorker(_ context.Context, spec model.SandboxSpec, workerID, persistentID, function string, input any) (supervisor.WorkerInvocationResult, error) {
+	f.invokedIn, f.invokedID, f.persistentID, f.function, f.input = spec, workerID, persistentID, function, input
 	if f.invokeErr != nil {
 		return supervisor.WorkerInvocationResult{}, f.invokeErr
 	}

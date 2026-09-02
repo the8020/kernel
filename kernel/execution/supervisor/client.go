@@ -237,7 +237,7 @@ func (c *Client) StopWorker(ctx context.Context, spec model.SandboxSpec, workerI
 	}{Immediate: immediate}, protocol.MessageWorkerStateChange, nil)
 }
 
-func (c *Client) InvokeWorker(ctx context.Context, spec model.SandboxSpec, workerID, function string, input any) (WorkerInvocationResult, error) {
+func (c *Client) InvokeWorker(ctx context.Context, spec model.SandboxSpec, workerID, persistentExecutionID, function string, input any) (WorkerInvocationResult, error) {
 	if workerID == "" || function == "" || len(function) > 128 {
 		return WorkerInvocationResult{}, errors.New("Worker ID and registered function are required")
 	}
@@ -250,9 +250,10 @@ func (c *Client) InvokeWorker(ctx context.Context, spec model.SandboxSpec, worke
 	}
 	var result WorkerInvocationResult
 	if err := c.control(ctx, spec, "/v1/workers/"+url.PathEscape(workerID)+"/invoke", protocol.MessageWorkerInvoke, struct {
-		Function string `json:"function"`
-		Input    any    `json:"input"`
-	}{Function: function, Input: input}, protocol.MessageWorkerResult, &result); err != nil {
+		Function              string `json:"function"`
+		Input                 any    `json:"input"`
+		PersistentExecutionID string `json:"persistent_execution_id,omitempty"`
+	}{Function: function, Input: input, PersistentExecutionID: persistentExecutionID}, protocol.MessageWorkerResult, &result); err != nil {
 		return WorkerInvocationResult{}, err
 	}
 	encoded, err := json.Marshal(result.Output)

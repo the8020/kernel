@@ -46,7 +46,24 @@ export function createKernelBridge(
 ): KernelBridge {
   let sequence = 0;
   const requestContext = new AsyncLocalStorage<KernelExecutionContext>();
+  const persistentContexts = new Map<string, KernelExecutionContext>();
   const pending = new Map<string, Pending>();
+  const requestExecutionContext = (
+    metadata: KernelExecutionContext,
+  ): KernelExecutionContext => {
+    const persistentId = metadata.persistentExecutionId;
+    if (persistentId === undefined) return metadata;
+    const existing = persistentContexts.get(persistentId);
+    if (existing === undefined) {
+      const context = { ...metadata };
+      persistentContexts.set(persistentId, context);
+      return context;
+    }
+    existing.requestId = metadata.requestId;
+    existing.serviceId = metadata.serviceId;
+    existing.auth = metadata.auth;
+    return existing;
+  };
   const invoke: KernelInvoke = (operation, input) => {
     const request = requestContext.getStore();
     if (request === undefined) {
@@ -92,6 +109,19 @@ export function createKernelBridge(
         },
       },
     });
+    if (
+      operation === "execution.completePersistent" &&
+      request.persistentExecutionId !== undefined
+    ) {
+      return result.then((value) => {
+        if (
+          persistentContexts.get(request.persistentExecutionId!) === request
+        ) {
+          persistentContexts.delete(request.persistentExecutionId!);
+        }
+        return value;
+      });
+    }
     return result;
   };
   (globalThis as unknown as Record<symbol, unknown>)[kernelInvokeSymbol] =
@@ -110,13 +140,16 @@ export function createKernelBridge(
       metadata: ServiceRequestMetadata,
       callback: () => Result,
     ): Result {
-      return requestContext.run(metadata, callback);
+      return requestContext.run(requestExecutionContext(metadata), callback);
     },
     withExecution<Result>(
       metadata: KernelExecutionContext,
       callback: () => Result,
     ): Result {
-      return requestContext.run(metadata, callback);
+      const context = metadata.persistentExecutionId === undefined
+        ? metadata
+        : persistentContexts.get(metadata.persistentExecutionId) ?? metadata;
+      return requestContext.run(context, callback);
     },
     handle(message: BridgeMessage): boolean {
       if (
@@ -144,6 +177,7 @@ export function createKernelBridge(
         call.reject(new Error("kernel API bridge closed"));
       }
       pending.clear();
+      persistentContexts.clear();
       requestContext.disable();
     },
   };

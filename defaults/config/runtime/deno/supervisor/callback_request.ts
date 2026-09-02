@@ -52,6 +52,10 @@ export function kernelCallbackRequest(
           target_node_id: call.arguments.nodeId,
           target_sandbox_id: call.arguments.sandboxId,
           target_worker_id: call.arguments.workerId,
+          ...(call.arguments.persistentExecutionId === undefined ? {} : {
+            target_persistent_execution_id:
+              call.arguments.persistentExecutionId,
+          }),
           function: call.arguments.function,
           input: call.arguments.input,
           ...identity,

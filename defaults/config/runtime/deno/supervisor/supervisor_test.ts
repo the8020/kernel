@@ -23,6 +23,7 @@ Deno.test("kernel callback payloads contain only operation-owned fields", () => 
       nodeId: "node-target",
       sandboxId: "sbx-target01",
       workerId: "wrk-target01",
+      persistentExecutionId: "persistent-target",
       function: "example.inspect",
       input: { value: 1 },
     },
@@ -35,6 +36,7 @@ Deno.test("kernel callback payloads contain only operation-owned fields", () => 
       target_node_id: "node-target",
       target_sandbox_id: "sbx-target01",
       target_worker_id: "wrk-target01",
+      target_persistent_execution_id: "persistent-target",
       function: "example.inspect",
       input: { value: 1 },
       execution_id: "execution-test",
@@ -406,6 +408,7 @@ Deno.test("persistent executions reserve hard slots and return to the same Worke
   });
   const workerMetadata = [metadata("persistent-a"), metadata("persistent-b")];
   for (const item of workerMetadata) {
+    item.workloadId = "service-version-a";
     item.service = {
       serviceId: "service-a",
       generation: 1,
@@ -423,7 +426,7 @@ Deno.test("persistent executions reserve hard slots and return to the same Worke
     );
   }
   supervisor.configureService(
-    "service-a",
+    "service-version-a",
     workers.map((worker) => worker.metadata.workerId),
     1,
   );
@@ -433,7 +436,7 @@ Deno.test("persistent executions reserve hard slots and return to the same Worke
     targetWorkerId?: string,
   ) =>
     supervisor.handler(
-      new Request("http://runtime/v1/services/service-a/dispatch", {
+      new Request("http://runtime/v1/services/service-version-a/dispatch", {
         method: "POST",
         headers: {
           authorization: `Bearer ${token}`,
@@ -466,12 +469,12 @@ Deno.test("persistent executions reserve hard slots and return to the same Worke
       1,
     ]);
     supervisor.completePersistentExecution(
-      "service-a",
+      "service-version-a",
       "execution-one",
       firstWorker!,
     );
     supervisor.completePersistentExecution(
-      "service-a",
+      "service-version-a",
       "execution-one",
       firstWorker!,
     );
@@ -485,7 +488,7 @@ Deno.test("persistent executions reserve hard slots and return to the same Worke
     let mismatched = "";
     try {
       supervisor.completePersistentExecution(
-        "service-a",
+        "service-version-a",
         "execution-three",
         secondWorker!,
       );
@@ -514,6 +517,7 @@ Deno.test("session reservation expiry starts an independent Worker idle clock", 
     now: () => now,
   });
   const workerMetadata = metadata("keepalive-worker");
+  workerMetadata.workloadId = "service-version-a";
   workerMetadata.service = {
     serviceId: "service-a",
     generation: 1,
@@ -524,11 +528,15 @@ Deno.test("session reservation expiry starts an independent Worker idle clock", 
     metadata: workerMetadata,
     permissions: { read: [examples] },
   });
-  supervisor.configureService("service-a", [worker.metadata.workerId], 1);
+  supervisor.configureService(
+    "service-version-a",
+    [worker.metadata.workerId],
+    1,
+  );
   try {
     assertEquals(supervisor.workers()[0]?.idle_since_ms, 1_000);
     const response = await supervisor.handler(
-      new Request("http://runtime/v1/services/service-a/dispatch", {
+      new Request("http://runtime/v1/services/service-version-a/dispatch", {
         method: "POST",
         headers: {
           authorization: `Bearer ${token}`,
@@ -542,6 +550,23 @@ Deno.test("session reservation expiry starts an independent Worker idle clock", 
     await response.body?.cancel();
     assertEquals(supervisor.workers()[0]?.in_flight, 1);
     assertEquals(supervisor.workers()[0]?.idle_since_ms, undefined);
+
+    const mismatch = await supervisor.invokeWorker(
+      worker.metadata.workerId,
+      "example.missing",
+      null,
+      new AbortController().signal,
+      "session-other",
+    );
+    assertEquals(mismatch.error?.code, "target_mismatch");
+    const exact = await supervisor.invokeWorker(
+      worker.metadata.workerId,
+      "example.missing",
+      null,
+      new AbortController().signal,
+      "session-one",
+    );
+    assertEquals(exact.error?.code, "function_not_found");
 
     now = 1_100;
     const expired = supervisor.workers()[0];

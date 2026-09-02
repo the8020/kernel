@@ -28,17 +28,18 @@
   only that supervisor. It never enumerates unrelated sandboxes merely to find
   one known group.
 - Invocation verifies node, sandbox, and Worker identity, never scans unrelated
-  Workers, forwards cross-node only to the exact authenticated node, and returns
-  bounded structured target/function/timeout/application errors.
+  Workers, carries an optional persistent-execution target for supervisor
+  binding validation, forwards cross-node only to the exact authenticated node,
+  and returns bounded structured target/function/timeout/application errors.
 - Workload managers with a durable Worker-to-group association stop through
   `StopInGroup`; unrelated unavailable sandboxes must not block owned Worker
   cleanup.
 - Worker startup serializes admission, enforces the existing node-wide Worker
   budget, and immediately before creation re-inspects the exact target sandbox.
-  It refuses creation when that sandbox is at the kernel-wide per-sandbox
-  Worker limit. CPU and RAM observations never reject Worker creation. The
-  Worker-count checks apply across workload types and do not reject dispatch to
-  an already running Worker.
+  It refuses creation when that sandbox is at the kernel-wide per-sandbox Worker
+  limit. CPU and RAM observations never reject Worker creation. The Worker-count
+  checks apply across workload types and do not reject dispatch to an already
+  running Worker.
 - Worker startup injects the configured non-secret database backend so module
   imports can construct the correct SQL compiler without a kernel callback.
 - Node-wide and sandbox-local admission failures have distinct typed sentinels;

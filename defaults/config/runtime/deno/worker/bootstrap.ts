@@ -296,11 +296,20 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
             const input = message.payload as {
               function?: unknown;
               input?: unknown;
+              persistentExecutionId?: unknown;
             };
             const name = typeof input.function === "string"
               ? input.function
               : "";
             const handler = workerFunctions[name];
+            const persistentExecutionId = input.persistentExecutionId;
+            if (
+              persistentExecutionId !== undefined &&
+              (typeof persistentExecutionId !== "string" ||
+                persistentExecutionId.length === 0)
+            ) {
+              throw new TypeError("persistent execution ID must be non-empty");
+            }
             if (handler === undefined) {
               port.postMessage({
                 type: "worker_result",
@@ -324,6 +333,7 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
                 {
                   requestId: message.correlationId,
                   serviceId: metadata.workloadId,
+                  persistentExecutionId,
                 },
                 async () => {
                   try {

@@ -240,11 +240,10 @@ export class Supervisor {
           const result = await this.options.kernelCall!(call);
           if (
             call.operation === "execution.completePersistent" &&
-            call.persistentExecutionId !== undefined &&
-            call.serviceId !== undefined
+            call.persistentExecutionId !== undefined
           ) {
             this.completePersistentExecution(
-              call.serviceId,
+              metadata.workloadId,
               call.persistentExecutionId,
               call.workerId,
             );
@@ -286,6 +285,7 @@ export class Supervisor {
     functionName: string,
     input: unknown,
     signal: AbortSignal,
+    persistentExecutionId?: string,
   ): Promise<WorkerInvocationResult> {
     const worker = this.#workers.get(workerId);
     if (worker === undefined || worker.closed || worker.draining) {
@@ -297,7 +297,25 @@ export class Supervisor {
         },
       };
     }
-    return await worker.invoke(functionName, input, signal);
+    if (persistentExecutionId !== undefined) {
+      const binding = this.#servicePools.get(worker.metadata.workloadId)
+        ?.bindings.get(persistentExecutionId);
+      if (binding?.workerId !== workerId) {
+        return {
+          ok: false,
+          error: {
+            code: "target_mismatch",
+            message: "persistent execution does not match Worker",
+          },
+        };
+      }
+    }
+    return await worker.invoke(
+      functionName,
+      input,
+      signal,
+      persistentExecutionId,
+    );
   }
 
   async stopWorker(workerId: string, immediate = false): Promise<void> {
@@ -895,11 +913,17 @@ export class Supervisor {
             typeof payload.function !== "string" ||
             payload.function.length === 0 || payload.function.length > 128
           ) throw new TypeError("registered Worker function is required");
+          if (
+            payload.persistent_execution_id !== undefined &&
+            (typeof payload.persistent_execution_id !== "string" ||
+              payload.persistent_execution_id.length === 0)
+          ) throw new TypeError("persistent execution ID must be non-empty");
           return await this.invokeWorker(
             decodeURIComponent(workerInvoke[1]!),
             payload.function,
             payload.input,
             request.signal,
+            payload.persistent_execution_id,
           );
         },
       );

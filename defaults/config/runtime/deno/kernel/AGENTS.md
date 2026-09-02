@@ -47,9 +47,12 @@
   supervisor callback and never appear in diagnostics.
 - The bridge uses `AsyncLocalStorage` to retain the exact trusted
   service-request or job-execution context across asynchronous continuations.
-  Concurrent calls in one Worker never guess between requests. Completion asks
-  the kernel to close the exact database scope, and Worker shutdown closes its
-  scope prefix.
+  Concurrent calls in one Worker never guess between requests. A persistent
+  execution keeps one context object whose request identity is updated when its
+  current transport reconnects, so its suspended program continues through the
+  active registered request. Exact Worker control may borrow that context but
+  never replaces its current transport identity. Completion asks the kernel to
+  close the exact database scope, and Worker shutdown closes its scope prefix.
 - There is no application settings accessor or application-specific namespace.
 
 # Work Guidance

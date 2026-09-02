@@ -25,13 +25,17 @@
   identity plus the kernel-observed client IP address and network scope, without
   cookies, route tokens, or application settings.
 - The kernel bridge uses `AsyncLocalStorage` to retain an exact request/job
-  context for every asynchronous continuation and relays only declared generic
-  kernel operations. The non-secret database backend is installed from trusted
-  Worker metadata before module import; every kernel call requires an active
-  request or job context.
+  context for every asynchronous continuation. A persistent execution reuses
+  that context and updates it to its current transport request on reconnect. The
+  exact-control path may borrow but never overwrite that current request. The
+  bridge relays only declared generic kernel operations. The non-secret database
+  backend is installed from trusted Worker metadata before module import; every
+  kernel call requires an active request or job context.
 - An entrypoint may export a validated `workerFunctions` map. Only those named
-  functions receive bounded JSON input and generic execution context; arbitrary
-  exports and `eval` are never callable.
+  functions receive bounded JSON input and generic execution context. Exact
+  control may carry its supervisor-validated persistent-execution identity so
+  lifecycle completion remains bound to that execution; arbitrary exports and
+  `eval` are never callable.
 - Job logs, execution context, and state reset between compatible reused
   invocations. Finalization closes the request/job database scope; Worker
   shutdown also requests prefix cleanup as a leak-safe fallback.

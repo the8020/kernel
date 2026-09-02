@@ -28,7 +28,7 @@ type Control interface {
 	Workers(context.Context, model.SandboxSpec) ([]supervisor.WorkerStatus, error)
 	StartWorker(context.Context, model.SandboxSpec, supervisor.StartWorkerRequest) (supervisor.WorkerStatus, error)
 	StopWorker(context.Context, model.SandboxSpec, string, bool) error
-	InvokeWorker(context.Context, model.SandboxSpec, string, string, any) (supervisor.WorkerInvocationResult, error)
+	InvokeWorker(context.Context, model.SandboxSpec, string, string, string, any) (supervisor.WorkerInvocationResult, error)
 	RunJob(context.Context, model.SandboxSpec, string, any, []string) (supervisor.JobResult, error)
 	ConfigureService(context.Context, model.SandboxSpec, string, []string, int) error
 	ServiceOpenAPI(context.Context, model.SandboxSpec, string) (map[string]any, error)
@@ -223,7 +223,7 @@ func (m *Manager) InvokeLocalWorker(ctx context.Context, input nodes.WorkerInvoc
 	if inspection.Spec.SandboxID != input.SandboxID {
 		return invocationFailure("target_mismatch", "sandbox identity does not match target")
 	}
-	result, err := m.control.InvokeWorker(ctx, inspection.Spec, input.WorkerID, input.Function, input.Input)
+	result, err := m.control.InvokeWorker(ctx, inspection.Spec, input.WorkerID, input.PersistentExecutionID, input.Function, input.Input)
 	if err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
 			return invocationFailure("timeout", "Worker invocation timed out")

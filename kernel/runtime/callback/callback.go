@@ -163,16 +163,17 @@ type databaseCallPayload struct {
 }
 
 type workerCallPayload struct {
-	ExecutionID     string `json:"execution_id"`
-	SourceWorkerID  string `json:"worker_id"`
-	ServiceID       string `json:"service_id"`
-	RequestID       string `json:"request_id"`
-	SourceSandboxID string `json:"sandbox_id"`
-	TargetNodeID    string `json:"target_node_id"`
-	TargetSandboxID string `json:"target_sandbox_id"`
-	TargetWorkerID  string `json:"target_worker_id"`
-	Function        string `json:"function"`
-	Input           any    `json:"input"`
+	ExecutionID                 string `json:"execution_id"`
+	SourceWorkerID              string `json:"worker_id"`
+	ServiceID                   string `json:"service_id"`
+	RequestID                   string `json:"request_id"`
+	SourceSandboxID             string `json:"sandbox_id"`
+	TargetNodeID                string `json:"target_node_id"`
+	TargetSandboxID             string `json:"target_sandbox_id"`
+	TargetWorkerID              string `json:"target_worker_id"`
+	TargetPersistentExecutionID string `json:"target_persistent_execution_id"`
+	Function                    string `json:"function"`
+	Input                       any    `json:"input"`
 }
 
 type completionCallPayload struct {
@@ -594,7 +595,8 @@ func (s *Server) handleWorkerInvocation(writer http.ResponseWriter, request *htt
 	defer cancel()
 	result := invoker.InvokeWorker(ctx, nodes.WorkerInvocationRequest{
 		NodeID: payload.TargetNodeID, SandboxID: payload.TargetSandboxID,
-		WorkerID: payload.TargetWorkerID, Function: payload.Function, Input: payload.Input,
+		WorkerID: payload.TargetWorkerID, PersistentExecutionID: payload.TargetPersistentExecutionID,
+		Function: payload.Function, Input: payload.Input,
 	})
 	data, err := json.Marshal(result)
 	if err != nil || len(data) > 1<<20 {

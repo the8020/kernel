@@ -6,9 +6,9 @@
 # Ownership
 
 - Query aggregate ready/failed/active status and Workers with explicit failure
-  state, last-idle time, and bounded identity-associated logs; start and stop Workers; send
-  exact registered-function invocations, return job results with structured
-  logs, configure service pools, stream service requests with trusted
+  state, last-idle time, and bounded identity-associated logs; start and stop
+  Workers; send exact registered-function invocations, return job results with
+  structured logs, configure service pools, stream service requests with trusted
   selected-Worker identity, and request drain.
 - Do not create sandboxes, select groups, expose host ports, interpret program
   results, or access containerd.
@@ -28,8 +28,9 @@
   and trusted metadata while authenticating the private supervisor upgrade with
   the sandbox token.
 - Exact Worker invocation targets one known Worker and carries a bounded
-  application-defined function name plus JSON input/output without scanning,
-  interpreting the name, or exposing the private endpoint publicly.
+  application-defined function name, optional persistent-execution identity, and
+  JSON input/output without scanning, interpreting the name, or exposing the
+  private endpoint publicly.
 - Non-success control responses retain their bounded HTTP status in
   `ResponseError`; callers may classify a `4xx` response as a rejected request
   without parsing error text, while authentication tokens remain hidden.

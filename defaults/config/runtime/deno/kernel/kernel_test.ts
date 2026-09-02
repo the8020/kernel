@@ -372,6 +372,78 @@ Deno.test("interleaved asynchronous calls retain their exact request", async () 
   }
 });
 
+Deno.test("persistent continuations follow their current transport request", async () => {
+  const channel = new MessageChannel();
+  const bridge = createKernelBridge(channel.port1);
+  const calls = createCallQueue(channel.port2);
+  let resume!: () => void;
+  const suspended = new Promise<void>((resolve) => resume = resolve);
+  const authenticated: ServiceRequestMetadata = {
+    ...persistentMetadata,
+    requestId: "request-establish",
+    auth: {
+      authenticated: true,
+      realm: "bootstrap-admin",
+      userId: "user-1",
+      username: "Admin",
+    },
+  };
+  try {
+    const program = bridge.withRequest(authenticated, async () => {
+      await suspended;
+      return await kernel.admin.execute("service.list");
+    });
+    bridge.withRequest(
+      { ...authenticated, requestId: "request-websocket" },
+      () => undefined,
+    );
+    const control = bridge.withExecution(
+      {
+        requestId: "request-control",
+        serviceId: "service-version-a",
+        persistentExecutionId: "persistent-test",
+      },
+      () => kernel.admin.execute("service.inspect"),
+    );
+    const controlCall = await calls.next();
+    assertEquals(
+      (controlCall.payload as { request: { requestId: string } }).request
+        .requestId,
+      "request-websocket",
+    );
+    bridge.handle({
+      type: "kernel_result",
+      correlationId: controlCall.correlationId as string,
+      payload: {
+        protocol_version: 1,
+        success: true,
+        result: { service: {} },
+      },
+    });
+    await control;
+    resume();
+    const call = await calls.next();
+    assertEquals(
+      (call.payload as { request: { requestId: string } }).request.requestId,
+      "request-websocket",
+    );
+    bridge.handle({
+      type: "kernel_result",
+      correlationId: call.correlationId as string,
+      payload: {
+        protocol_version: 1,
+        success: true,
+        result: { services: [] },
+      },
+    });
+    assertEquals(await program, { services: [] });
+  } finally {
+    bridge.close();
+    channel.port1.close();
+    channel.port2.close();
+  }
+});
+
 Deno.test("typed secret and package APIs delegate to generic administrative commands", async () => {
   const channel = new MessageChannel();
   const bridge = createKernelBridge(channel.port1);
