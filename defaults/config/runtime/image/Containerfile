@@ -16,6 +16,7 @@ COPY --chown=deno:deno kernel /opt/runtime/kernel
 COPY --chown=deno:deno http-source /opt/runtime/http-source
 COPY --chown=deno:deno bundle-runtime.sh /opt/runtime/bundle-runtime.sh
 COPY --chown=deno:deno deno.json /opt/runtime/deno.json
+COPY --chown=deno:deno deno.lock /opt/runtime/deno.lock
 COPY --chown=deno:deno protocol.ts /opt/runtime/protocol.ts
 
 RUN /bin/bash /opt/runtime/bundle-runtime.sh /opt/runtime/http-source /opt/runtime/http && \

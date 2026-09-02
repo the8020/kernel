@@ -51,7 +51,8 @@
   `runsc` and every release-provided `gvisor-bin/` companion remain adjacent
   under `node/kernel/bin/` so runtime startup never downloads missing helpers.
 - The service image runs non-root and includes only pinned Deno, generic runtime
-  modules/protocol, and explicitly required administrator debugging tools.
+  modules/protocol, the pinned Kysely dependency used by the database SDK, and
+  explicitly required administrator debugging tools.
   `stage-service-runtime.sh` excludes tests, DOX files, examples, application
   source, and unrelated files.
 

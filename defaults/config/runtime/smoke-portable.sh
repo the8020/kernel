@@ -46,7 +46,7 @@ cat > "$SMOKE_BUNDLE/config.json" <<EOF
   "process": {
     "terminal": false,
     "user": {"uid": 1993, "gid": 1993},
-    "args": ["/usr/bin/deno", "eval", "--config=/opt/runtime/deno.json", "--cached-only", "await import(\"@the8020/http\"); await import(\"@the8020/kernel\"); console.log(\"the8020-rootless-smoke\")"],
+    "args": ["/usr/bin/deno", "eval", "--config=/opt/runtime/deno.json", "--cached-only", "await import(\"@the8020/http\"); await import(\"@the8020/kernel\"); await import(\"kysely\"); console.log(\"the8020-rootless-smoke\")"],
     "env": ["PATH=/usr/bin", "HOME=/tmp", "DENO_DIR=/tmp/deno-cache", "DENO_NO_UPDATE_CHECK=1", "DENO_NO_PROMPT=1"],
     "cwd": "/tmp",
     "capabilities": {"bounding": [], "effective": [], "inheritable": [], "permitted": [], "ambient": []},

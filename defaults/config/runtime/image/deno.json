@@ -1,4 +1,5 @@
 {
+  "nodeModulesDir": "auto",
   "compilerOptions": {
     "strict": true,
     "noImplicitOverride": true,
@@ -13,6 +14,6 @@
     "@the8020/db": "file:///workspace/packages/the8020/db/mod.ts",
     "@the8020/db/types": "file:///workspace/packages/the8020/db/types.ts",
     "@packages/": "file:///workspace/packages/",
-    "kysely": "file:///workspace/packages/the8020/db/vendor/kysely/dist/index.js"
+    "kysely": "file:///opt/runtime/node_modules/kysely/dist/index.js"
   }
 }

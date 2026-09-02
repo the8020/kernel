@@ -7,11 +7,12 @@ IMAGE_ROOT=${2:-"$SOURCE_ROOT/node/kernel/runtime/images/rootless"}
 MANIFEST=${3:-"$SOURCE_ROOT/config/runtime/versions.toml"}
 CONTAINERFILE=${4:-"$SOURCE_ROOT/config/runtime/image/Containerfile"}
 RUNTIME_DEFINITION=${5:-"$SOURCE_ROOT/config/runtime/image/deno.json"}
+RUNTIME_LOCK=${RUNTIME_DEFINITION%.json}.lock
 BUILD_SCRIPT="$(dirname "$CONTAINERFILE")/build.sh"
 WORK_ROOT=${6:-"$SOURCE_ROOT/node/kernel/runtime"}
 RUNSC_DESTINATION=${7:-"$SOURCE_ROOT/node/kernel/bin/runsc"}
 PROTOCOL_SOURCE="$RUNTIME_SOURCE/protocol/generated.ts"
-if [[ -z "$SOURCE_ROOT" || ! -f "$MANIFEST" || ! -f "$CONTAINERFILE" || ! -f "$BUILD_SCRIPT" || ! -f "$RUNTIME_DEFINITION" || ! -f "$PROTOCOL_SOURCE" || -z "$WORK_ROOT" || -z "$RUNSC_DESTINATION" ]]; then
+if [[ -z "$SOURCE_ROOT" || ! -f "$MANIFEST" || ! -f "$CONTAINERFILE" || ! -f "$BUILD_SCRIPT" || ! -f "$RUNTIME_DEFINITION" || ! -f "$RUNTIME_LOCK" || ! -f "$PROTOCOL_SOURCE" || -z "$WORK_ROOT" || -z "$RUNSC_DESTINATION" ]]; then
   echo "usage: defaults/config/runtime/install-portable.sh <source-root> [image-root] [versions-file] [Containerfile] [deno-config] [work-root] [runsc-destination]" >&2
   exit 2
 fi
@@ -113,7 +114,7 @@ fi
 
 SOURCE_INPUT=$(
   find "$RUNTIME_SOURCE/deno/supervisor" "$RUNTIME_SOURCE/deno/worker" "$RUNTIME_SOURCE/deno/kernel" "$RUNTIME_SOURCE/deno/http" -maxdepth 1 -type f \( -name '*.ts' -o -name '*.d.ts' \) ! -name '*_test.ts' -print0 | sort -z | xargs -0 sha256sum
-  sha256sum "$RUNTIME_SOURCE/deno/deno.json" "$RUNTIME_SOURCE/deno/deno.lock" "$CONTAINERFILE" "$BUILD_SCRIPT" "$RUNTIME_DEFINITION" "$MANIFEST" "$RUNTIME_SOURCE/install-portable.sh" "$RUNTIME_SOURCE/materialize-oci-rootfs.sh" "$RUNTIME_SOURCE/run-rootfs-build.sh" "$RUNTIME_SOURCE/stage-service-runtime.sh" "$RUNTIME_SOURCE/bundle-runtime.sh" "$PROTOCOL_SOURCE" "$GVISOR_ROOT/runsc"
+  sha256sum "$RUNTIME_SOURCE/deno/deno.json" "$RUNTIME_SOURCE/deno/deno.lock" "$CONTAINERFILE" "$BUILD_SCRIPT" "$RUNTIME_DEFINITION" "$RUNTIME_LOCK" "$MANIFEST" "$RUNTIME_SOURCE/install-portable.sh" "$RUNTIME_SOURCE/materialize-oci-rootfs.sh" "$RUNTIME_SOURCE/run-rootfs-build.sh" "$RUNTIME_SOURCE/stage-service-runtime.sh" "$RUNTIME_SOURCE/bundle-runtime.sh" "$PROTOCOL_SOURCE" "$GVISOR_ROOT/runsc"
   printf '%s\n' "$BASE_MANIFEST" "$ARCHITECTURE"
 )
 SOURCE_HASH="sha256:$(printf '%s' "$SOURCE_INPUT" | sha256sum | awk '{print $1}')"
@@ -140,6 +141,7 @@ install -d -m 0755 "$ROOTFS_STAGE/artifacts" "$ROOTFS_STAGE/runtime-cache" "$ROO
 "$RUNTIME_SOURCE/stage-service-runtime.sh" "$SOURCE_ROOT" "$ROOTFS_STAGE/opt/runtime"
 install -m 0555 "$RUNTIME_SOURCE/bundle-runtime.sh" "$ROOTFS_STAGE/opt/runtime/bundle-runtime.sh"
 install -m 0444 "$RUNTIME_DEFINITION" "$ROOTFS_STAGE/opt/runtime/deno.json"
+install -m 0444 "$RUNTIME_LOCK" "$ROOTFS_STAGE/opt/runtime/deno.lock"
 install -m 0444 "$PROTOCOL_SOURCE" "$ROOTFS_STAGE/opt/runtime/protocol.ts"
 echo "runtime image [2/4]: installing declared packages and bundling generic modules" >&2
 "$RUNTIME_SOURCE/run-rootfs-build.sh" "$SOURCE_ROOT" "$RUNTIME_ROOT" "$ROOTFS_STAGE" /bin/sh -c \
@@ -155,7 +157,7 @@ if [[ "$SMOKE_RUNTIME" == outer-container-build ]]; then
     DENO_NO_UPDATE_CHECK=1 \
     DENO_NO_PROMPT=1 \
     /usr/bin/deno eval --config=/opt/runtime/deno.json --cached-only \
-    'await import("@the8020/http"); await import("@the8020/kernel"); console.log("the8020-outer-build-smoke")'
+    'await import("@the8020/http"); await import("@the8020/kernel"); await import("kysely"); console.log("the8020-outer-build-smoke")'
 else
   SMOKE_STAGE=$(mktemp -d "$TEMP_ROOT/rootless-smoke.XXXXXX")
   echo "runtime image [3/4]: smoke-testing portable gVisor launch" >&2
@@ -170,7 +172,7 @@ else
   "process": {
     "terminal": false,
     "user": {"uid": 1993, "gid": 1993},
-    "args": ["/usr/bin/deno", "eval", "--config=/opt/runtime/deno.json", "--cached-only", "await import(\"@the8020/http\"); await import(\"@the8020/kernel\"); console.log(\"the8020-rootless-smoke\")"],
+    "args": ["/usr/bin/deno", "eval", "--config=/opt/runtime/deno.json", "--cached-only", "await import(\"@the8020/http\"); await import(\"@the8020/kernel\"); await import(\"kysely\"); console.log(\"the8020-rootless-smoke\")"],
     "env": ["PATH=/usr/bin", "HOME=/tmp", "DENO_DIR=/tmp/deno-cache", "DENO_NO_UPDATE_CHECK=1", "DENO_NO_PROMPT=1"],
     "cwd": "/tmp",
     "capabilities": {"bounding": [], "effective": [], "inheritable": [], "permitted": [], "ambient": []},
