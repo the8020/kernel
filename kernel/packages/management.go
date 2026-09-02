@@ -352,6 +352,15 @@ func (s *Store) synchronizePackage(ctx context.Context, packageID string) (Packa
 		return result, err
 	}
 	if exists {
+		removed, removeErr := removeEmptyPackagePlaceholder(destination)
+		if removeErr != nil {
+			return result, removeErr
+		}
+		if removed {
+			exists = false
+		}
+	}
+	if exists {
 		result.PreviousCommit, err = s.cleanRepositoryHead(ctx, destination)
 		if err != nil {
 			return result, err
@@ -434,6 +443,26 @@ func (s *Store) synchronizePackage(ctx context.Context, packageID string) (Packa
 		s.logger.Log(ctx, slog.LevelInfo, "package synchronized", "package_id", packageID, "source", entry.Source, "requested", result.Requested, "previous_commit", result.PreviousCommit, "commit", result.Commit, "cloned", result.Cloned)
 	}
 	return result, nil
+}
+
+// A first-time schema evaluation may create its nested mount target before it
+// rejects the candidate. That target is not an installed package and is safe
+// to discard only while it remains completely empty.
+func removeEmptyPackagePlaceholder(path string) (bool, error) {
+	entries, err := os.ReadDir(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if len(entries) != 0 {
+		return false, nil
+	}
+	if err := os.Remove(path); err != nil {
+		return false, fmt.Errorf("remove empty package placeholder: %w", err)
+	}
+	return true, nil
 }
 
 // replacePackageDirectory exposes a validated staged tree with one atomic

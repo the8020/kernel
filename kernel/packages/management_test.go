@@ -176,6 +176,27 @@ func TestPackageIndexRemoteInspectionSynchronizationAndVersionSelection(t *testi
 	}
 }
 
+func TestRemoveEmptyPackagePlaceholder(t *testing.T) {
+	empty := filepath.Join(t.TempDir(), "empty")
+	if err := os.Mkdir(empty, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := removeEmptyPackagePlaceholder(empty)
+	if err != nil || !removed {
+		t.Fatalf("remove empty placeholder = %t, %v", removed, err)
+	}
+	if _, err := os.Stat(empty); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("empty placeholder still exists: %v", err)
+	}
+
+	nonempty := filepath.Join(t.TempDir(), "nonempty")
+	writeFile(t, filepath.Join(nonempty, "package.toml"), "schema = 1\n")
+	removed, err = removeEmptyPackagePlaceholder(nonempty)
+	if err != nil || removed {
+		t.Fatalf("remove real package = %t, %v", removed, err)
+	}
+}
+
 func TestLocalPackageCreationWritesIndexManifestAndInitialCommit(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is unavailable")
