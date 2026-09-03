@@ -161,6 +161,20 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
   const activeRequests = new Map<string, AbortController>();
   const activeControls = new Map<string, AbortController>();
   const activeWebSockets = new Map<string, WorkerWebSocketSession>();
+  const pendingControls: MessageEvent<ControlMessage>[] = [];
+  let dispatchControl:
+    | ((event: MessageEvent<ControlMessage>) => Promise<void>)
+    | undefined;
+
+  port.onmessage = (controlEvent: MessageEvent<ControlMessage>) => {
+    if (kernelBridge.handle(controlEvent.data)) return;
+    if (dispatchControl === undefined) {
+      pendingControls.push(controlEvent);
+      return;
+    }
+    void dispatchControl(controlEvent);
+  };
+  port.start();
 
   const log = (logEvent: RuntimeLogEvent): void =>
     port.postMessage({ type: "log", payload: logEvent });
@@ -264,9 +278,8 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
       );
     }
 
-    port.onmessage = async (controlEvent: MessageEvent<ControlMessage>) => {
+    dispatchControl = async (controlEvent: MessageEvent<ControlMessage>) => {
       const message = controlEvent.data;
-      if (kernelBridge.handle(message)) return;
       try {
         switch (message.type) {
           case "job_run": {
@@ -610,7 +623,9 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
         });
       }
     };
-    port.start();
+    for (const controlEvent of pendingControls.splice(0)) {
+      void dispatchControl(controlEvent);
+    }
     port.postMessage({ type: "ready" });
   } catch (error: unknown) {
     port.postMessage({ type: "fatal", error: errorMessage(error) });

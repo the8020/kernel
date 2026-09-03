@@ -53,6 +53,9 @@
   active registered request. Exact Worker control may borrow that context but
   never replaces its current transport identity. Completion asks the kernel to
   close the exact database scope, and Worker shutdown closes its scope prefix.
+- The read-only `database.info` call may run from identified Worker module
+  initialization; every SQL, transaction, authentication, and administration
+  call still requires an active execution context.
 - There is no application settings accessor or application-specific namespace.
 
 # Work Guidance

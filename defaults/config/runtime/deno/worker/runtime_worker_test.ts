@@ -315,6 +315,41 @@ Deno.test("service Worker bridges typed kernel authentication calls", async () =
   }
 });
 
+Deno.test("service Worker reads database info during module initialization", async () => {
+  const calls: KernelCallRequest[] = [];
+  const worker = new RuntimeWorker({
+    metadata: metadata("service", example("service_database_info"), "db-info"),
+    permissions: { read: [new URL("../examples", import.meta.url).pathname] },
+    kernelCall: (call) => {
+      calls.push(call);
+      return Promise.resolve({
+        backend: "sqlite",
+        location: "/database/system.db",
+        state: "READY",
+        initialized: true,
+        catalog_version: 1,
+      });
+    },
+  });
+  try {
+    await worker.ready;
+    assertEquals(calls.length, 1);
+    assertEquals(calls[0]?.operation, "database.info");
+    assertEquals(calls[0]?.requestId, undefined);
+    assertEquals(calls[0]?.serviceId, undefined);
+    const response = await worker.dispatchService(
+      new Request("http://service/database-info"),
+    );
+    assertEquals((await response.json()).backend, "sqlite");
+    assertEquals(
+      calls.filter((call) => call.operation === "database.info").length,
+      1,
+    );
+  } finally {
+    await worker.stop();
+  }
+});
+
 Deno.test("service Worker preserves SSE streaming", async () => {
   const worker = new RuntimeWorker({
     metadata: metadata("service", example("service"), "sse"),

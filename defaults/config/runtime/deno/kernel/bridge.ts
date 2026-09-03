@@ -66,13 +66,13 @@ export function createKernelBridge(
   };
   const invoke: KernelInvoke = (operation, input) => {
     const request = requestContext.getStore();
-    if (request === undefined) {
+    if (request === undefined && operation !== "database.info") {
       return Promise.reject(
         new Error("kernel API call must begin inside an execution"),
       );
     }
     if (operation === "auth.currentUser") {
-      const auth = request.auth;
+      const auth = request?.auth;
       return Promise.resolve(
         auth?.authenticated && auth.realm === "bootstrap-admin" &&
           auth.userId !== undefined && auth.username !== undefined
@@ -86,7 +86,7 @@ export function createKernelBridge(
     }
     if (
       operation === "execution.completePersistent" &&
-      request.persistentExecutionId === undefined
+      request?.persistentExecutionId === undefined
     ) {
       return Promise.reject(
         new Error("persistent execution context is unavailable"),
@@ -102,7 +102,7 @@ export function createKernelBridge(
       payload: {
         operation,
         arguments: input,
-        request: {
+        request: request === undefined ? undefined : {
           requestId: request.requestId,
           serviceId: request.serviceId,
           persistentExecutionId: request.persistentExecutionId,
@@ -111,7 +111,7 @@ export function createKernelBridge(
     });
     if (
       operation === "execution.completePersistent" &&
-      request.persistentExecutionId !== undefined
+      request?.persistentExecutionId !== undefined
     ) {
       return result.then((value) => {
         if (

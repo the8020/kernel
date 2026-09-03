@@ -29,8 +29,9 @@
   that context and updates it to its current transport request on reconnect. The
   exact-control path may borrow but never overwrite that current request. The
   bridge relays only declared generic kernel operations. The non-secret database
-  backend is installed from trusted Worker metadata before module import; every
-  kernel call requires an active request or job context.
+  backend is installed from trusted Worker metadata before module import;
+  read-only database status is also available before execution, while all
+  contextual kernel calls require an active request or job.
 - An entrypoint may export a validated `workerFunctions` map. Only those named
   functions receive bounded JSON input and generic execution context. Exact
   control may carry its supervisor-validated persistent-execution identity so

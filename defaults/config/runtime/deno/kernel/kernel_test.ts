@@ -679,18 +679,36 @@ Deno.test("typed secret and package APIs delegate to generic administrative comm
   }
 });
 
-Deno.test("Worker metadata is synchronous and kernel calls require execution context", async () => {
+Deno.test("Worker metadata and database info are available before execution", async () => {
   const channel = new MessageChannel();
   const bridge = createKernelBridge(channel.port1, "postgresql");
+  const calls = createCallQueue(channel.port2);
   try {
     assertEquals(kernelDatabaseBackend(), "postgresql");
+    const info = kernel.database.info();
+    const call = await calls.next();
+    assertEquals(
+      (call.payload as { operation: string; request?: unknown }).operation,
+      "database.info",
+    );
+    assertEquals(
+      (call.payload as { operation: string; request?: unknown }).request,
+      undefined,
+    );
+    bridge.handle({
+      type: "kernel_result",
+      correlationId: call.correlationId as string,
+      payload: {
+        backend: "postgresql",
+        location: "postgresql://database/system",
+        state: "READY",
+        initialized: true,
+        catalog_version: 1,
+      },
+    });
+    assertEquals((await info).backend, "postgresql");
     await assertRejects(
       () => kernel.auth.logoutCurrent(),
-      Error,
-      "inside an execution",
-    );
-    await assertRejects(
-      () => kernel.database.info(),
       Error,
       "inside an execution",
     );
