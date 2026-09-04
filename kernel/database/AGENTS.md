@@ -52,11 +52,11 @@
   decimal, datetime, bytes, and JSON.
 - Kernel-owned repositories normalize engine-native stored values through this
   package's shared encoders and decoders. Sandboxed package CRUD uses the
-  descriptor-aware `@the8020/db` codec; deliberately raw SQL results remain
+  descriptor-aware `/p/the8020/db/mod.ts` codec; deliberately raw SQL results remain
   engine-native where their logical type cannot be inferred without parsing SQL.
 - Backend SQL syntax, placeholder handling, execution transport, and physical
   value decoding are shared database concerns. Fix dialect discrepancies here or
-  in `@the8020/db`'s compiler/driver as their contract dictates; never make an
+  in `/p/the8020/db/mod.ts`'s compiler/driver as their contract dictates; never make an
   individual service, login flow, or repository compensate for them.
 - Query results fail, rather than truncate, above the runtime-mutable per-node
   row/byte limits. Defaults are 10,000 rows and 10 MiB. Pool defaults are 32

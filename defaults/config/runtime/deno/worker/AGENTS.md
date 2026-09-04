@@ -44,8 +44,9 @@
 - An entrypoint may export a validated `workerFunctions` map. Only those named
   functions receive bounded JSON input and generic execution context. Exact
   control may carry its supervisor-validated persistent-execution identity so
-  lifecycle completion remains bound to that execution; arbitrary exports and
-  `eval` are never callable.
+  lifecycle completion remains bound to that execution. Kernel calls from
+  service controls retain the service's canonical ID rather than its internal
+  pool/workload ID; arbitrary exports and `eval` are never callable.
 - Job logs, execution context, and state reset between compatible reused
   invocations. Secure-input maps are execution-local and cleared in `finally`,
   including failures. Finalization closes the request/job database scope; Worker

@@ -481,6 +481,47 @@ Deno.test("service Worker bridges typed kernel authentication calls", async () =
   }
 });
 
+Deno.test("persistent control calls use the canonical service identity", async () => {
+  const calls: KernelCallRequest[] = [];
+  const serviceMetadata = metadata(
+    "service",
+    example("service_control"),
+    "persistent-control",
+  );
+  serviceMetadata.service = {
+    serviceId: "example/control/service",
+    generation: 1,
+    canonicalBasePath: "/example/control/service",
+  };
+  const worker = new RuntimeWorker({
+    metadata: serviceMetadata,
+    permissions: { read: [new URL("../examples", import.meta.url).pathname] },
+    kernelCall: (call) => {
+      calls.push(call);
+      return Promise.resolve({ completed: true });
+    },
+  });
+  try {
+    await worker.ready;
+    assertEquals(
+      await worker.invoke(
+        "example.complete-persistent",
+        {},
+        undefined,
+        "persistent-control",
+      ),
+      { ok: true, output: { completed: true } },
+    );
+    const completion = calls.find((call) =>
+      call.operation === "execution.completePersistent"
+    );
+    assertEquals(completion?.serviceId, "example/control/service");
+    assertEquals(completion?.persistentExecutionId, "persistent-control");
+  } finally {
+    await worker.stop();
+  }
+});
+
 Deno.test("service Worker reads database info during module initialization", async () => {
   const calls: KernelCallRequest[] = [];
   const worker = new RuntimeWorker({

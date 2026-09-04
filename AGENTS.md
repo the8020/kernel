@@ -388,7 +388,7 @@ relevant child AGENTS.md
   and connection/theme controls. The Back control retains an accessible text
   label. The brand/Back cluster stays on the left and the connection/theme
   cluster stays flush right even when the dynamic middle is empty or hidden.
-  `@packages/the8020/uui/mod.ts` exports the reserved `BACK_EVENT`; programs
+  `/p/the8020/uui/mod.ts` exports the reserved `BACK_EVENT`; programs
   compare against it and never declare their own Back action. Programs place
   non-Back controls and actions in `callScreen({ header: ... })`, not bottom
   action regions. The top

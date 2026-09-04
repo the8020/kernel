@@ -179,6 +179,7 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
     port.postMessage({ type: "log", payload: logEvent });
   installConsoleCapture(log);
   const base: BaseContext = { metadata, signal: controller.signal, log };
+  const kernelServiceId = metadata.service?.serviceId ?? metadata.workloadId;
   const closeDatabaseScope = async (): Promise<void> => {
     if (metadata.databaseAccess === "none") return;
     try {
@@ -368,7 +369,7 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
               const output = await kernelBridge.withExecution(
                 {
                   requestId: message.correlationId,
-                  serviceId: metadata.workloadId,
+                  serviceId: kernelServiceId,
                   persistentExecutionId,
                   signal: control.signal,
                 },
@@ -429,7 +430,7 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
                 message.correlationId,
               meta: requestMetadata.meta ?? {
                 requestId: message.correlationId,
-                serviceId: metadata.service?.serviceId ?? metadata.workloadId,
+                serviceId: kernelServiceId,
                 serviceGeneration: metadata.service?.generation ?? 0,
                 canonicalBasePath: metadata.service?.canonicalBasePath ?? "/",
                 originalUrl: requestMetadata.url,

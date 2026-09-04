@@ -11,9 +11,7 @@
     "@the8020/http": "./http/the8020_http.js",
     "@the8020/kernel": "./kernel/mod.ts",
     "@the8020/protocol": "./protocol.ts",
-    "@the8020/db": "file:///workspace/packages/the8020/db/mod.ts",
-    "@the8020/db/types": "file:///workspace/packages/the8020/db/types.ts",
-    "@packages/": "file:///workspace/packages/",
+    "/p/": "file:///workspace/packages/",
     "kysely": "npm:kysely@0.29.4"
   }
 }

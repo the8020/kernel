@@ -56,6 +56,10 @@
   explicitly required administrator debugging tools.
   `stage-service-runtime.sh` excludes tests, DOX files, examples, application
   source, and unrelated files.
+- The image import map exposes the activated read-only package tree through the
+  single `/p/` prefix. Package imports include their namespace, package, file,
+  and extension, for example `/p/the8020/db/mod.ts`. Never add package-specific
+  runtime mappings.
 - Service and job supervisors may run only the pinned Deno binary for module
   validation; nested application Workers do not inherit subprocess permission.
 - The node-private runtime callback directory is bind-mounted at

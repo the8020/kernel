@@ -281,6 +281,10 @@ Deno.test("supervisor tracks Workers, service pools, and drain", async () => {
     "worker-b",
   ]);
   assertEquals(
+    readySnapshot.workers.some((worker) => "logs" in worker),
+    false,
+  );
+  assertEquals(
     Number.isSafeInteger(readySnapshot.supervisor_started_at_ms),
     true,
   );
@@ -1114,7 +1118,7 @@ Deno.test("job dispatch returns bounded structured and console logs", async () =
   const status = supervisor.workers().find((worker) =>
     worker.worker_id === job.workerId
   );
-  assertEquals(status?.logs.map((event) => event.message), [
+  assertEquals(status?.logs?.map((event) => event.message), [
     'job input {"value":1}',
   ]);
   await supervisor.drain();

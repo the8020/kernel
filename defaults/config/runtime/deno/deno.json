@@ -11,7 +11,7 @@
     "@the8020/http": "./http/mod.ts",
     "@the8020/kernel": "./kernel/mod.ts",
     "@the8020/protocol": "../protocol/generated.ts",
-    "@packages/": "../../../../packages/",
+    "/p/": "file:///workspace/packages/",
     "hono": "jsr:@hono/hono@4.9.8",
     "zod": "npm:zod@4.1.5"
   },

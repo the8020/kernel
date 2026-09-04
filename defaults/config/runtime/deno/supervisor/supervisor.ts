@@ -55,7 +55,7 @@ export interface WorkerStatus {
   persistent_executions: number;
   state: "starting" | "ready" | "stopping" | "stopped" | "failed";
   failure?: string;
-  logs: RuntimeLogEvent[];
+  logs?: RuntimeLogEvent[];
 }
 
 interface PersistentBinding {
@@ -1026,7 +1026,7 @@ export class Supervisor {
           ? "starting"
           : "ready",
         failure: worker.failure,
-        logs: includeLogs ? worker.logs : [],
+        ...(includeLogs ? { logs: worker.logs } : {}),
       };
     }).sort((left, right) => left.worker_id.localeCompare(right.worker_id));
   }
