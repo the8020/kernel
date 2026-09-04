@@ -22,7 +22,10 @@
   `node/kernel/runtime/definitions/` and the complete instance `scripts/` tree.
 - On a fresh fixed-layout instance, installation stages every bootstrap package
   under `packages/`. Local development sources become clean deterministic Git
-  snapshots; remote sources retain their repository history.
+  snapshots; remote sources retain their repository history. Release builds
+  ignore local siblings and resolve each source to the newest compatible tag:
+  the major must match the kernel, the package minor may be older but not newer,
+  and the highest available minor and patch win.
 - First kernel boot publishes those staged packages only after one batched table
   evaluation/synchronization and activation-hook run. Existing databases and
   ordinary restarts never reapply the bootstrap list or rescan all tables.

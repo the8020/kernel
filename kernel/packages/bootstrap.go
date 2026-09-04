@@ -9,6 +9,8 @@ import (
 	"strings"
 )
 
+const bootstrapRequestedTagConfig = "the8020.requestedTag"
+
 func (s *Store) stageInstalled(ctx context.Context, commits map[string]string) ([]Package, error) {
 	items, err := s.catalog.ListPackages()
 	if err != nil {
@@ -33,6 +35,20 @@ func (s *Store) stageInstalled(ctx context.Context, commits map[string]string) (
 		if source, sourceErr := s.gitValue(ctx, item.Path, "remote", "get-url", "origin"); sourceErr == nil {
 			if parsed, parseErr := url.Parse(strings.TrimSpace(source)); parseErr == nil && parsed.Scheme == "https" {
 				entry.Source, entry.Commit, entry.Local = source, commit, false
+				if requestedTag, tagErr := s.gitValue(ctx, item.Path, "config", "--local", "--get", bootstrapRequestedTagConfig); tagErr == nil {
+					requestedTag = strings.TrimSpace(requestedTag)
+					if !safeGitTag(requestedTag) {
+						return nil, fmt.Errorf("bootstrap package %s has invalid requested tag %q", item.ID, requestedTag)
+					}
+					tagCommit, resolveErr := s.gitValue(ctx, item.Path, "rev-parse", "--verify", "refs/tags/"+requestedTag+"^{commit}")
+					if resolveErr != nil {
+						return nil, fmt.Errorf("bootstrap package %s cannot resolve requested tag %s: %w", item.ID, requestedTag, resolveErr)
+					}
+					if tagCommit != commit {
+						return nil, fmt.Errorf("bootstrap package %s requested tag %s resolves to %s instead of %s", item.ID, requestedTag, tagCommit, commit)
+					}
+					entry.Tag, entry.Commit = requestedTag, ""
+				}
 			}
 		}
 		if err := validatePackageIndex(&entry); err != nil {

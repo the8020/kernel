@@ -5,6 +5,7 @@ SOURCE_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 INSTANCE_ROOT=$(pwd -P)
 SETUP_RUNTIME_HOST=true
 RUN_VERIFICATION=true
+RELEASE_VERSION=${THE8020_RELEASE_VERSION:-}
 
 for argument in "$@"; do
   case "$argument" in
@@ -21,6 +22,14 @@ done
 
 if [[ ! -f "$SOURCE_ROOT/AGENTS.md" || ! -f "$SOURCE_ROOT/go.mod" || ! -d "$SOURCE_ROOT/kernel/cbus/gen" ]]; then
   echo "80|20 installation source is incomplete: $SOURCE_ROOT" >&2
+  exit 1
+fi
+if [[ -n "$RELEASE_VERSION" && ! "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+  echo "THE8020_RELEASE_VERSION must contain exactly major.minor without leading zeroes" >&2
+  exit 1
+fi
+if [[ -n "$RELEASE_VERSION" && -n "${THE8020_BOOTSTRAP_SOURCE_ROOT:-}" ]]; then
+  echo "THE8020_RELEASE_VERSION cannot be combined with THE8020_BOOTSTRAP_SOURCE_ROOT" >&2
   exit 1
 fi
 if ! command -v git >/dev/null 2>&1; then
@@ -234,13 +243,27 @@ if [[ "$NEW_LAYOUT" == true ]]; then
     [[ ! -e "$destination" ]] || continue
     install -d -m 0755 "$namespace_root"
     package_stage=$(mktemp -d "$namespace_root/.${repository}.install.XXXXXX")
-    local_source="$BOOTSTRAP_SOURCE_ROOT/$repository"
-    if [[ ! -f "$local_source/package.toml" ]]; then
-      local_source="$BOOTSTRAP_SOURCE_ROOT/$namespace/$repository"
+    local_source=""
+    if [[ -z "$RELEASE_VERSION" ]]; then
+      local_source="$BOOTSTRAP_SOURCE_ROOT/$repository"
+      if [[ ! -f "$local_source/package.toml" ]]; then
+        local_source="$BOOTSTRAP_SOURCE_ROOT/$namespace/$repository"
+      fi
     fi
-    if [[ -f "$local_source/package.toml" ]]; then
+    if [[ -n "$local_source" && -f "$local_source/package.toml" ]]; then
       cp -a "$local_source/." "$package_stage/"
       rm -rf -- "$package_stage/.git" "$package_stage/.development" "$package_stage/node_modules"
+    elif [[ -n "$RELEASE_VERSION" ]]; then
+      resolution=$("$SOURCE_ROOT/release-tag.sh" package "$RELEASE_VERSION" "$package_source")
+      IFS=$'\t' read -r package_tag package_commit <<< "$resolution"
+      git -c advice.detachedHead=false clone --quiet --branch "$package_tag" -- "$package_source" "$package_stage"
+      installed_commit=$(git -C "$package_stage" rev-parse --verify 'HEAD^{commit}')
+      if [[ "$installed_commit" != "$package_commit" ]]; then
+        rm -rf -- "$package_stage"
+        echo "bootstrap package tag changed while cloning: $package_id@$package_tag" >&2
+        exit 1
+      fi
+      git -C "$package_stage" config --local the8020.requestedTag "$package_tag"
     else
       git clone --quiet -- "$package_source" "$package_stage"
     fi
@@ -398,6 +421,9 @@ if [[ "$RUN_VERIFICATION" == true ]]; then
   sh -n "$SOURCE_ROOT/defaults/scripts/activate"
   bash -n "$SOURCE_ROOT/defaults/scripts/install-codex.sh"
   bash -n "$SOURCE_ROOT/defaults/scripts/install-claude.sh"
+  bash -n "$SOURCE_ROOT/release-tag.sh"
+  bash -n "$SOURCE_ROOT/release-tag_test.sh"
+  "$SOURCE_ROOT/release-tag_test.sh"
   "$DENO_CMD" fmt --check "$SOURCE_ROOT/defaults/scripts/activate.ts"
   "$DENO_CMD" lint "$SOURCE_ROOT/defaults/scripts/activate.ts"
   "$DENO_CMD" check "$SOURCE_ROOT/defaults/scripts/activate.ts"

@@ -146,14 +146,17 @@ relevant child AGENTS.md
   create legacy top-level `config/` or `state/` roots.
   The interactive wrapper repairs inherited terminal state before output and
   on exit so an interrupted raw-mode client cannot cascade line indentation.
-- The root `Dockerfile` builds a Debian slim image, runs the ordinary default
-  installation in `/8020`, synchronizes first-party packages, and materializes
-  both rootless service and development sandbox images before publishing only
-  the runtime binaries and complete instance. It exposes HTTP 80 and SSH 22,
-  retains `/8020` as persistent instance data, and selects rootless gVisor;
-  ordinary `docker build` uses its existing build sandbox rather than nesting
-  gVisor, while Docker runs require an unconfined outer seccomp profile and
-  complete the pinned runsc smoke before kernel startup. The entrypoint creates
+- The sibling `the8020/deploy` repository owns the release Dockerfile. A
+  `VERSION=<major.minor>` build resolves the newest kernel patch in that exact
+  release line from GitHub and never copies local kernel or package sources.
+  The selected kernel runs the ordinary installation in `/8020`, resolves each
+  first-party package to its newest compatible tag, and materializes both
+  rootless service and development sandbox images. Package tags must share the
+  kernel major and may use the requested minor or an older one; the highest
+  compatible minor and patch win. The exact selected package tag and active
+  commit are retained in the database package index. Missing compatible tags
+  fail installation. Docker runs require an unconfined outer seccomp profile
+  and complete the pinned runsc smoke before kernel startup. The entrypoint creates
   the first user whenever the users table is empty, defaulting to username
   `admin` and password `admin`; `THE8020_USERNAME` and `THE8020_PASSWORD`
   independently override those defaults. Existing users are never changed. It
@@ -427,7 +430,9 @@ relevant child AGENTS.md
   bootstrap package set as clean Git repositories only for a fresh fixed-layout
   instance; first kernel boot publishes it transactionally in the database. It never
   builds, formats, lints, type-checks, or tests application packages and never
-  runs a UUI build or browser E2E.
+  runs a UUI build or browser E2E. `THE8020_RELEASE_VERSION=<major.minor>` is an
+  installer-only release input: it disables sibling-source snapshots and
+  stages every bootstrap package from its compatible resolved Git tag.
 - `run.sh` may be invoked from any directory. It treats that current directory
   as the instance root and runs `install.sh --skip-verification`, which refreshes
   both binaries, initializes the default layout when absent, and refreshes only
@@ -539,5 +544,6 @@ relevant child AGENTS.md
   the canonical generic runtime definition, source, image tooling, and pinned
   versions under `defaults/config/runtime/`.
 - Root-owned paths include `.vscode/`, `go.mod`, `go.sum`, `.go-version`,
-  `.gitignore`, `install.sh`, `run.sh`, repository media, and
+  `.gitignore`, `install.sh`, `run.sh`, `release-tag.sh`, release resolver tests,
+  repository media, and
   root-level project documentation.

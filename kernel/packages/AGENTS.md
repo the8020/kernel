@@ -40,6 +40,9 @@
 - The database package record is the sole desired/active package source of truth
   after first initialization. Bootstrap TOML is only the fresh-database source
   list; ordinary boots trust database state and never rescan all definitions.
+  Release-staged repositories carry their resolved requested tag in local Git
+  metadata; bootstrap verifies that it names the evaluated commit, then records
+  the tag as desired identity and the exact commit as active identity.
 - A fresh database stages every bootstrap package and performs one batched
   evaluation and synchronization before publishing the package set. Normal
   activation evaluates only candidate package tables in one batch.
