@@ -31,6 +31,7 @@ CREATE INDEX IF NOT EXISTS _8020_tables_source_package ON _8020_tables (source_p
 CREATE TABLE IF NOT EXISTS _8020_columns (
     table_id text NOT NULL,
     column_name text NOT NULL,
+    ordinal bigint NOT NULL,
     logical_type text NOT NULL,
     definition_hash text NOT NULL,
     definition_json text NOT NULL,

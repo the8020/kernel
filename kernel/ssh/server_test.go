@@ -18,6 +18,7 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 
 	"the8020/kernel/auth"
+	"the8020/kernel/database"
 	"the8020/kernel/sandbox/backend"
 	"the8020/kernel/settings"
 )
@@ -318,12 +319,6 @@ func TestSSHPasswordTTYAndRouting(t *testing.T) {
 
 func TestSSHPublicKeyAuthenticationAndRejections(t *testing.T) {
 	authentication, _ := testAuthentication(t)
-	if _, err := authentication.AddUser(context.Background(), "disabled", "unused password"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := authentication.DisableUser(context.Background(), "disabled"); err != nil {
-		t.Fatal(err)
-	}
 	matching := testSigner(t)
 	nonmatching := testSigner(t)
 	authorized := append([]byte("restrict "), gossh.MarshalAuthorizedKey(matching.PublicKey())...)
@@ -582,19 +577,51 @@ func TestRuntimePortReplacementPreservesConnectionsAndRollsBack(t *testing.T) {
 func testAuthentication(t *testing.T) (*auth.Manager, string) {
 	t.Helper()
 	root := t.TempDir()
-	usersFile := filepath.Join(root, "config", "auth", "bootstrap-users.toml")
+	databaseFile := filepath.Join(root, "system.db")
+	db := database.New(database.Config{
+		Backend: database.BackendSQLite, Location: databaseFile,
+		MaximumOpenConnections: 8, MaximumIdleConnections: 2,
+	})
+	if _, err := db.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE "the8020__users__users" ("username" TEXT PRIMARY KEY, "passwordHash" TEXT NOT NULL, "enabled" INTEGER NOT NULL, "authVersion" INTEGER NOT NULL, "createdAt" TEXT NOT NULL, "updatedAt" TEXT NOT NULL) STRICT`,
+		`CREATE TABLE "the8020__users__sessions" ("sessionId" TEXT PRIMARY KEY, "username" TEXT NOT NULL, "secretHash" TEXT NOT NULL, "authVersion" INTEGER NOT NULL, "createdAt" TEXT NOT NULL, "expiresAt" TEXT NOT NULL) STRICT`,
+	} {
+		if _, err := db.ExecContext(context.Background(), statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	parameters := auth.Argon2Parameters{Memory: 8, Iterations: 1, Parallelism: 1, SaltLength: 8, OutputLength: 16}
+	hasher, err := auth.NewPasswordHasher(parameters, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	manager, err := auth.New(auth.Config{
-		UsersFile: usersFile, SessionsRoot: filepath.Join(root, "state", "sessions"),
-		Argon2:      auth.Argon2Parameters{Memory: 8, Iterations: 1, Parallelism: 1, SaltLength: 8, OutputLength: 16},
-		LockTimeout: time.Second,
+		Database: db,
+		Argon2:   parameters,
+		Hasher:   hasher,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.AddUser(context.Background(), "alice", "correct horse"); err != nil {
-		t.Fatal(err)
+	now := database.EncodeTime(db, time.Now())
+	for _, user := range []struct {
+		username string
+		password string
+		enabled  bool
+	}{{"alice", "correct horse", true}, {"disabled", "unused password", false}} {
+		passwordHash, err := hasher.Hash(user.password)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(context.Background(), `INSERT INTO "the8020__users__users" ("username", "passwordHash", "enabled", "authVersion", "createdAt", "updatedAt") VALUES ($1, $2, $3, 1, $4, $4)`, user.username, passwordHash, user.enabled, now); err != nil {
+			t.Fatal(err)
+		}
 	}
-	return manager, usersFile
+	return manager, databaseFile
 }
 
 func clientConfig(username, password string) *gossh.ClientConfig {

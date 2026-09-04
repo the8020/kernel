@@ -76,7 +76,16 @@ func (g *CommandBusGateway) execute(ctx context.Context, commandID, resultField,
 		}
 		return errors.New("development activation command failed")
 	}
-	value, ok := response.Result[resultField]
+	result, ok := response.Result.(core.Result)
+	if !ok {
+		if values, mapOK := response.Result.(map[string]any); mapOK {
+			result, ok = core.Result(values), true
+		}
+	}
+	if !ok {
+		return errors.New("development activation command returned an invalid result")
+	}
+	value, ok := result[resultField]
 	if !ok {
 		return fmt.Errorf("development activation command omitted %s result", resultField)
 	}

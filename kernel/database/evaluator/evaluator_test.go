@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	"the8020/kernel/database"
@@ -26,6 +27,17 @@ type fakeJobs struct {
 	descriptor   func(evaluationItem) database.TableDescriptor
 }
 
+type guardedCatalog struct {
+	PackageCatalog
+	err   error
+	calls []string
+}
+
+func (c *guardedCatalog) ActivatedPackageCommit(_ context.Context, packageID string) (string, error) {
+	c.calls = append(c.calls, packageID)
+	return "", c.err
+}
+
 func (f *fakeJobs) Run(_ context.Context, _, _ string, options jobs.Options) (jobs.Record, error) {
 	f.calls = append(f.calls, options)
 	if f.failAt > 0 && len(f.calls) == f.failAt {
@@ -34,7 +46,10 @@ func (f *fakeJobs) Run(_ context.Context, _, _ string, options jobs.Options) (jo
 	if f.malformed {
 		return jobs.Record{Result: map[string]any{"invalid": true}}, nil
 	}
-	request := options.Input.(evaluationRequest)
+	if len(options.Arguments) != 1 {
+		return jobs.Record{}, errors.New("evaluator input was not one argument")
+	}
+	request := options.Arguments[0].(evaluationRequest)
 	tables := make([]database.EvaluatedTable, 0, len(request.Tables))
 	for _, item := range request.Tables {
 		descriptor := database.TableDescriptor{
@@ -76,12 +91,7 @@ func testEvaluator(t *testing.T, tableCount int) (*Evaluator, *fakeJobs, *databa
 			t.Fatal(err)
 		}
 	}
-	for _, directory := range []string{filepath.Join(root, "state", "services"), filepath.Join(root, "state", "package-index")} {
-		if err := os.MkdirAll(directory, 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	store, err := workspacepackages.New(workspacepackages.Config{WorkspaceRoot: root})
+	store, err := workspacepackages.NewCatalog(filepath.Join(root, "packages"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,9 +147,66 @@ func TestEvaluationBatchesModulesAndReusesOneRelease(t *testing.T) {
 	}
 }
 
+func TestEvaluationRejectsDirtySharedCheckout(t *testing.T) {
+	evaluator, runner, _, packageRoot := testEvaluator(t, 1)
+	commitRepository(t, packageRoot, "active")
+	if err := os.WriteFile(filepath.Join(packageRoot, "draft.ts"), []byte("export const draft = true;\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := evaluator.Evaluate(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "uncommitted changes") {
+		t.Fatalf("dirty source error = %v", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("dirty source reached evaluator: %#v", runner.calls)
+	}
+}
+
+func TestExplicitSynchronizationRequiresActivatedSourceButCandidateUsesStage(t *testing.T) {
+	evaluator, runner, manager, _ := testEvaluator(t, 1)
+	ctx := context.Background()
+	if _, err := evaluator.SynchronizeAll(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	manager.SetSourceEvaluator(evaluator.InspectDefinition)
+	guard := &guardedCatalog{PackageCatalog: evaluator.packages, err: errors.New("activated checkout is dirty")}
+	if err := evaluator.UseActivatedPackages(guard); err != nil {
+		t.Fatal(err)
+	}
+	before := len(runner.calls)
+	if _, err := evaluator.SynchronizeAll(ctx, false); err == nil || !strings.Contains(err.Error(), "activated checkout is dirty") {
+		t.Fatalf("sync-all error = %v", err)
+	}
+	if _, err := manager.SynchronizeDefinition(ctx, "acme__orders__table0000", ""); err == nil || !strings.Contains(err.Error(), "activated checkout is dirty") {
+		t.Fatalf("single sync error = %v", err)
+	}
+	if len(runner.calls) != before || len(guard.calls) != 2 {
+		t.Fatalf("guard calls=%#v evaluator calls=%d, want no source evaluation", guard.calls, len(runner.calls)-before)
+	}
+
+	candidate := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(candidate, "tables"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(candidate, "tables", "next.ts"), []byte("export default {};\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := evaluator.Prepare(ctx, []deployment.Candidate{{PackageID: "acme/orders", Root: candidate, Commit: "candidate"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(guard.calls) != 2 || len(runner.calls) != before+1 || len(runner.calls[before].Mounts) != 1 || runner.calls[before].Mounts[0].Source != candidate {
+		t.Fatalf("candidate guard=%#v call=%#v", guard.calls, runner.calls[before:])
+	}
+	if err := evaluator.Complete(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCandidatePreparationIsDurableAndRollbackRetiresCandidate(t *testing.T) {
 	evaluator, _, manager, _ := testEvaluator(t, 0)
 	if err := manager.FinalizeFullSynchronization(context.Background(), nil, map[string]string{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.CompleteInitialization(context.Background(), map[string]string{}); err != nil {
 		t.Fatal(err)
 	}
 	candidate := t.TempDir()
@@ -209,7 +276,7 @@ func TestInitialSynchronizationResumesCompletedBatches(t *testing.T) {
 	evaluator, runner, manager, _ := testEvaluator(t, maximumBatch+1)
 	runner.failAt = 2
 	results, err := evaluator.SynchronizeAll(context.Background(), true)
-	if err == nil || len(results) != maximumBatch || manager.Status().State != database.StateDegraded {
+	if err == nil || len(results) != maximumBatch || manager.Status().State != database.StateInitializationFailed {
 		t.Fatalf("first synchronization results=%d status=%#v error=%v", len(results), manager.Status(), err)
 	}
 	runner.failAt = 0

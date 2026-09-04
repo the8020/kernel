@@ -1,122 +1,99 @@
 # Purpose
 
-- Own filesystem-derived package and service definitions, selected-package
-  content inspection, the shared desired package index and Git synchronization,
-  and the replaceable shared service desired-state boundary.
+- Own package source inspection, database-backed package/service policy, Git
+  synchronization, and the atomic package activation transaction.
 
 # Ownership
 
-- Collection discovery reads only
-  `packages/<namespace>/<repository>/package.toml` and each package's
-  `services/<service>/service.toml`.
-- Selected-package inspection reads fixed-depth service and program manifests
-  plus a bounded recursive non-Git file inventory. It reports portable metadata
-  without reading or materializing mutable service desired state; Deno retains
-  ownership of program discovery, loading, and execution.
-- Derive package IDs, service IDs, canonical HTTP prefixes, and source paths
-  exclusively from validated filesystem segments.
-- Parse and validate package, canonical service lifecycle/scaling/placement and
-  access policy, and desired-state TOML; calculate effective configuration from
-  framework defaults, portable defaults, then state overrides.
-- Own `ServiceStateStore` and the `FileServiceStateStore` backend under
-  `state/services/.../state.toml`, with per-service advisory locks, file flush,
-  atomic rename, fixed-depth listing, and idempotent deletion.
-- Materialize framework and portable defaults into the first environment state
-  record so later package-default edits cannot silently change deployed
-  behavior.
-- Own fixed-depth `state/package-index/<author>/<repository>.toml` documents,
-  HTTPS Git source/ref inspection, bounded version and working-tree history,
-  atomic package worktree replacement, clean-worktree protection, initial local
-  package repository creation, and independent pull/push/checkout operations.
-- Emit structured package/service discovery and validation events when a logger
-  is supplied.
-- Do not own runtime Workers, reconciliation, HTTP dispatch, application routes,
-  or node-local observed state.
+- Discover package, service, program, command, table, and hook definitions only beneath
+  validated `packages/<namespace>/<repository>/` roots.
+- Own database adapters for `the8020/packages` desired/active package records,
+  activation history, hook runs, and `the8020/services` declarations and
+  overrides.
+- Own package Git source/ref inspection, clean worktree staging/replacement,
+  local repository initialization, pull/push/checkout, and transient named-secret
+  authentication.
+- Coordinate candidate table evaluation/synchronization, pre/post activation
+  hooks, source publication, durable recovery, and targeted service refresh.
+- Do not own physical SQL generation, evaluator execution, runtime Workers,
+  request routing, or node-local observed runtime state.
 
 # Local Contracts
 
-- Public API: `New`, summary discovery and selected-package inspection methods,
-  package-index list/inspect/set, source and repository inspection, version
-  listing, repository pull/push/checkout,
-  synchronization and local creation,
-  `ReadService`, `ReadState`, `MutateState`, `ServiceStateStore`,
-  `FileServiceStateStore`, identity/path types, manifest types,
-  `FrameworkDefaults`, and effective configuration types; logging is optional
-  and does not alter results.
-- Names match `^[A-Za-z0-9][A-Za-z0-9._-]*$`; hidden names, traversal,
-  separators, null bytes, symlink escapes, and entrypoints outside the package
-  tree are rejected.
-- First discovery creates generation-zero desired state using
-  `lifecycle.default_enabled` and frozen effective defaults; ordinary services
-  default disabled.
-- Omitted service and access types normalize to `stateless` and `public`;
-  explicit service types are only `stateless` or `session`, independent of
-  HTTP/WebSocket transport. Session keepalive remains editable and positive for
-  both types so switching type never loses its configured value.
-- Canonical scaling owns non-negative minimum/maximum Workers, positive
-  concurrency per Worker, target utilization in `(0,1]`, and positive Worker
-  keepalive. Maximum zero means unlimited only at the service level; otherwise
-  it cannot be below minimum. Canonical placement owns one trimmed optional
-  sandbox group, non-negative minimum sandboxes, and positive Workers per
-  sandbox. Defaults are zero/zero Workers, concurrency 32, target `0.7`, Worker
-  keepalive two minutes, zero warm sandboxes, four Workers per sandbox,
-  stateless type, and ten-minute session keepalive.
-- Service manifest and desired-state schema 2 are the only accepted format.
-  Older schemas and obsolete fields are rejected; development instances are
-  reinitialized instead of migrated.
-- Framework defaults are defined once by `DefaultFrameworkDefaults`; callers may
-  supply setting-derived defaults through `Config`.
-- Package content inspection excludes `.git`, does not follow directory
-  symlinks, returns package-relative file paths, and stops after 5,000 visited
-  entries with an explicit truncation marker.
-- Package index identity is repeated in each schema-one document and must match
-  its fixed-depth path and public source suffix. A remote entry selects exactly
-  one of latest default branch, hexadecimal commit, or safe Git tag; a local
-  entry has no source or selector.
+- Package and service IDs derive from validated filesystem segments. Selected
+  package inspection is bounded; collection discovery is fixed-depth and never
+  recursively scans every package in a hot or periodic path.
+- Service manifests are declarative defaults. Installation stores a complete
+  service row; operator overrides remain unchanged across package updates unless
+  a changed manifest field was not overridden.
+- Canonical service policy owns type, enablement, minimum/maximum Workers,
+  concurrency, target utilization, Worker/session keepalive, sandbox group,
+  minimum sandboxes, and Workers per sandbox. Old instance-based or filesystem
+  state has no compatibility path.
+- Invalid effective manifest/default/override combinations retain the
+  `ErrInvalidServicePolicy` domain classification for transport adapters.
+- Every direct desired-service mutation advances one shared monotonic
+  `services` revision and updates that service's latest change marker in the
+  same transaction. Nodes scalar-poll the revision and load only newer service
+  markers. Package definition changes remain published by the package revision
+  after activation, never by an early service marker while source is staged.
+- The database package record is the sole desired/active package source of truth
+  after first initialization. Bootstrap TOML is only the fresh-database source
+  list; ordinary boots trust database state and never rescan all definitions.
+- A fresh database stages every bootstrap package and performs one batched
+  evaluation and synchronization before publishing the package set. Normal
+  activation evaluates only candidate package tables in one batch.
+- Activation is prepare schema → pre-activate hooks → atomically switch source →
+  publish package/service records → post-activate hooks → complete. Durable
+  activation, package, hook, and pending-deployment rows make retry/recovery
+  idempotent. PostgreSQL holds one database advisory deployment lock throughout;
+  SQLite uses local transactional serialization for its single-node role.
+- Removed table/column definitions become retired metadata and retained physical
+  data. Only explicit confirmed trim performs destructive deletion. Incompatible
+  type, nullability, key, index, or constraint changes reject activation.
+- Hooks are optional `hooks/pre-activate.ts` and `hooks/post-activate.ts` default
+  functions. They run as bounded ordinary job Workers with package/database
+  access and receive package ID, exact candidate commit, and activation ID.
+- Programs resolve only from ready active package commits. Manifests may set
+  `discoverable = false` without changing execution semantics. Package command
+  candidates validate their referenced same-package program before source
+  publication; one invocation uses a short-lived exact source snapshot so a
+  self-update cannot change its running module. Source-control metadata is not
+  copied into runtime snapshots.
 - Synchronization clones into a hidden same-filesystem staging directory,
-  validates `package.toml`, resolves an exact commit, and switches the complete
-  repository by rename. Existing repositories with tracked or untracked changes
-  are preserved and rejected. One failed package does not prevent other
-  selected packages from synchronizing.
-- Package synchronization, pull, and checkout use the same optional schema
-  deployment handshake. The staged exact commit is prepared before its source
-  becomes visible, then the atomic source switch is completed in the catalog.
-  Schema rejection leaves the old tree active; a failure after the rename keeps
-  the durable pending deployment for startup recovery.
-- The package owner passes candidate roots and exact commits but never evaluates
-  TypeScript or emits DDL. An unchanged commit bypasses schema preparation.
-- An index may retain one validated global secret name for Git authentication,
-  including for a local package later given a remote. The value is resolved
-  through the narrow injected secret resolver only during a network operation.
-  Git receives it as a transient host-scoped extra header; URLs, index TOML,
-  durable Git configuration, results, and errors never contain the value.
-- Repository pull is fetch plus fast-forward only on a clean attached branch;
-  push publishes the attached branch; checkout selects exactly one local/remote
-  branch or hexadecimal commit and rejects dirty worktrees. Changed pull or
-  checkout results carry old/new service sets for targeted command composition.
+  validates the exact commit, and replaces source by rename. Dirty shared
+  worktrees are preserved and rejected. One failed batch package has explicit
+  durable failure state.
+- Activated-source consumers can require a clean installed checkout whose HEAD
+  or content fingerprint exactly matches the ready database commit; schema
+  evaluation uses this guard while staged activation evaluates its candidate.
+- Git credentials never enter URLs, command arguments, durable Git config,
+  package records, results, or logs. A selected named secret or recovery command
+  secure input is used only for a host-scoped transient HTTPS authorization
+  header.
+- Repository pull is clean-branch fetch plus fast-forward; push publishes the
+  attached branch; checkout selects one local/remote branch or hexadecimal
+  commit. Changed operations use the same activation transaction.
+- Kernel repository SQL remains portable across SQLite and PostgreSQL. Bind
+  logical booleans as parameters or use boolean predicates; never encode them
+  as SQLite-only `0`/`1` literals.
 
 # Work Guidance
 
-- Keep collection scans fixed-depth; recursive traversal is permitted only for
-  bounded inspection of one explicitly selected package. Do not add recursive
-  catalog discovery or a persistent definition cache.
-- Return invalid discovered entries with precise path-scoped validation errors
-  instead of aborting the complete scan.
-- Keep package mutations targeted. Do not turn an installed-package fingerprint
-  update into a full table or Worker scan.
+- Keep mutations package-targeted. Do not turn a candidate update into an
+  installed-package, table, service, sandbox, or Worker scan.
+- Keep filesystem ownership separate from database ownership: this package
+  supplies candidates and commits; the database owner evaluates descriptors and
+  applies physical schema.
 
 # Verification
 
-- Tests cover cheap fixed-depth package summaries, selected package
-  service/program/file inspection without desired-state materialization,
-  filesystem identity, descriptions, invalid and hidden names, symlink escape,
-  service entrypoints, schema-two defaults/validation and obsolete-schema
-  rejection, frozen first-discovery state,
-  backend replacement, CRUD/list/delete behavior, monotonic atomic
-  mutations, cross-process advisory locking, index validation and permissions,
-  real HTTPS Git ref/version discovery, latest/tag synchronization,
-  pull/push/branch/commit checkout, transient named-secret authentication,
-  service-set changes, schema-before-source ordering and rejection, dirty-
-  worktree preservation, and local repository creation.
+- Tests cover identity/path and program containment/symlink validation, exact
+  invocation snapshots, bounded inspection, database package and
+  service CRUD/revisions, manifest defaults/operator overrides, clean Git
+  synchronization and mutation, credentials, candidate-only schema activation,
+  hook ordering/idempotence, durable phase recovery, PostgreSQL lock ordering,
+  retirement/trim behavior, targeted package refresh, and automatic cross-node
+  desired-service propagation without full service scans.
 
 # Child DOX Index

@@ -4,18 +4,20 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
 	platformauth "the8020/kernel/auth"
 	"the8020/kernel/cbus/core"
 	"the8020/kernel/database"
+	"the8020/kernel/execution"
 	"the8020/kernel/nodes"
 	"the8020/kernel/runtime/protocol"
 	"the8020/kernel/sandbox/model"
@@ -44,6 +46,55 @@ func (i *recordingWorkerInvoker) InvokeWorker(_ context.Context, input nodes.Wor
 type recordingPersistentCompleter struct {
 	calls []PersistentExecutionTarget
 	err   error
+}
+
+type runtimeIdentityCall struct {
+	runtimeGroupID string
+	sandboxID      string
+	workerID       string
+	executionID    string
+	workloadID     string
+}
+
+type recordingRuntimeIdentity struct {
+	calls []runtimeIdentityCall
+	err   error
+}
+
+func (v *recordingRuntimeIdentity) ValidateRuntimeExecution(_ context.Context, runtimeGroupID, sandboxID, workerID, executionID, workloadID string) error {
+	v.calls = append(v.calls, runtimeIdentityCall{runtimeGroupID: runtimeGroupID, sandboxID: sandboxID, workerID: workerID, executionID: executionID, workloadID: workloadID})
+	return v.err
+}
+
+type recordingOperations struct {
+	operation string
+	input     map[string]any
+	result    any
+	err       error
+	caller    execution.Caller
+}
+
+func (o *recordingOperations) Execute(ctx context.Context, operation string, input map[string]any) (any, error) {
+	o.operation, o.input = operation, input
+	o.caller, _ = execution.CallerFromContext(ctx)
+	return o.result, o.err
+}
+
+func newCallbackTestServer(t *testing.T, store *state.Store, configure func(*Config)) *Server {
+	t.Helper()
+	config := Config{
+		Store: store, ProtocolVersion: protocol.ProtocolVersion,
+		SocketPath: filepath.Join(t.TempDir(), "kernel.sock"),
+		Workers:    &recordingRuntimeIdentity{},
+	}
+	if configure != nil {
+		configure(&config)
+	}
+	server, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return server
 }
 
 type recordingDatabase struct {
@@ -95,12 +146,8 @@ func (c *recordingPersistentCompleter) CompletePersistentExecution(_ context.Con
 func TestAuthenticatedRegistrationAndHeartbeatPersistStatus(t *testing.T) {
 	store, _ := state.New(t.TempDir())
 	spec, status := callbackFixture(t, store)
-	_, network, _ := net.ParseCIDR("10.88.0.0/16")
 	now := time.Date(2026, 8, 20, 1, 2, 3, 0, time.UTC)
-	server, err := New(Config{Store: store, ProtocolVersion: 1, AdvertiseAddress: "10.88.0.1", AllowedNetwork: network, Now: func() time.Time { return now }})
-	if err != nil {
-		t.Fatal(err)
-	}
+	server := newCallbackTestServer(t, store, func(config *Config) { config.Now = func() time.Time { return now } })
 	for _, endpoint := range []struct{ path, message string }{{"/v1/runtime/register", "supervisor_registration"}, {"/v1/runtime/heartbeat", "heartbeat"}} {
 		body := callbackMessage(t, protocol.MessageType(endpoint.message), spec, statusPayload{ProtocolVersion: 1, RuntimeGroupID: spec.RuntimeGroupID, SandboxID: spec.SandboxID, WorkloadType: string(spec.WorkloadType), SupervisorVersion: "1.0.0", DenoVersion: "2.9.4", WorkerCount: 2})
 		request := httptest.NewRequest(http.MethodPost, "http://callback"+endpoint.path, bytes.NewReader(body))
@@ -118,18 +165,16 @@ func TestAuthenticatedRegistrationAndHeartbeatPersistStatus(t *testing.T) {
 	}
 }
 
-func TestCallbackRejectsSourceTokenAndProtocolMismatch(t *testing.T) {
+func TestCallbackRejectsTokenAndProtocolMismatch(t *testing.T) {
 	store, _ := state.New(t.TempDir())
 	spec, _ := callbackFixture(t, store)
-	_, network, _ := net.ParseCIDR("10.88.0.0/16")
-	server, _ := New(Config{Store: store, ProtocolVersion: 1, AdvertiseAddress: "10.88.0.1", AllowedNetwork: network})
+	server := newCallbackTestServer(t, store, nil)
 	validPayload := statusPayload{ProtocolVersion: 1, RuntimeGroupID: spec.RuntimeGroupID, SandboxID: spec.SandboxID, WorkloadType: string(spec.WorkloadType)}
 	for _, test := range []struct {
 		name, remote, token string
 		version             int
 		want                int
 	}{
-		{"source", "127.0.0.1:1", spec.InternalToken, 1, http.StatusForbidden},
 		{"token", "10.88.0.2:1", "wrong", 1, http.StatusUnauthorized},
 		{"protocol", "10.88.0.2:1", spec.InternalToken, 2, http.StatusBadRequest},
 	} {
@@ -156,8 +201,7 @@ func TestCallbackCannotReviveTerminalRuntimeGroup(t *testing.T) {
 	if err := store.SaveStatus(spec.RuntimeGroupID, status); err != nil {
 		t.Fatal(err)
 	}
-	_, network, _ := net.ParseCIDR("10.88.0.0/16")
-	server, _ := New(Config{Store: store, ProtocolVersion: 1, AdvertiseAddress: "10.88.0.1", AllowedNetwork: network})
+	server := newCallbackTestServer(t, store, nil)
 	body := callbackMessage(t, protocol.MessageHeartbeat, spec, statusPayload{ProtocolVersion: 1, RuntimeGroupID: spec.RuntimeGroupID, SandboxID: spec.SandboxID, WorkloadType: string(spec.WorkloadType)})
 	request := httptest.NewRequest(http.MethodPost, "http://callback/v1/runtime/heartbeat", bytes.NewReader(body))
 	request.RemoteAddr = "10.88.0.2:1"
@@ -177,22 +221,12 @@ func TestSupervisorMediatedAuthenticationCallsRequireActiveRequestIdentity(t *te
 	root := t.TempDir()
 	store, _ := state.New(filepath.Join(root, "groups"))
 	spec, _ := callbackFixtureForWorkload(t, store, model.WorkloadService)
-	manager, err := platformauth.New(platformauth.Config{
-		UsersFile: filepath.Join(root, "config", "auth", "bootstrap-users.toml"), SessionsRoot: filepath.Join(root, "state", "auth", "bootstrap-sessions"),
-		SessionDuration: time.Hour, CleanupInterval: time.Hour,
-		Argon2: platformauth.Argon2Parameters{Memory: 8, Iterations: 1, Parallelism: 1, SaltLength: 8, OutputLength: 16},
+	manager := newCallbackTestAuthentication(t, root)
+	runtimeIdentity := &recordingRuntimeIdentity{}
+	server := newCallbackTestServer(t, store, func(config *Config) {
+		config.Authentication, config.RuntimeRequests = manager, manager
+		config.Workers = runtimeIdentity
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := manager.AddUser(context.Background(), "admin", "password"); err != nil {
-		t.Fatal(err)
-	}
-	_, network, _ := net.ParseCIDR("10.88.0.0/16")
-	server, err := New(Config{Store: store, ProtocolVersion: 1, AdvertiseAddress: "10.88.0.1", AllowedNetwork: network, Authentication: manager, RuntimeRequests: manager})
-	if err != nil {
-		t.Fatal(err)
-	}
 	release, err := manager.BeginRuntimeRequest(platformauth.RuntimeRequest{RequestID: "request-1", ServiceID: "example/auth/login", RuntimeGroupID: spec.RuntimeGroupID, SandboxID: spec.SandboxID, SecureTransport: true})
 	if err != nil {
 		t.Fatal(err)
@@ -210,14 +244,14 @@ func TestSupervisorMediatedAuthenticationCallsRequireActiveRequestIdentity(t *te
 		return response
 	}
 
-	identity := authCallPayload{ExecutionID: "execution-1", WorkerID: "worker-1", ServiceID: "example/auth/login", RequestID: "request-1", SandboxID: spec.SandboxID}
+	identity := authCallPayload{ExecutionID: "execution-1", WorkerID: "worker-1", WorkloadID: "service-version-login", ServiceID: "example/auth/login", RequestID: "request-1", SandboxID: spec.SandboxID}
 	mismatched := identity
 	mismatched.RequestID = "request-other"
-	if response := call("/v1/runtime/auth/bootstrap-login", protocol.MessageAuthBootstrapLogin, mismatched); response.Code != http.StatusConflict {
+	if response := call("/v1/runtime/auth/login", protocol.MessageAuthLogin, mismatched); response.Code != http.StatusConflict {
 		t.Fatalf("mismatched active request status=%d body=%q", response.Code, response.Body.String())
 	}
 	identity.Username, identity.Password = "admin", "password"
-	loginResponse := call("/v1/runtime/auth/bootstrap-login", protocol.MessageAuthBootstrapLogin, identity)
+	loginResponse := call("/v1/runtime/auth/login", protocol.MessageAuthLogin, identity)
 	if loginResponse.Code != http.StatusOK {
 		t.Fatalf("login status=%d body=%q", loginResponse.Code, loginResponse.Body.String())
 	}
@@ -225,9 +259,12 @@ func TestSupervisorMediatedAuthenticationCallsRequireActiveRequestIdentity(t *te
 	if err := json.Unmarshal(loginResponse.Body.Bytes(), &envelope); err != nil || envelope.MessageType != protocol.MessageAuthResult || envelope.CorrelationID != "correlation-1" {
 		t.Fatalf("login envelope=%#v error=%v", envelope, err)
 	}
-	var login platformauth.BootstrapLoginResult
+	var login platformauth.LoginResult
 	if err := json.Unmarshal(envelope.Payload, &login); err != nil || !login.Authenticated || login.SetCookie == "" {
 		t.Fatalf("login=%#v error=%v", login, err)
+	}
+	if len(runtimeIdentity.calls) != 1 || runtimeIdentity.calls[0].workloadID != "service-version-login" {
+		t.Fatalf("runtime identity=%#v", runtimeIdentity.calls)
 	}
 	cookieResponse := &http.Response{Header: http.Header{"Set-Cookie": []string{login.SetCookie}}}
 	cookies := cookieResponse.Cookies()
@@ -244,7 +281,7 @@ func TestSupervisorMediatedAuthenticationCallsRequireActiveRequestIdentity(t *te
 		t.Fatal(err)
 	}
 	defer releaseLogout()
-	logoutIdentity := authCallPayload{ExecutionID: "execution-1", WorkerID: "worker-1", ServiceID: "example/auth/logout", RequestID: "request-2", SandboxID: spec.SandboxID}
+	logoutIdentity := authCallPayload{ExecutionID: "execution-1", WorkerID: "worker-1", WorkloadID: "service-version-login", ServiceID: "example/auth/logout", RequestID: "request-2", SandboxID: spec.SandboxID}
 	logoutResponse := call("/v1/runtime/auth/logout-current", protocol.MessageAuthLogoutCurrent, logoutIdentity)
 	if logoutResponse.Code != http.StatusOK {
 		t.Fatalf("logout status=%d body=%q", logoutResponse.Code, logoutResponse.Body.String())
@@ -254,130 +291,161 @@ func TestSupervisorMediatedAuthenticationCallsRequireActiveRequestIdentity(t *te
 	}
 }
 
-func TestSupervisorMediatedAdminBusRequiresBootstrapAdministrator(t *testing.T) {
-	root := t.TempDir()
-	store, _ := state.New(filepath.Join(root, "groups"))
-	spec, _ := callbackFixtureForWorkload(t, store, model.WorkloadService)
+func TestJobsAndServicesCanExecuteAdminCommandsWithoutAUserOrHTTPRequest(t *testing.T) {
+	for _, workload := range []model.WorkloadType{model.WorkloadJob, model.WorkloadService} {
+		t.Run(string(workload), func(t *testing.T) {
+			store, _ := state.New(t.TempDir())
+			spec, _ := callbackFixtureForWorkload(t, store, workload)
+			registry := core.NewRegistry(nil)
+			mutated := false
+			err := registry.Register(core.Command{
+				Version: 1, ID: "kernel.test", Name: "kernel.test", Path: []string{"kernel.test"},
+				Parameters: []core.Parameter{{Name: "value", Type: "string", Required: true}},
+			}, func(_ context.Context, request core.Request) (core.Result, error) {
+				mutated = request.Arguments["value"] == "accepted"
+				return core.Result{"state": "done"}, nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			identity := &recordingRuntimeIdentity{}
+			server := newCallbackTestServer(t, store, func(config *Config) {
+				config.AdminBus, config.Workers = registry, identity
+			})
+			payload := adminCallPayload{
+				ExecutionID: "execution-1", WorkerID: "worker-1", WorkloadID: "service-version-control", ServiceID: "example/control", SandboxID: spec.SandboxID,
+				CommandID: "kernel.test", Arguments: map[string]any{"value": "accepted"},
+			}
+			response := runtimeControlCall(t, server, spec, "/v1/runtime/admin/execute", protocol.MessageAdminCommand, payload)
+			if response.Code != http.StatusOK {
+				t.Fatalf("admin status=%d body=%q", response.Code, response.Body.String())
+			}
+			var envelope protocol.Envelope
+			var result core.Response
+			if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(envelope.Payload, &result); err != nil || !result.Success || !mutated {
+				t.Fatalf("admin result=%#v mutated=%t error=%v", result, mutated, err)
+			}
+			values, ok := result.Result.(map[string]any)
+			if !ok || values["state"] != "done" || len(identity.calls) != 1 || identity.calls[0].workloadID != "service-version-control" {
+				t.Fatalf("result=%#v identity=%#v", result.Result, identity.calls)
+			}
+		})
+	}
+}
+
+func TestJobsAndServicesCanUseTypedRuntimeOperations(t *testing.T) {
+	for _, workload := range []model.WorkloadType{model.WorkloadJob, model.WorkloadService} {
+		t.Run(string(workload), func(t *testing.T) {
+			store, _ := state.New(t.TempDir())
+			spec, _ := callbackFixtureForWorkload(t, store, workload)
+			operations := &recordingOperations{result: map[string]any{"value": string(make([]byte, 4*1024))}}
+			server := newCallbackTestServer(t, store, func(config *Config) { config.Operations = operations })
+			response := runtimeControlCall(t, server, spec, "/v1/runtime/operation/execute", protocol.MessageAdminCommand, operationCallPayload{
+				ExecutionID: "execution-1", WorkerID: "worker-1", WorkloadID: "the8020/example/workload",
+				ServiceID: "the8020/example/service", SandboxID: spec.SandboxID, Operation: "example.inspect", Input: map[string]any{"id": "one"},
+			})
+			if response.Code != http.StatusOK || operations.operation != "example.inspect" || operations.input["id"] != "one" {
+				t.Fatalf("status=%d body=%q operation=%#v", response.Code, response.Body.String(), operations)
+			}
+			if operations.caller.ExecutionID != "execution-1" || operations.caller.Workload != workload {
+				t.Fatalf("runtime caller = %#v", operations.caller)
+			}
+			if response.Header().Get("Content-Length") != strconv.Itoa(response.Body.Len()) {
+				t.Fatalf("content length=%q body bytes=%d", response.Header().Get("Content-Length"), response.Body.Len())
+			}
+		})
+	}
+}
+
+func newCallbackTestAuthentication(t *testing.T, root string) *platformauth.Manager {
+	t.Helper()
+	db := database.New(database.Config{
+		Backend: database.BackendSQLite, Location: filepath.Join(root, "system.db"),
+		MaximumOpenConnections: 8, MaximumIdleConnections: 2,
+	})
+	if _, err := db.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE IF NOT EXISTS "the8020__users__users" ("username" TEXT PRIMARY KEY, "passwordHash" TEXT NOT NULL, "enabled" INTEGER NOT NULL, "authVersion" INTEGER NOT NULL, "createdAt" TEXT NOT NULL, "updatedAt" TEXT NOT NULL) STRICT`,
+		`CREATE TABLE IF NOT EXISTS "the8020__users__sessions" ("sessionId" TEXT PRIMARY KEY, "username" TEXT NOT NULL, "secretHash" TEXT NOT NULL, "authVersion" INTEGER NOT NULL, "createdAt" TEXT NOT NULL, "expiresAt" TEXT NOT NULL) STRICT`,
+	} {
+		if _, err := db.ExecContext(context.Background(), statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	parameters := platformauth.Argon2Parameters{Memory: 8, Iterations: 1, Parallelism: 1, SaltLength: 8, OutputLength: 16}
+	hasher, err := platformauth.NewPasswordHasher(parameters, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	manager, err := platformauth.New(platformauth.Config{
-		UsersFile: filepath.Join(root, "users.toml"), SessionsRoot: filepath.Join(root, "sessions"),
-		SessionDuration: time.Hour, CleanupInterval: time.Hour,
-		Argon2: platformauth.Argon2Parameters{Memory: 8, Iterations: 1, Parallelism: 1, SaltLength: 8, OutputLength: 16},
+		Database: db, SessionDuration: time.Hour, CleanupInterval: time.Hour,
+		Argon2: parameters, Hasher: hasher,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	registry := core.NewRegistry(nil)
-	mutated := false
-	err = registry.Register(core.Command{Version: 1, ID: "service.stop", Parameters: []core.Parameter{{Name: "service_id", Type: "string", Required: true}}}, func(_ context.Context, request core.Request) (core.Result, error) {
-		mutated = request.Arguments["service_id"] == "core/example/service"
-		return core.Result{"state": "STOPPED"}, nil
-	})
+	passwordHash, err := hasher.Hash("password")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, network, _ := net.ParseCIDR("10.88.0.0/16")
-	server, err := New(Config{Store: store, ProtocolVersion: 1, AdvertiseAddress: "10.88.0.1", AllowedNetwork: network, RuntimeRequests: manager, AdminBus: registry})
-	if err != nil {
+	now := database.EncodeTime(db, time.Now())
+	if _, err := db.ExecContext(context.Background(), `INSERT INTO "the8020__users__users" ("username", "passwordHash", "enabled", "authVersion", "createdAt", "updatedAt") VALUES ($1, $2, $3, 1, $4, $4)`, "admin", passwordHash, true, now); err != nil {
 		t.Fatal(err)
 	}
-	call := func(payload adminCallPayload) *httptest.ResponseRecorder {
-		payloadData, _ := json.Marshal(payload)
-		body, _ := json.Marshal(protocol.Envelope{ProtocolVersion: 1, MessageType: protocol.MessageAdminCommand, RuntimeGroupID: spec.RuntimeGroupID, CorrelationID: "correlation-admin", Payload: payloadData})
-		request := httptest.NewRequest(http.MethodPost, "http://callback/v1/runtime/admin/execute", bytes.NewReader(body))
-		request.RemoteAddr = "10.88.0.2:1000"
-		request.Header.Set("Authorization", "Bearer "+spec.InternalToken)
-		response := httptest.NewRecorder()
-		server.serveHTTP(response, request)
-		return response
-	}
-	identity := adminCallPayload{ExecutionID: "execution-1", WorkerID: "worker-1", ServiceID: "example/admin/control", RequestID: "request-admin", SandboxID: spec.SandboxID, CommandID: "service.stop", Arguments: map[string]any{"service_id": "core/example/service"}}
-	release, err := manager.BeginRuntimeRequest(platformauth.RuntimeRequest{RequestID: identity.RequestID, ServiceID: identity.ServiceID, RuntimeGroupID: spec.RuntimeGroupID, SandboxID: spec.SandboxID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if response := call(identity); response.Code != http.StatusForbidden {
-		t.Fatalf("anonymous status=%d body=%q", response.Code, response.Body.String())
-	}
-	release()
-	release, err = manager.BeginRuntimeRequest(platformauth.RuntimeRequest{RequestID: identity.RequestID, ServiceID: identity.ServiceID, RuntimeGroupID: spec.RuntimeGroupID, SandboxID: spec.SandboxID, Auth: platformauth.AuthContext{Authenticated: true, Realm: "bootstrap-admin", UserID: "bootstrap-admin:admin", Username: "admin"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer release()
-	response := call(identity)
-	if response.Code != http.StatusOK {
-		t.Fatalf("admin status=%d body=%q", response.Code, response.Body.String())
-	}
-	var envelope protocol.Envelope
-	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil || envelope.MessageType != protocol.MessageAdminResult || envelope.CorrelationID != "correlation-admin" {
-		t.Fatalf("admin envelope=%#v error=%v", envelope, err)
-	}
-	var result core.Response
-	if err := json.Unmarshal(envelope.Payload, &result); err != nil || !result.Success || result.Result["state"] != "STOPPED" || !mutated {
-		t.Fatalf("admin result=%#v mutated=%t error=%v", result, mutated, err)
-	}
-	mismatch := identity
-	mismatch.RequestID = "other-request"
-	if response := call(mismatch); response.Code != http.StatusConflict {
-		t.Fatalf("mismatch status=%d body=%q", response.Code, response.Body.String())
-	}
+	return manager
 }
 
 func TestActiveServiceRequestCanUseKernelOwnedDatabase(t *testing.T) {
 	store, _ := state.New(t.TempDir())
 	spec, _ := callbackFixtureForWorkload(t, store, model.WorkloadService)
-	_, network, _ := net.ParseCIDR("10.88.0.0/16")
 	active := platformauth.RuntimeRequest{
 		RequestID: "request-database", ServiceID: "example/data/service",
 		RuntimeGroupID: spec.RuntimeGroupID, SandboxID: spec.SandboxID,
 	}
-	runtimeRequests := fixedRuntimeRequests{requests: map[string]platformauth.RuntimeRequest{active.RequestID: active}}
 	databaseService := &recordingDatabase{}
-	server, err := New(Config{Store: store, ProtocolVersion: 1, AdvertiseAddress: "10.88.0.1", AllowedNetwork: network, RuntimeRequests: runtimeRequests, Database: databaseService})
-	if err != nil {
-		t.Fatal(err)
-	}
+	server := newCallbackTestServer(t, store, func(config *Config) { config.Database = databaseService })
 	payload := databaseCallPayload{
-		ExecutionID: "execution-1", WorkerID: "worker-1", ServiceID: active.ServiceID,
+		ExecutionID: "execution-1", WorkerID: "worker-1", WorkloadID: "service-version-data", ServiceID: active.ServiceID,
 		RequestID: active.RequestID, SandboxID: spec.SandboxID,
-		Statement: "SELECT $1", Parameters: json.RawMessage(`[3]`), ReturnRows: true,
+		Statement: "SELECT $1", Parameters: json.RawMessage(`[3]`), ReturnRows: true, ReturnInsertID: true,
 	}
 	response := runtimeControlCall(t, server, spec, "/v1/runtime/database/execute", protocol.MessageDatabaseExecute, payload)
-	if response.Code != http.StatusOK || len(databaseService.statements) != 1 || !databaseService.statements[0].ReturnRows || string(databaseService.statements[0].Parameters) != `[3]` {
+	if response.Code != http.StatusOK || len(databaseService.statements) != 1 || !databaseService.statements[0].ReturnRows || !databaseService.statements[0].ReturnInsertID || string(databaseService.statements[0].Parameters) != `[3]` {
 		t.Fatalf("query status=%d body=%q database=%#v", response.Code, response.Body.String(), databaseService)
 	}
 	var envelope protocol.Envelope
 	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil || envelope.MessageType != protocol.MessageDatabaseResult {
 		t.Fatalf("query envelope=%#v error=%v", envelope, err)
 	}
-	payload.Statement, payload.Parameters, payload.ReturnRows = "DELETE FROM example", nil, false
+	payload.Statement, payload.Parameters, payload.ReturnRows, payload.ReturnInsertID = "DELETE FROM example", nil, false, false
 	response = runtimeControlCall(t, server, spec, "/v1/runtime/database/execute", protocol.MessageDatabaseExecute, payload)
 	if response.Code != http.StatusOK || len(databaseService.statements) != 2 || databaseService.statements[1].ReturnRows {
 		t.Fatalf("execute status=%d body=%q database=%#v", response.Code, response.Body.String(), databaseService)
 	}
-	payload.RequestID = "inactive"
+	payload.RequestID = "job-or-request-scope"
 	response = runtimeControlCall(t, server, spec, "/v1/runtime/database/execute", protocol.MessageDatabaseExecute, payload)
-	if response.Code != http.StatusConflict || len(databaseService.statements) != 2 {
-		t.Fatalf("inactive status=%d database=%#v", response.Code, databaseService)
+	if response.Code != http.StatusOK || len(databaseService.statements) != 3 {
+		t.Fatalf("execution-scoped status=%d database=%#v", response.Code, databaseService)
 	}
 }
 
 func TestDatabaseScopeCleanupUsesExactExecutionIdentity(t *testing.T) {
 	store, _ := state.New(t.TempDir())
 	spec, _ := callbackFixtureForWorkload(t, store, model.WorkloadService)
-	_, network, _ := net.ParseCIDR("10.88.0.0/16")
 	active := platformauth.RuntimeRequest{
 		RequestID: "request-database", ServiceID: "example/data/service",
 		RuntimeGroupID: spec.RuntimeGroupID, SandboxID: spec.SandboxID,
 	}
-	runtimeRequests := fixedRuntimeRequests{requests: map[string]platformauth.RuntimeRequest{active.RequestID: active}}
 	databaseService := &recordingDatabase{}
-	server, err := New(Config{Store: store, ProtocolVersion: 1, AdvertiseAddress: "10.88.0.1", AllowedNetwork: network, RuntimeRequests: runtimeRequests, Database: databaseService})
-	if err != nil {
-		t.Fatal(err)
-	}
+	server := newCallbackTestServer(t, store, func(config *Config) { config.Database = databaseService })
 	payload := databaseCallPayload{
-		ExecutionID: "execution-1", WorkerID: "worker-1", ServiceID: active.ServiceID,
+		ExecutionID: "execution-1", WorkerID: "worker-1", WorkloadID: "service-version-data", ServiceID: active.ServiceID,
 		RequestID: active.RequestID, SandboxID: spec.SandboxID,
 	}
 	response := runtimeControlCall(t, server, spec, "/v1/runtime/database/scope", protocol.MessageDatabaseExecute, payload)
@@ -395,23 +463,20 @@ func TestDatabaseScopeCleanupUsesExactExecutionIdentity(t *testing.T) {
 	}
 }
 
-func TestAuthenticatedServiceCanInvokeOneExactWorker(t *testing.T) {
+func TestActiveServiceCanInvokeOneExactWorker(t *testing.T) {
 	store, _ := state.New(t.TempDir())
 	spec, _ := callbackFixtureForWorkload(t, store, model.WorkloadService)
-	_, network, _ := net.ParseCIDR("10.88.0.0/16")
 	active := platformauth.RuntimeRequest{
 		RequestID: "request-control", ServiceID: "example/admin/control",
 		RuntimeGroupID: spec.RuntimeGroupID, SandboxID: spec.SandboxID,
-		Auth: platformauth.AuthContext{Authenticated: true, UserID: "bootstrap-admin:admin", Username: "admin"},
 	}
-	runtimeRequests := fixedRuntimeRequests{requests: map[string]platformauth.RuntimeRequest{active.RequestID: active}}
 	invoker := &recordingWorkerInvoker{result: nodes.WorkerInvocationResult{OK: true, Output: map[string]any{"state": "live"}}}
-	server, err := New(Config{Store: store, ProtocolVersion: 1, AdvertiseAddress: "10.88.0.1", AllowedNetwork: network, RuntimeRequests: runtimeRequests, WorkerInvoker: invoker})
-	if err != nil {
-		t.Fatal(err)
-	}
+	identity := &recordingRuntimeIdentity{}
+	server := newCallbackTestServer(t, store, func(config *Config) {
+		config.WorkerInvoker, config.Workers = invoker, identity
+	})
 	payload := workerCallPayload{
-		ExecutionID: "source-execution", SourceWorkerID: "source-worker", ServiceID: active.ServiceID,
+		ExecutionID: "source-execution", SourceWorkerID: "source-worker", WorkloadID: "service-version-control", ServiceID: active.ServiceID,
 		RequestID: active.RequestID, SourceSandboxID: spec.SandboxID,
 		TargetNodeID: "node-b", TargetSandboxID: "sandbox-b", TargetWorkerID: "worker-b",
 		TargetPersistentExecutionID: "persistent-target",
@@ -433,30 +498,20 @@ func TestAuthenticatedServiceCanInvokeOneExactWorker(t *testing.T) {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
 
-	active.Auth = platformauth.AuthContext{}
-	runtimeRequests.requests[active.RequestID] = active
-	response = runtimeControlCall(t, server, spec, "/v1/runtime/worker/invoke", protocol.MessageWorkerInvoke, payload)
-	if response.Code != http.StatusForbidden || len(invoker.calls) != 1 {
-		t.Fatalf("anonymous status=%d calls=%#v", response.Code, invoker.calls)
-	}
-	payload.RequestID = "missing-request"
+	identity.err = errors.New("stale execution")
 	response = runtimeControlCall(t, server, spec, "/v1/runtime/worker/invoke", protocol.MessageWorkerInvoke, payload)
 	if response.Code != http.StatusConflict || len(invoker.calls) != 1 {
-		t.Fatalf("inactive status=%d calls=%#v", response.Code, invoker.calls)
+		t.Fatalf("inactive execution status=%d calls=%#v", response.Code, invoker.calls)
 	}
 }
 
 func TestPersistentCompletionCarriesExactGenericExecutionIdentity(t *testing.T) {
 	store, _ := state.New(t.TempDir())
 	spec, _ := callbackFixtureForWorkload(t, store, model.WorkloadService)
-	_, network, _ := net.ParseCIDR("10.88.0.0/16")
 	completer := &recordingPersistentCompleter{}
-	server, err := New(Config{Store: store, ProtocolVersion: 1, AdvertiseAddress: "10.88.0.1", AllowedNetwork: network, Persistent: completer})
-	if err != nil {
-		t.Fatal(err)
-	}
+	server := newCallbackTestServer(t, store, func(config *Config) { config.Persistent = completer })
 	payload := completionCallPayload{
-		ExecutionID: "worker-execution", WorkerID: "worker-a", ServiceID: "example/realtime/channel",
+		ExecutionID: "worker-execution", WorkerID: "worker-a", WorkloadID: "service-version-realtime", ServiceID: "example/realtime/channel",
 		RequestID: "request-old", SandboxID: spec.SandboxID, PersistentExecutionID: "persistent-a",
 	}
 	response := runtimeControlCall(t, server, spec, "/v1/runtime/execution/complete", protocol.MessagePersistentExecutionComplete, payload)
@@ -514,41 +569,75 @@ func callbackMessage(t *testing.T, messageType protocol.MessageType, spec model.
 
 func TestCallbackListenerLifecycle(t *testing.T) {
 	store, _ := state.New(t.TempDir())
-	_, network, _ := net.ParseCIDR("10.88.0.0/16")
-	server, _ := New(Config{Store: store, ProtocolVersion: 1, BindAddress: "127.0.0.1", AdvertiseAddress: "10.88.0.1", AllowedNetwork: network})
+	socketPath := filepath.Join(t.TempDir(), "kernel.sock")
+	server, err := New(Config{Store: store, ProtocolVersion: protocol.ProtocolVersion, SocketPath: socketPath, Workers: &recordingRuntimeIdentity{}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := server.Start(); err != nil {
 		t.Fatal(err)
 	}
-	if server.Address() == "" {
-		t.Fatal("callback address is empty")
+	if server.Address() != socketPath {
+		t.Fatalf("callback address=%q", server.Address())
+	}
+	info, err := os.Stat(socketPath)
+	if err != nil || info.Mode()&os.ModeSocket == 0 || info.Mode().Perm() != 0o666 {
+		t.Fatalf("socket info=%#v err=%v", info, err)
 	}
 	if err := server.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := os.Stat(socketPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("socket remains after close: %v", err)
+	}
 }
 
-func TestCallbackListenerReusesDurableEndpointAfterRestart(t *testing.T) {
+func TestCallbackClientReconnectsAfterSocketReplacement(t *testing.T) {
 	root := t.TempDir()
 	store, _ := state.New(filepath.Join(root, "groups"))
-	_, network, _ := net.ParseCIDR("10.88.0.0/16")
-	endpointState := filepath.Join(root, "callback.json")
+	spec, status := callbackFixture(t, store)
+	socketPath := filepath.Join(root, "runtime", "kernel.sock")
 	newServer := func() *Server {
-		server, err := New(Config{Store: store, ProtocolVersion: 1, BindAddress: "127.0.0.1", AdvertiseAddress: "10.88.0.1", AllowedNetwork: network, EndpointState: endpointState})
+		server, err := New(Config{Store: store, ProtocolVersion: protocol.ProtocolVersion, SocketPath: socketPath, Workers: &recordingRuntimeIdentity{}})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return server
 	}
+	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
+	}}
+	client := &http.Client{Transport: transport}
+	t.Cleanup(transport.CloseIdleConnections)
+	call := func() {
+		body := callbackMessage(t, protocol.MessageHeartbeat, spec, statusPayload{
+			ProtocolVersion: protocol.ProtocolVersion, RuntimeGroupID: spec.RuntimeGroupID,
+			SandboxID: spec.SandboxID, WorkloadType: string(spec.WorkloadType),
+		})
+		request, err := http.NewRequest(http.MethodPost, "http://kernel/v1/runtime/heartbeat", bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Authorization", "Bearer "+spec.InternalToken)
+		response, err := client.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("status=%d", response.StatusCode)
+		}
+	}
 	first := newServer()
 	if err := first.Start(); err != nil {
 		t.Fatal(err)
 	}
-	firstAddress, err := url.Parse(first.Address())
-	if err != nil {
+	call()
+	if err := first.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	firstAddressText := first.Address()
-	if err := first.Close(context.Background()); err != nil {
+	status.SupervisorHealthy = false
+	if err := store.SaveStatus(spec.RuntimeGroupID, status); err != nil {
 		t.Fatal(err)
 	}
 	second := newServer()
@@ -556,19 +645,10 @@ func TestCallbackListenerReusesDurableEndpointAfterRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer second.Close(context.Background())
-	secondAddress, err := url.Parse(second.Address())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if firstAddress.Port() == "" || secondAddress.Port() != firstAddress.Port() {
-		t.Fatalf("callback endpoint changed across restart: first=%s second=%s", firstAddressText, second.Address())
-	}
-	info, err := os.Stat(endpointState)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("endpoint state mode=%v", info.Mode().Perm())
+	call()
+	_, observed, err := store.Load(spec.RuntimeGroupID)
+	if err != nil || !observed.SupervisorHealthy {
+		t.Fatalf("observed=%#v err=%v", observed, err)
 	}
 }
 

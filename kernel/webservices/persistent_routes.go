@@ -1,24 +1,23 @@
 package webservices
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
-	"golang.org/x/sys/unix"
-
+	"the8020/kernel/database"
 	"the8020/kernel/sandbox/model"
 )
 
 const RouteHeader = "X-80-20-Route"
+const routesTable = `"the8020__services__routes"`
 
 var (
 	errRouteNotFound = errors.New("persistent route not found")
@@ -40,34 +39,26 @@ type persistentRoute struct {
 }
 
 type persistentRouteRegistry struct {
-	mu        sync.Mutex
-	nodeID    string
-	statePath string
-	now       func() time.Time
-	routes    map[string]persistentRoute
+	mu       sync.Mutex
+	nodeID   string
+	database database.Store
+	now      func() time.Time
 }
 
-type persistentRouteState struct {
-	Schema int                        `json:"schema"`
-	Routes map[string]persistentRoute `json:"routes"`
-}
-
-func newPersistentRouteRegistry(nodeID string, statePath ...string) *persistentRouteRegistry {
+func newPersistentRouteRegistry(nodeID string, store database.Store) *persistentRouteRegistry {
 	if nodeID == "" {
 		nodeID = "local"
 	}
-	path := ""
-	if len(statePath) > 0 {
-		path = statePath[0]
-	}
 	return &persistentRouteRegistry{
-		nodeID: nodeID, statePath: path,
-		now:    func() time.Time { return time.Now().UTC() },
-		routes: map[string]persistentRoute{},
+		nodeID: nodeID, database: store,
+		now: func() time.Time { return time.Now().UTC() },
 	}
 }
 
 func (r *persistentRouteRegistry) create(serviceID, poolID, runtimeGroupID, sandboxID, userID string, keepAlive time.Duration, connected bool) (string, persistentRoute, error) {
+	if r.database == nil {
+		return "", persistentRoute{}, errors.New("persistent route database is unavailable")
+	}
 	if serviceID == "" || poolID == "" || runtimeGroupID == "" || sandboxID == "" || keepAlive <= 0 {
 		return "", persistentRoute{}, errors.New("persistent route requires service, sandbox pool, and positive keepalive")
 	}
@@ -75,21 +66,38 @@ func (r *persistentRouteRegistry) create(serviceID, poolID, runtimeGroupID, sand
 	if err != nil {
 		return "", persistentRoute{}, err
 	}
-	raw := make([]byte, 32)
-	if _, err := rand.Read(raw); err != nil {
-		return "", persistentRoute{}, err
+	for attempt := 0; attempt < 16; attempt++ {
+		raw := make([]byte, 32)
+		if _, err := rand.Read(raw); err != nil {
+			return "", persistentRoute{}, err
+		}
+		token := base64.RawURLEncoding.EncodeToString(raw)
+		now := r.now().UTC()
+		record := persistentRoute{
+			ServiceID: serviceID, NodeID: r.nodeID, PoolID: poolID,
+			RuntimeGroupID: runtimeGroupID, SandboxID: sandboxID,
+			ExecutionID: executionID, UserID: userID, KeepAlive: keepAlive,
+			ExpiresAt: now.Add(keepAlive),
+		}
+		if connected {
+			record.Connected = 1
+		}
+		result, err := r.database.ExecContext(context.Background(), `INSERT INTO `+routesTable+` ("tokenHash", "serviceId", "nodeId", "poolId", "runtimeGroupId", "sandboxId", "workerId", "executionId", "userId", "keepAliveMs", "expiresAt", "connected") VALUES ($1, $2, $3, $4, $5, $6, '', $7, $8, $9, $10, $11) ON CONFLICT ("tokenHash") DO NOTHING`,
+			tokenKey(token), record.ServiceID, record.NodeID, record.PoolID,
+			record.RuntimeGroupID, record.SandboxID, record.ExecutionID,
+			record.UserID, record.KeepAlive.Milliseconds(),
+			database.EncodeTime(r.database, record.ExpiresAt), record.Connected)
+		if err != nil {
+			return "", persistentRoute{}, err
+		}
+		if affected, err := result.RowsAffected(); err != nil {
+			return "", persistentRoute{}, err
+		} else if affected == 0 {
+			continue
+		}
+		return token, record, nil
 	}
-	token := base64.RawURLEncoding.EncodeToString(raw)
-	now := r.now()
-	record := persistentRoute{ServiceID: serviceID, NodeID: r.nodeID, PoolID: poolID, RuntimeGroupID: runtimeGroupID, SandboxID: sandboxID, ExecutionID: executionID, UserID: userID, KeepAlive: keepAlive, ExpiresAt: now.Add(keepAlive)}
-	if connected {
-		record.Connected = 1
-	}
-	err = r.update(func(routes map[string]persistentRoute) {
-		sweepRoutes(routes, now)
-		routes[tokenKey(token)] = record
-	})
-	return token, record, err
+	return "", persistentRoute{}, errors.New("persistent route token collision limit exceeded")
 }
 
 func (r *persistentRouteRegistry) lookup(token, serviceID, userID string) (persistentRoute, error) {
@@ -101,206 +109,133 @@ func (r *persistentRouteRegistry) resolve(token, serviceID, userID string, conne
 }
 
 func (r *persistentRouteRegistry) resolveRoute(token, serviceID, userID string, connect, mutateConnection bool) (persistentRoute, error) {
-	if token == "" {
+	if token == "" || r.database == nil {
 		return persistentRoute{}, errRouteNotFound
 	}
-	var record persistentRoute
-	var resultErr error
-	err := r.update(func(routes map[string]persistentRoute) {
-		key := tokenKey(token)
-		item, exists := routes[key]
-		if !exists || item.ServiceID != serviceID || item.UserID != userID {
-			resultErr = errRouteNotFound
-			return
-		}
-		if !item.ExpiresAt.After(r.now()) {
-			delete(routes, key)
-			resultErr = errRouteExpired
-			return
-		}
-		if mutateConnection && connect {
-			item.Connected++
-			routes[key] = item
-		}
-		record = item
-	})
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	record, err := r.read(tokenKey(token), serviceID, userID)
 	if err != nil {
 		return persistentRoute{}, err
 	}
-	return record, resultErr
+	if !record.ExpiresAt.After(r.now().UTC()) {
+		_, _ = r.database.ExecContext(context.Background(), `DELETE FROM `+routesTable+` WHERE "tokenHash" = $1`, tokenKey(token))
+		return persistentRoute{}, errRouteExpired
+	}
+	if mutateConnection && connect {
+		if _, err := r.database.ExecContext(context.Background(), `UPDATE `+routesTable+` SET "connected" = "connected" + 1 WHERE "tokenHash" = $1`, tokenKey(token)); err != nil {
+			return persistentRoute{}, err
+		}
+		record.Connected++
+	}
+	return record, nil
+}
+
+func (r *persistentRouteRegistry) read(key, serviceID, userID string) (persistentRoute, error) {
+	row := r.database.QueryRowContext(context.Background(), `SELECT "serviceId", "nodeId", "poolId", "runtimeGroupId", "sandboxId", "workerId", "executionId", "userId", "keepAliveMs", "expiresAt", "connected" FROM `+routesTable+` WHERE "tokenHash" = $1 AND "serviceId" = $2 AND "userId" = $3`, key, serviceID, userID)
+	var record persistentRoute
+	var keepAlive int64
+	var expires any
+	if err := row.Scan(&record.ServiceID, &record.NodeID, &record.PoolID, &record.RuntimeGroupID, &record.SandboxID, &record.WorkerID, &record.ExecutionID, &record.UserID, &keepAlive, &expires, &record.Connected); errors.Is(err, sql.ErrNoRows) {
+		return persistentRoute{}, errRouteNotFound
+	} else if err != nil {
+		return persistentRoute{}, err
+	}
+	record.KeepAlive = time.Duration(keepAlive) * time.Millisecond
+	var err error
+	record.ExpiresAt, err = database.DecodeTime(expires)
+	return record, err
 }
 
 func (r *persistentRouteRegistry) succeed(token, workerID string) {
-	_ = r.update(func(routes map[string]persistentRoute) {
-		key := tokenKey(token)
-		record, exists := routes[key]
-		if !exists {
-			return
-		}
-		if workerID != "" {
-			record.WorkerID = workerID
-		}
-		record.ExpiresAt = r.now().Add(record.KeepAlive)
-		routes[key] = record
-	})
+	if token == "" || r.database == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := tokenKey(token)
+	var keepAlive int64
+	if err := r.database.QueryRowContext(context.Background(), `SELECT "keepAliveMs" FROM `+routesTable+` WHERE "tokenHash" = $1`, key).Scan(&keepAlive); err != nil {
+		return
+	}
+	expires := r.now().UTC().Add(time.Duration(keepAlive) * time.Millisecond)
+	_, _ = r.database.ExecContext(context.Background(), `UPDATE `+routesTable+` SET "workerId" = CASE WHEN $1 = '' THEN "workerId" ELSE $1 END, "expiresAt" = $2 WHERE "tokenHash" = $3`, workerID, database.EncodeTime(r.database, expires), key)
 }
 
 func (r *persistentRouteRegistry) disconnect(token string, successful bool) {
-	_ = r.update(func(routes map[string]persistentRoute) {
-		key := tokenKey(token)
-		record, exists := routes[key]
-		if !exists {
-			return
-		}
-		record.Connected = max(record.Connected-1, 0)
-		if successful {
-			record.ExpiresAt = r.now().Add(record.KeepAlive)
-		}
-		routes[key] = record
-	})
+	if token == "" || r.database == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := tokenKey(token)
+	var keepAlive int64
+	if err := r.database.QueryRowContext(context.Background(), `SELECT "keepAliveMs" FROM `+routesTable+` WHERE "tokenHash" = $1`, key).Scan(&keepAlive); err != nil {
+		return
+	}
+	if successful {
+		expires := r.now().UTC().Add(time.Duration(keepAlive) * time.Millisecond)
+		_, _ = r.database.ExecContext(context.Background(), `UPDATE `+routesTable+` SET "connected" = CASE WHEN "connected" > 0 THEN "connected" - 1 ELSE 0 END, "expiresAt" = $1 WHERE "tokenHash" = $2`, database.EncodeTime(r.database, expires), key)
+		return
+	}
+	_, _ = r.database.ExecContext(context.Background(), `UPDATE `+routesTable+` SET "connected" = CASE WHEN "connected" > 0 THEN "connected" - 1 ELSE 0 END WHERE "tokenHash" = $1`, key)
 }
 
 func (r *persistentRouteRegistry) discard(token string) {
-	_ = r.update(func(routes map[string]persistentRoute) { delete(routes, tokenKey(token)) })
+	if token != "" && r.database != nil {
+		_, _ = r.database.ExecContext(context.Background(), `DELETE FROM `+routesTable+` WHERE "tokenHash" = $1`, tokenKey(token))
+	}
 }
 
 func (r *persistentRouteRegistry) discardExecution(executionID string) {
-	if executionID == "" {
-		return
+	if executionID != "" && r.database != nil {
+		_, _ = r.database.ExecContext(context.Background(), `DELETE FROM `+routesTable+` WHERE "executionId" = $1`, executionID)
 	}
-	_ = r.update(func(routes map[string]persistentRoute) {
-		for key, record := range routes {
-			if record.ExecutionID == executionID {
-				delete(routes, key)
-			}
-		}
-	})
 }
 
 func (r *persistentRouteRegistry) discardService(serviceID string) {
-	if serviceID == "" {
-		return
+	if serviceID != "" && r.database != nil {
+		_, _ = r.database.ExecContext(context.Background(), `DELETE FROM `+routesTable+` WHERE "serviceId" = $1`, serviceID)
 	}
-	_ = r.update(func(routes map[string]persistentRoute) {
-		for key, record := range routes {
-			if record.ServiceID == serviceID {
-				delete(routes, key)
-			}
-		}
-	})
 }
 
 func (r *persistentRouteRegistry) complete(executionID, serviceID, runtimeGroupID, sandboxID, workerID string) error {
 	if executionID == "" || serviceID == "" || runtimeGroupID == "" || sandboxID == "" || workerID == "" {
 		return errors.New("complete persistent execution requires exact identity")
 	}
-	found := false
-	mismatch := false
-	err := r.update(func(routes map[string]persistentRoute) {
-		for key, record := range routes {
-			if record.ExecutionID != executionID {
-				continue
-			}
-			found = true
-			if record.NodeID != r.nodeID || record.ServiceID != serviceID || record.RuntimeGroupID != runtimeGroupID || record.SandboxID != sandboxID || record.WorkerID != workerID {
-				mismatch = true
-				return
-			}
-			delete(routes, key)
-		}
-	})
+	if r.database == nil {
+		return errors.New("persistent route database is unavailable")
+	}
+	result, err := r.database.ExecContext(context.Background(), `DELETE FROM `+routesTable+` WHERE "executionId" = $1 AND "nodeId" = $2 AND "serviceId" = $3 AND "runtimeGroupId" = $4 AND "sandboxId" = $5 AND "workerId" = $6`, executionID, r.nodeID, serviceID, runtimeGroupID, sandboxID, workerID)
 	if err != nil {
 		return err
 	}
-	if !found {
+	if affected, err := result.RowsAffected(); err != nil {
+		return err
+	} else if affected > 0 {
+		return nil
+	}
+	var count int
+	if err := r.database.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM `+routesTable+` WHERE "executionId" = $1`, executionID).Scan(&count); err != nil {
+		return err
+	}
+	if count == 0 {
 		return errRouteNotFound
 	}
-	if mismatch {
-		return errors.New("persistent execution target does not match route")
-	}
-	return nil
+	return errors.New("persistent execution target does not match route")
 }
 
 func (r *persistentRouteRegistry) hasPool(poolID string) bool {
-	result := false
-	_ = r.update(func(routes map[string]persistentRoute) {
-		sweepRoutes(routes, r.now())
-		for _, record := range routes {
-			if record.PoolID == poolID {
-				result = true
-				return
-			}
-		}
-	})
-	return result
-}
-
-func (r *persistentRouteRegistry) update(action func(map[string]persistentRoute)) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.statePath == "" {
-		action(r.routes)
-		return nil
+	if poolID == "" || r.database == nil {
+		return false
 	}
-	if err := os.MkdirAll(filepath.Dir(r.statePath), 0o700); err != nil {
-		return err
+	now := database.EncodeTime(r.database, r.now())
+	_, _ = r.database.ExecContext(context.Background(), `DELETE FROM `+routesTable+` WHERE "expiresAt" <= $1`, now)
+	var count int
+	if err := r.database.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM `+routesTable+` WHERE "poolId" = $1 AND "expiresAt" > $2`, poolID, now).Scan(&count); err != nil {
+		return false
 	}
-	lock, err := os.OpenFile(r.statePath+".lock", os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return err
-	}
-	defer lock.Close()
-	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX); err != nil {
-		return err
-	}
-	defer unix.Flock(int(lock.Fd()), unix.LOCK_UN) //nolint:errcheck
-	routes, err := readPersistentRoutes(r.statePath)
-	if err != nil {
-		return err
-	}
-	action(routes)
-	return writePersistentRoutes(r.statePath, routes)
-}
-
-func readPersistentRoutes(path string) (map[string]persistentRoute, error) {
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return map[string]persistentRoute{}, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	var state persistentRouteState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return nil, fmt.Errorf("decode persistent routes: %w", err)
-	}
-	if state.Schema != 1 || state.Routes == nil {
-		return nil, errors.New("persistent route state has unsupported schema")
-	}
-	return state.Routes, nil
-}
-
-func writePersistentRoutes(path string, routes map[string]persistentRoute) error {
-	data, err := json.MarshalIndent(persistentRouteState{Schema: 1, Routes: routes}, "", "  ")
-	if err != nil {
-		return err
-	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".persistent-routes-*")
-	if err != nil {
-		return err
-	}
-	name := temporary.Name()
-	defer os.Remove(name)
-	if err = temporary.Chmod(0o600); err == nil {
-		_, err = temporary.Write(append(data, '\n'))
-	}
-	if closeErr := temporary.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return err
-	}
-	return os.Rename(name, path)
+	return count > 0
 }
 
 func tokenKey(token string) string {
@@ -308,10 +243,9 @@ func tokenKey(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func sweepRoutes(routes map[string]persistentRoute, now time.Time) {
-	for key, record := range routes {
-		if !record.ExpiresAt.After(now) {
-			delete(routes, key)
-		}
+func (r persistentRoute) validate() error {
+	if r.ServiceID == "" || r.NodeID == "" || r.PoolID == "" || r.RuntimeGroupID == "" || r.SandboxID == "" || r.ExecutionID == "" || r.KeepAlive <= 0 || r.ExpiresAt.IsZero() || r.Connected < 0 {
+		return fmt.Errorf("invalid persistent route")
 	}
+	return nil
 }

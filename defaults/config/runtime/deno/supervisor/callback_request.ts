@@ -15,6 +15,7 @@ export function kernelCallbackRequest(
   const identity = {
     execution_id: call.executionId,
     worker_id: call.workerId,
+    workload_id: call.workloadId,
     service_id: call.serviceId,
     request_id: call.requestId,
     sandbox_id: sandboxId,
@@ -78,6 +79,13 @@ export function kernelCallbackRequest(
         responseMessageType: "admin_result",
         payload: { ...call.arguments, ...identity },
       };
+    case "runtime.operation":
+      return {
+        path: "/v1/runtime/operation/execute",
+        messageType: "admin_command",
+        responseMessageType: "admin_result",
+        payload: { ...call.arguments, ...identity },
+      };
     case "database.execute":
       return {
         path: "/v1/runtime/database/execute",
@@ -85,10 +93,10 @@ export function kernelCallbackRequest(
         responseMessageType: "database_result",
         payload: { ...call.arguments, ...identity },
       };
-    case "auth.bootstrapLogin":
+    case "auth.login":
       return {
-        path: "/v1/runtime/auth/bootstrap-login",
-        messageType: "auth_bootstrap_login",
+        path: "/v1/runtime/auth/login",
+        messageType: "auth_login",
         responseMessageType: "auth_result",
         payload: { ...call.arguments, ...identity },
       };

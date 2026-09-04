@@ -1,9 +1,8 @@
 version = 1
-id = "settings.list"
-path = ["settings", "list"]
-aliases = [["config", "list"]]
-summary = "List 80|20 settings"
-description = "Returns a compact key and description list by default. Use the detail view for declared storage, configured and active values, source, and override information."
+id = "kernel.config.list"
+path = ["kernel.config.list"]
+summary = "List kernel settings"
+description = "Lists node-local kernel settings. Use the detail view for complete values and restart state."
 mutates_state = false
 restart_behavior = "none"
 [handler]
@@ -19,6 +18,6 @@ description = "Optional view; use detail for complete setting records."
 name = "settings"
 type = "array"
 [[examples]]
-command = "settings list"
+command = "kernel.config.list"
 [[examples]]
-command = "settings list detail"
+command = "kernel.config.list detail"

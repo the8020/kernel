@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -44,16 +45,72 @@ func (a *testApplier) Prepare(context.Context, Values) (Prepared, error) {
 func newPersistencePaths(t *testing.T) PersistencePaths {
 	t.Helper()
 	root := t.TempDir()
-	paths := PersistencePaths{Node: filepath.Join(root, "node", "kernel", "settings.toml"), Global: filepath.Join(root, "config", "settings.toml")}
-	for _, path := range []string{paths.Node, paths.Global} {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, nil, 0o600); err != nil {
-			t.Fatal(err)
-		}
+	paths := PersistencePaths{Node: filepath.Join(root, "kernel.toml")}
+	if err := os.MkdirAll(filepath.Dir(paths.Node), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.Node, nil, 0o600); err != nil {
+		t.Fatal(err)
 	}
 	return paths
+}
+
+type memoryGlobalStore struct {
+	mu       sync.Mutex
+	values   map[string]any
+	revision uint64
+	fail     error
+}
+
+func (s *memoryGlobalStore) Load(_ context.Context, definitions []Definition) (map[string]any, uint64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.fail != nil {
+		return nil, 0, s.fail
+	}
+	if s.values == nil {
+		s.values = map[string]any{}
+	}
+	for _, definition := range definitions {
+		if _, exists := s.values[definition.Key]; !exists {
+			s.values[definition.Key] = definition.Default
+		}
+	}
+	result := make(map[string]any, len(s.values))
+	for key, value := range s.values {
+		result[key] = value
+	}
+	return result, s.revision, nil
+}
+
+func (s *memoryGlobalStore) Set(_ context.Context, definition Definition, value any) (uint64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.fail != nil {
+		return 0, s.fail
+	}
+	if s.values == nil {
+		s.values = map[string]any{}
+	}
+	s.values[definition.Key] = value
+	s.revision++
+	return s.revision, nil
+}
+
+func (s *memoryGlobalStore) Revision(context.Context) (uint64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.fail != nil {
+		return 0, s.fail
+	}
+	return s.revision, nil
+}
+
+func attachGlobal(t *testing.T, manager *Manager, store GlobalStore) {
+	t.Helper()
+	if err := manager.AttachGlobal(context.Background(), store); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func newTestManager(t *testing.T, startup map[string]string, environment map[string]string) (*Manager, PersistencePaths) {
@@ -63,6 +120,7 @@ func newTestManager(t *testing.T, startup map[string]string, environment map[str
 	if err != nil {
 		t.Fatal(err)
 	}
+	attachGlobal(t, manager, &memoryGlobalStore{})
 	return manager, paths
 }
 
@@ -118,7 +176,13 @@ func TestPrecedenceAndNodePersistedRemoval(t *testing.T) {
 }
 
 func TestGlobalSettingUsesGlobalStoreAndSurvivesRestart(t *testing.T) {
-	manager, paths := newTestManager(t, nil, nil)
+	paths := newPersistencePaths(t)
+	store := &memoryGlobalStore{}
+	manager, err := New(testDefinitions(), paths, nil, func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachGlobal(t, manager, store)
 	info, err := manager.Set(context.Background(), "network.root_alias", "example/demo/shell/")
 	if err != nil {
 		t.Fatal(err)
@@ -126,21 +190,18 @@ func TestGlobalSettingUsesGlobalStoreAndSurvivesRestart(t *testing.T) {
 	if info.Storage != StorageGlobal || info.ConfiguredValue != "example/demo/shell/" || info.ActiveValue != "the8020/uui/shell/" || !info.RestartPending {
 		t.Fatalf("global pending state: %#v", info)
 	}
-	global, err := os.ReadFile(paths.Global)
-	if err != nil {
-		t.Fatal(err)
-	}
 	node, err := os.ReadFile(paths.Node)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(global), `root_alias = "example/demo/shell/"`) || strings.Contains(string(node), "root_alias") {
-		t.Fatalf("global=%q node=%q", global, node)
+	if strings.Contains(string(node), "root_alias") {
+		t.Fatalf("global setting leaked into node configuration: %q", node)
 	}
 	restarted, err := New(testDefinitions(), paths, nil, func(string) (string, bool) { return "", false })
 	if err != nil {
 		t.Fatal(err)
 	}
+	attachGlobal(t, restarted, store)
 	info, err = restarted.Get("network.root_alias")
 	if err != nil {
 		t.Fatal(err)
@@ -155,35 +216,52 @@ func TestGlobalSettingUsesGlobalStoreAndSurvivesRestart(t *testing.T) {
 	if info.ConfiguredValue != "the8020/uui/shell/" || !info.RestartPending {
 		t.Fatalf("global unset state: %#v", info)
 	}
-	global, err = os.ReadFile(paths.Global)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(global), "root_alias") {
-		t.Fatalf("global override remains after unset: %s", global)
-	}
-	for _, path := range []string{paths.Node, paths.Global} {
-		fileInfo, err := os.Stat(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if fileInfo.Mode().Perm() != 0o600 {
-			t.Fatalf("%s mode = %v", path, fileInfo.Mode().Perm())
-		}
-		if temporary, _ := filepath.Glob(filepath.Join(filepath.Dir(path), ".settings-*.toml")); len(temporary) != 0 {
-			t.Fatalf("temporary settings files remain beside %s: %v", path, temporary)
-		}
-	}
-	lockInfo, err := os.Stat(filepath.Join(filepath.Dir(paths.Global), ".settings.lock"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if lockInfo.Mode().Perm() != 0o600 {
-		t.Fatalf("global settings lock mode = %v", lockInfo.Mode().Perm())
+	store.mu.Lock()
+	stored := store.values["network.root_alias"]
+	store.mu.Unlock()
+	if stored != "the8020/uui/shell/" {
+		t.Fatalf("unset did not persist the recommended default: %#v", stored)
 	}
 }
 
 func TestGlobalWritersMergeUnrelatedOverrides(t *testing.T) {
+	paths := newPersistencePaths(t)
+	store := &memoryGlobalStore{}
+	first, err := New(testDefinitions(), paths, nil, func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := New(testDefinitions(), paths, nil, func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachGlobal(t, first, store)
+	attachGlobal(t, second, store)
+	if _, err := first.Set(context.Background(), "network.root_alias", "example/demo/shell/"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.Set(context.Background(), "platform.display_name", "Example Platform"); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	rootAlias, displayName := store.values["network.root_alias"], store.values["platform.display_name"]
+	store.mu.Unlock()
+	if rootAlias != "example/demo/shell/" || displayName != "Example Platform" {
+		t.Fatalf("global values = %#v, %#v", rootAlias, displayName)
+	}
+	if _, err := first.Unset(context.Background(), "network.root_alias"); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	rootAlias, displayName = store.values["network.root_alias"], store.values["platform.display_name"]
+	store.mu.Unlock()
+	if rootAlias != "the8020/uui/shell/" || displayName != "Example Platform" {
+		t.Fatalf("global unset changed unrelated values: %#v, %#v", rootAlias, displayName)
+	}
+}
+
+func TestRefreshGlobalObservesOnlyNewRevisions(t *testing.T) {
+	store := &memoryGlobalStore{}
 	paths := newPersistencePaths(t)
 	first, err := New(testDefinitions(), paths, nil, func(string) (string, bool) { return "", false })
 	if err != nil {
@@ -193,28 +271,46 @@ func TestGlobalWritersMergeUnrelatedOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := first.Set(context.Background(), "network.root_alias", "example/demo/shell/"); err != nil {
+	attachGlobal(t, first, store)
+	attachGlobal(t, second, store)
+	if _, err := first.Set(context.Background(), "network.root_alias", "example/new/root/"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := second.Set(context.Background(), "platform.display_name", "Example Platform"); err != nil {
-		t.Fatal(err)
+	changed, err := second.RefreshGlobal(context.Background())
+	if err != nil || !changed {
+		t.Fatalf("refresh changed=%t err=%v", changed, err)
 	}
-	data, err := os.ReadFile(paths.Global)
+	info, _ := second.Get("network.root_alias")
+	if info.ConfiguredValue != "example/new/root/" || info.ActiveValue != "the8020/uui/shell/" || !info.RestartPending {
+		t.Fatalf("refreshed setting=%#v", info)
+	}
+	if changed, err := second.RefreshGlobal(context.Background()); err != nil || changed {
+		t.Fatalf("unchanged refresh changed=%t err=%v", changed, err)
+	}
+}
+
+func TestRefreshGlobalCommitsRuntimeMutableValues(t *testing.T) {
+	definitions := append(testDefinitions(), Definition{Key: "platform.banner", Type: TypeString, Storage: StorageGlobal, Default: "first", Environment: "THE8020_PLATFORM_BANNER", RuntimeMutable: true, Description: "banner"})
+	store := &memoryGlobalStore{}
+	manager, err := New(definitions, newPersistencePaths(t), nil, func(string) (string, bool) { return "", false })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), `root_alias = "example/demo/shell/"`) || !strings.Contains(string(data), `display_name = "Example Platform"`) {
-		t.Fatalf("one global writer lost another writer's override: %s", data)
-	}
-	if _, err := first.Unset(context.Background(), "network.root_alias"); err != nil {
+	attachGlobal(t, manager, store)
+	applier := &testApplier{}
+	if err := manager.RegisterApplier([]string{"platform.banner"}, applier); err != nil {
 		t.Fatal(err)
 	}
-	data, err = os.ReadFile(paths.Global)
-	if err != nil {
-		t.Fatal(err)
+	store.mu.Lock()
+	store.values["platform.banner"] = "second"
+	store.revision++
+	store.mu.Unlock()
+	if changed, err := manager.RefreshGlobal(context.Background()); err != nil || !changed || !applier.committed {
+		t.Fatalf("refresh changed=%t committed=%t err=%v", changed, applier.committed, err)
 	}
-	if strings.Contains(string(data), "root_alias") || !strings.Contains(string(data), `display_name = "Example Platform"`) {
-		t.Fatalf("global unset removed an unrelated override: %s", data)
+	info, _ := manager.Get("platform.banner")
+	if info.ConfiguredValue != "second" || info.ActiveValue != "second" || info.RestartPending {
+		t.Fatalf("runtime refreshed setting=%#v", info)
 	}
 }
 
@@ -305,7 +401,7 @@ func TestApplicationAndPersistenceFailuresPreserveState(t *testing.T) {
 	}
 
 	root := t.TempDir()
-	brokenPaths := PersistencePaths{Node: filepath.Join(root, "missing-node", "settings.toml"), Global: filepath.Join(root, "missing-global", "settings.toml")}
+	brokenPaths := PersistencePaths{Node: filepath.Join(root, "missing-node", "kernel.toml")}
 	broken, err := New(testDefinitions(), brokenPaths, nil, func(string) (string, bool) { return "", false })
 	if err != nil {
 		t.Fatal(err)
@@ -325,15 +421,16 @@ func TestApplicationAndPersistenceFailuresPreserveState(t *testing.T) {
 }
 
 func TestGlobalPersistenceFailurePreservesState(t *testing.T) {
-	root := t.TempDir()
-	paths := PersistencePaths{Node: filepath.Join(root, "node", "settings.toml"), Global: filepath.Join(root, "missing", "settings.toml")}
-	if err := os.MkdirAll(filepath.Dir(paths.Node), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	paths := newPersistencePaths(t)
+	store := &memoryGlobalStore{fail: errors.New("database unavailable")}
 	manager, err := New(testDefinitions(), paths, nil, func(string) (string, bool) { return "", false })
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Attach succeeds before simulating the database write failure.
+	store.fail = nil
+	attachGlobal(t, manager, store)
+	store.fail = errors.New("database unavailable")
 	if _, err := manager.Set(context.Background(), "network.root_alias", "example/demo/shell/"); err == nil {
 		t.Fatal("expected global persistence failure")
 	}
@@ -353,23 +450,11 @@ func TestGlobalOverrideInNodeStoreFails(t *testing.T) {
 	}
 }
 
-func TestWrongStoreAndInvalidStorageDefinitionsFail(t *testing.T) {
-	paths := newPersistencePaths(t)
-	if err := os.WriteFile(paths.Global, []byte("[network]\nmain_port = 8083\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := New(testDefinitions(), paths, nil, func(string) (string, bool) { return "", false }); err == nil || !strings.Contains(err.Error(), "belongs in the node settings store") {
-		t.Fatalf("wrong-store error = %v", err)
-	}
-
+func TestInvalidStorageDefinitionsFail(t *testing.T) {
 	base := Definition{Key: "test.value", Type: TypeString, Default: "value", Environment: "THE8020_TEST_VALUE", Description: "test"}
 	for name, mutate := range map[string]func(*Definition){
 		"missing": func(*Definition) {},
 		"invalid": func(definition *Definition) { definition.Storage = "cluster" },
-		"mutable global": func(definition *Definition) {
-			definition.Storage = StorageGlobal
-			definition.RuntimeMutable = true
-		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			definition := base

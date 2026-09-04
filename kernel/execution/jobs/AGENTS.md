@@ -1,47 +1,55 @@
 # Purpose
 
-- Own durable job-execution scheduling on job Workers in generic runtime groups.
+- Own non-durable job execution on job Workers in generic runtime groups.
 
 # Ownership
 
-- Enforce configured parallelism, bounded FIFO queueing, and timeouts; start synchronous or detached executions; send JSON input; persist results/logs/duration/failures; cancel one execution; and optionally retain/reuse a compatible idle Worker.
-- Do not implement a separate job runtime, cron/workflow scheduling, distributed queues, or container-level cancellation for ordinary jobs.
+- Enforce configured parallelism, bounded in-memory FIFO queueing, timeouts,
+  synchronous/detached execution, argument and secure-input delivery,
+  cancellation, and optional compatible idle-Worker reuse.
+- Do not persist, replay, schedule, or create automatic history for ordinary
+  jobs. Cron/workflow scheduling and durable history belong to future packages.
 
 # Local Contracts
 
-- Public API: `New`, `Manager.Run`, `List`, `Inspect`, `Cancel`, `FailGroup`, `Restore`, `Close`, and policy/options/record types.
-- One started execution maps to one Worker unless explicitly reusing a compatible idle Worker; active cancellation targets only that Worker.
+- Public API: `New`, `Manager.Run`, `List`, `Inspect`, `Cancel`, `FailGroup`,
+  `Close`, and policy/options/record types.
+- `Options.Arguments` is the positional array spread into the job's default
+  export. `Options.Secrets` travels separately and is cleared after every path.
+- Only queued, starting, running, and reusable-idle state is retained in memory.
+  Terminal result/output is returned to the caller and immediately removed.
+- Secure values are scrubbed from returned values, captured logs, and failures.
+  Redaction preserves structured execution error classification and details;
+  secret-free failures retain their original Go cause.
+- One started execution maps to one Worker unless explicit compatible reuse is
+  enabled. Each Worker owns one sandbox allocation claim. Program-command
+  invocations disable reuse, then stop their exact Worker and release that claim
+  after one call; reusable Workers retain it only until idle retirement.
 - An explicit instance-root-bounded development workspace becomes an
-  owner-scoped runtime-profile mount at `/workspace`; writable access is opt-in
-  and participates in reuse/group compatibility.
-- Jobs use the same managed Deno image and read-only installed-package mount as
-  services. Each invocation supplies an execution context to the generic kernel
-  bridge, including optional full or absent database access.
-- `Options.CheckModules` asks the existing supervisor validation path to
-  type-check a bounded module list before the Worker imports its entrypoint.
-  Extra mounts and permissions participate in runtime/Worker compatibility;
-  this is the small reusable seam used by the table evaluator, not a separate
-  job scheduler.
-- Parallel saturation persists submissions as `QUEUED` up to `QueuedExecutionLimit`; admission follows durable submission order, detached runs return immediately, and synchronous runs wait under their caller context.
-- An execution timeout bounds queueing, sandbox acquisition, Worker validation
-  and startup, and program execution as one lifecycle.
-- Cancelling queued work persists `CANCELLED` without touching a Worker. Detached work uses a bounded background context and persists every state transition. Non-reused Workers stop after completion or failure; reuse requires the same owner, job, entrypoint, release, runtime profile, and permissions, with one available record consumed atomically and retired after the configured idle timeout.
-- Group failure fails active jobs while preserving completed results and retiring lost idle reuse capacity.
-- Startup recovery never replays queued or ambiguous active work: it fails queued records, terminates active Workers, and marks those executions failed, while healthy idle reusable Workers regain their remaining retirement timer.
-- An unreadable or identity-mismatched job record is quarantined without
-  blocking recovery of other jobs or services.
+  owner-scoped runtime-profile mount at `/workspace`; writable access is opt-in.
+  Additional program mounts must be read-only and enter profile compatibility.
+- Jobs use the same runtime image, package/runtime read access, kernel API,
+  writable temp/cache paths, and network/import access as services.
+- `Options.CheckModules` asks the supervisor to type-check a bounded module list
+  before import. Database access may be full, metadata-only, or absent.
+- An execution timeout covers queueing, sandbox acquisition, Worker startup,
+  validation, and invocation. Cancelling queued work starts no Worker.
 
 # Work Guidance
 
-- Count `STARTING`/`RUNNING` executions against parallelism, count only `QUEUED` records against queue capacity, and never reuse a Worker across incompatible job/entrypoint identities.
+- Count `STARTING`/`RUNNING` against parallelism, count only `QUEUED` against
+  queue capacity, and never reuse across incompatible identities or profiles.
+  The global limit applies across logical jobs; an invocation parallelism limit
+  applies only to matching job IDs. A synchronous child discounts its validated
+  waiting job parent from global admission, but no other active work.
+- Queue admission is event-driven. State changes broadcast one shared wake-up;
+  do not add per-job tickers or polling scans.
 
 # Verification
 
-- Unit and race tests cover synchronous results/logs/duration, detached FIFO
-  completion, queue bounds, queued/caller cancellation, timeout failure,
-  package mounts, database execution metadata, module checking, default
-  destruction, compatible/release-incompatible reuse, idle retirement, startup
-  recovery without replay, and group-failure propagation.
-- Recovery tests also cover mixed valid and invalid record isolation.
+- Unit and race tests cover results/output, secure redaction and cleanup,
+  detached FIFO behavior, queue bounds, cancellation, timeout, mounts, database
+  metadata, module checking, default destruction, compatible reuse, idle
+  retirement, no persistence/replay, and group failure.
 
 # Child DOX Index

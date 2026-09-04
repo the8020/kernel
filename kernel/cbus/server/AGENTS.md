@@ -10,7 +10,10 @@
 # Local Contracts
 
 - Public API: `Server`, `New`, `Start`, `BeginShutdown`, and `Shutdown`.
-- Only `POST /v1/cbus/execute` is served; request bodies are bounded and the socket is created under a restrictive umask, verified as mode `0600`, and also chmodded where the filesystem supports socket chmod.
+- `GET /v2/cbus/catalog` returns the current immutable catalog with conditional
+  ETag support; `POST /v2/cbus/execute` dispatches one version-2 request.
+  Request bodies are bounded and the socket is created under a restrictive
+  umask, verified as mode `0600`, and chmodded where supported.
 - A filesystem that returns `EINVAL` for socket chmod is accepted only when the
   owning `node/kernel/run` directory is mode `0700`; normal Unix filesystems
   must expose socket mode `0600`.
@@ -26,6 +29,8 @@
 
 # Verification
 
-- `server_test.go` uses the real client over a temporary Unix socket and checks mode, typed dispatch, errors, mutation rejection during drain, and allowed status dispatch.
+- `server_test.go` uses the real client over a temporary Unix socket and checks
+  catalog/ETag behavior, mode, typed dispatch, errors, mutation rejection during
+  drain, and allowed status dispatch.
 
 # Child DOX Index

@@ -8,8 +8,8 @@
 
 # Local Contracts
 
-- The development image payload is separate from the service image under
-  `config/runtime/`, contains no credentials or package source, and
+- The development image payload is separate from the service image definition,
+  contains no credentials or package source, and
   starts `sandbox.sh`, which restores Debian's standard lock directory in the
   fresh `/run` tmpfs and becomes one inert `sleep` process. Deno remains
   available only for developer commands.

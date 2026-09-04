@@ -1,6 +1,6 @@
 # Purpose
 
-- Implement `settings.set` as declared by the adjacent authoritative TOML.
+- Implement `kernel.config.set` as declared by the adjacent authoritative TOML.
 
 # Ownership
 
@@ -9,9 +9,8 @@
 # Local Contracts
 
 - Public API: handler constructor `New(*services.Services) core.Handler` and `MapError` for the sibling unset handler.
-- The setting definition, never a command argument, selects node or global
-  persistence. Network binding, logging preparation, validation, and
-  persistence remain in their owners.
+- Accept only node-local setting definitions. Network binding, logging
+  preparation, validation, and persistence remain in their owners.
 
 # Work Guidance
 
@@ -19,7 +18,7 @@
 
 # Verification
 
-- Application integration covers successful node/global writes through the same
-  command, HTTP/SSH listener and logging mutation, and occupied-port rollback.
+- Application integration covers successful node-local writes, HTTP/SSH
+  listener and logging mutation, and occupied-port rollback.
 
 # Child DOX Index

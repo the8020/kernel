@@ -1,10 +1,13 @@
 # Purpose
 
-- Expose the kernel-owned system database through typed administrative commands.
+- Adapt kernel-owned database primitives for package runtime operations.
 
 # Local Contracts
 
-- `database check` verifies connectivity without mutating configuration.
+- No public CBus metadata lives here; `the8020/db` owns visible `db.*` and
+  `db.tables.*` command programs.
+- The private `database.check` operation verifies connectivity without mutating
+  configuration.
 - `sql` runs one bounded query by default or one statement with `--execute`.
 - `table list` is database-centric, `table definitions` evaluates activated
   source explicitly, `table inspect` performs detailed catalog/physical/source

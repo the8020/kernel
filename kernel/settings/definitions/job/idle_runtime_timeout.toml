@@ -1,6 +1,6 @@
 key = "job.default.idle_runtime_timeout"
 type = "integer"
-storage = "node"
+storage = "global"
 default = 60000
 environment = "THE8020_JOB_DEFAULT_IDLE_RUNTIME_TIMEOUT"
 minimum = 1000

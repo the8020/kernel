@@ -33,7 +33,7 @@ export interface CurrentExecutionMetadata {
 
 export interface AuthContext {
   authenticated: boolean;
-  realm?: "bootstrap-admin";
+  realm?: "user";
   userId?: string;
   username?: string;
   authVersion?: number;

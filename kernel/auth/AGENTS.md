@@ -1,15 +1,26 @@
 # Purpose
 
-- Own the bootstrap-administrator realm and shared file-backed authentication sessions used before database identity exists.
+- Own ordinary users and opaque database-backed authentication sessions.
 
 # Ownership
 
-- Own Argon2id password hashing and PHC parsing, atomic bootstrap-user configuration, opaque authentication-cookie creation and validation, immutable shared authentication-session files, revocation, expiration cleanup, and trusted bootstrap auth context.
-- Do not own HTTP service access policy, Deno transport, UUI logical sessions, browser rendering, roles, or permissions.
+- Own Argon2id password hashing and PHC parsing, read-only user authentication,
+  opaque authentication-cookie creation and validation, current-session
+  logout, expiration cleanup, and trusted authentication context.
+- Do not own user/session administration, HTTP service access policy, Deno
+  transport, UUI logical sessions, browser rendering, roles, or permissions.
 
 # Local Contracts
 
-- Bootstrap users live only in `config/auth/bootstrap-users.toml`; session records live only below sharded `state/auth/bootstrap-sessions/` and neither tree is sandbox-mounted.
+- Users and authentication sessions live only in
+  `the8020__users__users` and `the8020__users__sessions`. All users are peers
+  until a future permissions package defines roles. The package-owned
+  `users.*` commands exclusively create and administer users and authentication
+  sessions; the kernel has no parallel CRUD API or recovery-user commands.
+- Zero users is a valid state. Construction verifies the users and
+  authentication-session tables with bounded empty queries; missing or
+  inaccessible tables block the service/UUI plane while the admin socket and
+  database/package recovery remain available.
 - Usernames are the shared Linux/storage/sandbox identity: 3-32 lowercase ASCII
   letters or digits, with no normalization, aliases, or path-safe conversion.
 - Passwords use Argon2id with per-password random salts and encoded PHC parameters; unknown users follow the same Argon2 verification path as wrong passwords.
@@ -19,23 +30,32 @@
   presented secret. SSH public-key verification may resolve the same trusted
   context only for an existing enabled user after the protocol adapter verifies
   the separate key factor.
-- Authentication cookies are opaque `v1.<id>.<secret>` values; files contain only SHA-256 secret hashes and are published atomically without overwriting collisions.
-- User mutations use one advisory lock and restrictive atomic replacement. Password changes, disable operations, and explicit invalidation increment `auth_version`.
-- Ordinary validation is read-only except idempotent lazy deletion of expired records; every node may run cleanup concurrently without a global lock.
-- Cookie headers are created completely by the kernel and always use `HttpOnly`, `Path=/`, and configured `SameSite`/`Secure` attributes.
-- Active service dispatches register short-lived request identities and full kernel-only authentication context for authenticated supervisor callbacks; entries are removed when dispatch completes and are never persisted.
+- Authentication cookies are opaque `v1.<id>.<secret>` values; the database
+  contains only SHA-256 secret hashes and collision-safe inserts never overwrite
+  an existing session.
+- Package-owned database transactions serialize mutations across kernels.
+  Password changes, disable operations, and explicit invalidation increment
+  `auth_version`, which authentication observes on its next read.
+- Ordinary validation is read-only except idempotent lazy deletion of expired
+  records; every node may run cleanup concurrently without a global lock.
+- Cookie headers are created completely by the kernel and always use `HttpOnly`,
+  `Path=/`, and configured `SameSite`/`Secure` attributes.
+- Active service dispatches register short-lived request identities and full
+  kernel-only authentication context for authenticated supervisor callbacks;
+  entries are removed when dispatch completes and are never persisted.
 
 # Work Guidance
 
-- Keep authentication-session and UUI-session terminology distinct. Never log or return password hashes, presented passwords, cookie secrets, or stored secret hashes through administrative summaries.
+- Keep authentication-session and UUI-session terminology distinct. Never log
+  or return password hashes, presented passwords, cookie secrets, or stored
+  secret hashes.
 
 # Verification
 
-- Package and SSH integration tests cover PHC creation/parsing/verification,
-  mutable transport-secret verification, atomic and cross-process user
-  mutation, corruption handling, opaque session creation and cross-node
-  validation, revocation, expiration, cleanup concurrency, cookie headers,
-  disabled/version-invalid users, password and public-key identity resolution,
-  and secret non-disclosure.
+- Authentication and SSH tests cover PHC creation/parsing/verification, bounded
+  table readiness, mutable transport-secret verification, package-owned user
+  state changes, opaque session creation and cross-node validation, revocation,
+  expiration, cleanup concurrency, cookie headers, password and public-key
+  identity resolution, and secret non-disclosure.
 
 # Child DOX Index

@@ -1,4 +1,4 @@
-export async function run(): Promise<string> {
+export default async function nested(): Promise<string> {
   const source = `self.onmessage = () => self.postMessage("nested-ok")`;
   const worker = new Worker(
     `data:application/javascript,${encodeURIComponent(source)}`,

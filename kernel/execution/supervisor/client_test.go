@@ -3,6 +3,7 @@ package supervisor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -48,6 +49,13 @@ func TestStatusWorkersAndControlRoutes(t *testing.T) {
 			}
 			writeControlResponse(writer, control, protocol.MessageWorkerStateChange, map[string]any{"worker": map[string]any{"worker_id": "worker", "execution_id": "execution", "state": "ready"}}, http.StatusCreated)
 		case "/v1/jobs/worker/run":
+			var body struct {
+				Arguments []any `json:"arguments"`
+			}
+			if err := json.Unmarshal(control.Payload, &body); err != nil || body.Arguments == nil || len(body.Arguments) != 0 {
+				http.Error(writer, "bad job arguments", http.StatusBadRequest)
+				return
+			}
 			writeControlResponse(writer, control, protocol.MessageJobResult, map[string]any{"result": map[string]any{"ok": true}, "logs": []map[string]any{{"level": "info", "message": "ran"}}}, http.StatusOK)
 		case "/v1/workers/worker/invoke":
 			writeControlResponse(writer, control, protocol.MessageWorkerResult, map[string]any{"ok": true, "output": "reply"}, http.StatusOK)
@@ -82,7 +90,7 @@ func TestStatusWorkersAndControlRoutes(t *testing.T) {
 	if worker, err := client.StartWorker(context.Background(), spec, request); err != nil || worker.WorkerID != "worker" {
 		t.Fatalf("start=%#v err=%v", worker, err)
 	}
-	result, err := client.RunJob(context.Background(), spec, "worker", map[string]any{"value": 1}, nil)
+	result, err := client.RunJob(context.Background(), spec, "worker", nil, nil, nil)
 	if err != nil || result.Result.(map[string]any)["ok"] != true || len(result.Logs) != 1 || result.Logs[0].Message != "ran" {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
@@ -109,6 +117,23 @@ func TestStatusWorkersAndControlRoutes(t *testing.T) {
 		if messageTypes[index] != wantTypes[index] {
 			t.Fatalf("message type[%d]=%q want %q", index, messageTypes[index], wantTypes[index])
 		}
+	}
+}
+
+func TestControlResponsePreservesStructuredExecutionError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var control protocol.Envelope
+		control, _ = readControlRequest(request)
+		writeControlResponse(writer, control, protocol.MessageErrorResponse, map[string]any{
+			"error": "invalid scale", "code": "invalid_arguments", "details": map[string]any{"field": "maximum_workers"},
+		}, http.StatusBadRequest)
+	}))
+	defer server.Close()
+	client := testClient(t, server.URL)
+	err := client.StopWorker(context.Background(), testSpec(), "worker", false)
+	var response *ResponseError
+	if !errors.As(err, &response) || response.Code != "invalid_arguments" || response.Message != "invalid scale" || response.Details["field"] != "maximum_workers" {
+		t.Fatalf("response error = %#v, %v", response, err)
 	}
 }
 

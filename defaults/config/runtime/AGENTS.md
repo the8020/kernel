@@ -21,10 +21,11 @@
 - Generic application workloads are exactly `service` and `job`. Development
   sandboxes use a separate image with `sleep` as init and do not host the
   supervisor.
-- Every service sandbox has one infrastructure supervisor and zero or more
-  Workers. Entrypoints load only inside Workers; Worker permissions cannot
-  exceed the sandbox envelope, and neither supervisor nor Worker runs with
-  unrestricted permissions.
+- Every service/job sandbox has one infrastructure supervisor and zero or more
+  Workers. Entrypoints load only inside Workers; package/runtime files stay
+  read-only and only temp/cache paths are writable. Both workloads have
+  unrestricted outbound network and remote imports without using Deno
+  `--allow-all`.
 - Stateless/persistent service pools, persistent execution bindings,
   keep-alive, exact-Worker reuse, explicit persistent completion, physical
   WebSocket relay, and registered JSON-in/JSON-out Worker functions are generic
@@ -33,7 +34,7 @@
   writes `protocol/generated.ts`, build-only Go output, and the tracked Go
   mirror under `kernel/runtime/protocol/`; generated files are not hand-edited.
 - `install.sh` refreshes this tracked tree into each instance's
-  `config/runtime/`, hashes the complete generic image input set before build,
+  `node/kernel/runtime/definitions/`, hashes the complete generic image input set before build,
   and publishes only verified artifacts under
   `node/kernel/runtime/images/`. Unchanged verified digests are reused.
 - Deno dependency preparation and generic HTTP bundling execute inside the
@@ -57,6 +58,13 @@
   source, and unrelated files.
 - Service and job supervisors may run only the pinned Deno binary for module
   validation; nested application Workers do not inherit subprocess permission.
+- The node-private runtime callback directory is bind-mounted at
+  `/run/the8020`; supervisors connect to `kernel.sock` afresh for every HTTP/JSON
+  call so kernel socket replacement is transparent. The canonical runsc
+  configuration permits opening existing host Unix sockets, but not creating
+  them; only explicitly mounted sockets are reachable. Deno receives read/write
+  permission for the exact socket path because its Unix connect API requires
+  both, while the mounted directory remains read-only.
 
 # Work Guidance
 

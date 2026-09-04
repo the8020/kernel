@@ -1,4 +1,4 @@
-// Package auth owns bootstrap administrators and opaque shared authentication
+// Package auth owns users and opaque shared authentication
 // sessions. Authentication data remains kernel-only and outside sandboxes.
 package auth
 
@@ -9,13 +9,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"the8020/kernel/database"
 )
 
-const BootstrapRealm = "bootstrap-admin"
+const UserRealm = "user"
 
 type CookieConfig struct {
 	Name     string `json:"name"`
@@ -43,13 +44,12 @@ func (c CookieConfig) Validate() error {
 }
 
 type Config struct {
-	UsersFile       string
-	SessionsRoot    string
+	Database        database.Store
 	SessionDuration time.Duration
 	CleanupInterval time.Duration
 	Cookie          CookieConfig
 	Argon2          Argon2Parameters
-	LockTimeout     time.Duration
+	Hasher          *PasswordHasher
 	Random          io.Reader
 	Now             func() time.Time
 }
@@ -83,39 +83,21 @@ type AuthContext struct {
 	SessionID     string `json:"-"`
 }
 
-type BootstrapUser struct {
+type User struct {
 	ID       string `json:"id"`
 	Username string `json:"username"`
 	Realm    string `json:"realm"`
 }
 
-type BootstrapLoginResult struct {
-	Authenticated bool           `json:"authenticated"`
-	User          *BootstrapUser `json:"user,omitempty"`
-	SetCookie     string         `json:"setCookie,omitempty"`
-	Error         string         `json:"error,omitempty"`
+type LoginResult struct {
+	Authenticated bool   `json:"authenticated"`
+	User          *User  `json:"user,omitempty"`
+	SetCookie     string `json:"setCookie,omitempty"`
+	Error         string `json:"error,omitempty"`
 }
 
 type LogoutResult struct {
 	SetCookie string `json:"setCookie"`
-}
-
-type UserSummary struct {
-	Username       string    `json:"username"`
-	Enabled        bool      `json:"enabled"`
-	AuthVersion    uint64    `json:"auth_version"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
-	ActiveSessions int       `json:"active_authentication_session_count"`
-}
-
-type SessionSummary struct {
-	SessionID   string    `json:"session_id"`
-	Username    string    `json:"username"`
-	CreatedAt   time.Time `json:"created_at"`
-	ExpiresAt   time.Time `json:"expires_at"`
-	Valid       bool      `json:"valid"`
-	AuthVersion uint64    `json:"auth_version"`
 }
 
 func New(config Config) (*Manager, error) {
@@ -138,24 +120,32 @@ func New(config Config) (*Manager, error) {
 	if config.Now == nil {
 		config.Now = time.Now
 	}
-	hasher, err := NewPasswordHasher(config.Argon2, config.Random)
+	hasher := config.Hasher
+	if hasher == nil {
+		var err error
+		hasher, err = NewPasswordHasher(config.Argon2, config.Random)
+		if err != nil {
+			return nil, err
+		}
+	}
+	users, err := NewUserStore(UserStoreConfig{Database: config.Database, Hasher: hasher})
 	if err != nil {
 		return nil, err
 	}
-	users, err := NewUserStore(UserStoreConfig{Path: config.UsersFile, Hasher: hasher, LockTimeout: config.LockTimeout, Now: config.Now})
+	if err := users.Check(); err != nil {
+		return nil, fmt.Errorf("check users table: %w", err)
+	}
+	sessions, err := NewSessionStore(SessionStoreConfig{Database: config.Database, Random: config.Random, Now: config.Now})
 	if err != nil {
 		return nil, err
 	}
-	sessions, err := NewSessionStore(SessionStoreConfig{Root: config.SessionsRoot, Random: config.Random, Now: config.Now})
-	if err != nil {
-		return nil, err
+	if err := sessions.Check(); err != nil {
+		return nil, fmt.Errorf("check authentication sessions table: %w", err)
 	}
 	return &Manager{users: users, sessions: sessions, sessionDuration: config.SessionDuration, cleanupInterval: config.CleanupInterval, cookie: config.Cookie, now: config.Now, runtimeRequests: make(map[string]*RuntimeRequest)}, nil
 }
 
-func (m *Manager) UsersFile() string    { return m.users.Path() }
-func (m *Manager) SessionsRoot() string { return m.sessions.Root() }
-func (m *Manager) CookieName() string   { return m.cookie.Name }
+func (m *Manager) CookieName() string { return m.cookie.Name }
 
 func (m *Manager) BeginRuntimeRequest(request RuntimeRequest) (func(), error) {
 	if request.RequestID == "" || request.ServiceID == "" || request.RuntimeGroupID == "" || request.SandboxID == "" {
@@ -191,27 +181,27 @@ func (m *Manager) RuntimeRequest(requestID string) (RuntimeRequest, bool) {
 	return *request, true
 }
 
-func (m *Manager) BootstrapLogin(ctx context.Context, username, password string, secureTransport bool) (BootstrapLoginResult, error) {
+func (m *Manager) Login(ctx context.Context, username, password string, secureTransport bool) (LoginResult, error) {
 	if err := ctx.Err(); err != nil {
-		return BootstrapLoginResult{Error: "internal_error"}, err
+		return LoginResult{Error: "internal_error"}, err
 	}
 	user, err := m.users.Authenticate(username, password)
 	if errors.Is(err, ErrInvalidCredentials) {
-		return BootstrapLoginResult{Error: "invalid_credentials"}, nil
+		return LoginResult{Error: "invalid_credentials"}, nil
 	}
 	if errors.Is(err, ErrUserDisabled) {
-		return BootstrapLoginResult{Error: "disabled"}, nil
+		return LoginResult{Error: "disabled"}, nil
 	}
 	if err != nil {
-		return BootstrapLoginResult{Error: "internal_error"}, err
+		return LoginResult{Error: "internal_error"}, err
 	}
 	session, token, err := m.sessions.Create(user.Username, user.AuthVersion, m.sessionDuration)
 	if err != nil {
-		return BootstrapLoginResult{Error: "internal_error"}, err
+		return LoginResult{Error: "internal_error"}, err
 	}
-	return BootstrapLoginResult{
+	return LoginResult{
 		Authenticated: true,
-		User:          &BootstrapUser{ID: user.ID(), Username: user.Username, Realm: BootstrapRealm},
+		User:          &User{ID: user.ID(), Username: user.Username, Realm: UserRealm},
 		SetCookie:     m.setCookie(token, session.ExpiresAt, secureTransport),
 	}, nil
 }
@@ -248,7 +238,7 @@ func (m *Manager) AuthenticateUser(username string) (AuthContext, error) {
 func authContextForUser(user UserRecord) AuthContext {
 	return AuthContext{
 		Authenticated: true,
-		Realm:         BootstrapRealm,
+		Realm:         UserRealm,
 		UserID:        user.ID(),
 		Username:      user.Username,
 		AuthVersion:   user.AuthVersion,
@@ -267,7 +257,7 @@ func (m *Manager) ValidateCookie(cookieValue string) (AuthContext, error) {
 	if !exists || !user.Enabled || user.AuthVersion != session.AuthVersion {
 		return AuthContext{}, ErrUnauthenticated
 	}
-	return AuthContext{Authenticated: true, Realm: BootstrapRealm, UserID: user.ID(), Username: user.Username, AuthVersion: user.AuthVersion, SessionID: session.SessionID}, nil
+	return AuthContext{Authenticated: true, Realm: UserRealm, UserID: user.ID(), Username: user.Username, AuthVersion: user.AuthVersion, SessionID: session.SessionID}, nil
 }
 
 func (m *Manager) LogoutCurrent(context AuthContext, secureTransport bool) (LogoutResult, error) {
@@ -279,107 +269,6 @@ func (m *Manager) LogoutCurrent(context AuthContext, secureTransport bool) (Logo
 	return LogoutResult{SetCookie: m.clearCookie(secureTransport)}, nil
 }
 
-func (m *Manager) AddUser(ctx context.Context, username, password string) (UserSummary, error) {
-	user, err := m.users.Add(ctx, username, password)
-	return summaryForUser(user, 0), err
-}
-
-func (m *Manager) RemoveUser(ctx context.Context, username string) error {
-	if err := m.users.Remove(ctx, username); err != nil {
-		return err
-	}
-	_, err := m.sessions.RevokeUser(username)
-	return err
-}
-
-func (m *Manager) EnableUser(ctx context.Context, username string) (UserSummary, error) {
-	user, err := m.users.Enable(ctx, username)
-	return summaryForUser(user, 0), err
-}
-
-func (m *Manager) DisableUser(ctx context.Context, username string) (UserSummary, error) {
-	user, err := m.users.Disable(ctx, username)
-	if err != nil {
-		return UserSummary{}, err
-	}
-	_, revokeErr := m.sessions.RevokeUser(username)
-	return summaryForUser(user, 0), revokeErr
-}
-
-func (m *Manager) SetPassword(ctx context.Context, username, password string) (UserSummary, error) {
-	user, err := m.users.SetPassword(ctx, username, password)
-	if err != nil {
-		return UserSummary{}, err
-	}
-	_, revokeErr := m.sessions.RevokeUser(username)
-	return summaryForUser(user, 0), revokeErr
-}
-
-func (m *Manager) InvalidateUserSessions(ctx context.Context, username string) (UserSummary, error) {
-	user, err := m.users.InvalidateSessions(ctx, username)
-	if err != nil {
-		return UserSummary{}, err
-	}
-	_, revokeErr := m.sessions.RevokeUser(username)
-	return summaryForUser(user, 0), revokeErr
-}
-
-func (m *Manager) ListUsers() ([]UserSummary, error) {
-	users, err := m.users.List()
-	if err != nil {
-		return nil, err
-	}
-	sessions, err := m.ListSessions()
-	if err != nil {
-		return nil, err
-	}
-	active := make(map[string]int)
-	for _, session := range sessions {
-		if session.Valid {
-			active[session.Username]++
-		}
-	}
-	result := make([]UserSummary, 0, len(users))
-	for _, user := range users {
-		result = append(result, summaryForUser(user, active[user.Username]))
-	}
-	return result, nil
-}
-
-func (m *Manager) ListSessions() ([]SessionSummary, error) {
-	records, err := m.sessions.List()
-	if err != nil {
-		return nil, err
-	}
-	users, err := m.users.List()
-	if err != nil {
-		return nil, err
-	}
-	byUsername := make(map[string]UserRecord, len(users))
-	for _, user := range users {
-		byUsername[user.Username] = user
-	}
-	now := m.now().UTC()
-	result := make([]SessionSummary, 0, len(records))
-	for _, record := range records {
-		user, exists := byUsername[record.Username]
-		valid := now.Before(record.ExpiresAt) && exists && user.Enabled && user.AuthVersion == record.AuthVersion
-		result = append(result, SessionSummary{SessionID: record.SessionID, Username: record.Username, CreatedAt: record.CreatedAt, ExpiresAt: record.ExpiresAt, Valid: valid, AuthVersion: record.AuthVersion})
-	}
-	sort.Slice(result, func(i, j int) bool { return result[i].SessionID < result[j].SessionID })
-	return result, nil
-}
-
-func (m *Manager) RevokeSession(sessionID string) error { return m.sessions.Delete(sessionID) }
-
-func (m *Manager) RevokeUserSessions(username string) (int, error) {
-	return m.sessions.RevokeUser(username)
-}
-
-func (m *Manager) CleanupExpired() (int, error) {
-	return m.sessions.CleanupExpired(m.now().UTC())
-}
-
 func (m *Manager) RunCleanup(ctx context.Context, report func(error)) {
 	timer := time.NewTimer(m.cleanupInterval)
 	defer timer.Stop()
@@ -388,16 +277,12 @@ func (m *Manager) RunCleanup(ctx context.Context, report func(error)) {
 		case <-ctx.Done():
 			return
 		case <-timer.C:
-			if _, err := m.CleanupExpired(); err != nil && report != nil {
+			if _, err := m.sessions.CleanupExpired(m.now().UTC()); err != nil && report != nil {
 				report(err)
 			}
 			timer.Reset(m.cleanupInterval)
 		}
 	}
-}
-
-func summaryForUser(user UserRecord, active int) UserSummary {
-	return UserSummary{Username: user.Username, Enabled: user.Enabled, AuthVersion: user.AuthVersion, CreatedAt: user.CreatedAt, UpdatedAt: user.UpdatedAt, ActiveSessions: active}
 }
 
 func (m *Manager) setCookie(value string, expires time.Time, secureTransport bool) string {

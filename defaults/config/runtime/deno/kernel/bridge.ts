@@ -5,6 +5,7 @@ import {
   kernelDatabaseBackendSymbol,
   type KernelInvoke,
   kernelInvokeSymbol,
+  kernelSecretSymbol,
 } from "./mod.ts";
 
 export interface KernelExecutionContext {
@@ -12,6 +13,7 @@ export interface KernelExecutionContext {
   serviceId: string;
   persistentExecutionId?: string;
   auth?: ServiceRequestMetadata["auth"];
+  secrets?: Record<string, string>;
 }
 
 interface BridgeMessage {
@@ -74,7 +76,7 @@ export function createKernelBridge(
     if (operation === "auth.currentUser") {
       const auth = request?.auth;
       return Promise.resolve(
-        auth?.authenticated && auth.realm === "bootstrap-admin" &&
+        auth?.authenticated && auth.realm === "user" &&
           auth.userId !== undefined && auth.username !== undefined
           ? {
             id: auth.userId,
@@ -126,6 +128,9 @@ export function createKernelBridge(
   };
   (globalThis as unknown as Record<symbol, unknown>)[kernelInvokeSymbol] =
     invoke;
+  (globalThis as unknown as Record<symbol, unknown>)[kernelSecretSymbol] = (
+    name: string,
+  ): string | undefined => requestContext.getStore()?.secrets?.[name];
   if (databaseBackend !== undefined) {
     (globalThis as unknown as Record<symbol, unknown>)[
       kernelDatabaseBackendSymbol
@@ -167,6 +172,9 @@ export function createKernelBridge(
     close(): void {
       delete (globalThis as unknown as Record<symbol, unknown>)[
         kernelInvokeSymbol
+      ];
+      delete (globalThis as unknown as Record<symbol, unknown>)[
+        kernelSecretSymbol
       ];
       if (databaseBackend !== undefined) {
         delete (globalThis as unknown as Record<symbol, unknown>)[

@@ -128,13 +128,6 @@ type ActivationResult struct {
 	Packages            []ActivationPackageResult `json:"packages"`
 }
 
-// MountProfileDocument is the shared, operator-editable development mount
-// profile stored outside package repositories and sandbox-visible paths.
-type MountProfileDocument struct {
-	Schema int               `toml:"schema" json:"schema"`
-	Mounts []MountDefinition `toml:"mounts" json:"mounts"`
-}
-
 type ShellResult struct {
 	UserID    string `json:"user_id"`
 	SandboxID string `json:"sandbox_id"`

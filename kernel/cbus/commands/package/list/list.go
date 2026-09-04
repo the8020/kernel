@@ -20,10 +20,11 @@ type summary struct {
 
 func New(serviceSet *services.Services) core.Handler {
 	return func(_ context.Context, _ core.Request) (core.Result, error) {
-		if serviceSet == nil || serviceSet.Packages == nil {
+		service := serviceSet.PlatformSnapshot().Packages
+		if service == nil {
 			return nil, core.NewError(core.CodeRuntimeUnavailable, "package store is unavailable")
 		}
-		packages, err := serviceSet.Packages.ListPackages()
+		packages, err := service.ListPackages()
 		if err != nil {
 			return nil, commandutil.OperationError(err)
 		}

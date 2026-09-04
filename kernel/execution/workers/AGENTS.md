@@ -31,9 +31,17 @@
   Workers, carries an optional persistent-execution target for supervisor
   binding validation, forwards cross-node only to the exact authenticated node,
   and returns bounded structured target/function/timeout/application errors.
+- Runtime callback identity validation resolves only the authenticated runtime
+  group's persisted specification, asks only its supervisor for live Workers,
+  and matches the exact Worker, execution, and workload identity. It does not
+  perform backend or metrics probes.
 - Workload managers with a durable Worker-to-group association stop through
   `StopInGroup`; unrelated unavailable sandboxes must not block owned Worker
   cleanup.
+- Worker operations accept only ready, active, or draining sandbox runtimes.
+  Exact access to a terminal runtime returns the shared typed
+  `ErrRuntimeUnavailable`; global Worker listing skips terminal groups so one
+  stopped sandbox cannot make unrelated Workers invisible.
 - Worker startup serializes admission, enforces the existing node-wide Worker
   budget, and immediately before creation re-inspects the exact target sandbox.
   It refuses creation when that sandbox is at the kernel-wide per-sandbox Worker

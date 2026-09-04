@@ -1,26 +1,43 @@
 # Purpose
 
-- Provide the typed administrative contract from declarative metadata through local transport to thin handlers.
+- Provide one live administrative command catalog and execution protocol for
+  kernel recovery commands and package-owned TypeScript commands.
 
 # Ownership
 
-- Own command metadata, typed requests/responses/errors, generated discovery/catalog/registry, Unix transport, shared CLI behavior, and accepted 80|20 administration commands.
-- Do not use shell-command transport, runtime plugins, brokers, gRPC, or command-specific client code.
+- Own immutable process-local registry snapshots, typed requests/responses,
+  package command discovery, Unix transport, and shared CLI behavior.
+- Do not persist assembled catalogs or add command-specific client code,
+  package capabilities, shell transport, brokers, or gRPC.
 
 # Local Contracts
 
-- Protocol version 1 uses `POST /v1/cbus/execute` with JSON over a Unix socket created under a restrictive umask; `server/AGENTS.md` owns exact socket-mode verification and the contained fallback for filesystems that reject socket chmod.
-- Internal registry dispatch is transport independent and is reused by both the Unix administrative transport and authorized Deno supervisor callbacks.
-- Production command catalog, registry, and executable entries are generated; command TOML is authoritative and handler filenames/symbols are explicit.
-- Adding a command changes TOML and its referenced handler only, then runs `install.sh`.
+- Protocol version 2 serves `GET /v2/cbus/catalog` and
+  `POST /v2/cbus/execute` over the administrative Unix socket.
+- Generated Go registers only `kernel.*` recovery/lifecycle commands and the
+  explicitly deferred command families. Active packages contribute
+  `cbus/commands/**/command.toml` descriptors and same-package programs at
+  runtime; `kernel.*` is reserved.
+- The registry atomically publishes complete immutable snapshots. Execution
+  loads one snapshot and holds no registry lock while a command runs.
+- The package filesystem plus active database commits are the source of truth.
+  Startup, activation, removal, revision change, and `kernel.reindex` refresh
+  each process's catalog; invalid packages become independent diagnostics.
+- Package command argv is untouched after command lookup. Secure inputs travel
+  separately. Kernel adapters parse their own typed argv.
+- Internal registry dispatch is transport independent and may also be used by
+  an active supervised job or service through the runtime callback.
 
 # Work Guidance
 
-- Share catalog lookup, aliases, argument conversion, help, rendering, and client behavior across both admin modes.
+- Keep one catalog lookup, secure-input flow, help renderer, and response
+  renderer across one-shot and interactive administration.
 
 # Verification
 
-- Package unit tests plus `app/integration_test.go` cover generation, parsing, transport, dispatch, errors, live commands, and shutdown.
+- Core, discovery, transport, CLI, generator, and application tests cover
+  atomic swaps, naming/collisions, dynamic refresh, raw argv, secure inputs,
+  live dispatch, and shutdown.
 
 # Child DOX Index
 

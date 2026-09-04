@@ -57,7 +57,7 @@ show_shutdown_line() {
 
 show_shutdown_progress() {
   local status percent completed total message
-  status=$("$ADMIN" --root "$INSTANCE_ROOT" --json system status 2>/dev/null) || return 1
+  status=$("$ADMIN" --root "$INSTANCE_ROOT" --json kernel.status 2>/dev/null) || return 1
   percent=$(sed -nE 's/^[[:space:]]*"shutdown_percent":[[:space:]]*([0-9]+),?$/\1/p' <<<"$status")
   completed=$(sed -nE 's/^[[:space:]]*"shutdown_completed_steps":[[:space:]]*([0-9]+),?$/\1/p' <<<"$status")
   total=$(sed -nE 's/^[[:space:]]*"shutdown_total_steps":[[:space:]]*([0-9]+),?$/\1/p' <<<"$status")
@@ -77,7 +77,7 @@ stop_started_kernel() {
   if [[ "$STARTED_KERNEL" == true && -n "$KERNEL_PID" ]]; then
     SHUTDOWN_LAST_LINE=""
     local graceful_requested=false forced=false
-    if "$ADMIN" --root "$INSTANCE_ROOT" system shutdown >/dev/null 2>&1; then
+    if "$ADMIN" --root "$INSTANCE_ROOT" kernel.shutdown >/dev/null 2>&1; then
       graceful_requested=true
       show_shutdown_line 0 0 "$SHUTDOWN_TOTAL_STEPS" "graceful shutdown requested"
       for _ in $(seq 1 120); do
@@ -132,7 +132,7 @@ trap 'stop_started_kernel; restore_terminal; exit 130' INT TERM HUP
 trap 'stop_started_kernel; restore_terminal' EXIT
 
 ATTACHED_STATUS=""
-if ATTACHED_STATUS=$("$ADMIN" --root "$INSTANCE_ROOT" --json system status 2>/dev/null); then
+if ATTACHED_STATUS=$("$ADMIN" --root "$INSTANCE_ROOT" --json kernel.status 2>/dev/null); then
   STARTED_KERNEL=false
   KERNEL_PID=$(status_value pid "$ATTACHED_STATUS")
   if [[ -z "$KERNEL_PID" ]]; then
@@ -140,13 +140,13 @@ if ATTACHED_STATUS=$("$ADMIN" --root "$INSTANCE_ROOT" --json system status 2>/de
     exit 1
   fi
   echo "restarting attached kernel to activate the rebuilt binary" >&2
-  "$ADMIN" --root "$INSTANCE_ROOT" system restart >/dev/null
+  "$ADMIN" --root "$INSTANCE_ROOT" kernel.restart >/dev/null
   while true; do
     if ! kernel_process_running; then
       echo "attached kernel exited before completing its rebuild restart" >&2
       exit 1
     fi
-    RESTARTED_STATUS=$("$ADMIN" --root "$INSTANCE_ROOT" --json system status 2>/dev/null || true)
+    RESTARTED_STATUS=$("$ADMIN" --root "$INSTANCE_ROOT" --json kernel.status 2>/dev/null || true)
     if [[ -n "$RESTARTED_STATUS" ]] &&
       [[ "$(status_value restart_requested "$RESTARTED_STATUS")" == false ]] &&
       [[ "$(status_value shutdown_requested "$RESTARTED_STATUS")" == false ]] &&
@@ -164,7 +164,7 @@ else
   READY_ATTEMPT=0
   while [[ "$READY" != true ]]; do
     READY_ATTEMPT=$((READY_ATTEMPT + 1))
-    if "$ADMIN" --root "$INSTANCE_ROOT" system status >/dev/null 2>&1; then
+    if "$ADMIN" --root "$INSTANCE_ROOT" kernel.status >/dev/null 2>&1; then
       READY=true
       break
     fi

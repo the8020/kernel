@@ -1,0 +1,45 @@
+schema = 1
+
+[[packages]]
+id = "the8020/admin-core"
+source = "https://github.com/the8020/admin-core.git"
+
+[[packages]]
+id = "the8020/admin-db"
+source = "https://github.com/the8020/admin-db.git"
+
+[[packages]]
+id = "the8020/db"
+source = "https://github.com/the8020/db.git"
+
+[[packages]]
+id = "the8020/demo"
+source = "https://github.com/the8020/demo.git"
+
+[[packages]]
+id = "the8020/dev-core"
+source = "https://github.com/the8020/dev-core.git"
+
+[[packages]]
+id = "the8020/packages"
+source = "https://github.com/the8020/packages.git"
+
+[[packages]]
+id = "the8020/secrets"
+source = "https://github.com/the8020/secrets.git"
+
+[[packages]]
+id = "the8020/services"
+source = "https://github.com/the8020/services.git"
+
+[[packages]]
+id = "the8020/system"
+source = "https://github.com/the8020/system.git"
+
+[[packages]]
+id = "the8020/users"
+source = "https://github.com/the8020/users.git"
+
+[[packages]]
+id = "the8020/uui"
+source = "https://github.com/the8020/uui.git"

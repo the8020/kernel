@@ -1,6 +1,6 @@
 key = "job.default.worker_reuse"
 type = "boolean"
-storage = "node"
+storage = "global"
 default = false
 environment = "THE8020_JOB_DEFAULT_WORKER_REUSE"
 runtime_mutable = false

@@ -1,7 +1,13 @@
 import { assertEquals, assertRejects } from "../test/assert.ts";
 import type { ServiceRequestMetadata } from "../worker/contracts.ts";
 import { createKernelBridge } from "./bridge.ts";
-import { AdminCommandError, kernel, kernelDatabaseBackend } from "./mod.ts";
+import {
+  AdminCommandError,
+  kernel,
+  kernelDatabaseBackend,
+  parseCommandArguments,
+  requiredCommandArgument,
+} from "./mod.ts";
 
 const metadata: ServiceRequestMetadata = {
   requestId: "request-1",
@@ -19,6 +25,23 @@ const metadata: ServiceRequestMetadata = {
   },
   auth: { authenticated: false },
 };
+
+Deno.test("package command argument helpers return structured failures", () => {
+  for (
+    const action of [
+      () => requiredCommandArgument([], 0, "service ID"),
+      () => parseCommandArguments(["--unknown"], { values: ["known"] }),
+    ]
+  ) {
+    try {
+      action();
+      throw new Error("invalid arguments unexpectedly succeeded");
+    } catch (error) {
+      assertEquals(error instanceof AdminCommandError, true);
+      assertEquals((error as AdminCommandError).code, "invalid_arguments");
+    }
+  }
+});
 const persistentMetadata: ServiceRequestMetadata = {
   ...metadata,
   persistentExecutionId: "persistent-test",
@@ -51,8 +74,7 @@ Deno.test("typed kernel auth bridge correlates login and logout", async () => {
   try {
     const loginPromise = bridge.withRequest(
       metadata,
-      () =>
-        kernel.auth.bootstrapLogin({ username: "Admin", password: "private" }),
+      () => kernel.auth.login({ username: "Admin", password: "private" }),
     );
     const loginCall = await calls.next();
     assertEquals(loginCall.type, "kernel_call");
@@ -102,7 +124,7 @@ Deno.test("current user uses only the exact asynchronous request context", async
     ...persistentMetadata,
     auth: {
       authenticated: true,
-      realm: "bootstrap-admin",
+      realm: "user",
       userId: "user-1",
       username: "Admin",
       authVersion: 3,
@@ -111,7 +133,7 @@ Deno.test("current user uses only the exact asynchronous request context", async
   try {
     assertEquals(
       await bridge.withRequest(authenticated, () => kernel.auth.currentUser()),
-      { id: "user-1", username: "Admin", realm: "bootstrap-admin" },
+      { id: "user-1", username: "Admin", realm: "user" },
     );
     assertEquals(
       await bridge.withRequest(metadata, () => kernel.auth.currentUser()),
@@ -189,7 +211,7 @@ Deno.test("typed kernel admin bridge returns results and command errors", async 
     ...persistentMetadata,
     auth: {
       authenticated: true,
-      realm: "bootstrap-admin",
+      realm: "user",
       userId: "user-1",
       username: "Admin",
     },
@@ -212,7 +234,7 @@ Deno.test("typed kernel admin bridge returns results and command errors", async 
       type: "kernel_result",
       correlationId: listCall.correlationId as string,
       payload: {
-        protocol_version: 1,
+        protocol_version: 2,
         success: true,
         request_id: "command-1",
         result: { services: [{ service_id: "core/example/service" }] },
@@ -221,6 +243,28 @@ Deno.test("typed kernel admin bridge returns results and command errors", async 
     assertEquals(await list, {
       services: [{ service_id: "core/example/service" }],
     });
+
+    const comparison = bridge.withRequest(
+      authenticated,
+      () => kernel.database.tables.compare("acme__orders__orders"),
+    );
+    const comparisonCall = await calls.next();
+    assertEquals(
+      (comparisonCall.payload as { arguments: unknown }).arguments,
+      {
+        operation: "database.table.compare",
+        input: { table_id: "acme__orders__orders" },
+      },
+    );
+    bridge.handle({
+      type: "kernel_result",
+      correlationId: comparisonCall.correlationId as string,
+      payload: {
+        success: true,
+        result: { table: { table_id: "acme__orders__orders" } },
+      },
+    });
+    assertEquals(await comparison, { table_id: "acme__orders__orders" });
 
     const missing = bridge.withRequest(
       authenticated,
@@ -234,7 +278,7 @@ Deno.test("typed kernel admin bridge returns results and command errors", async 
       type: "kernel_result",
       correlationId: missingCall.correlationId as string,
       payload: {
-        protocol_version: 1,
+        protocol_version: 2,
         success: false,
         request_id: "command-2",
         error: { code: "not_found", message: "service not found" },
@@ -298,6 +342,37 @@ Deno.test("typed database bridge uses one execute operation", async () => {
       payload: { columns: [], rows: [], affected_rows: 2 },
     });
     assertEquals(await execute, { columns: [], rows: [], affected_rows: 2 });
+
+    const insert = bridge.withRequest(
+      metadata,
+      () =>
+        kernel.database.execute("INSERT INTO example DEFAULT VALUES", [], {
+          returnInsertId: true,
+        }),
+    );
+    const insertCall = await calls.next();
+    assertEquals(
+      (insertCall.payload as { arguments: unknown }).arguments,
+      {
+        statement: "INSERT INTO example DEFAULT VALUES",
+        parameters: [],
+        return_insert_id: true,
+      },
+    );
+    bridge.handle({
+      type: "kernel_result",
+      correlationId: insertCall.correlationId as string,
+      payload: {
+        columns: [],
+        rows: [],
+        insert_id: { type: "bigint", value: "1" },
+      },
+    });
+    assertEquals(await insert, {
+      columns: [],
+      rows: [],
+      insert_id: { type: "bigint", value: "1" },
+    });
     await assertRejects(
       () => bridge.withRequest(metadata, () => kernel.database.execute("", [])),
       TypeError,
@@ -383,7 +458,7 @@ Deno.test("persistent continuations follow their current transport request", asy
     requestId: "request-establish",
     auth: {
       authenticated: true,
-      realm: "bootstrap-admin",
+      realm: "user",
       userId: "user-1",
       username: "Admin",
     },
@@ -415,7 +490,7 @@ Deno.test("persistent continuations follow their current transport request", asy
       type: "kernel_result",
       correlationId: controlCall.correlationId as string,
       payload: {
-        protocol_version: 1,
+        protocol_version: 2,
         success: true,
         result: { service: {} },
       },
@@ -431,7 +506,7 @@ Deno.test("persistent continuations follow their current transport request", asy
       type: "kernel_result",
       correlationId: call.correlationId as string,
       payload: {
-        protocol_version: 1,
+        protocol_version: 2,
         success: true,
         result: { services: [] },
       },
@@ -444,7 +519,7 @@ Deno.test("persistent continuations follow their current transport request", asy
   }
 });
 
-Deno.test("typed secret and package APIs delegate to generic administrative commands", async () => {
+Deno.test("typed secret and package APIs use private runtime operations", async () => {
   const channel = new MessageChannel();
   const bridge = createKernelBridge(channel.port1);
   const calls = createCallQueue(channel.port2);
@@ -453,7 +528,7 @@ Deno.test("typed secret and package APIs delegate to generic administrative comm
       ...persistentMetadata,
       auth: {
         authenticated: true,
-        realm: "bootstrap-admin",
+        realm: "user",
         userId: "user-1",
         username: "Admin",
       },
@@ -469,12 +544,12 @@ Deno.test("typed secret and package APIs delegate to generic administrative comm
       const call = await calls.next();
       assertEquals(
         (call.payload as { arguments: unknown }).arguments,
-        { command_id: commandId, arguments: arguments_ },
+        { operation: commandId, input: arguments_ },
       );
       bridge.handle({
         type: "kernel_result",
         correlationId: call.correlationId as string,
-        payload: { protocol_version: 1, success: true, result },
+        payload: { success: true, result },
       });
       return await promise;
     };
@@ -546,13 +621,11 @@ Deno.test("typed secret and package APIs delegate to generic administrative comm
     );
 
     const index = {
-      schema: 1,
       author: "the8020",
       repository: "uui",
       source: "https://github.com/the8020/uui.git",
       local: false,
       package_id: "the8020/uui",
-      path: "/state/package-index/the8020/uui.toml",
       valid: true,
     };
     assertEquals(

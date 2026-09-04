@@ -34,11 +34,11 @@ const (
 	DefaultMaximumResultBytes = 10 << 20
 	DefaultMaximumResultRows  = 10_000
 
-	StateConnected    = "CONNECTED"
-	StateInitializing = "INITIALIZING"
-	StateReady        = "READY"
-	StateDegraded     = "DEGRADED"
-	StateUnavailable  = "UNAVAILABLE"
+	StateConnected            = "CONNECTED"
+	StateInitializing         = "INITIALIZING"
+	StateReady                = "READY"
+	StateInitializationFailed = "INITIALIZATION_FAILED"
+	StateUnavailable          = "UNAVAILABLE"
 )
 
 // Config selects the one system database used by this kernel.
@@ -111,7 +111,6 @@ type Manager struct {
 	evaluatorMu      sync.RWMutex
 	evaluator        DefinitionEvaluator
 	fullSynchronizer FullSynchronizer
-	sourceInspector  SourceInspector
 	sourceEvaluator  SourceEvaluator
 }
 
@@ -368,7 +367,7 @@ func (m *Manager) Check(ctx context.Context) (Status, error) {
 	m.status.Error = ""
 	if err == nil {
 		if m.status.CatalogError != "" {
-			m.status.State = StateDegraded
+			m.status.State = StateInitializationFailed
 		} else if m.status.CatalogVersion > 0 && m.status.Initialized {
 			m.status.State = StateReady
 		} else {
@@ -379,6 +378,18 @@ func (m *Manager) Check(ctx context.Context) (Status, error) {
 	}
 	m.statusMu.Unlock()
 	return m.Status(), err
+}
+
+// MarkUnavailable records a shared-state operation failure discovered after a
+// successful connectivity probe. A later successful Check may restore READY.
+func (m *Manager) MarkUnavailable(err error) {
+	if m == nil || err == nil {
+		return
+	}
+	m.statusMu.Lock()
+	m.status.State = StateUnavailable
+	m.status.Error = err.Error()
+	m.statusMu.Unlock()
 }
 
 func (m *Manager) ping(ctx context.Context) error {

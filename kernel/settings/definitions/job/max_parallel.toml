@@ -1,6 +1,6 @@
 key = "job.default.maximum_parallel_workers"
 type = "integer"
-storage = "node"
+storage = "global"
 default = 4
 environment = "THE8020_JOB_DEFAULT_MAXIMUM_PARALLEL_WORKERS"
 minimum = 1

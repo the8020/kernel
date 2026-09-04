@@ -4,20 +4,26 @@
 
 # Ownership
 
-- Own path/alias matching, positional and long-option conversion, help, local errors, exit mapping, text/JSON rendering, and interactive line tokenization.
+- Own live-catalog matching, kernel-command argument conversion, secure-input
+  extraction, help, local errors, exit mapping, text/JSON rendering, and
+  interactive line tokenization.
 - Do not own console lifecycle, socket paths, transport implementation, or command-specific branches.
 
 # Local Contracts
 
-- Public API: `Executor`, `ValueResolver`, `SecretResolver`, `Runner`, `New`,
-  `Runner.SetValueResolver`, `Runner.SetSecretResolver`, `Runner.Run`,
-  `Runner.Help`, and `SplitLine`.
-- Primary paths and aliases resolve from the generated catalog; positionals, `--name value`, `--name=value`, boolean flags, and the `--` terminator are converted before the client request.
-- An omitted required positional with a metadata-declared ordinary prompt is
-  resolved and type-checked before any secret prompt; other missing parameters
-  remain local errors. Ordinary password arguments are rejected, secure
-  prompts request confirmation, and automation must opt into the declared
-  standard-input flag.
+- Public API: `Executor`, `CatalogProvider`, `SecretResolver`, `Runner`, `New`,
+  `NewDynamic`, `Runner.SetSecretResolver`, `Runner.Run`, `Runner.Help`, and
+  `SplitLine`.
+- Dynamic runners conditionally fetch the live catalog before every command or
+  help action. Unknown/stale lookup refreshes once; stale execution refreshes
+  and retries once with the same request ID.
+- Package paths are one dotted visible token and every remaining token,
+  including options and `--`, is forwarded unchanged. Kernel command argv is
+  parsed by the server-side core adapter.
+- Lookup and help use only each command's canonical visible path.
+- Metadata-declared secure input is removed only through its explicit stdin
+  option or obtained through the client resolver. It is transported separately
+  and never placed in argv or history.
 - `help` is local; its global view lists catalog commands plus the local `help` and interactive `exit` commands as normal command rows, and both local commands have detailed help topics.
 - Catalog-matched operations use the typed executor; `admin` owns execution of the local `exit` command.
 - A single-result array of `{key, description}` summaries renders compactly as unlabeled key and indented description rows.
@@ -38,8 +44,8 @@
 
 # Verification
 
-- `cli_test.go` covers aliases, typed and metadata-prompted arguments, prompt
-  ordering, complete global help, local and catalog help topics, examples,
+- `cli_test.go` covers typed kernel arguments, raw package argv, dynamic/stale
+  catalog refresh, secure input, complete global help, catalog help, examples,
   local and structured command errors, compact setting and flat resource
   summaries, empty collections,
   detailed rendering order, exact large-integer rendering, and quoted input.

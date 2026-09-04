@@ -21,10 +21,19 @@ func TestRuntimeStatementProtocolPreservesBytesAndTransactions(t *testing.T) {
 	}
 	parameters, _ := json.Marshal([]any{1, map[string]any{"type": "bytes", "value": "AP7/"}})
 	result, err := manager.RunStatement(ctx, "request-1", StatementRequest{
-		Statement: `INSERT INTO values_test (id, payload) VALUES ($1, $2)`, Parameters: parameters, Transaction: token,
+		Statement: `INSERT INTO values_test (id, payload) VALUES ($1, $2)`, Parameters: parameters,
+		ReturnInsertID: true, Transaction: token,
 	})
-	if err != nil || result.AffectedRows == nil {
+	if err != nil || result.AffectedRows == nil || result.InsertID == nil {
 		t.Fatalf("insert = %#v, %v", result, err)
+	}
+	updateParameters, _ := json.Marshal([]any{map[string]any{"type": "bytes", "value": "AP7/"}, 1})
+	updated, err := manager.RunStatement(ctx, "request-1", StatementRequest{
+		Statement: `UPDATE values_test SET payload = $1 WHERE id = $2`, Parameters: updateParameters,
+		Transaction: token,
+	})
+	if err != nil || updated.InsertID != nil {
+		t.Fatalf("update = %#v, %v", updated, err)
 	}
 	if err := manager.FinishTransaction(ctx, "request-1", token, true); err != nil {
 		t.Fatal(err)

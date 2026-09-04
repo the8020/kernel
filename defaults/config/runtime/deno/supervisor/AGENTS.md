@@ -18,6 +18,8 @@
   `job`. Its bearer token never reaches Workers.
 - Worker/job/service-pool/drain controls use generated versioned envelopes and
   validate message type, runtime-group identity, and correlation.
+- Job control errors preserve bounded structured command failures while keeping
+  ordinary runtime failures as plain messages.
 - Service validation invokes pinned in-sandbox Deno with the configured
   cached-only/online dependency mode before readiness. Jobs may supply a bounded
   list of additional modules to type-check through the same validation path.
@@ -40,11 +42,15 @@
   crash remains isolated and unschedulable. Each Worker also reports its exact
   idle-since timestamp so the kernel can apply Worker keepalive with a
   deterministic clock.
-- Kernel database callbacks carry the supervisor's exact service-request or job
-  execution identity. The kernel-selected backend is available synchronously
-  before entrypoint import, while Worker policy either permits or denies
-  database operations. Request completion and Worker shutdown close
-  corresponding kernel transaction scopes.
+- Every kernel callback carries the Worker's exact internal workload identity
+  separately from any public service/request identity. The kernel-selected
+  database backend is available synchronously before entrypoint import, while
+  Worker policy either permits or denies database operations. Request completion
+  and Worker shutdown close corresponding kernel transaction scopes.
+- Kernel calls use HTTP/JSON over `KERNEL_SOCKET_PATH`. Each call opens a fresh
+  Unix-socket connection so a restarted kernel can replace the socket without
+  restarting the sandbox. Response reads complete at the declared HTTP body
+  length and never depend on the sandbox transport propagating connection EOF.
 
 # Lifecycle
 

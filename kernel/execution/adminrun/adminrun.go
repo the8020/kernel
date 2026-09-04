@@ -110,8 +110,8 @@ func (m *Manager) Eval(ctx context.Context, code string, options Options) (Resul
 		return Result{}, err
 	}
 	wrapper := `import value from "./module.ts";
-export async function run(input: unknown): Promise<unknown> {
-  return typeof value === "function" ? await value(input) : value;
+export default async function evaluate(...arguments_: unknown[]): Promise<unknown> {
+  return typeof value === "function" ? await value(...arguments_) : value;
 }
 `
 	if err := os.WriteFile(entry, []byte(wrapper), 0o644); err != nil {
@@ -148,7 +148,11 @@ func (m *Manager) submit(ctx context.Context, jobID, artifactID, relative string
 	}
 	entrypoint := "file:///artifacts/" + artifactID + "/" + filepath.ToSlash(relative)
 	permissions := artifactPermissions(options.Permissions, "/artifacts/"+artifactID)
-	record, err := m.jobs.Run(ctx, jobID, entrypoint, jobs.Options{OwnerID: options.OwnerID, Input: options.Input, Detached: options.Detached, GroupKey: options.GroupKey, Namespace: options.Namespace, Timeout: options.Timeout, Reuse: options.Reuse, Permissions: permissions, ReleaseID: artifactID, Workspace: options.Workspace, WorkspaceWritable: options.WorkspaceWritable})
+	arguments := []any(nil)
+	if options.Input != nil {
+		arguments = []any{options.Input}
+	}
+	record, err := m.jobs.Run(ctx, jobID, entrypoint, jobs.Options{OwnerID: options.OwnerID, Arguments: arguments, Detached: options.Detached, GroupKey: options.GroupKey, Namespace: options.Namespace, Timeout: options.Timeout, Reuse: options.Reuse, Permissions: permissions, ReleaseID: artifactID, Workspace: options.Workspace, WorkspaceWritable: options.WorkspaceWritable})
 	if err != nil {
 		return Result{ArtifactID: artifactID, Entrypoint: entrypoint, Execution: record}, err
 	}

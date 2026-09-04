@@ -2,13 +2,17 @@ package containerd
 
 import (
 	"context"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	runtimeoptions "github.com/containerd/containerd/api/types/runtimeoptions/v1"
+	containerdclient "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/core/containers"
 	"github.com/containerd/containerd/v2/pkg/oci"
+	"github.com/containerd/typeurl/v2"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
 	"the8020/kernel/sandbox/model"
@@ -41,6 +45,25 @@ func TestMutableOwnerLabelsSupportSharedGroups(t *testing.T) {
 	}
 }
 
+func TestRunscRuntimeOptionsUseNodeLocalConfiguration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runsc.toml")
+	container := &containers.Container{}
+	option := containerdclient.WithRuntime(RuntimeName, &runtimeoptions.Options{ConfigPath: path})
+	if err := option(context.Background(), nil, container); err != nil {
+		t.Fatal(err)
+	}
+	if container.Runtime.Name != RuntimeName || container.Runtime.Options == nil {
+		t.Fatalf("runtime=%#v", container.Runtime)
+	}
+	var decoded runtimeoptions.Options
+	if err := typeurl.UnmarshalTo(container.Runtime.Options, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.ConfigPath != path {
+		t.Fatalf("config path=%q want=%q", decoded.ConfigPath, path)
+	}
+}
+
 func TestSandboxOCIOptionEnforcesBoundaryAndLimits(t *testing.T) {
 	sandbox := testSandbox(t)
 	generated := &oci.Spec{
@@ -48,7 +71,7 @@ func TestSandboxOCIOptionEnforcesBoundaryAndLimits(t *testing.T) {
 		Process: &specs.Process{Args: []string{"deno", "run", "--cached-only", "--allow-read=/opt/runtime", "--allow-write=/tmp/runtime", "--allow-net=0.0.0.0:8000", "main.ts"}, Env: []string{"PATH=/bin"}, Capabilities: &specs.LinuxCapabilities{Bounding: []string{"CAP_SYS_ADMIN"}}},
 		Linux:   &specs.Linux{Namespaces: []specs.LinuxNamespace{{Type: specs.NetworkNamespace}}},
 	}
-	option := sandboxSpecOption(sandbox, "instance-one", "http://10.0.0.1:9123", 8000, 5*time.Second, 1500*time.Millisecond)
+	option := sandboxSpecOption(sandbox, "instance-one", "/run/the8020/kernel.sock", 8000, 5*time.Second, 1500*time.Millisecond)
 	if err := option(context.Background(), nil, &containers.Container{}, generated); err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +94,7 @@ func TestSandboxOCIOptionEnforcesBoundaryAndLimits(t *testing.T) {
 		}
 	}
 	arguments := strings.Join(generated.Process.Args, " ")
-	for _, expected := range []string{"--allow-read=", "/workspace/user-one", "--allow-write=", "/runtime-cache", "--allow-net=", "10.0.0.1:9123"} {
+	for _, expected := range []string{"--allow-read=", "/workspace/user-one", "--allow-write=", "/runtime-cache", "--allow-net=", "0.0.0.0:8000"} {
 		if !strings.Contains(arguments, expected) {
 			t.Errorf("arguments missing %q: %s", expected, arguments)
 		}
@@ -85,12 +108,12 @@ func TestOnlineDependencyModeRemovesCachedOnly(t *testing.T) {
 	sandbox.RuntimeProfile.EgressAllowed = true
 	sandbox.Permissions.ImportHosts = []string{"deno.land"}
 	sandbox.RuntimeProfile.Permissions.ImportHosts = []string{"deno.land"}
-	arguments := parentPermissionArgs([]string{"deno", "run", "--cached-only", "main.ts"}, sandbox, "", 8000)
+	arguments := parentPermissionArgs([]string{"deno", "run", "--cached-only", "main.ts"}, sandbox, "/run/the8020/kernel.sock", 8000)
 	if containsArgument(arguments, "--cached-only") {
 		t.Fatalf("cached-only remains: %#v", arguments)
 	}
-	if !containsArgument(arguments, "--allow-import=deno.land") {
-		t.Fatalf("import permission missing: %#v", arguments)
+	if !containsArgument(arguments, "--allow-net") || !containsArgument(arguments, "--allow-import") {
+		t.Fatalf("unrestricted network/import permissions missing: %#v", arguments)
 	}
 }
 

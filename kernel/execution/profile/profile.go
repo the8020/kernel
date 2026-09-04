@@ -53,13 +53,14 @@ func ForWorkerWithWorkspace(base model.RuntimeProfile, requested *supervisor.Wor
 
 var reservedEnvironment = map[string]bool{
 	"SANDBOX_ID": true, "RUNTIME_GROUP_ID": true, "WORKLOAD_TYPE": true,
-	"IMAGE_DIGEST": true, "INTERNAL_API_TOKEN": true, "KERNEL_CALLBACK_ADDRESS": true,
+	"IMAGE_DIGEST": true, "INTERNAL_API_TOKEN": true, "KERNEL_SOCKET_PATH": true,
 	"DEPENDENCY_MODE": true,
 	"SUPERVISOR_HOST": true, "SUPERVISOR_PORT": true, "INSPECTOR_PORT": true, "RUNTIME_PROFILE_HASH": true, "HEARTBEAT_INTERVAL_MS": true,
 	"WORKER_STOP_GRACE_MS": true,
 }
 
 func ForWorker(base model.RuntimeProfile, requested *supervisor.WorkerPermissions) (model.RuntimeProfile, error) {
+	base = clone(base)
 	if requested == nil {
 		return base, nil
 	}
@@ -95,6 +96,17 @@ func ForWorker(base model.RuntimeProfile, requested *supervisor.WorkerPermission
 		derived.DependencyMode = model.DependencyOnline
 	}
 	return derived, nil
+}
+
+func clone(profile model.RuntimeProfile) model.RuntimeProfile {
+	profile.Mounts = append([]model.Mount(nil), profile.Mounts...)
+	profile.DenoStartupFlags = append([]string(nil), profile.DenoStartupFlags...)
+	profile.Permissions.ReadPaths = append([]string(nil), profile.Permissions.ReadPaths...)
+	profile.Permissions.WritePaths = append([]string(nil), profile.Permissions.WritePaths...)
+	profile.Permissions.NetworkHosts = append([]string(nil), profile.Permissions.NetworkHosts...)
+	profile.Permissions.ImportHosts = append([]string(nil), profile.Permissions.ImportHosts...)
+	profile.Permissions.Environment = append([]string(nil), profile.Permissions.Environment...)
+	return profile
 }
 
 func withinAny(path string, roots []string) bool {

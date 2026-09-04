@@ -10,9 +10,10 @@ import (
 
 func New(serviceSet *services.Services) core.Handler {
 	return func(ctx context.Context, _ core.Request) (core.Result, error) {
-		if serviceSet.Nodes == nil {
+		nodeService := serviceSet.PlatformSnapshot().Nodes
+		if nodeService == nil {
 			return nil, core.NewError(core.CodeRuntimeUnavailable, "node topology is unavailable")
 		}
-		return core.Result{"nodes": serviceSet.Nodes.Statuses(ctx), "local_node_id": serviceSet.Nodes.LocalNodeID()}, nil
+		return core.Result{"nodes": nodeService.Statuses(ctx), "local_node_id": nodeService.LocalNodeID()}, nil
 	}
 }

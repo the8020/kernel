@@ -1,0 +1,24 @@
+version = 1
+id = "kernel.reindex"
+path = ["kernel.reindex"]
+summary = "Reindex package commands"
+description = "Rebuilds the process-local command catalog from active packages and reports invalid package fragments."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/system/reindex/reindex.go"
+symbol = "New"
+[[result]]
+name = "revision"
+type = "string"
+[[result]]
+name = "packages"
+type = "array"
+[[result]]
+name = "commands"
+type = "integer"
+[[result]]
+name = "diagnostics"
+type = "array"
+[[examples]]
+command = "kernel.reindex"

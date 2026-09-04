@@ -8,7 +8,7 @@
   administration, networking, logging, and lifecycle. Phase 1B adds
   containerd-managed or rootless gVisor sandboxes and one Deno supervisor/Worker
   execution path. Phase 1C adds filesystem packages and persistent web services.
-  Phase 1D adds bootstrap authentication, access-controlled
+  Phase 1D adds authentication, access-controlled
   stateless/persistent services, and the UUI application protocol on that same
   runtime. Phase 1E adds
   private development sandboxes, persistent private overlays, independent package Git
@@ -27,8 +27,8 @@
   code remains inside Deno Workers; full containerd mode is preferred and direct
   rootless gVisor is the automatic reduced fallback.
 - The kernel additionally owns development-image/sandbox lifecycle, durable
-  per-user sandbox storage, sandbox-scoped activation ingress, package-index
-  persistence, global named-secret storage, Git source/version and working-tree
+  per-user sandbox storage, sandbox-scoped activation ingress, database-backed
+  package persistence and global named-secret storage, Git source/version and working-tree
   inspection, authenticated pull/push/checkout, and package synchronization, plus
   the generic authenticated local console broker and
   backend PTY exec boundary. It owns the SSH listener and protocol adapter while
@@ -62,21 +62,25 @@
   `kernel/runtime/protocol/`. Never edit generated files manually. Authored
   kernel Go belongs under `kernel/`; native executables owned by a runtime image
   belong with that image's source.
-- Command TOML is authoritative for IDs, paths, aliases, help, arguments,
-  results, mutation/restart metadata, handlers, and examples.
+- Kernel command TOML is authoritative for built-in IDs, paths, help,
+  arguments, results, mutation/restart metadata, handlers, and examples.
+  Active packages own dynamic command TOML and same-package TypeScript programs;
+  the in-memory CBus catalog is rebuilt atomically from active package commits.
 - Package and service identities come only from
-  `packages/<namespace>/<repository>/services/<service>`; replaceable shared
-  package desired state lives under `state/package-index/`, service desired
-  state lives under `state/services/`, while node-local observations
-  live under `node/kernel/runtime/services/`. Startup or explicit full
-  reconciliation discovers the fixed-depth catalog; periodic maintenance is
-  restricted to live, draining, or capacity-pending services.
+  `packages/<namespace>/<repository>/services/<service>`. Desired/active package
+  records and installed service declarations/overrides live in database tables;
+  node-local observations live under `node/kernel/runtime/services/`. A fresh
+  database discovers the fixed-depth catalog once and package activation
+  refreshes only changed packages; periodic maintenance is restricted to live,
+  draining, or capacity-pending services. Direct desired-service changes publish
+  one transactional monotonic revision plus the affected service marker so
+  every node reconciles that ID without scanning the installed service catalog.
 - Setting TOML is authoritative for keys, types, node/global storage, defaults,
   environment inputs, validation, and runtime/restart metadata.
 - One runtime group is one gVisor sandbox with exactly one workload type—service
   or job—and one infrastructure Deno supervisor; application code runs only in
   Workers. There is no generic user-session workload.
-- Filesystem services persist one canonical worker-based schema: lifecycle type
+- Services persist one canonical worker-based database schema: lifecycle type
   is `stateless` or `session`; scaling owns minimum/maximum Workers, per-Worker
   concurrency and target utilization, and Worker keepalive; placement owns
   sandbox group, minimum warm sandboxes, and Workers per sandbox. The kernel
@@ -84,8 +88,8 @@
   admission, and scale-down; Deno owns only exact local Worker lifecycle and
   utilization observation. Internal persistent execution binding implements
   session services independently of HTTP or WebSocket transport and never
-  interprets UUI messages. Routing selects only the loaded service generation;
-  occupied prior-generation Workers drain without failing a version switch.
+  interprets UUI messages. Routing selects only the loaded service version;
+  occupied prior-version Workers drain without failing a version switch.
 - UUI sessions are ordinary persistent service executions. UUI establishment,
   replay, heartbeats, reconnect, and program recovery live in the UUI service
   handler and do not introduce a UUI-specific sandbox or supervisor category.
@@ -93,18 +97,18 @@
   Home, Program terminated, session metadata, and administration, belongs to
   the independent `the8020/uui` package. The kernel neither defines UUI settings nor injects
   application configuration into requests.
-- Ordinary service sandboxes receive only generic mounts: package source
-  read-only at `/workspace/packages` and package-owned state read-write at
-  `/state/package-data`. The kernel never interprets or scans package data.
+- Ordinary service and job sandboxes receive the activated package source
+  read-only at `/workspace/packages`. Shared application data uses the typed
+  kernel database bridge rather than a generic writable state mount.
 - Package-index commands validate HTTPS Git sources, list bounded refs and
   commits, atomically synchronize clean mapped repositories to latest, tag, or
   commit selections, create unlinked local repositories, and reload only
   services owned by changed packages. Independent repository commands inspect,
   fast-forward pull, push, and check out a branch or commit while preserving
-  dirty worktrees. A private global secret store owns values; package indexes
+  dirty worktrees. The database-backed global secret store owns values; package records
   contain at most a selected secret name. Git credentials never belong in index
   documents, repository URLs, durable Git configuration, or command arguments.
-- Authenticated Deno code may invoke a registered JSON-in/JSON-out function on
+- Supervised Deno code may invoke a registered JSON-in/JSON-out function on
   one exact node/sandbox/Worker through the generic kernel SDK. Go validates
   infrastructure identity, bounds, timeout, and forwarding while treating the
   function name and payload as opaque. Persistent handlers may report exact
@@ -116,12 +120,14 @@
 - The main HTTP listener binds all IPv4 interfaces so container and host port
   publication can reach application traffic. Administrative command transport,
   runtime callbacks, and other explicitly internal listeners remain private.
-- Current 80|20 package code is trusted. The typed Deno-to-kernel API has no
-  granular capability system yet; authentication calls retain request identity
-  rules, while administrative command execution additionally requires a
-  kernel-trusted active bootstrap-administrator request.
+- Current 80|20 package code is trusted. Jobs and services receive the same
+  typed Deno-to-kernel API and unrestricted outbound network/import access;
+  there is no granular capability system yet. Runtime operations and
+  `admin.execute` require an active supervised Worker execution, not a service
+  HTTP request or authenticated user. Authentication operations still require
+  their own service request context.
 - The kernel owns one dynamically opened `database/sql` pool. Backend,
-  location, and PostgreSQL credentials are restart-required global policy;
+  location, and PostgreSQL credentials are restart-required node-local policy;
   maximum open and retained-idle connections are runtime-mutable node policy,
   defaulting to 32 and 8. SQLite uses WAL in its private local database
   directory; PostgreSQL remains the shared multi-node backend.
@@ -148,16 +154,17 @@
   replacement sandboxes only from explicit workload demand; cross-restart
   restoration is opt-in.
 - Kernel initialization creates and validates only the instance layout and
-  node-local state. Startup loads and validates `config/runtime/versions.toml`
+  node-local state. Startup loads and validates `node/kernel/runtime/definitions/versions.toml`
   plus already materialized records beneath `node/kernel/runtime/images/`; it
   never runs Deno, shell image builders, package builds, or source staging.
-- Runtime-record recovery is isolated by workload. Only current records are
-  restored, malformed or obsolete records are quarantined, and per-workload
-  restoration failures remain visible without aborting unrelated service
-  routing or runtime composition. Terminal service-pool records are removed
+- Runtime-record recovery is isolated by service. Only current service records
+  are restored, malformed or obsolete records are quarantined, and restoration
+  failures remain visible without aborting unrelated service routing or runtime
+  composition. Ordinary jobs are non-durable and never replay. Terminal
+  service-pool records are removed
   after owner release so missing inherited sandboxes do not remain retry gates.
 - During graceful shutdown the administrative socket remains available for
-  `system status` and idempotent `system shutdown` and `system restart` calls
+  `kernel.status` and idempotent `kernel.shutdown` and `kernel.restart` calls
   until late process teardown, while all other command intake is rejected.
   The first lifecycle request selects shutdown or restart. Status exposes
   synchronized stage completion, restart intent, and the currently active
@@ -222,12 +229,12 @@
   debug leases.
 - `runtime/AGENTS.md`: pinned manifest loading, full/rootless readiness
   diagnostics, and mode selection.
-- `packages/AGENTS.md`: filesystem package/service manifests, desired package
-  index, Git synchronization, identity, validation, and shared service state.
+- `packages/AGENTS.md`: package/service manifests, database-backed desired and
+  active package/service state, Git activation, identity, and validation.
 - `secrets/AGENTS.md`: private global named-secret persistence and value access.
 - `webservices/AGENTS.md`: Phase 1C reconciliation, canonical service routing,
   lifecycle, administration, and node-local status.
-- `auth/AGENTS.md`: bootstrap administrators, Argon2id passwords, opaque shared
+- `auth/AGENTS.md`: ordinary users, Argon2id passwords, opaque shared
   authentication sessions, and kernel-generated cookies.
 - `development/AGENTS.md`: the per-user development sandbox, private package
   overlay checkpoints, package Git activation, and reset behavior.

@@ -23,8 +23,39 @@ func (e errorExecutor) Execute(context.Context, core.Request) (core.Response, er
 	return e.response, nil
 }
 
+type recordingCatalog struct {
+	calls    []string
+	catalogs []core.Catalog
+}
+
+func (c *recordingCatalog) Catalog(_ context.Context, known string) (core.Catalog, bool, error) {
+	c.calls = append(c.calls, known)
+	if len(c.catalogs) == 0 {
+		return core.Catalog{}, true, nil
+	}
+	next := c.catalogs[0]
+	if len(c.catalogs) > 1 {
+		c.catalogs = c.catalogs[1:]
+	}
+	return next, known != "" && known == next.Revision, nil
+}
+
+type sequenceExecutor struct {
+	requests  []core.Request
+	responses []core.Response
+}
+
+func (e *sequenceExecutor) Execute(_ context.Context, request core.Request) (core.Response, error) {
+	e.requests = append(e.requests, request)
+	response := e.responses[0]
+	if len(e.responses) > 1 {
+		e.responses = e.responses[1:]
+	}
+	return response, nil
+}
+
 func testCatalog() []core.Command {
-	return []core.Command{{ID: "thing.set", Path: []string{"thing", "set"}, Aliases: [][]string{{"config", "set"}}, Summary: "Set thing", Description: "Sets a thing.", Parameters: []core.Parameter{{Name: "name", Type: "string", Required: true}, {Name: "count", Type: "integer", Position: 1, Required: true}, {Name: "enabled", Type: "boolean", Position: 2, Required: true}, {Name: "namespace", Type: "string", Option: "namespace", Description: "Grouping namespace."}, {Name: "detached", Type: "boolean", Option: "detached", Description: "Return without waiting."}}, Examples: []string{"thing set x 2 true --namespace demo --detached"}}}
+	return []core.Command{{ID: "thing.set", Path: []string{"thing", "set"}, Summary: "Set thing", Description: "Sets a thing.", Parameters: []core.Parameter{{Name: "name", Type: "string", Required: true}, {Name: "count", Type: "integer", Position: 1, Required: true}, {Name: "enabled", Type: "boolean", Position: 2, Required: true}, {Name: "namespace", Type: "string", Option: "namespace", Description: "Grouping namespace."}, {Name: "detached", Type: "boolean", Option: "detached", Description: "Return without waiting."}}, Examples: []string{"thing set x 2 true --namespace demo --detached"}}}
 }
 
 func TestTextErrorsRenderStructuredDetails(t *testing.T) {
@@ -58,17 +89,17 @@ func TestSharedLookupParsingHelpAndRendering(t *testing.T) {
 	executor := &fakeExecutor{}
 	runner := New(testCatalog(), executor)
 	var output bytes.Buffer
-	if code := runner.Run(context.Background(), []string{"config", "set", "value", "--namespace=demo", "2", "--detached", "true"}, false, &output); code != 0 {
+	if code := runner.Run(context.Background(), []string{"thing", "set", "value", "--namespace=demo", "2", "--detached", "true"}, false, &output); code != 0 {
 		t.Fatalf("exit %d: %s", code, output.String())
 	}
-	if executor.request.CommandID != "thing.set" || executor.request.Arguments["count"] != int64(2) || executor.request.Arguments["enabled"] != true || executor.request.Arguments["namespace"] != "demo" || executor.request.Arguments["detached"] != true {
+	if executor.request.CommandID != "thing.set" || strings.Join(executor.request.Argv, "|") != "value|--namespace=demo|2|--detached|true" || executor.request.Arguments != nil {
 		t.Fatalf("request: %#v", executor.request)
 	}
 	if !strings.Contains(output.String(), "ok: true") {
 		t.Fatalf("output: %s", output.String())
 	}
 	help := runner.Help([]string{"thing", "set"})
-	for _, expected := range []string{"Usage: thing set <name> <count> <enabled> [--detached] [--namespace <namespace>]", "Options:", "--detached", "config set", "thing set x 2 true"} {
+	for _, expected := range []string{"Usage: thing set <name> <count> <enabled> [--detached] [--namespace <namespace>]", "Options:", "--detached", "thing set x 2 true"} {
 		if !strings.Contains(help, expected) {
 			t.Errorf("help missing %q: %s", expected, help)
 		}
@@ -99,11 +130,68 @@ func TestGlobalHelpListsCatalogAndLocalCommands(t *testing.T) {
 	}
 }
 
-func TestArgumentAndLineErrors(t *testing.T) {
-	runner := New(testCatalog(), &fakeExecutor{})
+func TestDynamicRunnerConditionallyRefreshesItsCatalog(t *testing.T) {
+	command := core.Command{ID: "example/tool/run@one", Name: "example.tool.run", Path: []string{"example.tool.run"}, Summary: "Run"}
+	provider := &recordingCatalog{catalogs: []core.Catalog{
+		{ProtocolVersion: core.ProtocolVersion, Revision: "one", Commands: []core.Command{command}},
+		{ProtocolVersion: core.ProtocolVersion, Revision: "one", Commands: []core.Command{command}},
+	}}
+	executor := &fakeExecutor{}
+	runner := NewDynamic(provider, executor)
 	var output bytes.Buffer
-	if code := runner.Run(context.Background(), []string{"thing", "set", "x", "no", "true"}, false, &output); code != 2 || !strings.Contains(output.String(), "must be an integer") {
+	if code := runner.Run(context.Background(), []string{"example.tool.run", "first"}, false, &output); code != 0 {
+		t.Fatalf("first run = %d: %s", code, output.String())
+	}
+	output.Reset()
+	if code := runner.Run(context.Background(), []string{"example.tool.run", "second"}, false, &output); code != 0 {
+		t.Fatalf("second run = %d: %s", code, output.String())
+	}
+	if len(provider.calls) != 2 || provider.calls[0] != "" || provider.calls[1] != "one" {
+		t.Fatalf("catalog conditions = %#v", provider.calls)
+	}
+}
+
+func TestDynamicRunnerRefreshesAndRetriesOneStaleExecution(t *testing.T) {
+	oldCommand := core.Command{ID: "example/tool/run@old", Name: "example.tool.run", Path: []string{"example.tool.run"}, Summary: "Run"}
+	newCommand := oldCommand
+	newCommand.ID = "example/tool/run@new"
+	provider := &recordingCatalog{catalogs: []core.Catalog{
+		{ProtocolVersion: core.ProtocolVersion, Revision: "old", Commands: []core.Command{oldCommand}},
+		{ProtocolVersion: core.ProtocolVersion, Revision: "new", Commands: []core.Command{newCommand}},
+	}}
+	executor := &sequenceExecutor{responses: []core.Response{
+		{ProtocolVersion: core.ProtocolVersion, CatalogRevision: "new", Error: core.NewError(core.CodeStaleCatalog, "changed")},
+		{ProtocolVersion: core.ProtocolVersion, CatalogRevision: "new", Success: true, Result: core.Result{"ok": true}},
+	}}
+	runner := NewDynamic(provider, executor)
+	var output bytes.Buffer
+	if code := runner.Run(context.Background(), []string{"example.tool.run", "--untouched", "value"}, false, &output); code != 0 {
+		t.Fatalf("retry run = %d: %s", code, output.String())
+	}
+	if len(provider.calls) != 2 || provider.calls[1] != "" {
+		t.Fatalf("catalog calls = %#v", provider.calls)
+	}
+	if len(executor.requests) != 2 {
+		t.Fatalf("execution requests = %#v", executor.requests)
+	}
+	first, second := executor.requests[0], executor.requests[1]
+	if first.CommandID != oldCommand.ID || first.CatalogRevision != "old" || second.CommandID != newCommand.ID || second.CatalogRevision != "new" {
+		t.Fatalf("retry requests = %#v", executor.requests)
+	}
+	if first.RequestID == "" || second.RequestID != first.RequestID || strings.Join(second.Argv, "|") != "--untouched|value" {
+		t.Fatalf("retry identity/argv = %#v", executor.requests)
+	}
+}
+
+func TestArgumentsRemainRawAndLineParsingReportsQuotes(t *testing.T) {
+	executor := &fakeExecutor{}
+	runner := New(testCatalog(), executor)
+	var output bytes.Buffer
+	if code := runner.Run(context.Background(), []string{"thing", "set", "x", "no", "true"}, false, &output); code != 0 {
 		t.Fatalf("code %d output %s", code, output.String())
+	}
+	if strings.Join(executor.request.Argv, "|") != "x|no|true" {
+		t.Fatalf("raw argv = %#v", executor.request.Argv)
 	}
 	if _, err := SplitLine("'unfinished"); err == nil {
 		t.Fatal("accepted unfinished quote")
@@ -114,35 +202,18 @@ func TestArgumentAndLineErrors(t *testing.T) {
 	}
 }
 
-func TestNamedOptionErrorsAndTerminator(t *testing.T) {
-	runner := New(testCatalog(), &fakeExecutor{})
-	tests := []struct {
-		tokens   []string
-		contains string
-	}{
-		{[]string{"thing", "set", "x", "2", "true", "--missing"}, "unknown option"},
-		{[]string{"thing", "set", "x", "2", "true", "--namespace"}, "requires a string value"},
-		{[]string{"thing", "set", "x", "2", "true", "--detached", "--detached"}, "only be specified once"},
-		{[]string{"thing", "set", "x", "2", "true", "--detached=no"}, "must be true or false"},
-	}
-	for _, test := range tests {
-		var output bytes.Buffer
-		if code := runner.Run(context.Background(), test.tokens, false, &output); code != 2 || !strings.Contains(output.String(), test.contains) {
-			t.Errorf("tokens %v: code %d output %q", test.tokens, code, output.String())
-		}
-	}
-
+func TestOptionsAndTerminatorRemainRaw(t *testing.T) {
 	executor := &fakeExecutor{}
-	runner = New([]core.Command{{ID: "test.run", Path: []string{"test", "run"}, Summary: "test", Description: "test", Parameters: []core.Parameter{{Name: "value", Type: "string", Required: true}}}}, executor)
+	runner := New([]core.Command{{ID: "test.run", Path: []string{"test", "run"}, Summary: "test", Description: "test"}}, executor)
 	var output bytes.Buffer
-	if code := runner.Run(context.Background(), []string{"test", "run", "--", "--literal"}, false, &output); code != 0 || executor.request.Arguments["value"] != "--literal" {
+	if code := runner.Run(context.Background(), []string{"test", "run", "--missing", "--", "--literal"}, false, &output); code != 0 || strings.Join(executor.request.Argv, "|") != "--missing|--|--literal" {
 		t.Fatalf("terminator: code %d request %#v output %q", code, executor.request, output.String())
 	}
 }
 
 func TestMetadataDeclaredSecretInput(t *testing.T) {
 	command := core.Command{
-		ID: "auth.bootstrap_admin.add", Path: []string{"auth", "bootstrap-admin", "add"}, Summary: "add", Description: "add",
+		ID: "user.add", Path: []string{"user", "add"}, Summary: "add", Description: "add",
 		Parameters: []core.Parameter{
 			{Name: "username", Type: "string", Position: 0, Required: true},
 			{Name: "password", Type: "string", Required: true, Secret: true, SecretPrompt: "Password: ", SecretConfirmationPrompt: "Confirm password: ", SecretStdinOption: "password-stdin", Description: "password"},
@@ -159,29 +230,29 @@ func TestMetadataDeclaredSecretInput(t *testing.T) {
 		return "not-in-command-history", nil
 	})
 	var output bytes.Buffer
-	if code := runner.Run(context.Background(), []string{"auth", "bootstrap-admin", "add", "admin"}, false, &output); code != 0 || fromStdin {
+	if code := runner.Run(context.Background(), []string{"user", "add", "admin"}, false, &output); code != 0 || fromStdin {
 		t.Fatalf("prompt run code=%d fromStdin=%t output=%q", code, fromStdin, output.String())
 	}
-	if executor.request.Arguments["password"] != "not-in-command-history" {
-		t.Fatalf("resolved request = %#v", executor.request.Arguments)
+	if executor.request.Secrets["password"] != "not-in-command-history" || strings.Join(executor.request.Argv, "|") != "admin" {
+		t.Fatalf("resolved request = %#v", executor.request)
 	}
 	if help := runner.Help(command.Path); !strings.Contains(help, "[--password-stdin]") || strings.Contains(help, "<password>") {
 		t.Fatalf("secret help exposed an ordinary password argument:\n%s", help)
 	}
 
 	output.Reset()
-	if code := runner.Run(context.Background(), []string{"auth", "bootstrap-admin", "add", "admin", "--password-stdin"}, false, &output); code != 0 || !fromStdin {
+	if code := runner.Run(context.Background(), []string{"user", "add", "admin", "--password-stdin"}, false, &output); code != 0 || !fromStdin {
 		t.Fatalf("stdin run code=%d fromStdin=%t output=%q", code, fromStdin, output.String())
 	}
 	output.Reset()
-	if code := runner.Run(context.Background(), []string{"auth", "bootstrap-admin", "add", "admin", "ordinary-password"}, false, &output); code != 2 || !strings.Contains(output.String(), "too many arguments") {
+	if code := runner.Run(context.Background(), []string{"user", "add", "admin", "ordinary-password"}, false, &output); code != 0 || strings.Join(executor.request.Argv, "|") != "admin|ordinary-password" {
 		t.Fatalf("ordinary password run code=%d output=%q", code, output.String())
 	}
 }
 
-func TestMetadataDeclaredValuePromptRunsBeforeSecretPrompt(t *testing.T) {
+func TestOnlyMetadataDeclaredSecretsArePrompted(t *testing.T) {
 	command := core.Command{
-		ID: "auth.bootstrap_admin.add", Path: []string{"auth", "bootstrap-admin", "add"}, Summary: "add", Description: "add",
+		ID: "user.add", Path: []string{"user", "add"}, Summary: "add", Description: "add",
 		Parameters: []core.Parameter{
 			{Name: "username", Type: "string", Position: 0, Required: true, Prompt: "Username: "},
 			{Name: "password", Type: "string", Required: true, Secret: true, SecretPrompt: "Password: ", SecretConfirmationPrompt: "Confirm password: ", SecretStdinOption: "password-stdin"},
@@ -190,10 +261,6 @@ func TestMetadataDeclaredValuePromptRunsBeforeSecretPrompt(t *testing.T) {
 	executor := &fakeExecutor{}
 	runner := New([]core.Command{command}, executor)
 	var events []string
-	runner.SetValueResolver(func(prompt string) (string, error) {
-		events = append(events, prompt)
-		return "prompted-admin", nil
-	})
 	runner.SetSecretResolver(func(prompt, _ string, _ bool) (string, error) {
 		events = append(events, prompt)
 		return "secure-password", nil
@@ -202,10 +269,10 @@ func TestMetadataDeclaredValuePromptRunsBeforeSecretPrompt(t *testing.T) {
 	if code := runner.Run(context.Background(), command.Path, false, &output); code != 0 {
 		t.Fatalf("prompted run code=%d output=%q", code, output.String())
 	}
-	if strings.Join(events, "|") != "Username: |Password: " {
+	if strings.Join(events, "|") != "Password: " {
 		t.Fatalf("prompt order = %#v", events)
 	}
-	if executor.request.Arguments["username"] != "prompted-admin" || executor.request.Arguments["password"] != "secure-password" {
+	if len(executor.request.Argv) != 0 || executor.request.Secrets["password"] != "secure-password" {
 		t.Fatalf("prompted request = %#v", executor.request.Arguments)
 	}
 
@@ -214,19 +281,8 @@ func TestMetadataDeclaredValuePromptRunsBeforeSecretPrompt(t *testing.T) {
 	if code := runner.Run(context.Background(), append(append([]string(nil), command.Path...), "explicit-admin"), false, &output); code != 0 {
 		t.Fatalf("explicit run code=%d output=%q", code, output.String())
 	}
-	if strings.Join(events, "|") != "Password: " || executor.request.Arguments["username"] != "explicit-admin" {
+	if strings.Join(events, "|") != "Password: " || strings.Join(executor.request.Argv, "|") != "explicit-admin" {
 		t.Fatalf("explicit prompt events=%#v request=%#v", events, executor.request.Arguments)
-	}
-
-	secretResolved := false
-	runner = New([]core.Command{command}, executor)
-	runner.SetSecretResolver(func(_, _ string, _ bool) (string, error) {
-		secretResolved = true
-		return "secure-password", nil
-	})
-	output.Reset()
-	if code := runner.Run(context.Background(), command.Path, false, &output); code != 2 || !strings.Contains(output.String(), "missing <username>") || secretResolved {
-		t.Fatalf("missing resolver code=%d secretResolved=%t output=%q", code, secretResolved, output.String())
 	}
 }
 

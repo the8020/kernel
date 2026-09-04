@@ -19,6 +19,7 @@ import (
 	"the8020/kernel/auth"
 	"the8020/kernel/cbus/core"
 	platformconsole "the8020/kernel/console"
+	"the8020/kernel/database"
 	"the8020/kernel/sandbox/backend"
 	sshserver "the8020/kernel/ssh"
 )
@@ -140,7 +141,7 @@ func runDevelopmentE2E(t *testing.T, rootless bool) {
 	}
 	driver := NewRunscDriver(RunscConfig{RunscPath: runsc, RuntimeRoot: filepath.Join(runtimeRoot, "runsc"), SandboxRoot: filepath.Join(runtimeRoot, "sandboxes"), LogRoot: filepath.Join(runtimeRoot, "logs"), Rootless: rootless, ignoreCgroups: !rootless && os.Getenv("THE8020_DEVELOPMENT_ROOTFUL_IGNORE_CGROUPS") == "1"})
 	registry := core.NewRegistry(nil)
-	manager, err := New(Config{Root: root, PackagesRoot: packages, ConfigRoot: filepath.Join(root, "config"), UsersRoot: users, RuntimeRoot: runtimeRoot, ImageRoot: imageRoot, ImageRecord: imageRecord, Driver: driver, ActivationGateway: NewCommandBusGateway(registry)})
+	manager, err := New(Config{Root: root, PackagesRoot: packages, UsersRoot: users, RuntimeRoot: runtimeRoot, ImageRoot: imageRoot, ImageRecord: imageRecord, Driver: driver, ActivationGateway: NewCommandBusGateway(registry)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,17 +267,39 @@ func waitForOverlayReset(t *testing.T, manager *Manager, userID string) {
 
 func proveSSHConsole(t *testing.T, root string, developmentManager *Manager) {
 	t.Helper()
+	db := database.New(database.Config{Backend: database.BackendSQLite, Location: filepath.Join(root, "database", "system.db")})
+	if _, err := db.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, statement := range []string{
+		`CREATE TABLE "the8020__users__users" ("username" TEXT PRIMARY KEY, "passwordHash" TEXT NOT NULL, "enabled" INTEGER NOT NULL, "authVersion" INTEGER NOT NULL, "createdAt" TEXT NOT NULL, "updatedAt" TEXT NOT NULL) STRICT`,
+		`CREATE TABLE "the8020__users__sessions" ("sessionId" TEXT PRIMARY KEY, "username" TEXT NOT NULL, "secretHash" TEXT NOT NULL, "authVersion" INTEGER NOT NULL, "createdAt" TEXT NOT NULL, "expiresAt" TEXT NOT NULL) STRICT`,
+	} {
+		if _, err := db.ExecContext(context.Background(), statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	parameters := auth.Argon2Parameters{Memory: 8, Iterations: 1, Parallelism: 1, SaltLength: 8, OutputLength: 16}
+	hasher, err := auth.NewPasswordHasher(parameters, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	authentication, err := auth.New(auth.Config{
-		UsersFile:    filepath.Join(root, "config", "auth", "bootstrap-users.toml"),
-		SessionsRoot: filepath.Join(root, "state", "auth", "bootstrap-sessions"),
-		Argon2:       auth.Argon2Parameters{Memory: 8, Iterations: 1, Parallelism: 1, SaltLength: 8, OutputLength: 16},
-		LockTimeout:  time.Second,
+		Database: db,
+		Argon2:   parameters,
+		Hasher:   hasher,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	const password = "development-ssh-proof"
-	if _, err := authentication.AddUser(context.Background(), "developer", password); err != nil {
+	passwordHash, err := hasher.Hash(password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := database.EncodeTime(db, time.Now())
+	if _, err := db.ExecContext(context.Background(), `INSERT INTO "the8020__users__users" ("username", "passwordHash", "enabled", "authVersion", "createdAt", "updatedAt") VALUES ($1, $2, $3, 1, $4, $4)`, "developer", passwordHash, true, now); err != nil {
 		t.Fatal(err)
 	}
 	consoleManager, err := platformconsole.New(platformconsole.Config{Authentication: authentication, Development: developmentManager})

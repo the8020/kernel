@@ -21,6 +21,7 @@ import (
 	"the8020/kernel/auth"
 	"the8020/kernel/cbus/core"
 	"the8020/kernel/database"
+	"the8020/kernel/execution"
 	"the8020/kernel/nodes"
 	"the8020/kernel/runtime/protocol"
 	"the8020/kernel/sandbox/model"
@@ -28,23 +29,22 @@ import (
 )
 
 type Config struct {
-	Store            *state.Store
-	ProtocolVersion  int
-	BindAddress      string
-	AdvertiseAddress string
-	AllowedNetwork   *net.IPNet
-	EndpointState    string
-	Now              func() time.Time
-	Authentication   Authentication
-	RuntimeRequests  RuntimeRequests
-	Database         Database
-	AdminBus         AdminBus
-	WorkerInvoker    WorkerInvoker
-	Persistent       PersistentExecutionCompleter
+	Store           *state.Store
+	ProtocolVersion int
+	SocketPath      string
+	Now             func() time.Time
+	Authentication  Authentication
+	RuntimeRequests RuntimeRequests
+	Database        Database
+	AdminBus        AdminBus
+	WorkerInvoker   WorkerInvoker
+	Persistent      PersistentExecutionCompleter
+	Workers         RuntimeIdentityValidator
+	Operations      RuntimeOperations
 }
 
 type Authentication interface {
-	BootstrapLogin(context.Context, string, string, bool) (auth.BootstrapLoginResult, error)
+	Login(context.Context, string, string, bool) (auth.LoginResult, error)
 	LogoutCurrent(auth.AuthContext, bool) (auth.LogoutResult, error)
 }
 
@@ -82,23 +82,34 @@ type PersistentExecutionTarget struct {
 	PersistentExecutionID string
 }
 
+// RuntimeIdentityValidator proves that a callback names a currently active
+// Worker execution in the sandbox authenticated by the envelope token.
+type RuntimeIdentityValidator interface {
+	ValidateRuntimeExecution(context.Context, string, string, string, string, string) error
+}
+
+// RuntimeOperations exposes typed kernel primitives to trusted package code.
+// It is deliberately separate from the public command registry.
+type RuntimeOperations interface {
+	Execute(context.Context, string, map[string]any) (any, error)
+}
+
 type Server struct {
-	store            *state.Store
-	protocolVersion  int
-	bindAddress      string
-	advertiseAddress string
-	allowedNetwork   *net.IPNet
-	endpointState    string
-	now              func() time.Time
-	authentication   Authentication
-	runtimeRequests  RuntimeRequests
-	adminBus         AdminBus
-	database         Database
-	workerInvoker    WorkerInvoker
-	persistent       PersistentExecutionCompleter
-	mu               sync.Mutex
-	listener         net.Listener
-	httpServer       *http.Server
+	store           *state.Store
+	protocolVersion int
+	socketPath      string
+	now             func() time.Time
+	authentication  Authentication
+	runtimeRequests RuntimeRequests
+	adminBus        AdminBus
+	database        Database
+	workerInvoker   WorkerInvoker
+	persistent      PersistentExecutionCompleter
+	workers         RuntimeIdentityValidator
+	operations      RuntimeOperations
+	mu              sync.Mutex
+	listener        net.Listener
+	httpServer      *http.Server
 }
 
 var errTerminalRuntimeGroup = errors.New("runtime group is not accepting callbacks")
@@ -131,6 +142,7 @@ type workerFailure struct {
 type authCallPayload struct {
 	ExecutionID string `json:"execution_id"`
 	WorkerID    string `json:"worker_id"`
+	WorkloadID  string `json:"workload_id"`
 	ServiceID   string `json:"service_id"`
 	RequestID   string `json:"request_id"`
 	SandboxID   string `json:"sandbox_id"`
@@ -141,6 +153,7 @@ type authCallPayload struct {
 type adminCallPayload struct {
 	ExecutionID string         `json:"execution_id"`
 	WorkerID    string         `json:"worker_id"`
+	WorkloadID  string         `json:"workload_id"`
 	ServiceID   string         `json:"service_id"`
 	RequestID   string         `json:"request_id"`
 	SandboxID   string         `json:"sandbox_id"`
@@ -149,22 +162,25 @@ type adminCallPayload struct {
 }
 
 type databaseCallPayload struct {
-	ExecutionID string          `json:"execution_id"`
-	WorkerID    string          `json:"worker_id"`
-	ServiceID   string          `json:"service_id"`
-	RequestID   string          `json:"request_id"`
-	SandboxID   string          `json:"sandbox_id"`
-	Statement   string          `json:"statement"`
-	Parameters  json.RawMessage `json:"parameters,omitempty"`
-	ReturnRows  bool            `json:"return_rows,omitempty"`
-	Transaction string          `json:"transaction,omitempty"`
-	Operation   string          `json:"operation,omitempty"`
-	Settings    json.RawMessage `json:"settings,omitempty"`
+	ExecutionID    string          `json:"execution_id"`
+	WorkerID       string          `json:"worker_id"`
+	WorkloadID     string          `json:"workload_id"`
+	ServiceID      string          `json:"service_id"`
+	RequestID      string          `json:"request_id"`
+	SandboxID      string          `json:"sandbox_id"`
+	Statement      string          `json:"statement"`
+	Parameters     json.RawMessage `json:"parameters,omitempty"`
+	ReturnRows     bool            `json:"return_rows,omitempty"`
+	ReturnInsertID bool            `json:"return_insert_id,omitempty"`
+	Transaction    string          `json:"transaction,omitempty"`
+	Operation      string          `json:"operation,omitempty"`
+	Settings       json.RawMessage `json:"settings,omitempty"`
 }
 
 type workerCallPayload struct {
 	ExecutionID                 string `json:"execution_id"`
 	SourceWorkerID              string `json:"worker_id"`
+	WorkloadID                  string `json:"workload_id"`
 	ServiceID                   string `json:"service_id"`
 	RequestID                   string `json:"request_id"`
 	SourceSandboxID             string `json:"sandbox_id"`
@@ -179,37 +195,62 @@ type workerCallPayload struct {
 type completionCallPayload struct {
 	ExecutionID           string `json:"execution_id"`
 	WorkerID              string `json:"worker_id"`
+	WorkloadID            string `json:"workload_id"`
 	ServiceID             string `json:"service_id"`
 	RequestID             string `json:"request_id"`
 	SandboxID             string `json:"sandbox_id"`
 	PersistentExecutionID string `json:"persistent_execution_id"`
 }
 
+type operationCallPayload struct {
+	ExecutionID string         `json:"execution_id"`
+	WorkerID    string         `json:"worker_id"`
+	WorkloadID  string         `json:"workload_id"`
+	ServiceID   string         `json:"service_id"`
+	RequestID   string         `json:"request_id"`
+	SandboxID   string         `json:"sandbox_id"`
+	Operation   string         `json:"operation"`
+	Input       map[string]any `json:"input"`
+}
+
+type operationCallResult struct {
+	Success bool        `json:"success"`
+	Result  any         `json:"result,omitempty"`
+	Error   *core.Error `json:"error,omitempty"`
+}
+
 func New(config Config) (*Server, error) {
-	if config.Store == nil || config.ProtocolVersion < 1 || config.AdvertiseAddress == "" || config.AllowedNetwork == nil {
-		return nil, errors.New("state store, protocol version, advertised address, and sandbox network are required")
-	}
-	if net.ParseIP(config.AdvertiseAddress) == nil {
-		return nil, errors.New("callback advertise address must be an IP")
-	}
-	if config.BindAddress == "" {
-		config.BindAddress = "0.0.0.0"
-	}
-	if net.ParseIP(config.BindAddress) == nil {
-		return nil, errors.New("callback bind address must be an IP")
-	}
-	if config.EndpointState != "" && !filepath.IsAbs(config.EndpointState) {
-		return nil, errors.New("runtime callback endpoint state path must be absolute")
+	if config.Store == nil || config.ProtocolVersion < 1 || !filepath.IsAbs(config.SocketPath) {
+		return nil, errors.New("state store, protocol version, and absolute kernel socket path are required")
 	}
 	if config.Now == nil {
 		config.Now = func() time.Time { return time.Now().UTC() }
 	}
-	return &Server{store: config.Store, protocolVersion: config.ProtocolVersion, bindAddress: config.BindAddress, advertiseAddress: config.AdvertiseAddress, allowedNetwork: config.AllowedNetwork, endpointState: config.EndpointState, now: config.Now, authentication: config.Authentication, runtimeRequests: config.RuntimeRequests, database: config.Database, adminBus: config.AdminBus, workerInvoker: config.WorkerInvoker, persistent: config.Persistent}, nil
+	return &Server{store: config.Store, protocolVersion: config.ProtocolVersion, socketPath: filepath.Clean(config.SocketPath), now: config.Now, authentication: config.Authentication, runtimeRequests: config.RuntimeRequests, database: config.Database, adminBus: config.AdminBus, workerInvoker: config.WorkerInvoker, persistent: config.Persistent, workers: config.Workers, operations: config.Operations}, nil
 }
 
 func (s *Server) SetWorkerInvoker(invoker WorkerInvoker) {
 	s.mu.Lock()
 	s.workerInvoker = invoker
+	s.mu.Unlock()
+}
+
+func (s *Server) SetRuntimeIdentityValidator(validator RuntimeIdentityValidator) {
+	s.mu.Lock()
+	s.workers = validator
+	s.mu.Unlock()
+}
+
+func (s *Server) SetRuntimeOperations(operations RuntimeOperations) {
+	s.mu.Lock()
+	s.operations = operations
+	s.mu.Unlock()
+}
+
+func (s *Server) SetAuthentication(authentication Authentication, requests RuntimeRequests) {
+	s.mu.Lock()
+	s.authentication = authentication
+	s.runtimeRequests = requests
 	s.mu.Unlock()
 }
 
@@ -225,94 +266,37 @@ func (s *Server) Start() error {
 	if s.listener != nil {
 		return errors.New("runtime callback server is already started")
 	}
-	port, err := loadEndpointPort(s.endpointState)
-	if err != nil {
-		return err
+	if err := os.MkdirAll(filepath.Dir(s.socketPath), 0o755); err != nil {
+		return fmt.Errorf("create runtime callback socket directory: %w", err)
 	}
-	listener, err := net.Listen("tcp", net.JoinHostPort(s.bindAddress, strconv.Itoa(port)))
+	if err := os.Chmod(filepath.Dir(s.socketPath), 0o755); err != nil {
+		return fmt.Errorf("make runtime callback socket directory accessible: %w", err)
+	}
+	if info, err := os.Lstat(s.socketPath); err == nil {
+		if info.Mode()&os.ModeSocket == 0 {
+			return errors.New("runtime callback socket path is occupied by a non-socket")
+		}
+		if connection, dialErr := net.DialTimeout("unix", s.socketPath, 100*time.Millisecond); dialErr == nil {
+			_ = connection.Close()
+			return errors.New("runtime callback socket is already active")
+		}
+		if err := os.Remove(s.socketPath); err != nil {
+			return fmt.Errorf("remove stale runtime callback socket: %w", err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect runtime callback socket: %w", err)
+	}
+	listener, err := net.Listen("unix", s.socketPath)
 	if err != nil {
 		return fmt.Errorf("listen for runtime callbacks: %w", err)
 	}
-	if port == 0 && s.endpointState != "" {
-		port = listener.Addr().(*net.TCPAddr).Port
-		if err := saveEndpointPort(s.endpointState, port); err != nil {
-			_ = listener.Close()
-			return err
-		}
+	if err := os.Chmod(s.socketPath, 0o666); err != nil {
+		_ = listener.Close()
+		return fmt.Errorf("make runtime callback socket accessible: %w", err)
 	}
 	server := &http.Server{Handler: http.HandlerFunc(s.serveHTTP), ReadHeaderTimeout: 5 * time.Second}
 	s.listener, s.httpServer = listener, server
 	go func() { _ = server.Serve(listener) }()
-	return nil
-}
-
-type endpointRecord struct {
-	Port int `json:"port"`
-}
-
-func loadEndpointPort(path string) (int, error) {
-	if path == "" {
-		return 0, nil
-	}
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, fmt.Errorf("read runtime callback endpoint: %w", err)
-	}
-	var record endpointRecord
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&record); err != nil {
-		return 0, fmt.Errorf("decode runtime callback endpoint: %w", err)
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return 0, errors.New("decode runtime callback endpoint: trailing data")
-	}
-	if record.Port < 1 || record.Port > 65535 {
-		return 0, errors.New("runtime callback endpoint has an invalid port")
-	}
-	return record.Port, nil
-}
-
-func saveEndpointPort(path string, port int) error {
-	if port < 1 || port > 65535 {
-		return errors.New("runtime callback endpoint has an invalid port")
-	}
-	directory := filepath.Dir(path)
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return fmt.Errorf("create runtime callback state directory: %w", err)
-	}
-	if err := os.Chmod(directory, 0o700); err != nil {
-		return fmt.Errorf("restrict runtime callback state directory: %w", err)
-	}
-	temporary, err := os.CreateTemp(directory, ".callback-*.tmp")
-	if err != nil {
-		return fmt.Errorf("create runtime callback endpoint state: %w", err)
-	}
-	name := temporary.Name()
-	defer os.Remove(name)
-	if err := temporary.Chmod(0o600); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	data, err := json.MarshalIndent(endpointRecord{Port: port}, "", "  ")
-	if err == nil {
-		_, err = temporary.Write(append(data, '\n'))
-	}
-	if err == nil {
-		err = temporary.Sync()
-	}
-	if closeErr := temporary.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return fmt.Errorf("write runtime callback endpoint state: %w", err)
-	}
-	if err := os.Rename(name, path); err != nil {
-		return fmt.Errorf("replace runtime callback endpoint state: %w", err)
-	}
 	return nil
 }
 
@@ -322,7 +306,7 @@ func (s *Server) Address() string {
 	if s.listener == nil {
 		return ""
 	}
-	return "http://" + net.JoinHostPort(s.advertiseAddress, strconv.Itoa(s.listener.Addr().(*net.TCPAddr).Port))
+	return s.socketPath
 }
 
 func (s *Server) Close(ctx context.Context) error {
@@ -335,10 +319,12 @@ func (s *Server) Close(ctx context.Context) error {
 	}
 	err := server.Shutdown(ctx)
 	if listener != nil {
-		err = errors.Join(err, listener.Close())
+		if closeErr := listener.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+			err = errors.Join(err, closeErr)
+		}
 	}
-	if errors.Is(err, net.ErrClosed) {
-		return nil
+	if removeErr := os.Remove(s.socketPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+		err = errors.Join(err, removeErr)
 	}
 	return err
 }
@@ -346,11 +332,6 @@ func (s *Server) Close(ctx context.Context) error {
 func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost || !validCallbackPath(request.URL.Path) {
 		http.NotFound(writer, request)
-		return
-	}
-	host, _, err := net.SplitHostPort(request.RemoteAddr)
-	if err != nil || !s.allowedNetwork.Contains(net.ParseIP(host)) {
-		http.Error(writer, "forbidden", http.StatusForbidden)
 		return
 	}
 	var message protocol.Envelope
@@ -383,12 +364,16 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 		http.Error(writer, "runtime group is not accepting callbacks", http.StatusConflict)
 		return
 	}
-	if wantType == protocol.MessageAuthBootstrapLogin || wantType == protocol.MessageAuthLogoutCurrent {
+	if wantType == protocol.MessageAuthLogin || wantType == protocol.MessageAuthLogoutCurrent {
 		s.handleAuthentication(writer, request, message, spec)
 		return
 	}
 	if wantType == protocol.MessageAdminCommand {
-		s.handleAdministration(writer, request, message, spec)
+		if request.URL.Path == "/v1/runtime/operation/execute" {
+			s.handleOperation(writer, request, message, spec)
+		} else {
+			s.handleAdministration(writer, request, message, spec)
+		}
 		return
 	}
 	if wantType == protocol.MessageDatabaseExecute {
@@ -435,14 +420,12 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 		http.Error(writer, "persist runtime heartbeat", http.StatusInternalServerError)
 		return
 	}
-	writer.Header().Set("Content-Type", "application/json")
-	writer.WriteHeader(http.StatusOK)
-	_, _ = writer.Write([]byte(`{"accepted":true}`))
+	writeJSON(writer, map[string]bool{"accepted": true})
 }
 
 func validCallbackPath(path string) bool {
 	switch path {
-	case "/v1/runtime/register", "/v1/runtime/heartbeat", "/v1/runtime/auth/bootstrap-login", "/v1/runtime/auth/logout-current", "/v1/runtime/admin/execute", "/v1/runtime/database/info", "/v1/runtime/database/execute", "/v1/runtime/database/transaction", "/v1/runtime/database/scope", "/v1/runtime/worker/invoke", "/v1/runtime/execution/complete":
+	case "/v1/runtime/register", "/v1/runtime/heartbeat", "/v1/runtime/auth/login", "/v1/runtime/auth/logout-current", "/v1/runtime/admin/execute", "/v1/runtime/operation/execute", "/v1/runtime/database/info", "/v1/runtime/database/execute", "/v1/runtime/database/transaction", "/v1/runtime/database/scope", "/v1/runtime/worker/invoke", "/v1/runtime/execution/complete":
 		return true
 	default:
 		return false
@@ -453,11 +436,11 @@ func callbackMessageType(path string) protocol.MessageType {
 	switch path {
 	case "/v1/runtime/register":
 		return protocol.MessageSupervisorRegistration
-	case "/v1/runtime/auth/bootstrap-login":
-		return protocol.MessageAuthBootstrapLogin
+	case "/v1/runtime/auth/login":
+		return protocol.MessageAuthLogin
 	case "/v1/runtime/auth/logout-current":
 		return protocol.MessageAuthLogoutCurrent
-	case "/v1/runtime/admin/execute":
+	case "/v1/runtime/admin/execute", "/v1/runtime/operation/execute":
 		return protocol.MessageAdminCommand
 	case "/v1/runtime/database/info", "/v1/runtime/database/execute", "/v1/runtime/database/transaction", "/v1/runtime/database/scope":
 		return protocol.MessageDatabaseExecute
@@ -471,7 +454,7 @@ func callbackMessageType(path string) protocol.MessageType {
 }
 
 func (s *Server) handleDatabase(writer http.ResponseWriter, request *http.Request, message protocol.Envelope, spec model.SandboxSpec) {
-	if s.database == nil || s.runtimeRequests == nil {
+	if s.database == nil {
 		http.Error(writer, "system database is unavailable", http.StatusServiceUnavailable)
 		return
 	}
@@ -480,8 +463,12 @@ func (s *Server) handleDatabase(writer http.ResponseWriter, request *http.Reques
 		return
 	}
 	var payload databaseCallPayload
-	if err := decodePayload(message.Payload, &payload); err != nil || payload.ExecutionID == "" || payload.WorkerID == "" || payload.SandboxID != spec.SandboxID {
+	if err := decodePayload(message.Payload, &payload); err != nil || payload.ExecutionID == "" || payload.WorkerID == "" || payload.WorkloadID == "" || payload.SandboxID != spec.SandboxID {
 		http.Error(writer, "invalid runtime database payload", http.StatusBadRequest)
+		return
+	}
+	if err := s.validateRuntimeIdentity(request.Context(), spec, payload.WorkerID, payload.ExecutionID, payload.WorkloadID); err != nil {
+		http.Error(writer, err.Error(), http.StatusConflict)
 		return
 	}
 	if request.URL.Path == "/v1/runtime/database/info" {
@@ -489,23 +476,20 @@ func (s *Server) handleDatabase(writer http.ResponseWriter, request *http.Reques
 		return
 	}
 	workerScope := databaseScope(spec.RuntimeGroupID, spec.SandboxID, payload.WorkerID, payload.ExecutionID)
-	if request.URL.Path == "/v1/runtime/database/scope" && payload.RequestID == "" && payload.ServiceID == "" {
+	if request.URL.Path == "/v1/runtime/database/scope" && payload.RequestID == "" {
 		s.database.CloseScopePrefix(workerScope)
 		s.writeDatabaseResult(writer, message, spec, map[string]any{"closed": true})
 		return
 	}
-	if payload.RequestID == "" || payload.ServiceID == "" {
+	if payload.ServiceID == "" {
 		http.Error(writer, "runtime database execution context is required", http.StatusConflict)
 		return
 	}
-	if spec.WorkloadType == model.WorkloadService {
-		active, exists := s.runtimeRequests.RuntimeRequest(payload.RequestID)
-		if !exists || payload.ServiceID != active.ServiceID || active.RuntimeGroupID != spec.RuntimeGroupID || active.SandboxID != spec.SandboxID {
-			http.Error(writer, "runtime database request is not active", http.StatusConflict)
-			return
-		}
+	requestScope := payload.RequestID
+	if requestScope == "" {
+		requestScope = payload.ExecutionID
 	}
-	scope := workerScope + "\x00" + payload.ServiceID + "\x00" + payload.RequestID
+	scope := workerScope + "\x00" + payload.ServiceID + "\x00" + requestScope
 	if request.URL.Path == "/v1/runtime/database/scope" {
 		s.database.CloseScope(scope)
 		s.writeDatabaseResult(writer, message, spec, map[string]any{"closed": true})
@@ -518,7 +502,8 @@ func (s *Server) handleDatabase(writer http.ResponseWriter, request *http.Reques
 	switch request.URL.Path {
 	case "/v1/runtime/database/execute":
 		result, err = s.database.RunStatement(ctx, scope, database.StatementRequest{
-			Statement: payload.Statement, Parameters: payload.Parameters, ReturnRows: payload.ReturnRows, Transaction: payload.Transaction,
+			Statement: payload.Statement, Parameters: payload.Parameters, ReturnRows: payload.ReturnRows,
+			ReturnInsertID: payload.ReturnInsertID, Transaction: payload.Transaction,
 		})
 	case "/v1/runtime/database/transaction":
 		switch payload.Operation {
@@ -561,19 +546,18 @@ func (s *Server) writeDatabaseResult(writer http.ResponseWriter, message protoco
 		return
 	}
 	response := protocol.Envelope{ProtocolVersion: s.protocolVersion, MessageType: protocol.MessageDatabaseResult, RuntimeGroupID: spec.RuntimeGroupID, CorrelationID: message.CorrelationID, Payload: data}
-	writer.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(writer).Encode(response)
+	writeJSON(writer, response)
 }
 
 func (s *Server) handleWorkerInvocation(writer http.ResponseWriter, request *http.Request, message protocol.Envelope, spec model.SandboxSpec) {
 	s.mu.Lock()
 	invoker := s.workerInvoker
 	s.mu.Unlock()
-	if invoker == nil || s.runtimeRequests == nil {
+	if invoker == nil {
 		http.Error(writer, "runtime Worker control is unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	if spec.WorkloadType != model.WorkloadService || message.CorrelationID == "" {
+	if (spec.WorkloadType != model.WorkloadService && spec.WorkloadType != model.WorkloadJob) || message.CorrelationID == "" {
 		http.Error(writer, "runtime Worker control identity mismatch", http.StatusBadRequest)
 		return
 	}
@@ -582,13 +566,12 @@ func (s *Server) handleWorkerInvocation(writer http.ResponseWriter, request *htt
 		http.Error(writer, "invalid Worker invocation payload", http.StatusBadRequest)
 		return
 	}
-	active, exists := s.runtimeRequests.RuntimeRequest(payload.RequestID)
-	if !exists || payload.ExecutionID == "" || payload.SourceWorkerID == "" || payload.ServiceID != active.ServiceID || payload.SourceSandboxID != spec.SandboxID || active.RuntimeGroupID != spec.RuntimeGroupID || active.SandboxID != spec.SandboxID {
+	if payload.ExecutionID == "" || payload.SourceWorkerID == "" || payload.WorkloadID == "" || payload.ServiceID == "" || payload.SourceSandboxID != spec.SandboxID {
 		http.Error(writer, "runtime Worker control request is not active", http.StatusConflict)
 		return
 	}
-	if !active.Auth.Authenticated || active.Auth.UserID == "" {
-		http.Error(writer, "authenticated administrator is required", http.StatusForbidden)
+	if err := s.validateRuntimeIdentity(request.Context(), spec, payload.SourceWorkerID, payload.ExecutionID, payload.WorkloadID); err != nil {
+		http.Error(writer, err.Error(), http.StatusConflict)
 		return
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), 5*time.Second)
@@ -604,8 +587,7 @@ func (s *Server) handleWorkerInvocation(writer http.ResponseWriter, request *htt
 		return
 	}
 	response := protocol.Envelope{ProtocolVersion: s.protocolVersion, MessageType: protocol.MessageWorkerResult, RuntimeGroupID: spec.RuntimeGroupID, CorrelationID: message.CorrelationID, Payload: data}
-	writer.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(writer).Encode(response)
+	writeJSON(writer, response)
 }
 
 func (s *Server) handlePersistentExecutionCompletion(writer http.ResponseWriter, request *http.Request, message protocol.Envelope, spec model.SandboxSpec) {
@@ -617,8 +599,12 @@ func (s *Server) handlePersistentExecutionCompletion(writer http.ResponseWriter,
 		return
 	}
 	var payload completionCallPayload
-	if err := decodePayload(message.Payload, &payload); err != nil || payload.ExecutionID == "" || payload.WorkerID == "" || payload.ServiceID == "" || payload.SandboxID != spec.SandboxID || payload.PersistentExecutionID == "" {
+	if err := decodePayload(message.Payload, &payload); err != nil || payload.ExecutionID == "" || payload.WorkerID == "" || payload.WorkloadID == "" || payload.ServiceID == "" || payload.SandboxID != spec.SandboxID || payload.PersistentExecutionID == "" {
 		http.Error(writer, "invalid persistent execution completion", http.StatusBadRequest)
+		return
+	}
+	if err := s.validateRuntimeIdentity(request.Context(), spec, payload.WorkerID, payload.ExecutionID, payload.WorkloadID); err != nil {
+		http.Error(writer, err.Error(), http.StatusConflict)
 		return
 	}
 	err := completer.CompletePersistentExecution(request.Context(), PersistentExecutionTarget{
@@ -632,8 +618,7 @@ func (s *Server) handlePersistentExecutionCompletion(writer http.ResponseWriter,
 	}
 	data := json.RawMessage(`{"completed":true}`)
 	response := protocol.Envelope{ProtocolVersion: s.protocolVersion, MessageType: protocol.MessagePersistentExecutionCompleted, RuntimeGroupID: spec.RuntimeGroupID, CorrelationID: message.CorrelationID, Payload: data}
-	writer.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(writer).Encode(response)
+	writeJSON(writer, response)
 }
 
 func decodePayload(data json.RawMessage, output any) error {
@@ -663,13 +648,17 @@ func (s *Server) handleAuthentication(writer http.ResponseWriter, request *http.
 		return
 	}
 	active, exists := s.runtimeRequests.RuntimeRequest(payload.RequestID)
-	if !exists || payload.ExecutionID == "" || payload.WorkerID == "" || payload.ServiceID != active.ServiceID || payload.SandboxID != spec.SandboxID || active.RuntimeGroupID != spec.RuntimeGroupID || active.SandboxID != spec.SandboxID {
+	if !exists || payload.ExecutionID == "" || payload.WorkerID == "" || payload.WorkloadID == "" || payload.ServiceID != active.ServiceID || payload.SandboxID != spec.SandboxID || active.RuntimeGroupID != spec.RuntimeGroupID || active.SandboxID != spec.SandboxID {
 		http.Error(writer, "runtime authentication request is not active", http.StatusConflict)
 		return
 	}
+	if err := s.validateRuntimeIdentity(request.Context(), spec, payload.WorkerID, payload.ExecutionID, payload.WorkloadID); err != nil {
+		http.Error(writer, err.Error(), http.StatusConflict)
+		return
+	}
 	var result any
-	if message.MessageType == protocol.MessageAuthBootstrapLogin {
-		login, err := s.authentication.BootstrapLogin(request.Context(), payload.Username, payload.Password, active.SecureTransport)
+	if message.MessageType == protocol.MessageAuthLogin {
+		login, err := s.authentication.Login(request.Context(), payload.Username, payload.Password, active.SecureTransport)
 		result = login
 		if err != nil && login.Error == "" {
 			http.Error(writer, "runtime authentication failed", http.StatusInternalServerError)
@@ -689,18 +678,15 @@ func (s *Server) handleAuthentication(writer http.ResponseWriter, request *http.
 		return
 	}
 	response := protocol.Envelope{ProtocolVersion: s.protocolVersion, MessageType: protocol.MessageAuthResult, RuntimeGroupID: spec.RuntimeGroupID, CorrelationID: message.CorrelationID, Payload: payloadData}
-	writer.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(writer).Encode(response); err != nil {
-		return
-	}
+	writeJSON(writer, response)
 }
 
 func (s *Server) handleAdministration(writer http.ResponseWriter, request *http.Request, message protocol.Envelope, spec model.SandboxSpec) {
-	if s.adminBus == nil || s.runtimeRequests == nil {
+	if s.adminBus == nil {
 		http.Error(writer, "runtime administration is unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	if spec.WorkloadType != model.WorkloadService || message.CorrelationID == "" {
+	if (spec.WorkloadType != model.WorkloadService && spec.WorkloadType != model.WorkloadJob) || message.CorrelationID == "" {
 		http.Error(writer, "runtime administration identity mismatch", http.StatusBadRequest)
 		return
 	}
@@ -709,16 +695,16 @@ func (s *Server) handleAdministration(writer http.ResponseWriter, request *http.
 		http.Error(writer, "invalid runtime administration payload", http.StatusBadRequest)
 		return
 	}
-	active, exists := s.runtimeRequests.RuntimeRequest(payload.RequestID)
-	if !exists || payload.ExecutionID == "" || payload.WorkerID == "" || payload.ServiceID != active.ServiceID || payload.SandboxID != spec.SandboxID || active.RuntimeGroupID != spec.RuntimeGroupID || active.SandboxID != spec.SandboxID {
+	if payload.ExecutionID == "" || payload.WorkerID == "" || payload.WorkloadID == "" || payload.ServiceID == "" || payload.SandboxID != spec.SandboxID {
 		http.Error(writer, "runtime administration request is not active", http.StatusConflict)
 		return
 	}
-	if !active.Auth.Authenticated || active.Auth.Realm != "bootstrap-admin" || active.Auth.UserID == "" {
-		http.Error(writer, "bootstrap administrator is required", http.StatusForbidden)
+	if err := s.validateRuntimeIdentity(request.Context(), spec, payload.WorkerID, payload.ExecutionID, payload.WorkloadID); err != nil {
+		http.Error(writer, err.Error(), http.StatusConflict)
 		return
 	}
-	result := s.adminBus.Execute(request.Context(), core.Request{
+	callContext := execution.WithCaller(request.Context(), execution.Caller{ExecutionID: payload.ExecutionID, Workload: spec.WorkloadType})
+	result := s.adminBus.Execute(callContext, core.Request{
 		ProtocolVersion: core.ProtocolVersion,
 		CommandID:       payload.CommandID,
 		Arguments:       payload.Arguments,
@@ -730,6 +716,71 @@ func (s *Server) handleAdministration(writer http.ResponseWriter, request *http.
 		return
 	}
 	response := protocol.Envelope{ProtocolVersion: s.protocolVersion, MessageType: protocol.MessageAdminResult, RuntimeGroupID: spec.RuntimeGroupID, CorrelationID: message.CorrelationID, Payload: payloadData}
+	writeJSON(writer, response)
+}
+
+func (s *Server) handleOperation(writer http.ResponseWriter, request *http.Request, message protocol.Envelope, spec model.SandboxSpec) {
+	s.mu.Lock()
+	operations := s.operations
+	s.mu.Unlock()
+	if operations == nil {
+		http.Error(writer, "runtime operations are unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if (spec.WorkloadType != model.WorkloadService && spec.WorkloadType != model.WorkloadJob) || message.CorrelationID == "" {
+		http.Error(writer, "runtime operation identity mismatch", http.StatusBadRequest)
+		return
+	}
+	var payload operationCallPayload
+	if err := decodePayload(message.Payload, &payload); err != nil || payload.Operation == "" || payload.ExecutionID == "" || payload.WorkerID == "" || payload.WorkloadID == "" || payload.SandboxID != spec.SandboxID {
+		http.Error(writer, "invalid runtime operation payload", http.StatusBadRequest)
+		return
+	}
+	if err := s.validateRuntimeIdentity(request.Context(), spec, payload.WorkerID, payload.ExecutionID, payload.WorkloadID); err != nil {
+		http.Error(writer, err.Error(), http.StatusConflict)
+		return
+	}
+	callContext := execution.WithCaller(request.Context(), execution.Caller{ExecutionID: payload.ExecutionID, Workload: spec.WorkloadType})
+	result, operationErr := operations.Execute(callContext, payload.Operation, payload.Input)
+	responseResult := operationCallResult{Success: operationErr == nil, Result: result}
+	if operationErr != nil {
+		var commandError *core.Error
+		if errors.As(operationErr, &commandError) {
+			responseResult.Error = commandError
+		} else {
+			responseResult.Error = core.NewError(core.CodeRuntimeOperation, operationErr.Error())
+		}
+		responseResult.Result = nil
+	}
+	payloadData, err := json.Marshal(responseResult)
+	if err != nil || len(payloadData) > 2<<20 {
+		http.Error(writer, "encode runtime operation result", http.StatusInternalServerError)
+		return
+	}
+	response := protocol.Envelope{ProtocolVersion: s.protocolVersion, MessageType: protocol.MessageAdminResult, RuntimeGroupID: spec.RuntimeGroupID, CorrelationID: message.CorrelationID, Payload: payloadData}
+	writeJSON(writer, response)
+}
+
+func writeJSON(writer http.ResponseWriter, value any) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		http.Error(writer, "encode runtime response", http.StatusInternalServerError)
+		return
+	}
 	writer.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(writer).Encode(response)
+	writer.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	_, _ = writer.Write(data)
+}
+
+func (s *Server) validateRuntimeIdentity(ctx context.Context, spec model.SandboxSpec, workerID, executionID, workloadID string) error {
+	s.mu.Lock()
+	validator := s.workers
+	s.mu.Unlock()
+	if validator == nil {
+		return errors.New("runtime execution validation is unavailable")
+	}
+	if err := validator.ValidateRuntimeExecution(ctx, spec.RuntimeGroupID, spec.SandboxID, workerID, executionID, workloadID); err != nil {
+		return errors.New("runtime execution is not active")
+	}
+	return nil
 }

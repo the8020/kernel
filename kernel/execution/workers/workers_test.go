@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -14,18 +15,71 @@ import (
 	"the8020/kernel/sandbox/model"
 )
 
-type fakeSandboxes struct{ items []manager.Inspection }
+type fakeSandboxes struct {
+	items      []manager.Inspection
+	listCalls  int
+	inspectIDs []string
+	resolveIDs []string
+}
+
+func (f *fakeSandboxes) ResolveRuntimeGroup(id string) (model.SandboxSpec, error) {
+	f.resolveIDs = append(f.resolveIDs, id)
+	for _, item := range f.items {
+		if item.Spec.RuntimeGroupID == id {
+			return item.Spec, nil
+		}
+	}
+	return model.SandboxSpec{}, context.Canceled
+}
 
 func (f *fakeSandboxes) List() ([]manager.Inspection, error) {
-	return append([]manager.Inspection(nil), f.items...), nil
+	f.listCalls++
+	result := append([]manager.Inspection(nil), f.items...)
+	for index := range result {
+		if result[index].Status.ObservedState == "" {
+			result[index].Status.ObservedState = model.StateReady
+		}
+	}
+	return result, nil
 }
 func (f *fakeSandboxes) Inspect(_ context.Context, id string) (manager.Inspection, error) {
+	f.inspectIDs = append(f.inspectIDs, id)
 	for _, item := range f.items {
 		if item.Spec.RuntimeGroupID == id || item.Spec.SandboxID == id {
+			if item.Status.ObservedState == "" {
+				item.Status.ObservedState = model.StateReady
+			}
 			return item, nil
 		}
 	}
 	return manager.Inspection{}, context.Canceled
+}
+
+func TestRuntimeExecutionValidationInspectsOnlyTheNamedGroup(t *testing.T) {
+	target := manager.Inspection{
+		Spec: model.SandboxSpec{SandboxID: "sandbox", RuntimeGroupID: "group", WorkloadType: model.WorkloadJob},
+		Workers: []supervisor.WorkerStatus{{
+			WorkerID: "worker", ExecutionID: "execution", WorkloadID: "job", State: "ready",
+		}},
+	}
+	unrelated := manager.Inspection{
+		Spec: model.SandboxSpec{SandboxID: "other-sandbox", RuntimeGroupID: "other-group", WorkloadType: model.WorkloadJob},
+	}
+	sandboxes := &fakeSandboxes{items: []manager.Inspection{unrelated, target}}
+	control := &fakeControl{workers: map[string][]supervisor.WorkerStatus{"group": target.Workers}}
+	manager, err := New(sandboxes, control, 0, 64, "sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ValidateRuntimeExecution(context.Background(), "group", "sandbox", "worker", "execution", "job"); err != nil {
+		t.Fatal(err)
+	}
+	if sandboxes.listCalls != 0 || len(sandboxes.inspectIDs) != 0 || !reflect.DeepEqual(sandboxes.resolveIDs, []string{"group"}) || control.lists != 1 {
+		t.Fatalf("list calls=%d inspect IDs=%#v resolve IDs=%#v supervisor lists=%d", sandboxes.listCalls, sandboxes.inspectIDs, sandboxes.resolveIDs, control.lists)
+	}
+	if err := manager.ValidateRuntimeExecution(context.Background(), "group", "sandbox", "worker", "wrong", "job"); err == nil {
+		t.Fatal("mismatched execution was accepted")
+	}
 }
 
 type fakeControl struct {
@@ -66,7 +120,7 @@ func (f *fakeControl) InvokeWorker(_ context.Context, spec model.SandboxSpec, wo
 	}
 	return supervisor.WorkerInvocationResult{OK: true, Output: "controlled"}, nil
 }
-func (f *fakeControl) RunJob(context.Context, model.SandboxSpec, string, any, []string) (supervisor.JobResult, error) {
+func (f *fakeControl) RunJob(context.Context, model.SandboxSpec, string, []any, map[string]string, []string) (supervisor.JobResult, error) {
 	return supervisor.JobResult{Result: "job"}, nil
 }
 func (f *fakeControl) ConfigureService(context.Context, model.SandboxSpec, string, []string, int) error {
@@ -139,6 +193,35 @@ func TestFilteredWorkerListResolvesOnlyTheExactRuntimeGroup(t *testing.T) {
 	}
 }
 
+func TestWorkerListingSkipsTerminalGroupsAndClassifiesExactUnavailability(t *testing.T) {
+	ready := manager.Inspection{
+		Spec:   model.SandboxSpec{SandboxID: "ready-sandbox", RuntimeGroupID: "ready-group", WorkloadType: model.WorkloadService},
+		Status: model.SandboxStatus{ObservedState: model.StateReady},
+	}
+	stopped := manager.Inspection{
+		Spec:   model.SandboxSpec{SandboxID: "stopped-sandbox", RuntimeGroupID: "stopped-group", WorkloadType: model.WorkloadService},
+		Status: model.SandboxStatus{ObservedState: model.StateStopped},
+	}
+	sandboxes := &fakeSandboxes{items: []manager.Inspection{stopped, ready}}
+	control := &fakeControl{workers: map[string][]supervisor.WorkerStatus{
+		"ready-group": {{WorkerID: "ready-worker"}},
+	}}
+	workerManager, err := New(sandboxes, control, 0, 64, "sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, err := workerManager.List(context.Background(), "")
+	if err != nil || len(listed) != 1 || listed[0].Worker.WorkerID != "ready-worker" || control.lists != 1 {
+		t.Fatalf("listed=%#v supervisor lists=%d err=%v", listed, control.lists, err)
+	}
+	if _, err := workerManager.List(context.Background(), "stopped-group"); !errors.Is(err, ErrRuntimeUnavailable) {
+		t.Fatalf("terminal exact-list error=%v", err)
+	}
+	if control.lists != 1 {
+		t.Fatalf("terminal group contacted its supervisor: %d", control.lists)
+	}
+}
+
 func TestWorkerStartEnforcesNodeMaximum(t *testing.T) {
 	spec := model.SandboxSpec{SandboxID: "sandbox", RuntimeGroupID: "group", WorkloadType: model.WorkloadJob, DependencyMode: model.DependencyCachedOnly, Permissions: model.Permissions{ReadPaths: []string{"/programs"}}}
 	sandboxes := &fakeSandboxes{items: []manager.Inspection{{Spec: spec}}}
@@ -189,10 +272,10 @@ func TestWorkerJobDelegationUsesTheExactWorker(t *testing.T) {
 	spec := model.SandboxSpec{SandboxID: "sandbox", RuntimeGroupID: "group", WorkloadType: model.WorkloadJob, Permissions: model.Permissions{ReadPaths: []string{"/workspace/packages"}}}
 	control := &fakeControl{workers: map[string][]supervisor.WorkerStatus{"group": {{WorkerID: "worker"}}}}
 	manager, _ := New(&fakeSandboxes{items: []manager.Inspection{{Spec: spec}}}, control, 0, 64, "sqlite")
-	if output, err := manager.RunJob(context.Background(), "worker", nil, []string{"/workspace/packages/example/table.ts"}); err != nil || output.Result != "job" {
+	if output, err := manager.RunJob(context.Background(), "worker", nil, nil, []string{"/workspace/packages/example/table.ts"}); err != nil || output.Result != "job" {
 		t.Fatalf("job=%#v err=%v", output, err)
 	}
-	if _, err := manager.RunJob(context.Background(), "worker", nil, []string{"/private/table.ts"}); err == nil {
+	if _, err := manager.RunJob(context.Background(), "worker", nil, nil, []string{"/private/table.ts"}); err == nil {
 		t.Fatal("out-of-envelope type-check module accepted")
 	}
 }

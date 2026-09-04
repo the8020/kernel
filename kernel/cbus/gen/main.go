@@ -36,7 +36,6 @@ type commandDefinition struct {
 	Version         int                 `toml:"version"`
 	ID              string              `toml:"id"`
 	Path            []string            `toml:"path"`
-	Aliases         [][]string          `toml:"aliases"`
 	Summary         string              `toml:"summary"`
 	Description     string              `toml:"description"`
 	MutatesState    bool                `toml:"mutates_state"`
@@ -324,14 +323,11 @@ func discoverCommands(root, modulePath string) ([]commandDefinition, error) {
 			return nil, fmt.Errorf("duplicate command ID %q in %s and %s", definition.ID, previous, definition.definitionFile)
 		}
 		ids[definition.ID] = definition.definitionFile
-		paths := append([][]string{definition.Path}, definition.Aliases...)
-		for _, path := range paths {
-			route := strings.Join(path, "\x00")
-			if previous, ok := routes[route]; ok {
-				return nil, fmt.Errorf("conflicting command path %q in %s and %s", core.PathString(path), previous, definition.definitionFile)
-			}
-			routes[route] = definition.definitionFile
+		route := strings.Join(definition.Path, "\x00")
+		if previous, ok := routes[route]; ok {
+			return nil, fmt.Errorf("conflicting command path %q in %s and %s", core.PathString(definition.Path), previous, definition.definitionFile)
 		}
+		routes[route] = definition.definitionFile
 	}
 	sort.Slice(definitions, func(i, j int) bool { return definitions[i].ID < definitions[j].ID })
 	return definitions, nil
@@ -355,13 +351,8 @@ func parseCommand(root, modulePath, path string) (commandDefinition, error) {
 	if !validID(definition.ID) {
 		return definition, fmt.Errorf("%s: invalid command ID %q", path, definition.ID)
 	}
-	if err := validatePath(definition.Path); err != nil {
+	if err := validatePrimaryPath(definition.ID, definition.Path); err != nil {
 		return definition, fmt.Errorf("%s: primary path: %w", path, err)
-	}
-	for _, alias := range definition.Aliases {
-		if err := validatePath(alias); err != nil {
-			return definition, fmt.Errorf("%s: alias: %w", path, err)
-		}
 	}
 	if strings.TrimSpace(definition.Summary) == "" || strings.TrimSpace(definition.Description) == "" {
 		return definition, fmt.Errorf("%s: summary and description are required", path)
@@ -388,11 +379,11 @@ func parseCommand(root, modulePath, path string) (commandDefinition, error) {
 			if parameter.Prompt != "" {
 				return definition, fmt.Errorf("%s: secret parameter %s cannot declare an ordinary prompt", path, parameter.Name)
 			}
-			if parameter.Type != "string" || parameter.Option != "" || !parameter.Required {
-				return definition, fmt.Errorf("%s: secret parameter %s must be a required string without an ordinary option", path, parameter.Name)
+			if parameter.Type != "string" || parameter.Option != "" {
+				return definition, fmt.Errorf("%s: secret parameter %s must be a string without an ordinary option", path, parameter.Name)
 			}
-			if strings.TrimSpace(parameter.SecretPrompt) == "" || strings.TrimSpace(parameter.SecretConfirmationPrompt) == "" {
-				return definition, fmt.Errorf("%s: secret parameter %s requires prompt and confirmation metadata", path, parameter.Name)
+			if strings.TrimSpace(parameter.SecretPrompt) == "" {
+				return definition, fmt.Errorf("%s: secret parameter %s requires prompt metadata", path, parameter.Name)
 			}
 			if !validOption(parameter.SecretStdinOption) {
 				return definition, fmt.Errorf("%s: secret parameter %s has invalid stdin option", path, parameter.Name)
@@ -546,6 +537,13 @@ func validatePath(path []string) error {
 	}
 	return nil
 }
+
+func validatePrimaryPath(id string, path []string) error {
+	if len(path) == 1 && path[0] == id && strings.HasPrefix(id, "kernel.") {
+		return nil
+	}
+	return validatePath(path)
+}
 func validExportedIdentifier(value string) bool {
 	if value == "" || !unicode.IsUpper([]rune(value)[0]) {
 		return false
@@ -605,7 +603,7 @@ func generateCommandCatalog(definitions []commandDefinition) []byte {
 	output.WriteString(generatedHeader)
 	output.WriteString("package catalog\n\nimport \"the8020/kernel/cbus/core\"\n\nvar Commands = []core.Command{\n")
 	for _, definition := range definitions {
-		fmt.Fprintf(&output, "{Version:%d, ID:%q, Path:%s, Aliases:%s, Summary:%q, Description:%q, MutatesState:%t, RestartBehavior:%q, Parameters:%s, Result:%s, Examples:%s},\n", definition.Version, definition.ID, stringSlice(definition.Path), nestedStringSlice(definition.Aliases), definition.Summary, definition.Description, definition.MutatesState, definition.RestartBehavior, parametersLiteral(definition.Parameters), resultLiteral(definition.Result), exampleLiteral(definition.Examples))
+		fmt.Fprintf(&output, "{Version:%d, ID:%q, Path:%s, Summary:%q, Description:%q, MutatesState:%t, RestartBehavior:%q, Parameters:%s, Result:%s, Examples:%s},\n", definition.Version, definition.ID, stringSlice(definition.Path), definition.Summary, definition.Description, definition.MutatesState, definition.RestartBehavior, parametersLiteral(definition.Parameters), resultLiteral(definition.Result), exampleLiteral(definition.Examples))
 	}
 	output.WriteString("}\n")
 	return []byte(output.String())
@@ -616,13 +614,6 @@ func stringSlice(values []string) string {
 		parts[i] = strconv.Quote(value)
 	}
 	return "[]string{" + strings.Join(parts, ",") + "}"
-}
-func nestedStringSlice(values [][]string) string {
-	parts := make([]string, len(values))
-	for i, value := range values {
-		parts[i] = stringSlice(value)
-	}
-	return "[][]string{" + strings.Join(parts, ",") + "}"
 }
 func parametersLiteral(values []core.Parameter) string {
 	parts := make([]string, len(values))
@@ -749,10 +740,9 @@ func generateAdminMain() []byte {
 import (
 	"os"
 	"the8020/kernel/admin"
-	"the8020.generated/cbus/catalog"
 )
 
-func main() { os.Exit(admin.Main(catalog.Commands, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)) }
+func main() { os.Exit(admin.Main(os.Args[1:], os.Stdin, os.Stdout, os.Stderr)) }
 `)
 }
 

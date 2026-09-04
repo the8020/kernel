@@ -1,18 +1,33 @@
 package webservices
 
 import (
+	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"the8020/kernel/database"
 )
 
+func newTestRouteDatabase(t *testing.T, root string) *database.Manager {
+	t.Helper()
+	db := database.New(database.Config{Backend: database.BackendSQLite, Location: filepath.Join(root, "system.db"), MaximumOpenConnections: 8, MaximumIdleConnections: 2})
+	if _, err := db.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(context.Background(), `CREATE TABLE IF NOT EXISTS "the8020__services__routes" ("tokenHash" TEXT PRIMARY KEY, "serviceId" TEXT NOT NULL, "nodeId" TEXT NOT NULL, "poolId" TEXT NOT NULL, "runtimeGroupId" TEXT NOT NULL, "sandboxId" TEXT NOT NULL, "workerId" TEXT NOT NULL, "executionId" TEXT NOT NULL, "userId" TEXT NOT NULL, "keepAliveMs" INTEGER NOT NULL, "expiresAt" TEXT NOT NULL, "connected" INTEGER NOT NULL) STRICT`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
 func TestPersistentRoutesAreSharedAcrossNodesWithoutPersistingTokens(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "persistent-routes.json")
-	nodeA := newPersistentRouteRegistry("node-a", path)
-	nodeB := newPersistentRouteRegistry("node-b", path)
+	db := newTestRouteDatabase(t, t.TempDir())
+	nodeA := newPersistentRouteRegistry("node-a", db)
+	nodeB := newPersistentRouteRegistry("node-b", db)
 	token, created, err := nodeA.create("example/realtime/channel", "pool-a", "group-a", "sandbox-a", "user-1", 2*time.Minute, false)
 	if err != nil {
 		t.Fatal(err)
@@ -24,12 +39,9 @@ func TestPersistentRoutesAreSharedAcrossNodesWithoutPersistingTokens(t *testing.
 	if _, err := nodeB.lookup(token, "example/realtime/channel", "user-2"); !errors.Is(err, errRouteNotFound) {
 		t.Fatalf("route was not bound to its authenticated user: %v", err)
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(data), token) {
-		t.Fatal("shared route state persisted the bearer token")
+	var storedHash string
+	if err := db.QueryRowContext(context.Background(), `SELECT "tokenHash" FROM "the8020__services__routes" WHERE "executionId" = $1`, created.ExecutionID).Scan(&storedHash); err != nil || storedHash == token || storedHash != tokenKey(token) {
+		t.Fatalf("route token persistence = %q, %v", storedHash, err)
 	}
 	nodeA.succeed(token, "worker-a")
 	resolved, err = nodeB.lookup(token, "example/realtime/channel", "user-1")
@@ -39,7 +51,7 @@ func TestPersistentRoutesAreSharedAcrossNodesWithoutPersistingTokens(t *testing.
 }
 
 func TestConnectedRouteStillExpiresWithoutOwningNodeHeartbeat(t *testing.T) {
-	registry := newPersistentRouteRegistry("node-a")
+	registry := newPersistentRouteRegistry("node-a", newTestRouteDatabase(t, t.TempDir()))
 	now := time.Unix(1_700_000_000, 0).UTC()
 	registry.now = func() time.Time { return now }
 	token, _, err := registry.create("example/realtime/channel", "pool-a", "group-a", "sandbox-a", "user-1", time.Minute, true)
@@ -53,7 +65,7 @@ func TestConnectedRouteStillExpiresWithoutOwningNodeHeartbeat(t *testing.T) {
 }
 
 func TestRouteHeartbeatRefreshesTransportLease(t *testing.T) {
-	registry := newPersistentRouteRegistry("node-a")
+	registry := newPersistentRouteRegistry("node-a", newTestRouteDatabase(t, t.TempDir()))
 	now := time.Unix(1_700_000_000, 0).UTC()
 	registry.now = func() time.Time { return now }
 	token, _, err := registry.create("example/realtime/channel", "pool-a", "group-a", "sandbox-a", "user-1", time.Minute, true)
@@ -70,7 +82,7 @@ func TestRouteHeartbeatRefreshesTransportLease(t *testing.T) {
 }
 
 func TestDiscardExecutionInvalidatesItsOpaqueRoute(t *testing.T) {
-	registry := newPersistentRouteRegistry("node-a")
+	registry := newPersistentRouteRegistry("node-a", newTestRouteDatabase(t, t.TempDir()))
 	token, record, err := registry.create("example/realtime/channel", "pool-a", "group-a", "sandbox-a", "user-1", time.Minute, false)
 	if err != nil {
 		t.Fatal(err)
@@ -82,7 +94,7 @@ func TestDiscardExecutionInvalidatesItsOpaqueRoute(t *testing.T) {
 }
 
 func TestExactPersistentCompletionInvalidatesOnlyMatchingRoute(t *testing.T) {
-	registry := newPersistentRouteRegistry("node-a")
+	registry := newPersistentRouteRegistry("node-a", newTestRouteDatabase(t, t.TempDir()))
 	token, record, err := registry.create("example/realtime/channel", "pool-a", "group-a", "sandbox-a", "user-1", time.Minute, false)
 	if err != nil {
 		t.Fatal(err)

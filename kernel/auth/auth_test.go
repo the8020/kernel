@@ -2,15 +2,16 @@ package auth
 
 import (
 	"context"
-	"encoding/json"
+	"database/sql"
 	"errors"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"the8020/kernel/database"
 )
 
 type testClock struct {
@@ -32,20 +33,72 @@ func (c *testClock) Advance(duration time.Duration) {
 
 func newTestManager(t *testing.T, root string, clock *testClock, cleanup time.Duration) *Manager {
 	t.Helper()
+	db := newTestAuthDatabase(t, root)
 	manager, err := New(Config{
-		UsersFile:       filepath.Join(root, "config", "auth", "bootstrap-users.toml"),
-		SessionsRoot:    filepath.Join(root, "state", "auth", "bootstrap-sessions"),
+		Database:        db,
 		SessionDuration: time.Hour,
 		CleanupInterval: cleanup,
 		Cookie:          CookieConfig{Name: "the8020_auth", Secure: false, SameSite: "lax"},
 		Argon2:          testArgon2Parameters(),
-		LockTimeout:     time.Second,
 		Now:             clock.Time,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return manager
+}
+
+func addTestUser(t *testing.T, manager *Manager, username, password string) {
+	t.Helper()
+	passwordHash, err := manager.users.hasher.Hash(password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := database.EncodeTime(manager.users.database, manager.now().UTC())
+	if _, err := manager.users.database.ExecContext(context.Background(), `INSERT INTO `+usersTable+` ("username", "passwordHash", "enabled", "authVersion", "createdAt", "updatedAt") VALUES ($1, $2, $3, 1, $4, $4)`, username, passwordHash, true, now); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func newTestAuthDatabase(t *testing.T, root string) *database.Manager {
+	t.Helper()
+	db := database.New(database.Config{
+		Backend: database.BackendSQLite, Location: filepath.Join(root, "system.db"),
+		MaximumOpenConnections: 8, MaximumIdleConnections: 2,
+	})
+	if _, err := db.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE IF NOT EXISTS "the8020__users__users" ("username" TEXT PRIMARY KEY, "passwordHash" TEXT NOT NULL, "enabled" INTEGER NOT NULL, "authVersion" INTEGER NOT NULL, "createdAt" TEXT NOT NULL, "updatedAt" TEXT NOT NULL) STRICT`,
+		`CREATE TABLE IF NOT EXISTS "the8020__users__sessions" ("sessionId" TEXT PRIMARY KEY, "username" TEXT NOT NULL, "secretHash" TEXT NOT NULL, "authVersion" INTEGER NOT NULL, "createdAt" TEXT NOT NULL, "expiresAt" TEXT NOT NULL) STRICT`,
+	} {
+		if _, err := db.ExecContext(context.Background(), statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
+func TestAuthenticationConstructionRejectsMissingPackageTables(t *testing.T) {
+	db := database.New(database.Config{
+		Backend: database.BackendSQLite, Location: filepath.Join(t.TempDir(), "system.db"),
+		MaximumOpenConnections: 2, MaximumIdleConnections: 1,
+	})
+	if _, err := db.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := New(Config{Database: db, Argon2: testArgon2Parameters()}); err == nil || !strings.Contains(err.Error(), "check users table") {
+		t.Fatalf("construct authentication without users package tables: %v", err)
+	}
+	if _, err := db.ExecContext(context.Background(), `CREATE TABLE `+usersTable+` ("username" TEXT PRIMARY KEY, "passwordHash" TEXT NOT NULL, "enabled" INTEGER NOT NULL, "authVersion" INTEGER NOT NULL, "createdAt" TEXT NOT NULL, "updatedAt" TEXT NOT NULL) STRICT`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(Config{Database: db, Argon2: testArgon2Parameters()}); err == nil || !strings.Contains(err.Error(), "check authentication sessions table") {
+		t.Fatalf("construct authentication without sessions table: %v", err)
+	}
 }
 
 func cookieFromHeader(t *testing.T, header string) *http.Cookie {
@@ -62,11 +115,9 @@ func TestOpaqueAuthenticationSessionIsSharedAndNeverStoresSecret(t *testing.T) {
 	root := t.TempDir()
 	clock := &testClock{now: time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)}
 	nodeA := newTestManager(t, root, clock, time.Minute)
-	if _, err := nodeA.AddUser(context.Background(), "admin", "password"); err != nil {
-		t.Fatal(err)
-	}
-	first, err := nodeA.BootstrapLogin(context.Background(), "admin", "password", true)
-	if err != nil || !first.Authenticated || first.User == nil || first.User.ID != "bootstrap-admin:admin" || first.Error != "" {
+	addTestUser(t, nodeA, "admin", "password")
+	first, err := nodeA.Login(context.Background(), "admin", "password", true)
+	if err != nil || !first.Authenticated || first.User == nil || first.User.ID != "user:admin" || first.Error != "" {
 		t.Fatalf("first=%#v err=%v", first, err)
 	}
 	cookie := cookieFromHeader(t, first.SetCookie)
@@ -77,25 +128,17 @@ func TestOpaqueAuthenticationSessionIsSharedAndNeverStoresSecret(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(root, "state", "auth", "bootstrap-sessions", sessionID[:2], sessionID+".toml")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(data), secret) || !strings.Contains(string(data), "secret_hash = ") || !strings.Contains(string(data), "sha256:") {
-		t.Fatalf("session file disclosed secret or omitted hash: %s", data)
-	}
-	info, err := os.Stat(path)
-	if err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("mode=%v err=%v", info.Mode().Perm(), err)
+	stored, err := nodeA.sessions.Read(sessionID)
+	if err != nil || stored.SecretHash == secret || !strings.HasPrefix(stored.SecretHash, "sha256:") {
+		t.Fatalf("stored session disclosed secret or omitted hash: %#v, err=%v", stored, err)
 	}
 
 	nodeB := newTestManager(t, root, clock, time.Minute)
 	contextValue, err := nodeB.ValidateCookie(cookie.Value)
-	if err != nil || !contextValue.Authenticated || contextValue.Username != "admin" || contextValue.UserID != "bootstrap-admin:admin" || contextValue.SessionID != sessionID {
+	if err != nil || !contextValue.Authenticated || contextValue.Username != "admin" || contextValue.UserID != "user:admin" || contextValue.SessionID != sessionID {
 		t.Fatalf("context=%#v err=%v", contextValue, err)
 	}
-	second, err := nodeA.BootstrapLogin(context.Background(), "admin", "password", false)
+	second, err := nodeA.Login(context.Background(), "admin", "password", false)
 	if err != nil || cookieFromHeader(t, second.SetCookie).Value == cookie.Value {
 		t.Fatalf("second=%#v err=%v", second, err)
 	}
@@ -106,10 +149,10 @@ func TestOpaqueAuthenticationSessionIsSharedAndNeverStoresSecret(t *testing.T) {
 	if _, err := nodeB.ValidateCookie("v1.malformed"); !errors.Is(err, ErrUnauthenticated) {
 		t.Fatalf("malformed cookie err=%v", err)
 	}
-	if err := nodeA.RevokeSession(sessionID); err != nil {
+	if err := nodeA.sessions.Delete(sessionID); err != nil {
 		t.Fatal(err)
 	}
-	if err := nodeA.RevokeSession(sessionID); err != nil {
+	if err := nodeA.sessions.Delete(sessionID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := nodeB.ValidateCookie(cookie.Value); !errors.Is(err, ErrUnauthenticated) {
@@ -117,63 +160,32 @@ func TestOpaqueAuthenticationSessionIsSharedAndNeverStoresSecret(t *testing.T) {
 	}
 }
 
-func TestAuthenticationVersionDisablePasswordChangeAndRemovalInvalidateSessions(t *testing.T) {
-	root := t.TempDir()
+func TestAuthenticationObservesPackageOwnedUserState(t *testing.T) {
 	clock := &testClock{now: time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)}
-	manager := newTestManager(t, root, clock, time.Minute)
-	if _, err := manager.AddUser(context.Background(), "admin", "first"); err != nil {
+	manager := newTestManager(t, t.TempDir(), clock, time.Minute)
+	addTestUser(t, manager, "admin", "password")
+	login, err := manager.Login(context.Background(), "admin", "password", false)
+	if err != nil || !login.Authenticated {
+		t.Fatalf("login=%#v err=%v", login, err)
+	}
+	cookie := cookieFromHeader(t, login.SetCookie).Value
+	if _, err := manager.users.database.ExecContext(context.Background(), `UPDATE `+usersTable+` SET "authVersion" = "authVersion" + 1 WHERE "username" = $1`, "admin"); err != nil {
 		t.Fatal(err)
 	}
-	login := func(password string) string {
-		result, err := manager.BootstrapLogin(context.Background(), "admin", password, false)
-		if err != nil || !result.Authenticated {
-			t.Fatalf("login=%#v err=%v", result, err)
-		}
-		return cookieFromHeader(t, result.SetCookie).Value
-	}
-
-	versionCookie := login("first")
-	if _, err := manager.users.InvalidateSessions(context.Background(), "admin"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := manager.ValidateCookie(versionCookie); !errors.Is(err, ErrUnauthenticated) {
+	if _, err := manager.ValidateCookie(cookie); !errors.Is(err, ErrUnauthenticated) {
 		t.Fatalf("version-mismatched cookie err=%v", err)
 	}
-	passwordCookie := login("first")
-	changed, err := manager.SetPassword(context.Background(), "admin", "second")
-	if err != nil || changed.AuthVersion != 3 {
-		t.Fatalf("changed=%#v err=%v", changed, err)
+	if _, err := manager.users.database.ExecContext(context.Background(), `UPDATE `+usersTable+` SET "enabled" = $1 WHERE "username" = $2`, false, "admin"); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := manager.ValidateCookie(passwordCookie); !errors.Is(err, ErrUnauthenticated) {
-		t.Fatalf("password-change cookie err=%v", err)
-	}
-	if result, err := manager.BootstrapLogin(context.Background(), "admin", "first", false); err != nil || result.Error != "invalid_credentials" || result.Authenticated {
-		t.Fatalf("old password result=%#v err=%v", result, err)
-	}
-	disabledCookie := login("second")
-	disabled, err := manager.DisableUser(context.Background(), "admin")
-	if err != nil || disabled.Enabled || disabled.AuthVersion != 4 {
-		t.Fatalf("disabled=%#v err=%v", disabled, err)
-	}
-	if _, err := manager.ValidateCookie(disabledCookie); !errors.Is(err, ErrUnauthenticated) {
-		t.Fatalf("disabled cookie err=%v", err)
-	}
-	if result, err := manager.BootstrapLogin(context.Background(), "admin", "second", false); err != nil || result.Error != "disabled" || result.Authenticated {
+	if result, err := manager.Login(context.Background(), "admin", "password", false); err != nil || result.Error != "disabled" || result.Authenticated {
 		t.Fatalf("disabled login=%#v err=%v", result, err)
 	}
-	if _, err := manager.EnableUser(context.Background(), "admin"); err != nil {
+	if _, err := manager.users.database.ExecContext(context.Background(), `DELETE FROM `+usersTable+` WHERE "username" = $1`, "admin"); err != nil {
 		t.Fatal(err)
 	}
-	removedCookie := login("second")
-	if err := manager.RemoveUser(context.Background(), "admin"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := manager.ValidateCookie(removedCookie); !errors.Is(err, ErrUnauthenticated) {
-		t.Fatalf("removed-user cookie err=%v", err)
-	}
-	sessions, err := manager.ListSessions()
-	if err != nil || len(sessions) != 0 {
-		t.Fatalf("sessions=%#v err=%v", sessions, err)
+	if _, err := manager.users.Authenticate("admin", "password"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("removed user authentication err=%v", err)
 	}
 }
 
@@ -181,10 +193,8 @@ func TestAuthenticationSessionExpirationLazyAndPeriodicCleanup(t *testing.T) {
 	root := t.TempDir()
 	clock := &testClock{now: time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)}
 	manager := newTestManager(t, root, clock, 5*time.Millisecond)
-	if _, err := manager.AddUser(context.Background(), "admin", "password"); err != nil {
-		t.Fatal(err)
-	}
-	login, err := manager.BootstrapLogin(context.Background(), "admin", "password", false)
+	addTestUser(t, manager, "admin", "password")
+	login, err := manager.Login(context.Background(), "admin", "password", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +204,7 @@ func TestAuthenticationSessionExpirationLazyAndPeriodicCleanup(t *testing.T) {
 	if _, err := manager.ValidateCookie(first); !errors.Is(err, ErrUnauthenticated) {
 		t.Fatalf("expired cookie err=%v", err)
 	}
-	if _, err := manager.sessions.Read(firstID); !errors.Is(err, os.ErrNotExist) {
+	if _, err := manager.sessions.Read(firstID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("expired session still exists: %v", err)
 	}
 
@@ -209,7 +219,7 @@ func TestAuthenticationSessionExpirationLazyAndPeriodicCleanup(t *testing.T) {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			_, err := manager.CleanupExpired()
+			_, err := manager.sessions.CleanupExpired(clock.Time())
 			errorsChannel <- err
 		}()
 	}
@@ -220,7 +230,7 @@ func TestAuthenticationSessionExpirationLazyAndPeriodicCleanup(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := manager.sessions.Read(second.SessionID); !errors.Is(err, os.ErrNotExist) {
+	if _, err := manager.sessions.Read(second.SessionID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("concurrent cleanup left session: %v", err)
 	}
 
@@ -238,7 +248,7 @@ func TestAuthenticationSessionExpirationLazyAndPeriodicCleanup(t *testing.T) {
 	}()
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
-		if _, err := manager.sessions.Read(third.SessionID); errors.Is(err, os.ErrNotExist) {
+		if _, err := manager.sessions.Read(third.SessionID); errors.Is(err, sql.ErrNoRows) {
 			cancel()
 			<-done
 			return
@@ -248,14 +258,12 @@ func TestAuthenticationSessionExpirationLazyAndPeriodicCleanup(t *testing.T) {
 	t.Fatal("periodic cleanup did not remove expired authentication session")
 }
 
-func TestLogoutCookieUserAndSessionSummariesDoNotExposeSecrets(t *testing.T) {
+func TestLogoutClearsCookieAndRevokesCurrentSession(t *testing.T) {
 	root := t.TempDir()
 	clock := &testClock{now: time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)}
 	manager := newTestManager(t, root, clock, time.Minute)
-	if _, err := manager.AddUser(context.Background(), "admin", "password"); err != nil {
-		t.Fatal(err)
-	}
-	login, err := manager.BootstrapLogin(context.Background(), "admin", "password", false)
+	addTestUser(t, manager, "admin", "password")
+	login, err := manager.Login(context.Background(), "admin", "password", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,24 +271,6 @@ func TestLogoutCookieUserAndSessionSummariesDoNotExposeSecrets(t *testing.T) {
 	authContext, err := manager.ValidateCookie(cookie.Value)
 	if err != nil {
 		t.Fatal(err)
-	}
-	users, err := manager.ListUsers()
-	if err != nil || len(users) != 1 || users[0].ActiveSessions != 1 {
-		t.Fatalf("users=%#v err=%v", users, err)
-	}
-	sessions, err := manager.ListSessions()
-	if err != nil || len(sessions) != 1 || !sessions[0].Valid {
-		t.Fatalf("sessions=%#v err=%v", sessions, err)
-	}
-	encoded, err := json.Marshal(struct {
-		Users    []UserSummary    `json:"users"`
-		Sessions []SessionSummary `json:"sessions"`
-	}{users, sessions})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(encoded), "password") || strings.Contains(string(encoded), "secret") || strings.Contains(string(encoded), cookie.Value) {
-		t.Fatalf("summary disclosed authentication secret: %s", encoded)
 	}
 	logout, err := manager.LogoutCurrent(authContext, true)
 	if err != nil {

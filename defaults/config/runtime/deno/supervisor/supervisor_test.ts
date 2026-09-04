@@ -12,6 +12,7 @@ Deno.test("kernel callback payloads contain only operation-owned fields", () => 
     arguments: {},
     requestId: "request-test",
     serviceId: "example/persistent",
+    workloadId: "service-version-test",
     executionId: "execution-test",
     workerId: "wrk-source01",
     persistentExecutionId: "persistent-test",
@@ -41,6 +42,7 @@ Deno.test("kernel callback payloads contain only operation-owned fields", () => 
       input: { value: 1 },
       execution_id: "execution-test",
       worker_id: "wrk-source01",
+      workload_id: "service-version-test",
       service_id: "example/persistent",
       request_id: "request-test",
       sandbox_id: "sbx-source01",
@@ -54,6 +56,7 @@ Deno.test("kernel callback payloads contain only operation-owned fields", () => 
     {
       execution_id: "execution-test",
       worker_id: "wrk-source01",
+      workload_id: "service-version-test",
       service_id: "example/persistent",
       request_id: "request-test",
       sandbox_id: "sbx-source01",
@@ -76,6 +79,7 @@ Deno.test("kernel callback payloads contain only operation-owned fields", () => 
         return_rows: true,
         execution_id: "execution-test",
         worker_id: "wrk-source01",
+        workload_id: "service-version-test",
         service_id: "example/persistent",
         request_id: "request-test",
         sandbox_id: "sbx-source01",
@@ -721,8 +725,8 @@ Deno.test("supervisor converts only trusted internal authentication metadata", a
         authorization: `Bearer ${token}`,
         "x-80-20-url": "http://service/auth",
         "x-80-20-internal-auth-authenticated": "true",
-        "x-80-20-internal-auth-realm": "bootstrap-admin",
-        "x-80-20-internal-auth-user-id": "bootstrap-admin:Admin",
+        "x-80-20-internal-auth-realm": "user",
+        "x-80-20-internal-auth-user-id": "user:Admin",
         "x-80-20-internal-auth-username": "Admin",
         "x-80-20-internal-auth-version": "7",
       },
@@ -731,8 +735,8 @@ Deno.test("supervisor converts only trusted internal authentication metadata", a
   assertEquals(await response.json(), {
     auth: {
       authenticated: true,
-      realm: "bootstrap-admin",
-      userId: "bootstrap-admin:Admin",
+      realm: "user",
+      userId: "user:Admin",
       username: "Admin",
       authVersion: 7,
     },
@@ -862,7 +866,8 @@ Deno.test("job dispatch returns bounded structured and console logs", async () =
         "content-type": "application/json",
       },
       body: controlEnvelope("job_start", {
-        input: { value: 1 },
+        arguments: [{ value: 1 }],
+        secrets: {},
         check_modules: [job.entrypoint],
       }),
     }),
@@ -873,7 +878,6 @@ Deno.test("job dispatch returns bounded structured and console logs", async () =
   assertEquals(body.correlation_id, "correlation-test");
   assertEquals(body.payload.result, {
     input: { value: 1 },
-    executionCount: 1,
   });
   assertEquals(checked, [[job.entrypoint]]);
   assertEquals(analyzed, [[job.entrypoint]]);
@@ -885,18 +889,51 @@ Deno.test("job dispatch returns bounded structured and console logs", async () =
   });
   assertEquals(
     body.payload.logs.map((event: { message: string }) => event.message),
-    [
-      "execution 1",
-      'job input {"value":1}',
-    ],
+    ['job input {"value":1}'],
   );
   const status = supervisor.workers().find((worker) =>
     worker.worker_id === job.workerId
   );
   assertEquals(status?.logs.map((event) => event.message), [
-    "execution 1",
     'job input {"value":1}',
   ]);
+  await supervisor.drain();
+});
+
+Deno.test("job dispatch preserves structured command failures", async () => {
+  const supervisor = new Supervisor({
+    runtimeGroupId: "group-job",
+    sandboxId: "sandbox-job-error",
+    workloadType: "job",
+    token,
+    supervisorVersion: "test",
+  });
+  const job = metadata("worker-job-error");
+  job.workloadType = "job";
+  job.workloadId = "job-error";
+  job.entrypoint = new URL("../examples/job_error.ts", import.meta.url).href;
+  await supervisor.startWorker({
+    metadata: job,
+    permissions: { read: [examples] },
+  });
+  const response = await supervisor.handler(
+    new Request("http://runtime/v1/jobs/worker-job-error/run", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: controlEnvelope("job_start", { arguments: [], secrets: {} }),
+    }),
+  );
+  const body = await response.json();
+  assertEquals(response.status, 400);
+  assertEquals(body.message_type, "error_response");
+  assertEquals(body.payload, {
+    error: "structured job failure",
+    code: "invalid_arguments",
+    details: { field: "example" },
+  });
   await supervisor.drain();
 });
 

@@ -1,13 +1,13 @@
 import type {
   BaseContext,
   ExecutionMetadata,
-  JobContext,
   JobEntrypoint,
   RuntimeLogEvent,
   ServiceContext,
   ServiceEntrypoint,
   ServiceRequestMetadata,
   WorkerControlFunctions,
+  WorkerExecutionFailure,
 } from "./contracts.ts";
 import { createKernelBridge } from "../kernel/bridge.ts";
 
@@ -157,7 +157,6 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
   const { metadata, port } = event.data;
   const kernelBridge = createKernelBridge(port, metadata.databaseBackend);
   const controller = new AbortController();
-  let executionCount = 0;
   const activeRequests = new Map<string, AbortController>();
   const activeControls = new Map<string, AbortController>();
   const activeWebSockets = new Map<string, WorkerWebSocketSession>();
@@ -181,6 +180,7 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
   installConsoleCapture(log);
   const base: BaseContext = { metadata, signal: controller.signal, log };
   const closeDatabaseScope = async (): Promise<void> => {
+    if (metadata.databaseAccess === "none") return;
     try {
       await kernelBridge.closeExecution();
     } catch {
@@ -238,9 +238,7 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
     const serviceEntrypoint = platformService === undefined
       ? module.fetch as ServiceEntrypoint | undefined
       : undefined;
-    const jobEntrypoint = (module.run ?? module.default) as
-      | JobEntrypoint
-      | undefined;
+    const jobEntrypoint = module.default as JobEntrypoint | undefined;
 
     if (
       metadata.workloadType === "service" &&
@@ -274,7 +272,7 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
       metadata.workloadType === "job" && typeof jobEntrypoint !== "function"
     ) {
       throw new TypeError(
-        "job entrypoint must export run(input, context) or a default function",
+        "job entrypoint must default-export a function",
       );
     }
 
@@ -283,17 +281,35 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
       try {
         switch (message.type) {
           case "job_run": {
-            executionCount++;
-            const context: JobContext = { ...base, executionCount };
+            const input = message.payload as {
+              arguments?: unknown;
+              secrets?: unknown;
+            };
+            if (!Array.isArray(input.arguments)) {
+              throw new TypeError("job arguments must be an array");
+            }
+            const arguments_ = input.arguments;
+            if (
+              input.secrets === null || typeof input.secrets !== "object" ||
+              Array.isArray(input.secrets) ||
+              !Object.values(input.secrets).every((value) =>
+                typeof value === "string"
+              )
+            ) {
+              throw new TypeError("job secrets must be a string map");
+            }
+            const secrets = { ...(input.secrets as Record<string, string>) };
             const result = await kernelBridge.withExecution(
               {
                 requestId: message.correlationId,
                 serviceId: metadata.workloadId,
+                secrets,
               },
               async () => {
                 try {
-                  return await jobEntrypoint!(message.payload, context);
+                  return await jobEntrypoint!(...arguments_);
                 } finally {
+                  for (const name of Object.keys(secrets)) delete secrets[name];
                   await closeDatabaseScope();
                 }
               },
@@ -619,7 +635,7 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
         port.postMessage({
           type: "execution_error",
           correlationId: message.correlationId,
-          error: errorMessage(error),
+          failure: executionFailure(error),
         });
       }
     };
@@ -684,6 +700,24 @@ function errorMessage(error: unknown): string {
   return error instanceof Error
     ? `${error.name}: ${error.message}`
     : String(error);
+}
+
+function executionFailure(error: unknown): WorkerExecutionFailure {
+  if (
+    error instanceof Error && error.name === "AdminCommandError" &&
+    typeof (error as Error & { code?: unknown }).code === "string"
+  ) {
+    const details = (error as Error & { details?: unknown }).details;
+    return {
+      message: error.message,
+      code: (error as Error & { code: string }).code,
+      ...(details !== null && typeof details === "object" &&
+          !Array.isArray(details)
+        ? { details: details as Record<string, unknown> }
+        : {}),
+    };
+  }
+  return { message: errorMessage(error) };
 }
 
 function installConsoleCapture(

@@ -1,6 +1,6 @@
 key = "database.location"
 type = "string"
-storage = "global"
+storage = "node"
 default = "${INSTANCE_ROOT}/database/system.db"
 environment = "THE8020_DATABASE_LOCATION"
 runtime_mutable = false

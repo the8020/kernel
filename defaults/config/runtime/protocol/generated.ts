@@ -19,7 +19,7 @@ export const MESSAGE_TYPES = [
   "service_openapi",
   "runtime_drain",
   "runtime_shutdown",
-  "auth_bootstrap_login",
+  "auth_login",
   "auth_logout_current",
   "auth_result",
   "admin_command",

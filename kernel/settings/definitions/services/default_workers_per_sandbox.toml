@@ -1,6 +1,6 @@
 key = "services.default_workers_per_sandbox"
 type = "integer"
-storage = "node"
+storage = "global"
 default = 4
 environment = "THE8020_SERVICES_DEFAULT_WORKERS_PER_SANDBOX"
 minimum = 1

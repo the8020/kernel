@@ -1,9 +1,10 @@
-// Package set implements the thin settings.set command handler.
+// Package set implements the thin kernel.config.set command handler.
 package set
 
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"the8020/kernel/cbus/core"
 	"the8020/kernel/logging"
@@ -13,10 +14,18 @@ import (
 	sshserver "the8020/kernel/ssh"
 )
 
-// New binds settings.set to the settings transaction service.
+// New binds kernel.config.set to the settings transaction service.
 func New(serviceSet *services.Services) core.Handler {
 	return func(ctx context.Context, request core.Request) (core.Result, error) {
-		info, err := serviceSet.Settings.Set(ctx, request.Arguments["key"].(string), request.Arguments["value"].(string))
+		key := request.Arguments["key"].(string)
+		current, err := serviceSet.Settings.Get(key)
+		if err == nil && current.Storage != settingservice.StorageNode {
+			return nil, core.NewError(core.CodeInvalidArguments, fmt.Sprintf("setting %s is global; use system.settings.set", key))
+		}
+		if err != nil {
+			return nil, MapError(err)
+		}
+		info, err := serviceSet.Settings.Set(ctx, key, request.Arguments["value"].(string))
 		if err != nil {
 			return nil, MapError(err)
 		}

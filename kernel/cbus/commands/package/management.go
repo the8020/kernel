@@ -10,7 +10,7 @@ import (
 	"the8020/kernel/services"
 )
 
-// RefreshRepositoryMutation reloads only services affected by a changed
+// RefreshRepositoryMutation reconciles only services affected by a changed
 // checkout. Offline package administration performs only the Git transaction.
 func RefreshRepositoryMutation(ctx context.Context, serviceSet *services.Services, mutation workspacepackages.RepositoryMutation) error {
 	if !mutation.Changed {
@@ -34,7 +34,7 @@ func RefreshRepositoryMutation(ctx context.Context, serviceSet *services.Service
 		}
 	}
 	for _, serviceID := range mutation.Services {
-		if _, err := runtimeServices.Services.Reload(ctx, serviceID); err != nil {
+		if _, err := runtimeServices.Services.Reconcile(ctx, serviceID); err != nil {
 			lifecycleErrors = append(lifecycleErrors, err)
 		}
 	}
@@ -53,21 +53,35 @@ type SynchronizationResult struct {
 }
 
 func Management(serviceSet *services.Services) (services.PackageManagementService, error) {
-	if serviceSet == nil || serviceSet.PackageManagement == nil {
+	service := serviceSet.PackageManagementSnapshot()
+	if service == nil {
 		return nil, core.NewError(core.CodeRuntimeUnavailable, "package management is unavailable")
 	}
-	return serviceSet.PackageManagement, nil
+	return service, nil
 }
 
 // Synchronize updates package worktrees and then refreshes only services owned
 // by changed packages. Offline deployment dispatch has no runtime service and
 // therefore performs only the package transaction.
 func Synchronize(ctx context.Context, serviceSet *services.Services, packageIDs []string) ([]SynchronizationResult, error) {
+	return SynchronizeWithCredential(ctx, serviceSet, packageIDs, "")
+}
+
+// SynchronizeWithCredential performs the same package transaction with one
+// invocation-scoped Git token supplied by the administrative client.
+func SynchronizeWithCredential(ctx context.Context, serviceSet *services.Services, packageIDs []string, token string) ([]SynchronizationResult, error) {
 	management, err := Management(serviceSet)
 	if err != nil {
 		return nil, err
 	}
-	results, err := management.SynchronizePackages(ctx, packageIDs)
+	var results []workspacepackages.PackageSynchronization
+	if token == "" {
+		results, err = management.SynchronizePackages(ctx, packageIDs)
+	} else if credentialManagement, ok := management.(services.PackageCredentialManagementService); ok {
+		results, err = credentialManagement.SynchronizePackagesWithCredential(ctx, packageIDs, token)
+	} else {
+		return nil, core.NewError(core.CodeRuntimeUnavailable, "transient Git credentials are unavailable")
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +107,7 @@ func Synchronize(ctx context.Context, serviceSet *services.Services, packageIDs 
 			result.RetiredServices = append(result.RetiredServices, serviceID)
 		}
 		for _, serviceID := range result.Services {
-			if _, reloadErr := runtimeServices.Services.Reload(ctx, serviceID); reloadErr != nil {
+			if _, reloadErr := runtimeServices.Services.Reconcile(ctx, serviceID); reloadErr != nil {
 				lifecycleErrors = append(lifecycleErrors, reloadErr)
 				continue
 			}

@@ -4,9 +4,7 @@ package nodes
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/subtle"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,8 +13,6 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -24,11 +20,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pelletier/go-toml/v2"
-	"golang.org/x/sys/unix"
+	"the8020/kernel/database"
 )
 
-const schemaVersion = 1
 const capacityPath = "/__the8020/node/capacity"
 const workerInvokePath = "/__the8020/node/worker/invoke"
 const maximumWorkerInvocationBytes = 1 << 20
@@ -36,16 +30,11 @@ const maximumWorkerInvocationBytes = 1 << 20
 var nodeIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 type Node struct {
-	ID               string `toml:"id" json:"id"`
-	URL              string `toml:"url" json:"url"`
-	RecipientAddress string `toml:"recipient_address" json:"recipient_address"`
-	RecipientPort    int    `toml:"recipient_port" json:"recipient_port"`
-	Enabled          bool   `toml:"enabled" json:"enabled"`
-}
-
-type topologyFile struct {
-	Schema int    `toml:"schema"`
-	Nodes  []Node `toml:"nodes"`
+	ID               string `json:"id"`
+	URL              string `json:"url"`
+	RecipientAddress string `json:"recipient_address"`
+	RecipientPort    int    `json:"recipient_port"`
+	Enabled          bool   `json:"enabled"`
 }
 
 type ServiceCapacity struct {
@@ -115,7 +104,7 @@ type Status struct {
 
 type Manager struct {
 	mu       sync.RWMutex
-	path     string
+	database database.Store
 	secret   string
 	localID  string
 	nodes    map[string]Node
@@ -126,12 +115,12 @@ type Manager struct {
 	workers  WorkerInvoker
 }
 
-func New(path, localID string) (*Manager, error) {
-	if path == "" || !nodeIDPattern.MatchString(localID) {
-		return nil, errors.New("node topology path and valid local node ID are required")
+func New(store database.Store, localID, sharedSecret string) (*Manager, error) {
+	if store == nil || !nodeIDPattern.MatchString(localID) || sharedSecret == "" {
+		return nil, errors.New("database, valid local node ID, and shared forwarding secret are required")
 	}
-	manager := &Manager{path: path, localID: localID, nodes: map[string]Node{}, http: &http.Client{Transport: http.DefaultTransport, Timeout: 2 * time.Second}}
-	if err := manager.initialize(); err != nil {
+	manager := &Manager{database: store, secret: sharedSecret, localID: localID, nodes: map[string]Node{}, http: &http.Client{Transport: http.DefaultTransport, Timeout: 2 * time.Second}}
+	if err := manager.Refresh(context.Background()); err != nil {
 		return nil, err
 	}
 	return manager, nil
@@ -260,7 +249,6 @@ func (m *Manager) InvokeWorker(ctx context.Context, input WorkerInvocationReques
 }
 
 func (m *Manager) List() []Node {
-	_ = m.refresh()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make([]Node, 0, len(m.nodes))
@@ -272,9 +260,6 @@ func (m *Manager) List() []Node {
 }
 
 func (m *Manager) Inspect(id string) (Node, error) {
-	if err := m.refresh(); err != nil {
-		return Node{}, err
-	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	node, exists := m.nodes[id]
@@ -284,9 +269,26 @@ func (m *Manager) Inspect(id string) (Node, error) {
 	return node, nil
 }
 
-func (m *Manager) refresh() error {
-	nodes, err := readTopology(m.path)
+// Refresh atomically replaces the cached topology from shared state. Hot
+// routing and allocation paths read only the cache.
+func (m *Manager) Refresh(ctx context.Context) error {
+	rows, err := m.database.QueryContext(ctx, `SELECT "id", "url", "recipientAddress", "recipientPort", "enabled" FROM "the8020__system__nodes" ORDER BY "id"`)
 	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	nodes := map[string]Node{}
+	for rows.Next() {
+		var node Node
+		if err := rows.Scan(&node.ID, &node.URL, &node.RecipientAddress, &node.RecipientPort, &node.Enabled); err != nil {
+			return err
+		}
+		if err := validateNode(node); err != nil {
+			return fmt.Errorf("node %q: %w", node.ID, err)
+		}
+		nodes[node.ID] = node
+	}
+	if err := rows.Err(); err != nil {
 		return err
 	}
 	m.mu.Lock()
@@ -299,7 +301,11 @@ func (m *Manager) Set(ctx context.Context, node Node) (Node, error) {
 	if err := validateNode(node); err != nil {
 		return Node{}, err
 	}
-	if err := m.mutate(ctx, func(nodes map[string]Node) { nodes[node.ID] = node }); err != nil {
+	_, err := m.database.ExecContext(ctx, `INSERT INTO "the8020__system__nodes" ("id", "url", "recipientAddress", "recipientPort", "enabled", "updatedAt") VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT ("id") DO UPDATE SET "url" = excluded."url", "recipientAddress" = excluded."recipientAddress", "recipientPort" = excluded."recipientPort", "enabled" = excluded."enabled", "updatedAt" = excluded."updatedAt"`, node.ID, node.URL, node.RecipientAddress, node.RecipientPort, node.Enabled, database.EncodeTime(m.database, time.Now()))
+	if err != nil {
+		return Node{}, err
+	}
+	if err := m.Refresh(ctx); err != nil {
 		return Node{}, err
 	}
 	return node, nil
@@ -312,7 +318,11 @@ func (m *Manager) Remove(ctx context.Context, id string) error {
 	if id == m.localID {
 		return errors.New("cannot remove the running local node")
 	}
-	return m.mutate(ctx, func(nodes map[string]Node) { delete(nodes, id) })
+	_, err := m.database.ExecContext(ctx, `DELETE FROM "the8020__system__nodes" WHERE "id" = $1`, id)
+	if err == nil {
+		err = m.Refresh(ctx)
+	}
+	return err
 }
 
 // Start exposes the authenticated recipient listener declared for this node.
@@ -602,49 +612,6 @@ func (m *Manager) authorize(next http.Handler) http.Handler {
 	})
 }
 
-func (m *Manager) initialize() error {
-	if err := os.MkdirAll(filepath.Dir(m.path), 0o700); err != nil {
-		return err
-	}
-	if _, err := os.Stat(m.path); errors.Is(err, os.ErrNotExist) {
-		if err := writeTopology(m.path, map[string]Node{}); err != nil {
-			return err
-		}
-	} else if err != nil {
-		return err
-	}
-	nodes, err := readTopology(m.path)
-	if err != nil {
-		return err
-	}
-	secret, err := loadOrCreateSecret(filepath.Join(filepath.Dir(m.path), ".nodes.key"))
-	if err != nil {
-		return err
-	}
-	m.nodes, m.secret = nodes, secret
-	return nil
-}
-
-func (m *Manager) mutate(ctx context.Context, action func(map[string]Node)) error {
-	lock, err := acquireLock(ctx, m.path+".lock")
-	if err != nil {
-		return err
-	}
-	defer releaseLock(lock)
-	nodes, err := readTopology(m.path)
-	if err != nil {
-		return err
-	}
-	action(nodes)
-	if err := writeTopology(m.path, nodes); err != nil {
-		return err
-	}
-	m.mu.Lock()
-	m.nodes = nodes
-	m.mu.Unlock()
-	return nil
-}
-
 func validateNode(node Node) error {
 	if !nodeIDPattern.MatchString(node.ID) || strings.TrimSpace(node.RecipientAddress) == "" || node.RecipientPort < 1 || node.RecipientPort > 65535 {
 		return errors.New("node requires a valid ID, recipient address, and recipient port")
@@ -654,113 +621,4 @@ func validateNode(node Node) error {
 		return errors.New("node URL must be an absolute HTTP or HTTPS URL")
 	}
 	return nil
-}
-
-func readTopology(path string) (map[string]Node, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var file topologyFile
-	if err := toml.Unmarshal(data, &file); err != nil {
-		return nil, fmt.Errorf("decode node topology: %w", err)
-	}
-	if file.Schema != schemaVersion {
-		return nil, fmt.Errorf("unsupported node topology schema %d", file.Schema)
-	}
-	result := make(map[string]Node, len(file.Nodes))
-	for _, node := range file.Nodes {
-		if err := validateNode(node); err != nil {
-			return nil, fmt.Errorf("node %q: %w", node.ID, err)
-		}
-		if _, exists := result[node.ID]; exists {
-			return nil, fmt.Errorf("duplicate node ID %q", node.ID)
-		}
-		result[node.ID] = node
-	}
-	return result, nil
-}
-
-func writeTopology(path string, nodes map[string]Node) error {
-	items := make([]Node, 0, len(nodes))
-	for _, node := range nodes {
-		items = append(items, node)
-	}
-	sort.Slice(items, func(i, j int) bool { return items[i].ID < items[j].ID })
-	data, err := toml.Marshal(topologyFile{Schema: schemaVersion, Nodes: items})
-	if err != nil {
-		return err
-	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".nodes-*")
-	if err != nil {
-		return err
-	}
-	name := temporary.Name()
-	defer os.Remove(name)
-	if err = temporary.Chmod(0o600); err == nil {
-		_, err = temporary.Write(data)
-	}
-	if closeErr := temporary.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return err
-	}
-	return os.Rename(name, path)
-}
-
-func loadOrCreateSecret(path string) (string, error) {
-	if data, err := os.ReadFile(path); err == nil {
-		secret := strings.TrimSpace(string(data))
-		if decoded, decodeErr := base64.RawURLEncoding.DecodeString(secret); decodeErr == nil && len(decoded) == 32 {
-			return secret, nil
-		}
-		return "", errors.New("node forwarding key is invalid")
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return "", err
-	}
-	value := make([]byte, 32)
-	if _, err := rand.Read(value); err != nil {
-		return "", err
-	}
-	secret := base64.RawURLEncoding.EncodeToString(value)
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if errors.Is(err, os.ErrExist) {
-		return loadOrCreateSecret(path)
-	}
-	if err != nil {
-		return "", err
-	}
-	if _, err = file.WriteString(secret + "\n"); err == nil {
-		err = file.Close()
-	} else {
-		_ = file.Close()
-	}
-	return secret, err
-}
-
-func acquireLock(ctx context.Context, path string) (*os.File, error) {
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	for {
-		if err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB); err == nil {
-			return file, nil
-		} else if !errors.Is(err, unix.EWOULDBLOCK) {
-			file.Close()
-			return nil, err
-		}
-		select {
-		case <-ctx.Done():
-			file.Close()
-			return nil, ctx.Err()
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
-}
-
-func releaseLock(file *os.File) {
-	_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
-	_ = file.Close()
 }

@@ -2,9 +2,9 @@
 set -euo pipefail
 
 SOURCE_ROOT=${1:-}
-MANIFEST=${2:-"$SOURCE_ROOT/config/runtime/versions.toml"}
-RUNTIME_ROOT=${3:-"$SOURCE_ROOT/node/kernel/runtime"}
 RUNTIME_SOURCE="$SOURCE_ROOT/defaults/config/runtime"
+MANIFEST=${2:-"$RUNTIME_SOURCE/versions.toml"}
+RUNTIME_ROOT=${3:-"$SOURCE_ROOT/node/kernel/runtime"}
 if [[ -z "$SOURCE_ROOT" || ! -f "$MANIFEST" ]]; then
   echo "usage: defaults/config/runtime/install-host.sh <source-root> [versions-file] [node-runtime-root]" >&2
   exit 2

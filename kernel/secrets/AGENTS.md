@@ -4,7 +4,7 @@
 
 # Ownership
 
-- Persist secret values in `config/secrets/secrets.toml`, expose explicit
+- Persist secret values in `the8020__secrets__secrets`, expose explicit
   list/get/set operations, and resolve values for trusted kernel consumers.
 - Do not own package metadata, Git behavior, authorization policy, command-bus
   transport, or application screens.
@@ -12,11 +12,9 @@
 # Local Contracts
 
 - Secret names use the platform-safe name grammar. Values are nonempty,
-  bounded, stored only in the mode-`0600` TOML document, and never included in
-  list or set results.
-- Mutations use a mode-`0600` advisory lock and atomic file replacement so
-  kernels sharing the global configuration root cannot partially overwrite one
-  another.
+  bounded, and never included in list or set results.
+- Database upserts serialize shared mutations across kernels. The database
+  connection and credentials remain private to the kernel.
 - Secret values are intentionally retrievable only by the explicit get method
   and trusted in-process resolvers. Callers must never log them.
 
@@ -27,7 +25,7 @@
 # Verification
 
 - `store_test.go` covers empty stores, validation, overwrite behavior,
-  cross-instance serialization, persistence, file modes, and non-disclosing
+  concurrent serialization, durable reopening, and non-disclosing
   summaries.
 
 # Child DOX Index

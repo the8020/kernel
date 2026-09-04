@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -39,6 +40,49 @@ func TestPackageDiscoveryUsesExactlyTwoFilesystemLevels(t *testing.T) {
 	}
 	if items[2].ID != "the8020/demo" || !items[2].Valid || items[2].Description != "Example one" || items[2].ServiceCount != 1 {
 		t.Fatalf("valid package = %#v", items[2])
+	}
+}
+
+func TestActivatedPackageCommitRequiresCleanExactSource(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git is unavailable")
+	}
+	root := t.TempDir()
+	packageRoot := filepath.Join(root, "packages", "the8020", "demo")
+	writeFile(t, filepath.Join(packageRoot, "package.toml"), "schema = 1\ndescription = \"Demo\"\n")
+	runTestGit(t, gitPath, "", "init", "-q", "-b", "main", packageRoot)
+	runTestGit(t, gitPath, packageRoot, "config", "user.name", "Package Test")
+	runTestGit(t, gitPath, packageRoot, "config", "user.email", "packages@example.test")
+	runTestGit(t, gitPath, packageRoot, "add", ".")
+	runTestGit(t, gitPath, packageRoot, "commit", "-q", "-m", "initial")
+	commit := runTestGit(t, gitPath, packageRoot, "rev-parse", "HEAD")
+	store := newTestStore(t, root)
+	index := store.index.(*memoryPackageIndexStore)
+	if err := index.Put(context.Background(), PackageIndex{
+		PackageID: "the8020/demo", Author: "the8020", Repository: "demo",
+		State: "ready", ActiveCommit: commit,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if actual, err := store.ActivatedPackageCommit(context.Background(), "the8020/demo"); err != nil || actual != commit {
+		t.Fatalf("activated commit = %q, %v", actual, err)
+	}
+
+	writeFile(t, filepath.Join(packageRoot, "draft.ts"), "export const draft = true;\n")
+	if _, err := store.ActivatedPackageCommit(context.Background(), "the8020/demo"); err == nil || !strings.Contains(err.Error(), "uncommitted changes") {
+		t.Fatalf("dirty checkout error = %v", err)
+	}
+	if err := os.Remove(filepath.Join(packageRoot, "draft.ts")); err != nil {
+		t.Fatal(err)
+	}
+	entry, _, _ := index.Get(context.Background(), "the8020/demo")
+	entry.ActiveCommit = strings.Repeat("0", len(commit))
+	if err := index.Put(context.Background(), entry); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ActivatedPackageCommit(context.Background(), "the8020/demo"); err == nil || !strings.Contains(err.Error(), "does not match ready active commit") {
+		t.Fatalf("commit mismatch error = %v", err)
 	}
 }
 
@@ -237,22 +281,16 @@ title = "Variables"
 version = "1.0.0"
 `)
 	writeFile(t, filepath.Join(root, "packages", "the8020", "demo", "services", "variables", "service.ts"), "export default {};\n")
-	writeFile(t, filepath.Join(root, "state", "services", "the8020", "demo", "variables", "state.toml"), `schema = 2
-enabled = true
-generation = 7
-[scaling]
-minimum_workers = 8
-maximum_workers = 32
-concurrency_per_worker = 24
-target_utilization = 0.75
-worker_keep_alive = "2m"
-[placement]
-sandbox_group = "shared-examples"
-minimum_sandboxes = 2
-workers_per_sandbox = 8
-`)
-
 	store := newTestStore(t, root)
+	minimum, maximum, concurrency, target, minimumSandboxes, workersPerSandbox := 8, 32, 24, 0.75, 2, 8
+	workerKeepAlive, sandboxGroup := "2m", "shared-examples"
+	if err := store.state.Put("the8020/demo/variables", DesiredServiceState{
+		Enabled: true, Generation: 7,
+		Scaling:   ScalingOverrides{MinimumWorkers: &minimum, MaximumWorkers: &maximum, ConcurrencyPerWorker: &concurrency, TargetUtilization: &target, WorkerKeepAlive: &workerKeepAlive},
+		Placement: PlacementOverrides{SandboxGroup: &sandboxGroup, MinimumSandboxes: &minimumSandboxes, WorkersPerSandbox: &workersPerSandbox},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	definition, err := store.ReadService("the8020/demo/variables")
 	if err != nil {
 		t.Fatal(err)
@@ -281,7 +319,7 @@ workers_per_sandbox = 8
 	}
 }
 
-func TestFirstDiscoveryCreatesDisabledDesiredState(t *testing.T) {
+func TestSourceInspectionDoesNotCreateDesiredState(t *testing.T) {
 	root := t.TempDir()
 	writeService(t, root, "the8020", "demo", "variables", "service.ts")
 	store := newTestStore(t, root)
@@ -289,11 +327,11 @@ func TestFirstDiscoveryCreatesDisabledDesiredState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !definition.StateExists || definition.State.Enabled || definition.State.Generation != 0 {
+	if definition.StateExists || definition.State.Enabled || definition.State.Generation != 0 {
 		t.Fatalf("state = %#v exists=%t", definition.State, definition.StateExists)
 	}
-	if _, err := os.Stat(filepath.Join(root, "state", "services", "the8020", "demo", "variables", "state.toml")); err != nil {
-		t.Fatalf("discovery did not create desired state: %v", err)
+	if _, exists, err := store.state.Get("the8020/demo/variables"); err != nil || exists {
+		t.Fatalf("source inspection mutated desired state: exists=%t err=%v", exists, err)
 	}
 }
 
@@ -315,8 +353,8 @@ func TestServiceDefaultsUseWorkerScalingAndIndependentKeepalives(t *testing.T) {
 	if effective.Placement.MinimumSandboxes != 0 || effective.Placement.WorkersPerSandbox != 4 || effective.Placement.SandboxGroup != "" {
 		t.Fatalf("placement defaults = %#v", effective.Placement)
 	}
-	if definition.State.Schema != serviceStateSchema || definition.State.Scaling.MinimumWorkers == nil || definition.State.Scaling.MaximumWorkers == nil || definition.State.Placement.MinimumSandboxes == nil {
-		t.Fatalf("materialized defaults = %#v", definition.State)
+	if definition.State.Scaling.MinimumWorkers != nil || definition.State.Scaling.MaximumWorkers != nil || definition.State.Placement.MinimumSandboxes != nil {
+		t.Fatalf("package defaults were incorrectly materialized as operator overrides: %#v", definition.State)
 	}
 }
 
@@ -354,6 +392,22 @@ func TestServicePolicyValidation(t *testing.T) {
 	writeFile(t, filepath.Join(root, "packages", "the8020", "demo", "services", "variables", "service.ts"), "export default {};\n")
 	if _, err := newTestStore(t, root).ReadService("the8020/demo/variables"); err != nil {
 		t.Fatalf("zero maximum must mean unlimited: %v", err)
+	}
+}
+
+func TestEffectivePolicyValidationIsClassified(t *testing.T) {
+	policy := EffectiveConfiguration{
+		Lifecycle: LifecycleConfiguration{ServiceType: ServiceTypeStateless, SessionKeepAlive: time.Minute},
+		Scaling: ScalingConfiguration{
+			MinimumWorkers: 2, MaximumWorkers: 1, ConcurrencyPerWorker: 1,
+			TargetUtilization: 0.7, WorkerKeepAlive: time.Minute,
+		},
+		Placement:      PlacementConfiguration{WorkersPerSandbox: 1},
+		Timeouts:       TimeoutConfiguration{Request: time.Second, Drain: time.Second},
+		DependencyMode: "cached-only",
+	}
+	if err := validateEffective(policy); !errors.Is(err, ErrInvalidServicePolicy) {
+		t.Fatalf("validation error = %v", err)
 	}
 }
 
@@ -438,6 +492,7 @@ func TestMutateStateIsAtomicMonotonicAndSerialized(t *testing.T) {
 	root := t.TempDir()
 	writeService(t, root, "the8020", "demo", "variables", "service.ts")
 	store := newTestStore(t, root)
+	installTestService(t, store, "the8020/demo/variables")
 	const mutations = 12
 	var wait sync.WaitGroup
 	errorsByMutation := make(chan error, mutations)
@@ -478,33 +533,19 @@ func TestMutateStateIsAtomicMonotonicAndSerialized(t *testing.T) {
 	if err != nil || !exists || !state.Enabled || state.Generation != mutations {
 		t.Fatalf("state=%#v exists=%t err=%v", state, exists, err)
 	}
-	data, err := os.ReadFile(filepath.Join(root, "state", "services", "the8020", "demo", "variables", "state.toml"))
-	if err != nil || strings.Contains(string(data), ".state-") {
-		t.Fatalf("state file invalid: %q err=%v", data, err)
-	}
 }
 
 func TestMutateStateCanRepairInvalidEffectiveDesiredState(t *testing.T) {
 	root := t.TempDir()
 	writeService(t, root, "the8020", "demo", "variables", "service.ts")
-	writeFile(t, filepath.Join(root, "state", "services", "the8020", "demo", "variables", "state.toml"), `schema = 2
-enabled = true
-generation = 8
-[lifecycle]
-service_type = "stateless"
-session_keep_alive = "10m"
-[scaling]
-minimum_workers = 7
-maximum_workers = 3
-concurrency_per_worker = 32
-target_utilization = 0.7
-worker_keep_alive = "2m"
-[placement]
-sandbox_group = ""
-minimum_sandboxes = 0
-workers_per_sandbox = 4
-`)
 	store := newTestStore(t, root)
+	minimum, maximum := 7, 3
+	if err := store.state.Put("the8020/demo/variables", DesiredServiceState{
+		Enabled: true, Generation: 8,
+		Scaling: ScalingOverrides{MinimumWorkers: &minimum, MaximumWorkers: &maximum},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	state, err := store.MutateState(context.Background(), "the8020/demo/variables", func(state *DesiredServiceState) error {
 		minimum, maximum := 1, 4
 		state.Scaling.MinimumWorkers = &minimum
@@ -516,29 +557,6 @@ workers_per_sandbox = 4
 	}
 	if state.Generation != 9 || state.Scaling.MinimumWorkers == nil || *state.Scaling.MinimumWorkers != 1 {
 		t.Fatalf("repaired state = %#v", state)
-	}
-}
-
-func TestMutateStateRejectsStateSymlinkBeforeWritingOutsideRoot(t *testing.T) {
-	root := t.TempDir()
-	outside := t.TempDir()
-	writeService(t, root, "the8020", "demo", "variables", "service.ts")
-	if err := os.MkdirAll(filepath.Join(root, "state", "services"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(outside, filepath.Join(root, "state", "services", "the8020")); err != nil {
-		t.Fatal(err)
-	}
-	store := newTestStore(t, root)
-	_, err := store.MutateState(context.Background(), "the8020/demo/variables", func(state *DesiredServiceState) error {
-		state.Enabled = true
-		return nil
-	})
-	if err == nil || !strings.Contains(err.Error(), "real directory") {
-		t.Fatalf("MutateState() error = %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(outside, "demo")); !os.IsNotExist(err) {
-		t.Fatalf("mutation wrote outside state root: %v", err)
 	}
 }
 
@@ -558,11 +576,26 @@ func TestParseIdentityRejectsHiddenTraversalAndWrongDepth(t *testing.T) {
 
 func newTestStore(t *testing.T, root string) *Store {
 	t.Helper()
-	store, err := New(Config{WorkspaceRoot: root, StateLockTimeout: time.Second})
+	store, err := New(Config{
+		WorkspaceRoot: root,
+		StateStore:    &memoryServiceStateStore{states: map[string]DesiredServiceState{}},
+		IndexStore:    newMemoryPackageIndexStore(),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return store
+}
+
+func installTestService(t *testing.T, store *Store, serviceID string) {
+	t.Helper()
+	definition, err := store.ReadService(serviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.state.Put(serviceID, definition.State); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func writeService(t *testing.T, root, namespace, repository, service, entrypoint string) {

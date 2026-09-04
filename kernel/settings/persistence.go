@@ -2,17 +2,12 @@ package settings
 
 import (
 	"bufio"
-	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
-	"time"
-
-	"golang.org/x/sys/unix"
 )
 
 func persist(path string, definitions map[string]Definition, sources map[string]sourceValues, storage Storage) error {
@@ -23,59 +18,6 @@ func persist(path string, definitions map[string]Definition, sources map[string]
 		}
 	}
 	return persistValues(path, definitions, values, storage)
-}
-
-func persistGlobalChange(ctx context.Context, path string, definitions map[string]Definition, sources map[string]sourceValues, changed string) error {
-	return withPersistenceLock(ctx, path, func() error {
-		values, err := loadPersisted(path, definitions, StorageGlobal)
-		if err != nil {
-			return err
-		}
-		source := sources[changed]
-		if source.hasPersisted {
-			values[changed] = source.persisted
-		} else {
-			delete(values, changed)
-		}
-		return persistValues(path, definitions, values, StorageGlobal)
-	})
-}
-
-func withPersistenceLock(ctx context.Context, settingsPath string, operation func() error) (err error) {
-	lockPath := filepath.Join(filepath.Dir(settingsPath), ".settings.lock")
-	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return fmt.Errorf("open global settings lock: %w", err)
-	}
-	if err := file.Chmod(0o600); err != nil {
-		_ = file.Close()
-		return fmt.Errorf("restrict global settings lock: %w", err)
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		err = unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB)
-		if err == nil {
-			break
-		}
-		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
-			_ = file.Close()
-			return fmt.Errorf("lock global settings: %w", err)
-		}
-		if time.Now().After(deadline) {
-			_ = file.Close()
-			return errors.New("timed out acquiring global settings lock")
-		}
-		select {
-		case <-ctx.Done():
-			_ = file.Close()
-			return ctx.Err()
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
-	defer func() {
-		err = errors.Join(err, unix.Flock(int(file.Fd()), unix.LOCK_UN), file.Close())
-	}()
-	return operation()
 }
 
 func persistValues(path string, definitions map[string]Definition, values map[string]any, storage Storage) error {

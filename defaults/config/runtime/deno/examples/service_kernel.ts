@@ -7,7 +7,7 @@ export const fetch: ServiceEntrypoint = async (request) => {
     return Response.json(await kernel.auth.logoutCurrent());
   }
   if (path === "/admin") {
-    return Response.json(await kernel.admin.execute("service.list"));
+    return Response.json(await kernel.admin.execute("kernel.status"));
   }
   if (path === "/database-query") {
     return Response.json(
@@ -43,5 +43,5 @@ export const fetch: ServiceEntrypoint = async (request) => {
     username: string;
     password: string;
   };
-  return Response.json(await kernel.auth.bootstrapLogin(credentials));
+  return Response.json(await kernel.auth.login(credentials));
 };

@@ -28,7 +28,7 @@ const (
 	MessageServiceOpenapi               MessageType = "service_openapi"
 	MessageRuntimeDrain                 MessageType = "runtime_drain"
 	MessageRuntimeShutdown              MessageType = "runtime_shutdown"
-	MessageAuthBootstrapLogin           MessageType = "auth_bootstrap_login"
+	MessageAuthLogin                    MessageType = "auth_login"
 	MessageAuthLogoutCurrent            MessageType = "auth_logout_current"
 	MessageAuthResult                   MessageType = "auth_result"
 	MessageAdminCommand                 MessageType = "admin_command"
@@ -56,7 +56,7 @@ var validMessageTypes = map[MessageType]bool{
 	MessageServiceOpenapi:               true,
 	MessageRuntimeDrain:                 true,
 	MessageRuntimeShutdown:              true,
-	MessageAuthBootstrapLogin:           true,
+	MessageAuthLogin:                    true,
 	MessageAuthLogoutCurrent:            true,
 	MessageAuthResult:                   true,
 	MessageAdminCommand:                 true,

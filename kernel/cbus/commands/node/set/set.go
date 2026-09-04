@@ -12,10 +12,11 @@ import (
 
 func New(serviceSet *services.Services) core.Handler {
 	return func(ctx context.Context, request core.Request) (core.Result, error) {
-		if serviceSet.Nodes == nil {
+		nodeService := serviceSet.PlatformSnapshot().Nodes
+		if nodeService == nil {
 			return nil, core.NewError(core.CodeRuntimeUnavailable, "node topology is unavailable")
 		}
-		node, err := serviceSet.Nodes.Set(ctx, nodes.Node{
+		node, err := nodeService.Set(ctx, nodes.Node{
 			ID: commandutil.String(request, "node_id"), URL: commandutil.String(request, "url"),
 			RecipientAddress: commandutil.String(request, "recipient_address"), RecipientPort: commandutil.Int(request, "recipient_port"),
 			Enabled: commandutil.Bool(request, "enabled"),

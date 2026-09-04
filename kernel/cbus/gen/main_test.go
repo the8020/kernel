@@ -31,16 +31,12 @@ func writeFile(t *testing.T, root, path, content string) {
 		t.Fatal(err)
 	}
 }
-func commandTOML(id, path, alias, handler, symbol, parameterType string) string {
+func commandTOML(id, path, handler, symbol, parameterType string) string {
 	parameters := ""
 	if parameterType != "" {
 		parameters = fmt.Sprintf("[[parameters]]\nname = \"value\"\ntype = %q\nposition = 0\nrequired = true\ndescription = \"value\"\n", parameterType)
 	}
-	aliases := ""
-	if alias != "" {
-		aliases = fmt.Sprintf("aliases = [[%q]]\n", alias)
-	}
-	return fmt.Sprintf("version = 1\nid = %q\npath = [%q]\n%ssummary = \"summary\"\ndescription = \"description\"\nmutates_state = false\nrestart_behavior = \"none\"\n[handler]\nfile = %q\nsymbol = %q\n%s[[result]]\nname = \"ok\"\ntype = \"boolean\"\n[[examples]]\ncommand = %q\n", id, path, aliases, handler, symbol, parameters, path)
+	return fmt.Sprintf("version = 1\nid = %q\npath = [%q]\nsummary = \"summary\"\ndescription = \"description\"\nmutates_state = false\nrestart_behavior = \"none\"\n[handler]\nfile = %q\nsymbol = %q\n%s[[result]]\nname = \"ok\"\ntype = \"boolean\"\n[[examples]]\ncommand = %q\n", id, path, handler, symbol, parameters, path)
 }
 func settingTOML(key string) string {
 	return fmt.Sprintf("key = %q\ntype = \"integer\"\nstorage = \"node\"\ndefault = 1\nenvironment = \"THE8020_TEST_VALUE\"\nminimum = 1\nmaximum = 10\nruntime_mutable = true\nrestart_required = false\ndescription = \"test\"\n", key)
@@ -50,7 +46,7 @@ func fixture(t *testing.T) string {
 	root := t.TempDir()
 	writeFile(t, root, "go.mod", "module example.test/project\n\ngo 1.26\n")
 	writeFile(t, root, "kernel/cbus/commands/deep/run/run.go", "package run\n\nfunc New() {}\n")
-	writeFile(t, root, "kernel/cbus/commands/deep/run/command.toml", commandTOML("deep.run", "run", "", "kernel/cbus/commands/deep/run/run.go", "New", "string"))
+	writeFile(t, root, "kernel/cbus/commands/deep/run/command.toml", commandTOML("deep.run", "run", "kernel/cbus/commands/deep/run/run.go", "New", "string"))
 	writeFile(t, root, "kernel/settings/definitions/deep/value.toml", settingTOML("deep.value"))
 	writeFile(t, root, "defaults/config/runtime/versions.toml", "runtime_protocol_version = 1\n")
 	writeFile(t, root, "defaults/config/runtime/protocol/schema.json", `{"protocol_version":1,"messages":["heartbeat","runtime_shutdown"],"required_envelope_fields":["protocol_version","message_type","runtime_group_id"]}`)
@@ -162,41 +158,38 @@ func TestCommandMetadataRejections(t *testing.T) {
 		contains string
 	}{
 		{"duplicate ID", func(t *testing.T, root string) {
-			writeFile(t, root, "kernel/cbus/commands/two/command.toml", commandTOML("deep.run", "two", "", "kernel/cbus/commands/deep/run/run.go", "New", ""))
+			writeFile(t, root, "kernel/cbus/commands/two/command.toml", commandTOML("deep.run", "two", "kernel/cbus/commands/deep/run/run.go", "New", ""))
 		}, "duplicate command ID"},
 		{"duplicate path", func(t *testing.T, root string) {
-			writeFile(t, root, "kernel/cbus/commands/two/command.toml", commandTOML("deep.two", "run", "", "kernel/cbus/commands/deep/run/run.go", "New", ""))
-		}, "conflicting command path"},
-		{"conflicting alias", func(t *testing.T, root string) {
-			writeFile(t, root, "kernel/cbus/commands/two/command.toml", commandTOML("deep.two", "two", "run", "kernel/cbus/commands/deep/run/run.go", "New", ""))
+			writeFile(t, root, "kernel/cbus/commands/two/command.toml", commandTOML("deep.two", "run", "kernel/cbus/commands/deep/run/run.go", "New", ""))
 		}, "conflicting command path"},
 		{"invalid parameter", func(t *testing.T, root string) {
-			writeFile(t, root, "kernel/cbus/commands/deep/run/command.toml", commandTOML("deep.run", "run", "", "kernel/cbus/commands/deep/run/run.go", "New", "float"))
+			writeFile(t, root, "kernel/cbus/commands/deep/run/command.toml", commandTOML("deep.run", "run", "kernel/cbus/commands/deep/run/run.go", "New", "float"))
 		}, "invalid parameter type"},
 		{"invalid option", func(t *testing.T, root string) {
-			definition := commandTOML("deep.run", "run", "", "kernel/cbus/commands/deep/run/run.go", "New", "string")
+			definition := commandTOML("deep.run", "run", "kernel/cbus/commands/deep/run/run.go", "New", "string")
 			definition = strings.Replace(definition, "position = 0", "option = \"Bad\"", 1)
 			writeFile(t, root, "kernel/cbus/commands/deep/run/command.toml", definition)
 		}, "invalid parameter option"},
 		{"optional prompted parameter", func(t *testing.T, root string) {
-			definition := commandTOML("deep.run", "run", "", "kernel/cbus/commands/deep/run/run.go", "New", "string")
+			definition := commandTOML("deep.run", "run", "kernel/cbus/commands/deep/run/run.go", "New", "string")
 			definition = strings.Replace(definition, "required = true\n", "required = false\nprompt = \"Value: \"\n", 1)
 			writeFile(t, root, "kernel/cbus/commands/deep/run/command.toml", definition)
 		}, "prompted parameter value must be required"},
 		{"prompted option", func(t *testing.T, root string) {
-			definition := commandTOML("deep.run", "run", "", "kernel/cbus/commands/deep/run/run.go", "New", "string")
+			definition := commandTOML("deep.run", "run", "kernel/cbus/commands/deep/run/run.go", "New", "string")
 			definition = strings.Replace(definition, "position = 0\n", "option = \"value\"\nprompt = \"Value: \"\n", 1)
 			writeFile(t, root, "kernel/cbus/commands/deep/run/command.toml", definition)
 		}, "prompted parameter value must be positional"},
 		{"missing handler", func(t *testing.T, root string) {
-			writeFile(t, root, "kernel/cbus/commands/deep/run/command.toml", commandTOML("deep.run", "run", "", "kernel/cbus/commands/deep/run/missing.go", "New", ""))
+			writeFile(t, root, "kernel/cbus/commands/deep/run/command.toml", commandTOML("deep.run", "run", "kernel/cbus/commands/deep/run/missing.go", "New", ""))
 		}, "handler file"},
 		{"outside handler", func(t *testing.T, root string) {
 			writeFile(t, root, "outside.go", "package outside\nfunc New(){}\n")
-			writeFile(t, root, "kernel/cbus/commands/deep/run/command.toml", commandTOML("deep.run", "run", "", "outside.go", "New", ""))
+			writeFile(t, root, "kernel/cbus/commands/deep/run/command.toml", commandTOML("deep.run", "run", "outside.go", "New", ""))
 		}, "inside kernel"},
 		{"invalid symbol", func(t *testing.T, root string) {
-			writeFile(t, root, "kernel/cbus/commands/deep/run/command.toml", commandTOML("deep.run", "run", "", "kernel/cbus/commands/deep/run/run.go", "Missing", ""))
+			writeFile(t, root, "kernel/cbus/commands/deep/run/command.toml", commandTOML("deep.run", "run", "kernel/cbus/commands/deep/run/run.go", "Missing", ""))
 		}, "constructor symbol"},
 	}
 	for _, test := range tests {
@@ -213,7 +206,7 @@ func TestCommandMetadataRejections(t *testing.T) {
 
 func TestSharedHandlerReferencedBySeveralCommands(t *testing.T) {
 	root := fixture(t)
-	writeFile(t, root, "kernel/cbus/commands/two/command.toml", commandTOML("deep.two", "two", "", "kernel/cbus/commands/deep/run/run.go", "New", ""))
+	writeFile(t, root, "kernel/cbus/commands/two/command.toml", commandTOML("deep.two", "two", "kernel/cbus/commands/deep/run/run.go", "New", ""))
 	if err := generate(root); err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +244,7 @@ func TestSettingStorageMetadataIsRequired(t *testing.T) {
 	}
 }
 
-func TestRepositoryCatalogContainsEveryAcceptedPhase1Command(t *testing.T) {
+func TestRepositoryCatalogContainsOnlyKernelAndDeferredCommands(t *testing.T) {
 	working, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -262,23 +255,14 @@ func TestRepositoryCatalogContainsEveryAcceptedPhase1Command(t *testing.T) {
 		t.Fatal(err)
 	}
 	expected := []string{
-		"auth.bootstrap_admin.add", "auth.bootstrap_admin.disable", "auth.bootstrap_admin.enable", "auth.bootstrap_admin.invalidate_sessions", "auth.bootstrap_admin.list", "auth.bootstrap_admin.remove", "auth.bootstrap_admin.set_password",
-		"auth.session.cleanup", "auth.session.list", "auth.session.revoke", "auth.session.revoke_user",
-		"database.check", "database.sql", "database.table.definitions", "database.table.inspect", "database.table.list", "database.table.sync", "database.table.sync_all", "database.table.trim",
 		"debug.close", "debug.open", "debug.targets",
-		"development.activate.preview", "development.activate.run",
-		"development.image.status",
-		"development.sandbox.create", "development.sandbox.delete", "development.sandbox.factory_reset", "development.sandbox.inspect", "development.sandbox.kill", "development.sandbox.list", "development.sandbox.reset_source", "development.sandbox.restart", "development.sandbox.shell", "development.sandbox.start", "development.sandbox.stop",
 		"job.cancel", "job.inspect", "job.list", "job.run",
-		"node.list", "node.paths.get", "node.paths.set", "node.remove", "node.set",
-		"package.index.inspect", "package.index.list", "package.index.set", "package.inspect", "package.list", "package.local.create", "package.repository.checkout", "package.repository.init", "package.repository.inspect", "package.repository.list", "package.repository.pull", "package.repository.push", "package.repository.remote", "package.repository.status", "package.source.inspect", "package.synchronize", "package.version.list",
+		"kernel.config.get", "kernel.config.list", "kernel.config.set", "kernel.config.unset",
+		"kernel.packages.inspect", "kernel.packages.list", "kernel.packages.set", "kernel.packages.synchronize",
+		"kernel.reindex", "kernel.restart", "kernel.shutdown", "kernel.status",
 		"pool.resize", "pool.status", "port.close", "port.expose", "port.list",
 		"runtime.doctor", "runtime.eval", "runtime.image.status", "runtime.run", "runtime.status",
 		"sandbox.delete", "sandbox.history.inspect", "sandbox.history.list", "sandbox.inspect", "sandbox.kill", "sandbox.list", "sandbox.metrics", "sandbox.stop",
-		"secret.get", "secret.list", "secret.set",
-		"service.inspect", "service.list", "service.openapi", "service.request", "service.restart", "service.scale", "service.start", "service.stop", "service.validate",
-		"settings.get", "settings.list", "settings.set", "settings.unset",
-		"system.restart", "system.shutdown", "system.status",
 		"worker.inspect", "worker.kill", "worker.list", "worker.stop",
 	}
 	if len(commands) != len(expected) {
@@ -289,19 +273,32 @@ func TestRepositoryCatalogContainsEveryAcceptedPhase1Command(t *testing.T) {
 			t.Fatalf("command[%d] = %q, want %q", index, command.ID, expected[index])
 		}
 	}
-	for _, command := range commands {
-		if command.ID != "auth.bootstrap_admin.add" {
-			continue
-		}
-		if len(command.Parameters) == 0 || command.Parameters[0].Name != "username" || command.Parameters[0].Prompt != "Username: " {
-			t.Fatalf("bootstrap administrator username metadata = %#v", command.Parameters)
-		}
-		return
-	}
-	t.Fatal("bootstrap administrator add command was not discovered")
 }
 
-func TestEveryDevelopmentCommandExampleTraversesBothCLIParsingModes(t *testing.T) {
+func TestRunScriptUsesCurrentKernelLifecycleCommands(t *testing.T) {
+	working, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Clean(filepath.Join(working, "..", "..", ".."))
+	data, err := os.ReadFile(filepath.Join(root, "run.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(data)
+	for _, command := range []string{"kernel.status", "kernel.restart", "kernel.shutdown"} {
+		if !strings.Contains(source, command) {
+			t.Errorf("run.sh does not invoke %s", command)
+		}
+	}
+	for _, stale := range []string{"system status", "system restart", "system shutdown"} {
+		if strings.Contains(source, stale) {
+			t.Errorf("run.sh retains removed command %q", stale)
+		}
+	}
+}
+
+func TestEveryKernelRecoveryCommandExampleTraversesBothCLIModes(t *testing.T) {
 	working, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -317,13 +314,13 @@ func TestEveryDevelopmentCommandExampleTraversesBothCLIParsingModes(t *testing.T
 		for _, example := range definition.Examples {
 			examples = append(examples, example.Command)
 		}
-		catalog = append(catalog, core.Command{Version: definition.Version, ID: definition.ID, Path: definition.Path, Aliases: definition.Aliases, Summary: definition.Summary, Description: definition.Description, Parameters: definition.Parameters, Result: definition.Result, MutatesState: definition.MutatesState, RestartBehavior: definition.RestartBehavior, Examples: examples})
+		catalog = append(catalog, core.Command{Version: definition.Version, ID: definition.ID, Path: definition.Path, Summary: definition.Summary, Description: definition.Description, Parameters: definition.Parameters, Result: definition.Result, MutatesState: definition.MutatesState, RestartBehavior: definition.RestartBehavior, Examples: examples})
 	}
 	executor := &catalogExecutor{}
 	runner := cli.New(catalog, executor)
 	count := 0
 	for _, command := range catalog {
-		if !strings.HasPrefix(command.ID, "development.") && !strings.HasPrefix(command.ID, "package.repository.") {
+		if !strings.HasPrefix(command.ID, "kernel.") {
 			continue
 		}
 		if len(command.Examples) == 0 {
@@ -345,14 +342,14 @@ func TestEveryDevelopmentCommandExampleTraversesBothCLIParsingModes(t *testing.T
 		}
 		count++
 	}
-	if count != 22 {
-		t.Fatalf("development CLI command count = %d, want 22", count)
+	if count != 12 {
+		t.Fatalf("kernel recovery CLI command count = %d, want 12", count)
 	}
 }
 
 func TestSecretParameterMetadataAndHyphenatedPath(t *testing.T) {
 	root := fixture(t)
-	definition := "version = 1\nid = \"auth.user_add\"\npath = [\"auth\", \"bootstrap-admin\", \"add\"]\nsummary = \"summary\"\ndescription = \"description\"\nmutates_state = true\nrestart_behavior = \"none\"\n[handler]\nfile = \"kernel/cbus/commands/deep/run/run.go\"\nsymbol = \"New\"\n[[parameters]]\nname = \"username\"\ntype = \"string\"\nposition = 0\nrequired = true\nprompt = \"Username: \"\ndescription = \"username\"\n[[parameters]]\nname = \"password\"\ntype = \"string\"\nrequired = true\nsecret = true\nsecret_prompt = \"Password: \"\nsecret_confirmation_prompt = \"Confirm password: \"\nsecret_stdin_option = \"password-stdin\"\ndescription = \"password input\"\n[[result]]\nname = \"user\"\ntype = \"object\"\n[[examples]]\ncommand = \"auth bootstrap-admin add admin\"\n"
+	definition := "version = 1\nid = \"user.add\"\npath = [\"user\", \"add\"]\nsummary = \"summary\"\ndescription = \"description\"\nmutates_state = true\nrestart_behavior = \"none\"\n[handler]\nfile = \"kernel/cbus/commands/deep/run/run.go\"\nsymbol = \"New\"\n[[parameters]]\nname = \"username\"\ntype = \"string\"\nposition = 0\nrequired = true\nprompt = \"Username: \"\ndescription = \"username\"\n[[parameters]]\nname = \"password\"\ntype = \"string\"\nrequired = true\nsecret = true\nsecret_prompt = \"Password: \"\nsecret_confirmation_prompt = \"Confirm password: \"\nsecret_stdin_option = \"password-stdin\"\ndescription = \"password input\"\n[[result]]\nname = \"user\"\ntype = \"object\"\n[[examples]]\ncommand = \"user add alice\"\n"
 	writeFile(t, root, "kernel/cbus/commands/deep/run/command.toml", definition)
 	commands, err := discoverCommands(root, "example.test/project")
 	if err != nil {
@@ -396,13 +393,13 @@ func TestRepositoryCatalogContainsEveryRequiredPlatformSetting(t *testing.T) {
 		}
 	}
 	for _, key := range []string{
-		"auth.bootstrap.session_duration", "auth.bootstrap.cleanup_interval",
-		"auth.bootstrap.cookie.name", "auth.bootstrap.cookie.secure", "auth.bootstrap.cookie.same_site",
-		"auth.bootstrap.argon2.memory", "auth.bootstrap.argon2.iterations", "auth.bootstrap.argon2.parallelism",
+		"auth.session_duration", "auth.cleanup_interval",
+		"auth.cookie.name", "auth.cookie.secure", "auth.cookie.same_site",
+		"auth.argon2.memory", "auth.argon2.iterations", "auth.argon2.parallelism",
 		"services.reconcile_interval", "services.startup_timeout",
 		"services.default_request_timeout", "services.default_drain_timeout", "services.default_minimum_workers",
 		"services.default_maximum_workers", "services.default_concurrency_per_worker", "services.default_target_utilization_percent",
-		"services.default_worker_keep_alive", "services.default_workers_per_sandbox", "services.default_minimum_sandboxes", "services.default_session_keep_alive", "services.state_lock_timeout",
+		"services.default_worker_keep_alive", "services.default_workers_per_sandbox", "services.default_minimum_sandboxes", "services.default_session_keep_alive",
 		"runtime.sandbox.maximum_workers",
 		"database.backend", "database.location", "database.username", "database.password",
 		"database.maximum_open_connections", "database.maximum_idle_connections",
@@ -413,16 +410,16 @@ func TestRepositoryCatalogContainsEveryRequiredPlatformSetting(t *testing.T) {
 		}
 	}
 	backend := found["database.backend"]
-	if backend.Default != "sqlite" || fmt.Sprint(backend.Allowed) != "[sqlite postgresql]" || backend.Storage != settings.StorageGlobal || !backend.RestartRequired || backend.RuntimeMutable {
+	if backend.Default != "sqlite" || fmt.Sprint(backend.Allowed) != "[sqlite postgresql]" || backend.Storage != settings.StorageNode || !backend.RestartRequired || backend.RuntimeMutable {
 		t.Fatalf("database backend setting = %#v", backend)
 	}
 	location := found["database.location"]
-	if location.Default != "${INSTANCE_ROOT}/database/system.db" || location.Storage != settings.StorageGlobal || !location.RestartRequired || location.RuntimeMutable {
+	if location.Default != "${INSTANCE_ROOT}/database/system.db" || location.Storage != settings.StorageNode || !location.RestartRequired || location.RuntimeMutable {
 		t.Fatalf("database location setting = %#v", location)
 	}
 	for _, key := range []string{"database.username", "database.password"} {
 		definition := found[key]
-		if definition.Default != "" || definition.Storage != settings.StorageGlobal || !definition.RestartRequired || definition.RuntimeMutable {
+		if definition.Default != "" || definition.Storage != settings.StorageNode || !definition.RestartRequired || definition.RuntimeMutable {
 			t.Fatalf("database credential setting %s = %#v", key, definition)
 		}
 	}
@@ -447,7 +444,13 @@ func TestRepositoryCatalogContainsEveryRequiredPlatformSetting(t *testing.T) {
 			t.Errorf("obsolete CPU/RAM setting remains: %s", key)
 		}
 	}
-	wantGlobal := []string{"database.backend", "database.location", "database.password", "database.username", "network.root_alias"}
+	wantGlobal := []string{
+		"auth.argon2.iterations", "auth.argon2.memory", "auth.argon2.parallelism",
+		"auth.cookie.name", "auth.cookie.same_site", "auth.cookie.secure", "auth.session_duration",
+		"job.default.execution_timeout", "job.default.idle_runtime_timeout", "job.default.maximum_parallel_workers", "job.default.queued_execution_limit", "job.default.worker_reuse",
+		"network.root_alias",
+		"services.default_concurrency_per_worker", "services.default_drain_timeout", "services.default_maximum_workers", "services.default_minimum_sandboxes", "services.default_minimum_workers", "services.default_request_timeout", "services.default_session_keep_alive", "services.default_target_utilization_percent", "services.default_worker_keep_alive", "services.default_workers_per_sandbox",
+	}
 	if fmt.Sprint(global) != fmt.Sprint(wantGlobal) {
 		t.Fatalf("global settings = %v, want %v", global, wantGlobal)
 	}

@@ -14,7 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
+	"sync"
 
 	secretstore "the8020/kernel/secrets"
 
@@ -25,28 +25,27 @@ import (
 )
 
 const (
-	packageIndexSchema = 1
-	gitOutputLimit     = 2 << 20
-	maximumSourceRefs  = 200
-	maximumVersions    = 200
+	gitOutputLimit    = 2 << 20
+	maximumSourceRefs = 200
+	maximumVersions   = 200
 )
 
-// PackageIndex is the durable desired source and version of one package.
-// Package identity is repeated in the document so an index file remains
-// understandable independently of its path.
+// PackageIndex is the durable desired and active state of one package.
 type PackageIndex struct {
-	Schema          int    `toml:"schema" json:"schema"`
-	Author          string `toml:"author" json:"author"`
-	Repository      string `toml:"repository" json:"repository"`
-	Source          string `toml:"source,omitempty" json:"source,omitempty"`
-	Commit          string `toml:"commit,omitempty" json:"commit,omitempty"`
-	Tag             string `toml:"tag,omitempty" json:"tag,omitempty"`
-	Secret          string `toml:"secret,omitempty" json:"secret,omitempty"`
-	Local           bool   `toml:"local,omitempty" json:"local"`
-	PackageID       string `toml:"-" json:"package_id"`
-	Path            string `toml:"-" json:"path"`
-	Valid           bool   `toml:"-" json:"valid"`
-	ValidationError string `toml:"-" json:"validation_error,omitempty"`
+	Author          string `json:"author"`
+	Repository      string `json:"repository"`
+	Source          string `json:"source,omitempty"`
+	Commit          string `json:"commit,omitempty"`
+	Tag             string `json:"tag,omitempty"`
+	Secret          string `json:"secret,omitempty"`
+	Local           bool   `json:"local"`
+	ActiveCommit    string `json:"active_commit,omitempty"`
+	State           string `json:"state"`
+	Error           string `json:"error,omitempty"`
+	Revision        uint64 `json:"revision"`
+	PackageID       string `json:"package_id"`
+	Valid           bool   `json:"valid"`
+	ValidationError string `json:"validation_error,omitempty"`
 }
 
 type SourceReference struct {
@@ -108,46 +107,21 @@ type LocalPackage struct {
 }
 
 func (s *Store) ListPackageIndexes() ([]PackageIndex, error) {
-	s.indexMu.RLock()
-	defer s.indexMu.RUnlock()
-	namespaces, err := os.ReadDir(s.indexRoot)
-	if err != nil {
-		return nil, fmt.Errorf("read package index: %w", err)
-	}
-	result := []PackageIndex{}
-	for _, namespace := range namespaces {
-		if !namespace.IsDir() || strings.HasPrefix(namespace.Name(), ".") {
-			continue
-		}
-		files, readErr := os.ReadDir(filepath.Join(s.indexRoot, namespace.Name()))
-		if readErr != nil {
-			return nil, fmt.Errorf("read package index namespace %s: %w", namespace.Name(), readErr)
-		}
-		for _, file := range files {
-			if file.IsDir() || file.Type()&os.ModeSymlink != 0 || filepath.Ext(file.Name()) != ".toml" {
-				continue
-			}
-			repository := strings.TrimSuffix(file.Name(), ".toml")
-			id := namespace.Name() + "/" + repository
-			entry, entryErr := s.readPackageIndexUnlocked(id)
-			if entryErr != nil {
-				entry = PackageIndex{PackageID: id, Author: namespace.Name(), Repository: repository, Path: filepath.Join(s.indexRoot, namespace.Name(), file.Name()), ValidationError: entryErr.Error()}
-			}
-			result = append(result, entry)
-		}
-	}
-	sort.Slice(result, func(i, j int) bool { return result[i].PackageID < result[j].PackageID })
-	return result, nil
+	return s.index.List(context.Background())
 }
 
 func (s *Store) InspectPackageIndex(packageID string) (PackageIndex, error) {
-	s.indexMu.RLock()
-	defer s.indexMu.RUnlock()
-	return s.readPackageIndexUnlocked(packageID)
+	entry, exists, err := s.index.Get(context.Background(), packageID)
+	if err != nil {
+		return PackageIndex{}, err
+	}
+	if !exists {
+		return PackageIndex{}, os.ErrNotExist
+	}
+	return entry, nil
 }
 
 func (s *Store) SetPackageIndex(ctx context.Context, entry PackageIndex) (PackageIndex, error) {
-	entry.Schema = packageIndexSchema
 	if err := validatePackageIndex(&entry); err != nil {
 		return PackageIndex{}, err
 	}
@@ -158,12 +132,10 @@ func (s *Store) SetPackageIndex(ctx context.Context, entry PackageIndex) (Packag
 		return PackageIndex{}, err
 	}
 	defer unlock()
-	s.indexMu.Lock()
-	defer s.indexMu.Unlock()
-	if err := s.writePackageIndexUnlocked(entry); err != nil {
+	if err := s.index.Put(ctx, entry); err != nil {
 		return PackageIndex{}, err
 	}
-	return s.readPackageIndexUnlocked(entry.PackageID)
+	return s.InspectPackageIndex(entry.PackageID)
 }
 
 func (s *Store) InspectPackageSource(ctx context.Context, source string) (SourceInspection, error) {
@@ -238,11 +210,12 @@ func (s *Store) ListPackageVersions(ctx context.Context, packageID string, limit
 		return PackageVersions{}, err
 	}
 	defer unlock()
-	s.indexMu.RLock()
-	entry, err := s.readPackageIndexUnlocked(packageID)
-	s.indexMu.RUnlock()
+	entry, exists, err := s.index.Get(ctx, packageID)
 	if err != nil {
 		return PackageVersions{}, err
+	}
+	if !exists {
+		return PackageVersions{}, os.ErrNotExist
 	}
 	repositoryPath, err := s.installedPackagePath(packageID)
 	if err != nil {
@@ -293,6 +266,17 @@ func (s *Store) ListPackageVersions(ctx context.Context, packageID string, limit
 }
 
 func (s *Store) SynchronizePackages(ctx context.Context, packageIDs []string) ([]PackageSynchronization, error) {
+	return s.synchronizePackages(ctx, packageIDs, "")
+}
+
+// SynchronizePackagesWithCredential uses one invocation-scoped Git token
+// without adding it to package state. The caller owns acquiring and discarding
+// the token.
+func (s *Store) SynchronizePackagesWithCredential(ctx context.Context, packageIDs []string, token string) ([]PackageSynchronization, error) {
+	return s.synchronizePackages(ctx, packageIDs, token)
+}
+
+func (s *Store) synchronizePackages(ctx context.Context, packageIDs []string, token string) ([]PackageSynchronization, error) {
 	if len(packageIDs) == 0 {
 		entries, err := s.ListPackageIndexes()
 		if err != nil {
@@ -318,9 +302,9 @@ func (s *Store) SynchronizePackages(ctx context.Context, packageIDs []string) ([
 	sort.Strings(ids)
 	results := make([]PackageSynchronization, 0, len(ids))
 	for _, packageID := range ids {
-		result, err := s.synchronizePackage(ctx, packageID)
+		result, err := s.synchronizePackage(ctx, packageID, token)
 		if err != nil {
-			result.PackageID, result.Error, result.Success = packageID, err.Error(), false
+			result.PackageID, result.Error, result.Success = packageID, redactGitCredential(err.Error(), token), false
 		} else {
 			result.Success = true
 		}
@@ -332,7 +316,7 @@ func (s *Store) SynchronizePackages(ctx context.Context, packageIDs []string) ([
 	return results, nil
 }
 
-func (s *Store) synchronizePackage(ctx context.Context, packageID string) (PackageSynchronization, error) {
+func (s *Store) synchronizePackage(ctx context.Context, packageID, transientToken string) (PackageSynchronization, error) {
 	s.repositoryMu.Lock()
 	defer s.repositoryMu.Unlock()
 	unlock, err := s.lockPackage(ctx, packageID)
@@ -340,11 +324,12 @@ func (s *Store) synchronizePackage(ctx context.Context, packageID string) (Packa
 		return PackageSynchronization{}, err
 	}
 	defer unlock()
-	s.indexMu.RLock()
-	entry, err := s.readPackageIndexUnlocked(packageID)
-	s.indexMu.RUnlock()
+	entry, exists, err := s.index.Get(ctx, packageID)
 	if err != nil {
 		return PackageSynchronization{}, err
+	}
+	if !exists {
+		return PackageSynchronization{}, os.ErrNotExist
 	}
 	result := PackageSynchronization{PackageID: packageID, Source: entry.Source, Requested: entry.selector(), Local: entry.Local}
 	destination, exists, err := s.packageDestination(packageID)
@@ -386,7 +371,7 @@ func (s *Store) synchronizePackage(ctx context.Context, packageID string) (Packa
 	}
 	defer os.RemoveAll(stageRoot)
 	stage := filepath.Join(stageRoot, "repository")
-	authentication, err := s.repositoryAuthentication(packageID, entry.Source)
+	authentication, err := s.repositoryAuthenticationWithCredential(packageID, entry.Source, transientToken)
 	if err != nil {
 		return result, err
 	}
@@ -408,7 +393,7 @@ func (s *Store) synchronizePackage(ctx context.Context, packageID string) (Packa
 	if err != nil {
 		return result, err
 	}
-	if exists && result.PreviousCommit == result.Commit {
+	if exists && result.PreviousCommit == result.Commit && entry.State == "ready" && entry.ActiveCommit == result.Commit {
 		if output, commandErr := s.runGit(ctx, destination, nil, "remote", "set-url", "origin", entry.Source); commandErr != nil {
 			return result, fmt.Errorf("update package remote: %w: %s", commandErr, cleanGitOutput(output))
 		}
@@ -434,9 +419,12 @@ func (s *Store) synchronizePackage(ctx context.Context, packageID string) (Packa
 	}
 	if hook != nil {
 		if err := hook.Complete(ctx, true); err != nil {
-			return result, fmt.Errorf("complete package database schema deployment: %w", err)
+			return result, fmt.Errorf("complete package activation: %w", err)
 		}
 		preparedSchema = false
+	}
+	if err := finalizePackageDirectory(destination); err != nil {
+		return result, err
 	}
 	result.Changed, result.Cloned = true, !exists
 	if s.logger != nil {
@@ -466,7 +454,7 @@ func removeEmptyPackagePlaceholder(path string) (bool, error) {
 }
 
 // replacePackageDirectory exposes a validated staged tree with one atomic
-// rename and keeps the previous tree recoverable until that rename succeeds.
+// rename. The previous tree remains recoverable until activation hooks finish.
 func replacePackageDirectory(destination, stage string) (bool, error) {
 	backup := destination + ".previous"
 	if _, err := os.Lstat(backup); err == nil {
@@ -493,16 +481,33 @@ func replacePackageDirectory(destination, stage string) (bool, error) {
 	if err := syncPackageDirectory(filepath.Dir(destination)); err != nil {
 		return true, err
 	}
-	if exists {
-		if err := os.RemoveAll(backup); err != nil {
-			return true, fmt.Errorf("remove previous package: %w", err)
-		}
+	return true, nil
+}
+
+func finalizePackageDirectory(destination string) error {
+	if err := os.RemoveAll(destination + ".previous"); err != nil {
+		return fmt.Errorf("remove previous package: %w", err)
 	}
-	return true, syncPackageDirectory(filepath.Dir(destination))
+	return syncPackageDirectory(filepath.Dir(destination))
+}
+
+func rollbackPackageDirectory(destination string) error {
+	backup := destination + ".previous"
+	if err := os.RemoveAll(destination); err != nil {
+		return fmt.Errorf("remove failed package candidate: %w", err)
+	}
+	if _, err := os.Lstat(backup); err == nil {
+		if err := os.Rename(backup, destination); err != nil {
+			return fmt.Errorf("restore previous package: %w", err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return syncPackageDirectory(filepath.Dir(destination))
 }
 
 func (s *Store) CreateLocalPackage(ctx context.Context, author, repository, description string) (LocalPackage, error) {
-	entry := PackageIndex{Schema: packageIndexSchema, Author: strings.TrimSpace(author), Repository: strings.TrimSpace(repository), Local: true}
+	entry := PackageIndex{Author: strings.TrimSpace(author), Repository: strings.TrimSpace(repository), Local: true}
 	if err := validatePackageIndex(&entry); err != nil {
 		return LocalPackage{}, err
 	}
@@ -520,14 +525,12 @@ func (s *Store) CreateLocalPackage(ctx context.Context, author, repository, desc
 	if exists {
 		return LocalPackage{}, fmt.Errorf("package already exists: %s", entry.PackageID)
 	}
-	s.indexMu.RLock()
-	_, indexErr := s.readPackageIndexUnlocked(entry.PackageID)
-	s.indexMu.RUnlock()
-	if indexErr == nil {
-		return LocalPackage{}, fmt.Errorf("package index already exists: %s", entry.PackageID)
-	}
-	if !errors.Is(indexErr, os.ErrNotExist) {
+	_, indexExists, indexErr := s.index.Get(ctx, entry.PackageID)
+	if indexErr != nil {
 		return LocalPackage{}, indexErr
+	}
+	if indexExists {
+		return LocalPackage{}, fmt.Errorf("package index already exists: %s", entry.PackageID)
 	}
 	identity, _ := ParsePackageID(entry.PackageID)
 	namespaceRoot := filepath.Join(s.packagesRoot, identity.Namespace)
@@ -567,12 +570,13 @@ func (s *Store) CreateLocalPackage(ctx context.Context, author, repository, desc
 	if err := os.Rename(stage, destination); err != nil {
 		return LocalPackage{}, fmt.Errorf("activate local package: %w", err)
 	}
-	s.indexMu.Lock()
-	writeErr := s.writePackageIndexUnlocked(entry)
-	s.indexMu.Unlock()
+	writeErr := s.index.Put(ctx, entry)
 	if writeErr != nil {
 		_ = os.RemoveAll(destination)
 		return LocalPackage{}, fmt.Errorf("write local package index: %w", writeErr)
+	}
+	if err := s.index.SetActivation(ctx, entry.PackageID, "ready", commit, nil); err != nil {
+		return LocalPackage{}, err
 	}
 	indexed, err := s.InspectPackageIndex(entry.PackageID)
 	if err != nil {
@@ -582,65 +586,6 @@ func (s *Store) CreateLocalPackage(ctx context.Context, author, repository, desc
 	return LocalPackage{Index: indexed, Package: installed, Commit: commit, Repository: destination}, nil
 }
 
-func (s *Store) readPackageIndexUnlocked(packageID string) (PackageIndex, error) {
-	identity, err := ParsePackageID(packageID)
-	if err != nil {
-		return PackageIndex{}, err
-	}
-	path := filepath.Join(s.indexRoot, identity.Namespace, identity.Repository+".toml")
-	var entry PackageIndex
-	if err := decodeTOMLFile(path, &entry); err != nil {
-		return PackageIndex{}, err
-	}
-	entry.PackageID, entry.Path = packageID, path
-	if entry.Author != identity.Namespace || entry.Repository != identity.Repository {
-		return PackageIndex{}, errors.New("package index identity does not match its path")
-	}
-	if err := validatePackageIndex(&entry); err != nil {
-		return PackageIndex{}, err
-	}
-	entry.Valid = true
-	return entry, nil
-}
-
-func (s *Store) writePackageIndexUnlocked(entry PackageIndex) error {
-	identity, _ := ParsePackageID(entry.PackageID)
-	directory := filepath.Join(s.indexRoot, identity.Namespace)
-	if err := os.MkdirAll(directory, 0o755); err != nil {
-		return fmt.Errorf("create package index namespace: %w", err)
-	}
-	data, err := toml.Marshal(entry)
-	if err != nil {
-		return fmt.Errorf("encode package index: %w", err)
-	}
-	temporary, err := os.CreateTemp(directory, "."+identity.Repository+"-*.toml")
-	if err != nil {
-		return fmt.Errorf("create package index temporary file: %w", err)
-	}
-	name := temporary.Name()
-	defer os.Remove(name)
-	if err = temporary.Chmod(0o600); err == nil {
-		_, err = temporary.Write(data)
-	}
-	if err == nil {
-		err = temporary.Sync()
-	}
-	if closeErr := temporary.Close(); err == nil {
-		err = closeErr
-	}
-	path := filepath.Join(directory, identity.Repository+".toml")
-	if err == nil {
-		err = os.Rename(name, path)
-	}
-	if err == nil {
-		err = syncPackageDirectory(directory)
-	}
-	if err != nil {
-		return fmt.Errorf("write package index: %w", err)
-	}
-	return nil
-}
-
 func validatePackageIndex(entry *PackageIndex) error {
 	entry.Author = strings.TrimSpace(entry.Author)
 	entry.Repository = strings.TrimSpace(entry.Repository)
@@ -648,9 +593,6 @@ func validatePackageIndex(entry *PackageIndex) error {
 	entry.Commit = strings.ToLower(strings.TrimSpace(entry.Commit))
 	entry.Tag = strings.TrimSpace(entry.Tag)
 	entry.Secret = strings.TrimSpace(entry.Secret)
-	if entry.Schema != packageIndexSchema {
-		return fmt.Errorf("package index schema must equal %d", packageIndexSchema)
-	}
 	if err := ValidateName(entry.Author); err != nil {
 		return fmt.Errorf("author: %w", err)
 	}
@@ -787,17 +729,37 @@ func (s *Store) installedPackagePath(packageID string) (string, error) {
 }
 
 func (s *Store) cleanRepositoryHead(ctx context.Context, path string) (string, error) {
+	return verifyCleanRepositoryHead(path, func(arguments ...string) (string, error) {
+		return s.gitValue(ctx, path, arguments...)
+	})
+}
+
+// CleanRepositoryHead returns HEAD only when the default Git checkout has no
+// tracked or untracked changes. Callers without a Store use this for immutable
+// reads of shared package source.
+func CleanRepositoryHead(ctx context.Context, path string) (string, error) {
+	return verifyCleanRepositoryHead(path, func(arguments ...string) (string, error) {
+		command := exec.CommandContext(ctx, "git", append([]string{"-C", path}, arguments...)...)
+		output, err := command.CombinedOutput()
+		if err != nil {
+			return "", fmt.Errorf("%w: %s", err, cleanGitOutput(string(output)))
+		}
+		return strings.TrimSpace(string(output)), nil
+	})
+}
+
+func verifyCleanRepositoryHead(path string, run func(...string) (string, error)) (string, error) {
 	if info, err := os.Stat(filepath.Join(path, ".git")); err != nil || !info.IsDir() {
 		return "", errors.New("installed package is not a Git repository")
 	}
-	status, err := s.gitValue(ctx, path, "status", "--porcelain=v1", "--untracked-files=all")
+	status, err := run("status", "--porcelain=v1", "--untracked-files=all")
 	if err != nil {
 		return "", fmt.Errorf("inspect installed package: %w", err)
 	}
 	if status != "" {
 		return "", errors.New("installed package has uncommitted changes")
 	}
-	head, err := s.gitValue(ctx, path, "rev-parse", "--verify", "HEAD^{commit}")
+	head, err := run("rev-parse", "--verify", "HEAD^{commit}")
 	if err != nil {
 		return "", fmt.Errorf("inspect installed package HEAD: %w", err)
 	}
@@ -841,33 +803,17 @@ func serviceIDsAt(root, packageID string) ([]string, error) {
 }
 
 func (s *Store) lockPackage(ctx context.Context, packageID string) (func(), error) {
-	identity, err := ParsePackageID(packageID)
-	if err != nil {
+	if _, err := ParsePackageID(packageID); err != nil {
 		return nil, err
 	}
-	directory := filepath.Join(s.indexRoot, ".locks", identity.Namespace)
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return nil, err
-	}
-	file, err := os.OpenFile(filepath.Join(directory, identity.Repository+".lock"), os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	for {
-		err = unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB)
-		if err == nil {
-			return func() { _ = unix.Flock(int(file.Fd()), unix.LOCK_UN); _ = file.Close() }, nil
-		}
-		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
-			_ = file.Close()
-			return nil, err
-		}
-		select {
-		case <-ctx.Done():
-			_ = file.Close()
-			return nil, ctx.Err()
-		case <-time.After(25 * time.Millisecond):
-		}
+	value, _ := s.packageLocks.LoadOrStore(packageID, make(chan struct{}, 1))
+	semaphore := value.(chan struct{})
+	select {
+	case semaphore <- struct{}{}:
+		var once sync.Once
+		return func() { once.Do(func() { <-semaphore }) }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 

@@ -6,10 +6,10 @@
 
 - Own startup/shutdown order, generic settings arguments,
   system-database pool composition and catalog-gated service readiness,
-  bootstrap-authentication composition and cleanup lifecycle,
+  database-backed authentication composition and cleanup lifecycle,
   full-versus-rootless runtime selection, degraded diagnostics,
-  mapped package/state-store composition, service-package mounts, and
-  filesystem-service reconciliation, plus development-sandbox composition and
+  package/database-store composition, service-package mounts, and service
+  reconciliation, plus development-sandbox composition and
   shutdown, generic sandbox-console broker and SSH-server composition, and shared node
   topology/capacity-forwarding composition.
 - Do not own command behavior, domain validation, transport parsing, or
@@ -21,54 +21,50 @@
   `ErrRestartRequested`.
 - Dependencies are the generated definitions/registration callback plus the
   typed Phase 1A and Phase 1B package owners.
-- The node root defaults to the current directory. An absent layout starts the
-  guided path-selection procedure, while `--init-defaults` selects default
-  mapped roots noninteractively. Initialization creates directories, validates
-  Unix permissions, and records the mapping; it never installs defaults,
-  packages, tools, or images. `--init-only` exits after node state creation.
-- `--init-only --synchronize-packages` acquires the node lock and dispatches the
-  generated `package.synchronize` handler in-process without starting listeners
-  or runtime services. Fresh installation uses this offline command-bus path
-  exactly once; rebuilding or restarting an initialized instance never
-  synchronizes packages implicitly.
-- Startup order is load the explicit shared-root mapping → initialize shared
-  and node-local state roots → lock → settings → logging → system
-  database pool/readiness check →
-  bootstrap-authentication store and per-node cleanup → global secret store →
-  package and desired-state stores → registry and
+- The node root defaults to the current directory. Initialization creates the
+  fixed package/user/node/database layout, validates Unix permissions, and
+  records node identity and node-local settings in `kernel.toml`; it never
+  installs packages, tools, or images. `--init-only` exits after node creation.
+- Startup order is load the fixed layout → lock → node settings → logging →
+  built-in command registry/socket → asynchronous database connection and internal
+  catalog initialization → database-backed global settings, authentication,
+  secrets, topology, packages and services →
   development manager → network → authenticated console route → SSH listener → appliers →
-  generated handler registration → command socket → asynchronous runtime-image
+  runtime-image
   record validation and runtime diagnostics/composition → initial terminal
   sandbox-history cleanup →
   configured fast inherited-sandbox destruction or explicit reconciliation →
-  workload-record cleanup → initialize/validate the database catalog → compose
-  the job runtime and table evaluator → recover a pending schema deployment or
-  fully synchronize an uninitialized database → one-time filesystem-service discovery plus
+  service-record cleanup → initialize/validate the database catalog → compose
+  the non-durable job runtime, exact-package program runner, and table evaluator
+  → recover a pending schema deployment or
+  fully synchronize an uninitialized database → atomically index package CBus
+  commands → one-time installed-service discovery plus
   active-runtime-only maintenance → heartbeat/OOM and hourly history-retention
   monitoring.
 - The command socket publishes `runtime initialization is in progress` until one
   complete runtime dependency snapshot is ready; runtime commands fail safely
-  during that interval while system/settings/authentication administration
+  during that interval while `kernel.*` recovery and lifecycle administration
   remains available.
 - Database connection, catalog, or first full-table synchronization failure is
-  logged and cached in status. It never prevents the administrative command
-  socket or raw SQL recovery from running, but it prevents ordinary services and
-  UUI from starting. An explicit `database check` retries connectivity after
-  operators change or repair the configured backend.
+  logged and cached in status. It never prevents the administrative socket or
+  built-in `kernel.config.*` and package recovery commands from running, but it
+  prevents package commands, ordinary services, and UUI from starting.
+- Authentication composition verifies its package-owned users and session
+  tables before the service plane is published; an empty users table is valid,
+  while an inaccessible table is a runtime initialization failure.
 - A fresh database synchronizes every installed package table in bounded
-  evaluator batches and becomes `READY` only after all succeed. A normal boot
-  trusts the initialized marker and does not scan definitions. The deliberate
-  future insertion point for idempotent package data bootstrap is after table
-  synchronization and before service discovery; no seed framework exists yet.
+  evaluator batches and becomes `READY` only after all schemas and package
+  activation hooks succeed. A normal boot trusts the initialized marker and
+  does not scan definitions or repeat completed hooks.
 - Database pool limits are node-local runtime settings applied transactionally
-  to the already running pool; backend, location, and credentials remain global
+  to the already running pool; backend, location, and credentials remain node-local
   restart settings.
 - `sandbox.startup_policy` defaults to `destroy`, which enumerates
   instance-owned metadata and force-deletes inherited backend objects without
   task, network, or supervisor health probes. `reconcile` is the explicit
   cross-restart preservation mode.
 - `sandbox.warm_pool.size` defaults to zero. Jobs and enabled
-  filesystem services create sandboxes from explicit command or request demand;
+  services create sandboxes from explicit command or request demand;
   configured positive warm capacity remains available as an opt-in latency
   tradeoff.
 - `sandbox.history.retention` is node-local, restart-required, and defaults to
@@ -79,12 +75,13 @@
 - Restart restoration never rebinds a listener for an unavailable sandbox;
   debug listeners are always discarded because their token and Go handler are
   memory-only.
+- Ordinary jobs are memory-only and have no startup restoration phase.
 - Persisted live service pools whose sandbox is absent from the reconciled
   healthy set are retired locally before service restoration, including pools
   already left `FAILED` by an earlier run; startup never waits on supervisor
   calls to known-missing groups.
-- Workload-record quarantine, failure propagation, service/job restoration, and
-  host-port restoration are best-effort per workload. Their errors are logged
+- Service-record quarantine, failure propagation, and host-port restoration are
+  best-effort per workload. Their errors are logged
   and isolated; only failure of a shared runtime prerequisite may make runtime
   composition unavailable.
 - Runtime-host failures retain both full and rootless diagnostics and
@@ -92,13 +89,12 @@
   mode and selects rootless only when full host authority is unavailable.
 - Development sandboxes select direct runsc consistently with the configured
   full/rootless runtime mode. They use their separate development-image
-  materialization and state roots and remain administrable independently of
+  materialization and node-local runtime roots and remain administrable independently of
   asynchronous service-runtime initialization.
 - Process composition creates one registry before the development manager,
   supplies it to the sandbox activation gateway, then registers the
   generated handlers before any administrative command can create a sandbox.
-  The shared `config/development-mounts.toml` profile is the production mount
-  input; its absence falls back to the equivalent built-in profile.
+  The small built-in development mount profile is canonical.
 - Development-manager initialization starts inherited development-sandbox
   deletion asynchronously without restoring process state or scanning all
   sandbox records; durable overlay and system state remain available for an
@@ -119,20 +115,22 @@
   job/Worker workspaces; mounting the instance root itself is rejected because
   it would expose protected `node/kernel` data.
 - Runtime composition supplies the already registered command bus to the
-  authenticated supervisor callback; it does not construct a second
-  administrative registry.
+  authenticated supervisor callback and publishes runtime operations plus the
+  package-command indexer after the job/program path is ready; it does not
+  construct a second administrative registry.
 - Runtime composition supplies the kernel-owned database service to the
   authenticated supervisor callback. Neither the supervisor nor a Worker
   receives database credentials or direct database network permissions.
 - Package composition injects only the secret store's narrow value resolver
   into the package manager; command services separately expose authenticated
   secret administration. Deno and application packages never receive the
-  secret file path.
-- Service and job runtime profiles mount the configured package root read-only at
-  `/workspace/packages` and shared package state read-write at
-  `/state/package-data`, grant Workers read-only access to the bundled generic
-  `/opt/runtime` modules, and keep portable dependency mode in runtime-group
-  compatibility. The kernel never scans or interprets package state.
+  secret storage internals.
+- Service and job runtime profiles mount the activated package root read-only at
+  `/workspace/packages` and the runtime callback directory at `/run/the8020`,
+  grant Workers read-only access to bundled `/opt/runtime` modules, unrestricted
+  outbound network/imports, and writable `/tmp` and `/runtime-cache`, and keep
+  portable dependency mode in runtime-group compatibility. Durable shared
+  application data goes through the kernel database bridge.
 - Runtime composition derives the node temporary-storage budget when its
   node-local setting is zero, applies node Worker admission and the kernel-wide
   per-sandbox Worker maximum, derives the canonical service framework defaults,
@@ -142,8 +140,8 @@
   authenticated local/cross-node path and generic persistent-execution
   completion through the supervisor callback. Function names and JSON payloads
   remain opaque to composition.
-- `config/nodes.toml` and `.nodes.key` initialize before runtime composition.
-  The configured local recipient listener starts only after the service router
+- Database-backed topology initializes before runtime composition. The
+  configured local recipient listener starts only after the service router
   and capacity provider exist and forwards both HTTP and WebSocket traffic.
 - Main-listener composition reads the restart-required global
   `network.root_alias` value and supplies it to the network owner before the
@@ -152,10 +150,10 @@
   elapsed-time estimate: public HTTP, runtime initialization join, runtime
   controllers, runtime ports, runtime sandboxes, runtime backends,
   authentication maintenance, administrative socket, and process resources.
-- Shutdown first drains command intake while retaining `system status` and
-  idempotent `system shutdown` and `system restart`. SSH and console sessions
+- Shutdown first drains command intake while retaining `kernel.status` and
+  idempotent `kernel.shutdown` and `kernel.restart`. SSH and console sessions
   close before sandbox cleanup. Public HTTP draining, authentication cleanup,
-  and runtime cancellation/join overlap; filesystem-service,
+  and runtime cancellation/join overlap; package-service,
   execution-service, job, and warm-pool controllers stop concurrently after
   monitoring stops; ports then close before sandboxes; callback and sandbox
   backend endpoints close concurrently after sandbox cleanup. The administrative
@@ -167,9 +165,14 @@
 - Development manager shutdown checkpoints private package deltas before it
   destroys owned sandbox processes, then completes before logging and
   instance-lock release.
-- Filesystem-service maintenance never polls the complete package catalog.
+- Service maintenance never polls the complete package catalog.
   Startup discovers once; explicit service actions and cold requests reconcile
   directly, while the timer touches only live or capacity-pending services.
+  The shared-state monitor scalar-polls package and direct-service revisions;
+  only an advanced revision loads and reconciles its affected IDs. Database or
+  package-source convergence failures gate the public plane; a failure to start
+  one affected service remains local, keeps its revision pending, and retries
+  without taking unrelated services offline.
 - Extend composition only when a kernel-owned Phase requirement adds a real
   lifecycle service.
 

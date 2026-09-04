@@ -8,12 +8,14 @@ import (
 	"time"
 
 	"the8020/kernel/auth"
+	"the8020/kernel/cbus/core"
 	"the8020/kernel/database"
 	"the8020/kernel/debugging"
 	"the8020/kernel/development"
 	"the8020/kernel/execution/adminrun"
 	"the8020/kernel/execution/groups"
 	"the8020/kernel/execution/jobs"
+	programrunner "the8020/kernel/execution/programs"
 	"the8020/kernel/execution/workers"
 	"the8020/kernel/instance"
 	"the8020/kernel/lifecycle"
@@ -49,14 +51,73 @@ type Services struct {
 	Lifecycle         *lifecycle.Manager
 	Auth              AuthService
 	Secrets           SecretService
-	Layout            LayoutService
 	Instance          InstanceInfo
 	Runtime           *RuntimeServices
 	Packages          PackageService
 	PackageManagement PackageManagementService
 	Development       DevelopmentService
 	Database          DatabaseService
+	platformMu        sync.RWMutex
 	runtimeMu         sync.RWMutex
+}
+
+// PlatformServices become visible together only after database bootstrap has
+// completed. This keeps early command-bus requests from observing a partially
+// initialized public service plane.
+type PlatformServices struct {
+	Network     *network.Manager
+	Nodes       *nodes.Manager
+	Auth        AuthService
+	Secrets     SecretService
+	Packages    PackageService
+	Development DevelopmentService
+}
+
+func (s *Services) PublishPlatform(platform PlatformServices) {
+	if s == nil {
+		return
+	}
+	s.platformMu.Lock()
+	s.Network = platform.Network
+	s.Nodes = platform.Nodes
+	s.Auth = platform.Auth
+	s.Secrets = platform.Secrets
+	s.Packages = platform.Packages
+	s.Development = platform.Development
+	s.PackageManagement, _ = platform.Packages.(PackageManagementService)
+	s.platformMu.Unlock()
+}
+
+func (s *Services) PlatformSnapshot() PlatformServices {
+	if s == nil {
+		return PlatformServices{}
+	}
+	s.platformMu.RLock()
+	defer s.platformMu.RUnlock()
+	return PlatformServices{
+		Network: s.Network, Nodes: s.Nodes, Auth: s.Auth, Secrets: s.Secrets,
+		Packages: s.Packages, Development: s.Development,
+	}
+}
+
+func (s *Services) PackageManagementSnapshot() PackageManagementService {
+	if s == nil {
+		return nil
+	}
+	s.platformMu.RLock()
+	defer s.platformMu.RUnlock()
+	return s.PackageManagement
+}
+
+// PublishPackageManagement exposes the recovery package store before the
+// optional application/runtime plane is ready.
+func (s *Services) PublishPackageManagement(management PackageManagementService) {
+	if s == nil {
+		return
+	}
+	s.platformMu.Lock()
+	s.PackageManagement = management
+	s.platformMu.Unlock()
 }
 
 // DatabaseService is the only SQL boundary exposed to handlers and the
@@ -69,6 +130,7 @@ type DatabaseService interface {
 	ListTables(context.Context) ([]database.TableSummary, error)
 	ListDefinitions(context.Context) ([]database.DefinitionSummary, error)
 	InspectTable(context.Context, string) (database.TableDetail, error)
+	CompareTable(context.Context, string) (database.TableDetail, error)
 	SynchronizeDefinition(context.Context, string, string) (database.SynchronizationResult, error)
 	SynchronizeDefinitions(context.Context, []string, bool) ([]database.SynchronizationResult, error)
 	Trim(context.Context, string, []string, bool) error
@@ -81,30 +143,13 @@ type SecretService interface {
 	Set(context.Context, string, string) (secrets.Summary, error)
 }
 
-// LayoutService is the handler-facing bootstrap path configuration contract.
-type LayoutService interface {
-	Current() (instance.Layout, error)
-	Set(instance.Layout) (instance.Layout, error)
-}
-
-// AuthService is the handler- and runtime-facing bootstrap authentication
+// AuthService is the handler- and runtime-facing user authentication
 // contract. It deliberately exposes summaries and opaque cookie headers only.
 type AuthService interface {
 	CookieName() string
-	BootstrapLogin(context.Context, string, string, bool) (auth.BootstrapLoginResult, error)
+	Login(context.Context, string, string, bool) (auth.LoginResult, error)
 	ValidateCookie(string) (auth.AuthContext, error)
 	LogoutCurrent(auth.AuthContext, bool) (auth.LogoutResult, error)
-	AddUser(context.Context, string, string) (auth.UserSummary, error)
-	RemoveUser(context.Context, string) error
-	EnableUser(context.Context, string) (auth.UserSummary, error)
-	DisableUser(context.Context, string) (auth.UserSummary, error)
-	SetPassword(context.Context, string, string) (auth.UserSummary, error)
-	InvalidateUserSessions(context.Context, string) (auth.UserSummary, error)
-	ListUsers() ([]auth.UserSummary, error)
-	ListSessions() ([]auth.SessionSummary, error)
-	RevokeSession(string) error
-	RevokeUserSessions(string) (int, error)
-	CleanupExpired() (int, error)
 }
 
 // SandboxService is the handler-facing sandbox lifecycle contract.
@@ -126,7 +171,7 @@ type WorkerService interface {
 	Stop(context.Context, string, bool) error
 }
 
-// PackageService is the handler-facing direct filesystem package contract.
+// PackageService exposes installed package manifests from active checkouts.
 type PackageService interface {
 	ListPackages() ([]workspacepackages.Package, error)
 	InspectPackage(string) (workspacepackages.Package, error)
@@ -151,6 +196,12 @@ type PackageManagementService interface {
 	CheckoutPackageRepository(context.Context, string, string, string) (workspacepackages.RepositoryMutation, error)
 }
 
+// PackageCredentialManagementService is the narrow recovery path for an
+// invocation-scoped Git credential. The credential is never stored.
+type PackageCredentialManagementService interface {
+	SynchronizePackagesWithCredential(context.Context, []string, string) ([]workspacepackages.PackageSynchronization, error)
+}
+
 // DevelopmentService is the handler-facing durable development sandbox,
 // activation, and image contract.
 type DevelopmentService interface {
@@ -170,13 +221,14 @@ type DevelopmentService interface {
 	Activate(context.Context, string, development.ActivationOptions) (development.ActivationResult, error)
 }
 
-// WebServiceService is the handler-facing filesystem service lifecycle and
+// WebServiceService is the handler-facing service lifecycle and
 // canonical request contract.
 type WebServiceService interface {
 	Start(context.Context, string) (webservices.Status, error)
 	Stop(context.Context, string) (webservices.Status, error)
 	Restart(context.Context, string) (webservices.Status, error)
 	Reload(context.Context, string) (webservices.Status, error)
+	Reconcile(context.Context, string) (webservices.Status, error)
 	Retire(context.Context, string) error
 	Scale(context.Context, string, webservices.ScaleOptions) (webservices.Status, error)
 	List() ([]webservices.Status, error)
@@ -224,19 +276,21 @@ type AdminRunService interface {
 // RuntimeServices is the typed Phase 1B dependency set. Doctor remains
 // available when host runtime initialization fails; lifecycle services are nil.
 type RuntimeServices struct {
-	Versions       runtimehost.Versions
-	Doctor         *runtimehost.Doctor
-	RootlessDoctor *runtimehost.RootlessDoctor
-	Isolation      runtimehost.IsolationReport
-	Failure        string
-	Sandboxes      SandboxService
-	Workers        WorkerService
-	Services       WebServiceService
-	Jobs           JobService
-	Ports          PortService
-	Debugging      DebugService
-	Pool           PoolService
-	AdminRun       AdminRunService
+	Versions        runtimehost.Versions
+	Doctor          *runtimehost.Doctor
+	RootlessDoctor  *runtimehost.RootlessDoctor
+	Isolation       runtimehost.IsolationReport
+	Failure         string
+	Sandboxes       SandboxService
+	Workers         WorkerService
+	Services        WebServiceService
+	Jobs            JobService
+	Programs        *programrunner.Runner
+	ReindexCommands func(context.Context) (core.Result, error)
+	Ports           PortService
+	Debugging       DebugService
+	Pool            PoolService
+	AdminRun        AdminRunService
 }
 
 // New constructs the dependency container without adding lookup behavior.

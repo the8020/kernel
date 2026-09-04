@@ -1,6 +1,6 @@
 # Purpose
 
-- Implement `settings.list` as declared by the adjacent authoritative TOML.
+- Implement `kernel.config.list` as declared by the adjacent authoritative TOML.
 
 # Ownership
 
@@ -9,9 +9,9 @@
 # Local Contracts
 
 - Public API: handler constructor `New(*services.Services) core.Handler`.
-- With no argument, return only each setting key and description. With `detail`,
-  return complete setting records including declared storage. Reject every other
-  view.
+- Include only node-local settings. With no argument, return each key and
+  description. With `detail`, return complete records including declared
+  storage. Reject every other view.
 
 # Work Guidance
 

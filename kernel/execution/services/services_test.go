@@ -575,6 +575,39 @@ func TestRuntimeGroupFailureMarksLiveServiceFailed(t *testing.T) {
 	}
 }
 
+func TestTerminalRuntimeIsClassifiedAndReplaced(t *testing.T) {
+	store, _ := records.New(t.TempDir())
+	coordinatorFake := &fakeCoordinator{}
+	workersFake := &fakeWorkers{}
+	manager, _ := New(coordinatorFake, workersFake, store, Policy{Strategy: model.GroupingOwner})
+	options := testOptions(1, 2, 1)
+	record, err := manager.Start(context.Background(), "api", "file:///programs/api.ts", options)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	workersFake.listErr = fmt.Errorf("stopped sandbox: %w", workers.ErrRuntimeUnavailable)
+	if _, err := manager.ReconcileCapacity(context.Background(), record.ServiceID, 1); !errors.Is(err, workers.ErrRuntimeUnavailable) {
+		t.Fatalf("reconcile error=%v", err)
+	}
+	failed, err := manager.Inspect(record.ServiceID)
+	if err != nil || failed.State != "FAILED" || !failed.RuntimeUnavailable {
+		t.Fatalf("failed=%#v err=%v", failed, err)
+	}
+
+	workersFake.listErr = nil
+	restarted, err := manager.Start(context.Background(), "api", "file:///programs/api.ts", options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restarted.State != "READY" || restarted.RuntimeUnavailable || len(restarted.WorkerIDs) != 1 {
+		t.Fatalf("restarted=%#v", restarted)
+	}
+	if len(coordinatorFake.releases) != 1 || len(coordinatorFake.requests) != 2 {
+		t.Fatalf("releases=%#v ensures=%#v", coordinatorFake.releases, coordinatorFake.requests)
+	}
+}
+
 func TestScaleToZeroServiceWakesAndReturnsToZero(t *testing.T) {
 	store, _ := records.New(t.TempDir())
 	workersFake := &fakeWorkers{idleSinceMS: map[string]int64{}}

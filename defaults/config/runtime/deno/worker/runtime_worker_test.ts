@@ -1,5 +1,5 @@
 import { assertEquals, assertRejects } from "../test/assert.ts";
-import { RuntimeWorker } from "./runtime_worker.ts";
+import { RuntimeWorker, WorkerExecutionError } from "./runtime_worker.ts";
 import type {
   ExecutionMetadata,
   KernelCallRequest,
@@ -38,25 +38,122 @@ Deno.test("job Worker loads ES module and supports compatible reuse", async () =
     permissions: { read: [new URL("../examples", import.meta.url).pathname] },
   });
   try {
-    assertEquals(await worker.runJob({ value: 1 }), {
+    assertEquals(await worker.runJob([{ value: 1 }]), {
       input: { value: 1 },
-      executionCount: 1,
     });
     assertEquals(worker.logs.map((event) => event.message), [
-      "execution 1",
       'job input {"value":1}',
     ]);
-    assertEquals(await worker.runJob("again"), {
+    assertEquals(await worker.runJob(["again"]), {
       input: "again",
-      executionCount: 2,
     });
     assertEquals(worker.logs.map((event) => event.message), [
-      "execution 2",
       "job input again",
     ]);
   } finally {
     await worker.stop();
     await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+});
+
+Deno.test("job Worker spreads arguments into only the default export", async () => {
+  const spread = new RuntimeWorker({
+    metadata: metadata("job", example("job_spread"), "spread"),
+    permissions: { read: [new URL("../examples", import.meta.url).pathname] },
+  });
+  try {
+    assertEquals(await spread.runJob(["Alice Smith", "--admin"]), [
+      "Alice Smith",
+      "--admin",
+    ]);
+  } finally {
+    await spread.stop();
+  }
+
+  const runOnly = new RuntimeWorker({
+    metadata: metadata("job", example("job_run_only"), "run-only"),
+    permissions: { read: [new URL("../examples", import.meta.url).pathname] },
+  });
+  try {
+    await assertRejects(
+      () => runOnly.ready,
+      Error,
+      "default-export",
+    );
+  } finally {
+    await runOnly.stop();
+  }
+});
+
+Deno.test("job Worker preserves structured command failures", async () => {
+  const worker = new RuntimeWorker({
+    metadata: metadata("job", example("job_error"), "error"),
+    permissions: { read: [new URL("../examples", import.meta.url).pathname] },
+  });
+  try {
+    try {
+      await worker.runJob([]);
+      throw new Error("structured job unexpectedly succeeded");
+    } catch (error) {
+      assertEquals(error instanceof WorkerExecutionError, true);
+      assertEquals(
+        (error as WorkerExecutionError).message,
+        "structured job failure",
+      );
+      assertEquals((error as WorkerExecutionError).code, "invalid_arguments");
+      assertEquals((error as WorkerExecutionError).details, {
+        field: "example",
+      });
+    }
+  } finally {
+    worker.kill();
+  }
+});
+
+Deno.test("database-free jobs do not open or close database scopes", async () => {
+  const jobMetadata = metadata("job", example("job"), "database-free");
+  jobMetadata.databaseAccess = "none";
+  const calls: KernelCallRequest[] = [];
+  const worker = new RuntimeWorker({
+    metadata: jobMetadata,
+    permissions: { read: [new URL("../examples", import.meta.url).pathname] },
+    kernelCall: (call) => {
+      calls.push(call);
+      return Promise.resolve({});
+    },
+  });
+  try {
+    assertEquals(await worker.runJob(["input"]), { input: "input" });
+    assertEquals(calls, []);
+  } finally {
+    await worker.stop();
+  }
+});
+
+Deno.test("job secure inputs are isolated and cleared after failures", async () => {
+  const first = new RuntimeWorker({
+    metadata: metadata("job", example("job_secret"), "secret-first"),
+    permissions: { read: [new URL("..", import.meta.url).pathname] },
+  });
+  const second = new RuntimeWorker({
+    metadata: metadata("job", example("job_secret"), "secret-second"),
+    permissions: { read: [new URL("..", import.meta.url).pathname] },
+  });
+  try {
+    const values = await Promise.all([
+      first.runJob(["password"], { password: "first-private-value" }),
+      second.runJob(["password"], { password: "second-private-value" }),
+    ]);
+    assertEquals(values, ["first-private-value", "second-private-value"]);
+    await assertRejects(
+      () => first.runJob(["password", true], { password: "never-leak-this" }),
+      Error,
+      "deliberate job failure",
+    );
+    assertEquals(await first.runJob(["password"]), "missing");
+    assertEquals(JSON.stringify(first.logs).includes("never-leak-this"), false);
+  } finally {
+    await Promise.all([first.stop(), second.stop()]);
   }
 });
 
@@ -82,6 +179,44 @@ Deno.test("service Worker transfers request and response streams", async () => {
     assertEquals(await response.text(), "POST:/large:streamed:upload-stream");
   } finally {
     await worker.stop();
+  }
+});
+
+Deno.test("jobs and services both have unrestricted outbound network access", async () => {
+  const external = Deno.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    onListen() {},
+  }, () => new Response("external-api"));
+  const address = external.addr as Deno.NetAddr;
+  const target = `http://127.0.0.1:${address.port}/value`;
+  const permissions = {
+    read: [new URL("../examples", import.meta.url).pathname],
+    net: true as const,
+    import: true as const,
+  };
+  const job = new RuntimeWorker({
+    metadata: metadata("job", example("job_network"), "network-job"),
+    permissions,
+  });
+  const service = new RuntimeWorker({
+    metadata: metadata(
+      "service",
+      example("service_network"),
+      "network-service",
+    ),
+    permissions,
+  });
+  try {
+    assertEquals(await job.runJob([target]), "external-api");
+    const response = await service.dispatchService(
+      new Request(`http://service.test/?target=${encodeURIComponent(target)}`),
+    );
+    assertEquals(response.status, 200);
+    assertEquals(await response.text(), "external-api");
+  } finally {
+    await Promise.all([job.stop(), service.stop()]);
+    await external.shutdown();
   }
 });
 
@@ -122,8 +257,8 @@ Deno.test("stateless service Worker bridges WebSocket routes without buffering m
     },
     auth: {
       authenticated: true,
-      realm: "bootstrap-admin",
-      userId: "bootstrap-admin:Admin",
+      realm: "user",
+      userId: "user:Admin",
       username: "Admin",
       authVersion: 1,
     },
@@ -188,22 +323,22 @@ Deno.test("service Worker bridges typed kernel authentication calls", async () =
     permissions: { read: [new URL("../examples", import.meta.url).pathname] },
     kernelCall: (call) => {
       calls.push(call);
-      if (call.operation === "auth.bootstrapLogin") {
+      if (call.operation === "auth.login") {
         return Promise.resolve({
           authenticated: true,
           user: {
-            id: "bootstrap-admin:Admin",
+            id: "user:Admin",
             username: "Admin",
-            realm: "bootstrap-admin",
+            realm: "user",
           },
           setCookie: "the8020_auth=opaque; HttpOnly; Path=/",
         });
       }
       if (call.operation === "admin.execute") {
         return Promise.resolve({
-          protocol_version: 1,
+          protocol_version: 2,
           success: true,
-          result: { services: [{ service_id: "core/example/service" }] },
+          result: { ready: true },
         });
       }
       if (call.operation === "database.execute") {
@@ -240,10 +375,11 @@ Deno.test("service Worker bridges typed kernel authentication calls", async () =
     );
     assertEquals((await login.json()).authenticated, true);
     assertEquals(calls[0], {
-      operation: "auth.bootstrapLogin",
+      operation: "auth.login",
       arguments: { username: "Admin", password: "private" },
       requestId: "request-auth-1",
       serviceId: "example/auth/login",
+      workloadId: "workload-kernel",
       executionId: "execution-kernel",
       workerId: "worker-kernel",
       persistentExecutionId: undefined,
@@ -260,12 +396,10 @@ Deno.test("service Worker bridges typed kernel authentication calls", async () =
       new Request("http://service/admin"),
       { ...requestMetadata, requestId: "request-admin-1" },
     );
-    assertEquals(await admin.json(), {
-      services: [{ service_id: "core/example/service" }],
-    });
+    assertEquals(await admin.json(), { ready: true });
     assertEquals(applicationCalls()[2]?.operation, "admin.execute");
     assertEquals(applicationCalls()[2]?.arguments, {
-      command_id: "service.list",
+      command_id: "kernel.status",
       arguments: {},
     });
     const query = await worker.dispatchService(
@@ -336,7 +470,8 @@ Deno.test("service Worker reads database info during module initialization", asy
     assertEquals(calls.length, 1);
     assertEquals(calls[0]?.operation, "database.info");
     assertEquals(calls[0]?.requestId, undefined);
-    assertEquals(calls[0]?.serviceId, undefined);
+    assertEquals(calls[0]?.serviceId, "workload-db-info");
+    assertEquals(calls[0]?.workloadId, "workload-db-info");
     const response = await worker.dispatchService(
       new Request("http://service/database-info"),
     );
@@ -414,7 +549,7 @@ Deno.test("Worker permissions deny undeclared host reads", async () => {
   });
   try {
     await assertRejects(
-      () => worker.runJob(null),
+      () => worker.runJob([]),
       Error,
       "Requires read access",
     );
@@ -429,7 +564,7 @@ Deno.test("nested Workers remain available within the parent envelope", async ()
     permissions: { read: [new URL("../examples", import.meta.url).pathname] },
   });
   try {
-    assertEquals(await worker.runJob(null), "nested-ok");
+    assertEquals(await worker.runJob([]), "nested-ok");
   } finally {
     worker.kill();
   }

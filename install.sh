@@ -137,70 +137,28 @@ find "$DEVELOPMENT_DIR/generated" -name '*.go' -type f -print0 | xargs -0 "$GOFM
 "$GO_CMD" -C "$DEVELOPMENT_DIR/generated" build -mod=readonly -trimpath -o "$DEVELOPMENT_DIR/bin/admin" ./cmd/admin
 
 KERNEL="$DEVELOPMENT_DIR/bin/kernel"
-LAYOUT_FILE="$INSTANCE_ROOT/node/kernel/paths.toml"
+KERNEL_CONFIG="$INSTANCE_ROOT/kernel.toml"
 NEW_LAYOUT=false
-if [[ ! -f "$LAYOUT_FILE" ]]; then
+if [[ ! -f "$KERNEL_CONFIG" ]]; then
   NEW_LAYOUT=true
   echo "platform build [2/5]: initializing instance layout" >&2
   "$KERNEL" --root "$INSTANCE_ROOT" --init-defaults --init-only
 else
   echo "platform build [2/5]: using initialized instance layout" >&2
 fi
-if [[ ! -f "$LAYOUT_FILE" ]]; then
-  echo "kernel initialization did not create $LAYOUT_FILE" >&2
+if [[ ! -f "$KERNEL_CONFIG" ]]; then
+  echo "kernel initialization did not create $KERNEL_CONFIG" >&2
   exit 1
 fi
-
-layout_path() {
-  local key=$1
-  sed -nE "s/^${key}[[:space:]]*=[[:space:]]*['\"]([^'\"]+)['\"]$/\\1/p" "$LAYOUT_FILE" | head -n 1
-}
-
-CONFIG_ROOT=$(layout_path config)
-STATE_ROOT=$(layout_path state)
-PACKAGES_ROOT=$(layout_path packages)
-if [[ -z "$CONFIG_ROOT" || ! -d "$CONFIG_ROOT" || -z "$STATE_ROOT" || ! -d "$STATE_ROOT" || -z "$PACKAGES_ROOT" || ! -d "$PACKAGES_ROOT" ]]; then
-  echo "initialized layout has invalid configuration, state, or package roots" >&2
+PACKAGES_ROOT="$INSTANCE_ROOT/packages"
+if [[ ! -d "$PACKAGES_ROOT" || ! -d "$INSTANCE_ROOT/users" ]]; then
+  echo "initialized layout is missing its package or user root" >&2
   exit 1
 fi
-CONFIG_RUNTIME="$CONFIG_ROOT/runtime"
 NODE_KERNEL="$INSTANCE_ROOT/node/kernel"
 NODE_RUNTIME="$NODE_KERNEL/runtime"
-mkdir -p "$CONFIG_RUNTIME" "$NODE_RUNTIME/images/rootless" "$NODE_RUNTIME/images/full" "$NODE_RUNTIME/images/development" "$NODE_KERNEL/bin"
-
-# Installation, not the kernel, owns repository defaults. Shared and node-local
-# operator files are created only when absent; the two empty files created by a
-# brand-new layout receive their initial schema templates here.
-if [[ "$NEW_LAYOUT" == true ]]; then
-  install -m 0600 "$SOURCE_ROOT/defaults/config/settings.toml" "$CONFIG_ROOT/settings.toml"
-  install -m 0600 "$SOURCE_ROOT/defaults/node/kernel/settings.toml" "$NODE_KERNEL/settings.toml"
-fi
-while IFS= read -r -d '' directory; do
-  relative=${directory#"$SOURCE_ROOT/defaults/config"/}
-  [[ "$directory" == "$SOURCE_ROOT/defaults/config" ]] && relative=""
-  [[ "$relative" == runtime || "$relative" == runtime/* ]] && continue
-  mkdir -p "$CONFIG_ROOT/$relative"
-done < <(find "$SOURCE_ROOT/defaults/config" -type d -print0)
-while IFS= read -r -d '' source; do
-  relative=${source#"$SOURCE_ROOT/defaults/config"/}
-  [[ "$relative" == runtime/* ]] && continue
-  destination="$CONFIG_ROOT/$relative"
-  if [[ ! -e "$destination" ]]; then
-    install -m 0600 "$source" "$destination"
-  fi
-done < <(find "$SOURCE_ROOT/defaults/config" -type f -print0)
-while IFS= read -r -d '' directory; do
-  relative=${directory#"$SOURCE_ROOT/defaults/node"/}
-  [[ "$directory" == "$SOURCE_ROOT/defaults/node" ]] && relative=""
-  mkdir -p "$INSTANCE_ROOT/node/$relative"
-done < <(find "$SOURCE_ROOT/defaults/node" -type d -print0)
-while IFS= read -r -d '' source; do
-  relative=${source#"$SOURCE_ROOT/defaults/node"/}
-  destination="$INSTANCE_ROOT/node/$relative"
-  if [[ ! -e "$destination" ]]; then
-    install -m 0600 "$source" "$destination"
-  fi
-done < <(find "$SOURCE_ROOT/defaults/node" -type f -print0)
+RUNTIME_DEFINITIONS="$NODE_RUNTIME/definitions"
+mkdir -p "$NODE_RUNTIME/images/rootless" "$NODE_RUNTIME/images/full" "$NODE_RUNTIME/images/development" "$NODE_KERNEL/bin"
 
 # Development helper scripts are platform-owned and mounted read-only into
 # every development sandbox. Refresh the complete tree so removed helpers do
@@ -258,73 +216,107 @@ if [[ -n "$SCRIPTS_PREVIOUS" ]]; then
 fi
 trap - EXIT
 
-# Package defaults establish desired state only for an empty index. Once any
-# package has been declared, the shared index is entirely operator-owned.
-PACKAGE_INDEX_ROOT="$STATE_ROOT/package-index"
-mkdir -p "$PACKAGE_INDEX_ROOT"
-if ! find "$PACKAGE_INDEX_ROOT" -mindepth 2 -maxdepth 2 -type f -name '*.toml' -print -quit | grep -q .; then
-  while IFS= read -r -d '' directory; do
-    relative=${directory#"$SOURCE_ROOT/defaults/state/package-index"/}
-    [[ "$directory" == "$SOURCE_ROOT/defaults/state/package-index" ]] && relative=""
-    install -d -m 0755 "$PACKAGE_INDEX_ROOT/$relative"
-  done < <(find "$SOURCE_ROOT/defaults/state/package-index" -type d -print0)
-  while IFS= read -r -d '' source; do
-    relative=${source#"$SOURCE_ROOT/defaults/state/package-index"/}
-    install -m 0600 "$source" "$PACKAGE_INDEX_ROOT/$relative"
-  done < <(find "$SOURCE_ROOT/defaults/state/package-index" -type f -name '*.toml' -print0)
-fi
-
-# Seed package content exactly once as part of a fresh instance installation.
-# Existing instances update packages only through an explicit synchronization.
+# A fresh node stages the immutable bootstrap package set once. The database
+# records desired and active packages during first boot and is authoritative
+# thereafter. Local source roots are a development/test input only.
 if [[ "$NEW_LAYOUT" == true ]]; then
-  echo "synchronizing initial indexed packages" >&2
-  "$KERNEL" --root "$INSTANCE_ROOT" --init-only --synchronize-packages
+  BOOTSTRAP_SOURCE_ROOT=${THE8020_BOOTSTRAP_SOURCE_ROOT:-"$(dirname "$SOURCE_ROOT")"}
+  while IFS=$'\t' read -r package_id package_source; do
+    [[ -n "$package_id" && -n "$package_source" ]] || continue
+    if [[ ! "$package_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+      echo "invalid bootstrap package ID: $package_id" >&2
+      exit 1
+    fi
+    namespace=${package_id%%/*}
+    repository=${package_id#*/}
+    namespace_root="$PACKAGES_ROOT/$namespace"
+    destination="$namespace_root/$repository"
+    [[ ! -e "$destination" ]] || continue
+    install -d -m 0755 "$namespace_root"
+    package_stage=$(mktemp -d "$namespace_root/.${repository}.install.XXXXXX")
+    local_source="$BOOTSTRAP_SOURCE_ROOT/$repository"
+    if [[ ! -f "$local_source/package.toml" ]]; then
+      local_source="$BOOTSTRAP_SOURCE_ROOT/$namespace/$repository"
+    fi
+    if [[ -f "$local_source/package.toml" ]]; then
+      cp -a "$local_source/." "$package_stage/"
+      rm -rf -- "$package_stage/.git" "$package_stage/.development" "$package_stage/node_modules"
+    else
+      git clone --quiet -- "$package_source" "$package_stage"
+    fi
+    if [[ ! -f "$package_stage/package.toml" ]]; then
+      rm -rf -- "$package_stage"
+      echo "bootstrap package is missing package.toml: $package_id" >&2
+      exit 1
+    fi
+    # Local workspace snapshots include current uncommitted development source.
+    # Give that exact snapshot a real commit so the database never needs a
+    # second, filesystem-only package identity and later activation works
+    # through the same Git path as remote packages.
+    if [[ ! -d "$package_stage/.git" ]]; then
+      git -C "$package_stage" init --quiet --initial-branch=main
+      git -C "$package_stage" add --all
+      GIT_AUTHOR_DATE='2000-01-01T00:00:00Z' \
+      GIT_COMMITTER_DATE='2000-01-01T00:00:00Z' \
+        git -C "$package_stage" \
+        -c user.name='80|20 Installer' \
+        -c user.email='installer@the8020.local' \
+        -c commit.gpgsign=false \
+        commit --quiet --message='Bootstrap package snapshot'
+    fi
+    mv -- "$package_stage" "$destination"
+  done < <(awk -F '"' '
+    /^\[\[packages\]\]$/ { if (id != "") print id "\t" source; id=""; source=""; next }
+    /^id[[:space:]]*=/ { id=$2; next }
+    /^source[[:space:]]*=/ { source=$2; next }
+    END { if (id != "") print id "\t" source }
+  ' "$SOURCE_ROOT/defaults/bootstrap-packages.toml")
 fi
 
 # Runtime definitions and source are one platform-owned build-input tree.
 # Replace it atomically so removed tracked files cannot survive indefinitely in
-# an existing instance; other shared configuration remains untouched.
-CONFIG_RUNTIME_STAGE=$(mktemp -d "$CONFIG_ROOT/.runtime-install.XXXXXX")
-CONFIG_RUNTIME_PREVIOUS=""
+# an existing instance.
+RUNTIME_DEFINITIONS_STAGE=$(mktemp -d "$NODE_RUNTIME/.definitions-install.XXXXXX")
+RUNTIME_DEFINITIONS_PREVIOUS=""
 cleanup_runtime_refresh() {
-  if [[ -n "$CONFIG_RUNTIME_STAGE" && -e "$CONFIG_RUNTIME_STAGE" ]]; then
-    rm -rf -- "$CONFIG_RUNTIME_STAGE"
+  if [[ -n "$RUNTIME_DEFINITIONS_STAGE" && -e "$RUNTIME_DEFINITIONS_STAGE" ]]; then
+    rm -rf -- "$RUNTIME_DEFINITIONS_STAGE"
   fi
-  if [[ -n "$CONFIG_RUNTIME_PREVIOUS" && -e "$CONFIG_RUNTIME_PREVIOUS" && ! -e "$CONFIG_RUNTIME" ]]; then
-    mv -- "$CONFIG_RUNTIME_PREVIOUS" "$CONFIG_RUNTIME"
+  if [[ -n "$RUNTIME_DEFINITIONS_PREVIOUS" && -e "$RUNTIME_DEFINITIONS_PREVIOUS" && ! -e "$RUNTIME_DEFINITIONS" ]]; then
+    mv -- "$RUNTIME_DEFINITIONS_PREVIOUS" "$RUNTIME_DEFINITIONS"
   fi
 }
 trap cleanup_runtime_refresh EXIT
-chmod 0755 "$CONFIG_RUNTIME_STAGE"
+chmod 0755 "$RUNTIME_DEFINITIONS_STAGE"
 while IFS= read -r -d '' directory; do
   relative=${directory#"$RUNTIME_SOURCE"/}
   [[ "$directory" == "$RUNTIME_SOURCE" ]] && relative=""
-  install -d -m 0755 "$CONFIG_RUNTIME_STAGE/$relative"
+  install -d -m 0755 "$RUNTIME_DEFINITIONS_STAGE/$relative"
 done < <(find "$RUNTIME_SOURCE" -type d -print0)
 while IFS= read -r -d '' source; do
   relative=${source#"$RUNTIME_SOURCE"/}
-  install -m 0644 "$source" "$CONFIG_RUNTIME_STAGE/$relative"
+  install -m 0644 "$source" "$RUNTIME_DEFINITIONS_STAGE/$relative"
 done < <(find "$RUNTIME_SOURCE" -type f -print0)
-if [[ -e "$CONFIG_RUNTIME" ]]; then
-  CONFIG_RUNTIME_PREVIOUS="$CONFIG_ROOT/.runtime-previous.$$"
-  if [[ -e "$CONFIG_RUNTIME_PREVIOUS" ]]; then
-    echo "runtime configuration backup path already exists: $CONFIG_RUNTIME_PREVIOUS" >&2
+if [[ -e "$RUNTIME_DEFINITIONS" ]]; then
+  RUNTIME_DEFINITIONS_PREVIOUS="$NODE_RUNTIME/.definitions-previous.$$"
+  if [[ -e "$RUNTIME_DEFINITIONS_PREVIOUS" ]]; then
+    echo "runtime definition backup path already exists: $RUNTIME_DEFINITIONS_PREVIOUS" >&2
     exit 1
   fi
-  mv -- "$CONFIG_RUNTIME" "$CONFIG_RUNTIME_PREVIOUS"
+  mv -- "$RUNTIME_DEFINITIONS" "$RUNTIME_DEFINITIONS_PREVIOUS"
 fi
-if ! mv -- "$CONFIG_RUNTIME_STAGE" "$CONFIG_RUNTIME"; then
+if ! mv -- "$RUNTIME_DEFINITIONS_STAGE" "$RUNTIME_DEFINITIONS"; then
   exit 1
 fi
-CONFIG_RUNTIME_STAGE=""
-if [[ -n "$CONFIG_RUNTIME_PREVIOUS" ]]; then
-  rm -rf -- "$CONFIG_RUNTIME_PREVIOUS"
-  CONFIG_RUNTIME_PREVIOUS=""
+RUNTIME_DEFINITIONS_STAGE=""
+if [[ -n "$RUNTIME_DEFINITIONS_PREVIOUS" ]]; then
+  rm -rf -- "$RUNTIME_DEFINITIONS_PREVIOUS"
+  RUNTIME_DEFINITIONS_PREVIOUS=""
 fi
 trap - EXIT
 
-if [[ ! -f "$CONFIG_RUNTIME/versions.toml" || ! -f "$CONFIG_RUNTIME/image/Containerfile" || ! -f "$CONFIG_RUNTIME/image/deno.json" ]]; then
-  echo "instance runtime configuration is incomplete: $CONFIG_RUNTIME" >&2
+if [[ ! -f "$RUNTIME_DEFINITIONS/versions.toml" || ! -f "$RUNTIME_DEFINITIONS/image/Containerfile" || ! -f "$RUNTIME_DEFINITIONS/image/deno.json" ]]; then
+  echo "instance runtime definitions are incomplete: $RUNTIME_DEFINITIONS" >&2
   exit 1
 fi
 
@@ -332,18 +324,18 @@ echo "platform build [3/5]: refreshing portable generic runtime image" >&2
 bash "$RUNTIME_SOURCE/install-portable.sh" \
   "$SOURCE_ROOT" \
   "$NODE_RUNTIME/images/rootless" \
-  "$CONFIG_RUNTIME/versions.toml" \
-  "$CONFIG_RUNTIME/image/Containerfile" \
-  "$CONFIG_RUNTIME/image/deno.json" \
+  "$RUNTIME_DEFINITIONS/versions.toml" \
+  "$RUNTIME_DEFINITIONS/image/Containerfile" \
+  "$RUNTIME_DEFINITIONS/image/deno.json" \
   "$NODE_RUNTIME" \
   "$NODE_KERNEL/bin/runsc"
 
 echo "platform build [4/5]: refreshing portable development image" >&2
 bash "$RUNTIME_SOURCE/development/install-portable.sh" \
   "$SOURCE_ROOT" \
-  "$CONFIG_RUNTIME/development" \
+  "$RUNTIME_DEFINITIONS/development" \
   "$NODE_RUNTIME/images/development" \
-  "$CONFIG_RUNTIME/versions.toml" \
+  "$RUNTIME_DEFINITIONS/versions.toml" \
   "$NODE_RUNTIME"
 
 has_effective_capability() {
@@ -368,7 +360,7 @@ full_runtime_host_available() {
 FULL_RUNTIME_HOST=false
 REQUESTED_RUNTIME_MODE=${THE8020_SANDBOX_RUNTIME_MODE:-auto}
 if [[ "$SETUP_RUNTIME_HOST" == true && "$REQUESTED_RUNTIME_MODE" != rootless ]] && full_runtime_host_available; then
-  bash "$RUNTIME_SOURCE/install-host.sh" "$SOURCE_ROOT" "$CONFIG_RUNTIME/versions.toml" "$NODE_RUNTIME"
+  bash "$RUNTIME_SOURCE/install-host.sh" "$SOURCE_ROOT" "$RUNTIME_DEFINITIONS/versions.toml" "$NODE_RUNTIME"
   FULL_RUNTIME_HOST=true
 elif [[ "$REQUESTED_RUNTIME_MODE" == full ]]; then
   echo "full sandbox mode was requested but SYS_ADMIN, NET_ADMIN, and writable cgroup v2 authority are unavailable" >&2
@@ -378,17 +370,17 @@ else
 fi
 
 if [[ "$FULL_RUNTIME_HOST" == true ]]; then
-  INSTANCE_UUID=$(sed -nE 's/^uuid[[:space:]]*=[[:space:]]*"([^"]+)"$/\1/p' "$NODE_KERNEL/instance.toml" | head -n 1)
+  INSTANCE_UUID=$(sed -nE 's/^id[[:space:]]*=[[:space:]]*"([^"]+)"$/\1/p' "$KERNEL_CONFIG" | head -n 1)
   if [[ -z "$INSTANCE_UUID" ]]; then
     echo "node identity is missing" >&2
     exit 1
   fi
   bash "$RUNTIME_SOURCE/build-image.sh" \
-    "$SOURCE_ROOT" "$CONFIG_RUNTIME/image" "$NODE_RUNTIME/images/full" \
-    "$CONFIG_RUNTIME/versions.toml" "$NODE_RUNTIME" "$INSTANCE_UUID"
+    "$SOURCE_ROOT" "$RUNTIME_DEFINITIONS/image" "$NODE_RUNTIME/images/full" \
+    "$RUNTIME_DEFINITIONS/versions.toml" "$NODE_RUNTIME" "$INSTANCE_UUID"
   bash "$RUNTIME_SOURCE/development/build-image.sh" \
-    "$SOURCE_ROOT" "$CONFIG_RUNTIME/development" "$NODE_RUNTIME/images/development" \
-    "$CONFIG_RUNTIME/versions.toml" "$NODE_RUNTIME"
+    "$SOURCE_ROOT" "$RUNTIME_DEFINITIONS/development" "$NODE_RUNTIME/images/development" \
+    "$RUNTIME_DEFINITIONS/versions.toml" "$NODE_RUNTIME"
 fi
 
 echo "platform build [5/5]: verifying platform artifacts" >&2

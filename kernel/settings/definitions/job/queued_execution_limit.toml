@@ -1,6 +1,6 @@
 key = "job.default.queued_execution_limit"
 type = "integer"
-storage = "node"
+storage = "global"
 default = 1024
 environment = "THE8020_JOB_DEFAULT_QUEUED_EXECUTION_LIMIT"
 minimum = 1

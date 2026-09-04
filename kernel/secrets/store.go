@@ -1,28 +1,25 @@
-// Package secrets owns global named secret persistence. Values remain outside
-// sandboxes and are returned only by an explicit read or trusted resolver.
+// Package secrets owns shared named secrets. Values remain kernel-only and are
+// returned only by an explicit read or trusted resolver.
 package secrets
 
 import (
 	"context"
+	"crypto/rand"
+	"database/sql"
+	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
 	"os"
-	"path/filepath"
-	"sort"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
-	"github.com/pelletier/go-toml/v2"
-	"golang.org/x/sys/unix"
+	"the8020/kernel/database"
 )
 
 const (
-	documentSchema   = 1
-	maximumFileSize  = 2 << 20
 	maximumValueSize = 64 << 10
+	secretsTable     = `"the8020__secrets__secrets"`
 )
 
 // Summary deliberately omits the stored value.
@@ -33,75 +30,54 @@ type Summary struct {
 
 // Secret is returned only by the explicit get operation.
 type Secret struct {
-	Name      string    `toml:"name" json:"name"`
-	Value     string    `toml:"value" json:"value"`
-	UpdatedAt time.Time `toml:"updated_at" json:"updated_at"`
-}
-
-type document struct {
-	Schema  int      `toml:"schema"`
-	Secrets []Secret `toml:"secrets"`
+	Name      string    `json:"name"`
+	Value     string    `json:"value"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type Config struct {
-	Path        string
-	LockTimeout time.Duration
-	Now         func() time.Time
+	Database database.Store
+	Now      func() time.Time
 }
 
 type Store struct {
-	path        string
-	lockPath    string
-	lockTimeout time.Duration
-	now         func() time.Time
-	mu          sync.RWMutex
+	database database.Store
+	now      func() time.Time
 }
 
 func New(config Config) (*Store, error) {
-	if !filepath.IsAbs(config.Path) {
-		return nil, errors.New("secrets path must be absolute")
-	}
-	directory := filepath.Dir(config.Path)
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return nil, fmt.Errorf("create secrets directory: %w", err)
-	}
-	directoryInfo, err := os.Lstat(directory)
-	if err != nil || !directoryInfo.IsDir() || directoryInfo.Mode()&os.ModeSymlink != 0 {
-		return nil, errors.New("secrets directory must be a real directory")
-	}
-	if err := os.Chmod(directory, 0o700); err != nil {
-		return nil, fmt.Errorf("restrict secrets directory: %w", err)
-	}
-	if config.LockTimeout <= 0 {
-		config.LockTimeout = 5 * time.Second
+	if config.Database == nil {
+		return nil, errors.New("database is required")
 	}
 	if config.Now == nil {
 		config.Now = time.Now
 	}
-	store := &Store{
-		path: config.Path, lockPath: config.Path + ".lock",
-		lockTimeout: config.LockTimeout, now: config.Now,
-	}
-	if _, err := store.read(); err != nil {
-		return nil, err
+	store := &Store{database: config.Database, now: config.Now}
+	if _, err := store.List(); err != nil {
+		return nil, fmt.Errorf("open secrets table: %w", err)
 	}
 	return store, nil
 }
 
-func (s *Store) Path() string { return s.path }
-
 func (s *Store) List() ([]Summary, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	document, err := s.read()
+	rows, err := s.database.QueryContext(context.Background(), `SELECT "name", "updatedAt" FROM `+secretsTable+` ORDER BY "name"`)
 	if err != nil {
 		return nil, err
 	}
-	result := make([]Summary, 0, len(document.Secrets))
-	for _, secret := range document.Secrets {
-		result = append(result, Summary{Name: secret.Name, UpdatedAt: secret.UpdatedAt})
+	defer rows.Close()
+	result := []Summary{}
+	for rows.Next() {
+		var item Summary
+		var updated any
+		if err := rows.Scan(&item.Name, &updated); err != nil {
+			return nil, err
+		}
+		if item.UpdatedAt, err = database.DecodeTime(updated); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
 	}
-	return result, nil
+	return result, rows.Err()
 }
 
 func (s *Store) Get(name string) (Secret, error) {
@@ -109,18 +85,17 @@ func (s *Store) Get(name string) (Secret, error) {
 	if err != nil {
 		return Secret{}, err
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	document, err := s.read()
+	var secret Secret
+	var updated any
+	err = s.database.QueryRowContext(context.Background(), `SELECT "name", "value", "updatedAt" FROM `+secretsTable+` WHERE "name" = $1`, name).Scan(&secret.Name, &secret.Value, &updated)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Secret{}, fmt.Errorf("secret %q: %w", name, os.ErrNotExist)
+	}
 	if err != nil {
 		return Secret{}, err
 	}
-	for _, secret := range document.Secrets {
-		if secret.Name == name {
-			return secret, nil
-		}
-	}
-	return Secret{}, fmt.Errorf("secret %q: %w", name, os.ErrNotExist)
+	secret.UpdatedAt, err = database.DecodeTime(updated)
+	return secret, err
 }
 
 // SecretValue is the narrow resolver used by kernel-owned operations.
@@ -146,39 +121,34 @@ func (s *Store) Set(ctx context.Context, name, value string) (Summary, error) {
 	if len([]byte(value)) > maximumValueSize {
 		return Summary{}, fmt.Errorf("secret value exceeds %d bytes", maximumValueSize)
 	}
-	if err := ctx.Err(); err != nil {
-		return Summary{}, err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	unlock, err := s.acquire(ctx)
+	now := s.now().UTC()
+	_, err = s.database.ExecContext(ctx, `INSERT INTO `+secretsTable+` ("name", "value", "updatedAt") VALUES ($1, $2, $3) ON CONFLICT ("name") DO UPDATE SET "value" = excluded."value", "updatedAt" = excluded."updatedAt"`, name, value, database.EncodeTime(s.database, now))
 	if err != nil {
 		return Summary{}, err
 	}
-	defer unlock()
-	document, err := s.read()
+	return Summary{Name: name, UpdatedAt: now}, nil
+}
+
+// EnsureRandom returns one shared random secret, creating it exactly once.
+// Concurrent kernels may generate candidates, but all read the winning row.
+func (s *Store) EnsureRandom(ctx context.Context, name string, size int) (Secret, error) {
+	name, err := normalizeName(name)
 	if err != nil {
-		return Summary{}, err
+		return Secret{}, err
 	}
-	updated := Secret{Name: name, Value: value, UpdatedAt: s.now().UTC()}
-	found := false
-	for index := range document.Secrets {
-		if document.Secrets[index].Name == name {
-			document.Secrets[index] = updated
-			found = true
-			break
-		}
+	if size < 16 || size > maximumValueSize {
+		return Secret{}, errors.New("random secret size must be between 16 and 65536 bytes")
 	}
-	if !found {
-		document.Secrets = append(document.Secrets, updated)
+	value := make([]byte, size)
+	if _, err := rand.Read(value); err != nil {
+		return Secret{}, err
 	}
-	sort.Slice(document.Secrets, func(i, j int) bool {
-		return document.Secrets[i].Name < document.Secrets[j].Name
-	})
-	if err := s.write(document); err != nil {
-		return Summary{}, err
+	now := s.now().UTC()
+	encoded := base64.RawURLEncoding.EncodeToString(value)
+	if _, err := s.database.ExecContext(ctx, `INSERT INTO `+secretsTable+` ("name", "value", "updatedAt") VALUES ($1, $2, $3) ON CONFLICT ("name") DO NOTHING`, name, encoded, database.EncodeTime(s.database, now)); err != nil {
+		return Secret{}, err
 	}
-	return Summary{Name: updated.Name, UpdatedAt: updated.UpdatedAt}, nil
+	return s.Get(name)
 }
 
 func normalizeName(value string) (string, error) {
@@ -209,132 +179,4 @@ func ValidateName(value string) error {
 		return errors.New("secret name must not contain surrounding whitespace")
 	}
 	return nil
-}
-
-func (s *Store) read() (document, error) {
-	metadata, err := os.Lstat(s.path)
-	if errors.Is(err, os.ErrNotExist) {
-		return document{Schema: documentSchema, Secrets: []Secret{}}, nil
-	}
-	if err != nil {
-		return document{}, fmt.Errorf("inspect secrets: %w", err)
-	}
-	if !metadata.Mode().IsRegular() || metadata.Mode()&os.ModeSymlink != 0 || metadata.Mode().Perm()&0o077 != 0 || metadata.Size() > maximumFileSize {
-		return document{}, errors.New("secrets file must be a bounded private regular file")
-	}
-	file, err := os.Open(s.path)
-	if err != nil {
-		return document{}, fmt.Errorf("open secrets: %w", err)
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return document{}, fmt.Errorf("inspect secrets: %w", err)
-	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || !os.SameFile(metadata, info) || info.Size() > maximumFileSize {
-		return document{}, errors.New("secrets file changed while opening")
-	}
-	data := make([]byte, info.Size())
-	if _, err := io.ReadFull(file, data); err != nil {
-		return document{}, fmt.Errorf("read secrets: %w", err)
-	}
-	var decoded document
-	if err := toml.Unmarshal(data, &decoded); err != nil {
-		return document{}, fmt.Errorf("decode secrets: %w", err)
-	}
-	if decoded.Schema != documentSchema {
-		return document{}, fmt.Errorf("secrets schema must equal %d", documentSchema)
-	}
-	seen := make(map[string]bool, len(decoded.Secrets))
-	for _, secret := range decoded.Secrets {
-		name, nameErr := normalizeName(secret.Name)
-		if nameErr != nil || name != secret.Name || seen[name] || secret.Value == "" || len([]byte(secret.Value)) > maximumValueSize || secret.UpdatedAt.IsZero() {
-			return document{}, errors.New("secrets file contains an invalid entry")
-		}
-		seen[name] = true
-	}
-	sort.Slice(decoded.Secrets, func(i, j int) bool {
-		return decoded.Secrets[i].Name < decoded.Secrets[j].Name
-	})
-	return decoded, nil
-}
-
-func (s *Store) write(value document) error {
-	data, err := toml.Marshal(value)
-	if err != nil {
-		return fmt.Errorf("encode secrets: %w", err)
-	}
-	directory := filepath.Dir(s.path)
-	temporary, err := os.CreateTemp(directory, ".secrets-*.tmp")
-	if err != nil {
-		return fmt.Errorf("create secrets temporary file: %w", err)
-	}
-	name := temporary.Name()
-	defer os.Remove(name)
-	if err = temporary.Chmod(0o600); err == nil {
-		_, err = temporary.Write(data)
-	}
-	if err == nil {
-		err = temporary.Sync()
-	}
-	if closeErr := temporary.Close(); err == nil {
-		err = closeErr
-	}
-	if err == nil {
-		err = os.Rename(name, s.path)
-	}
-	if err == nil {
-		err = syncDirectory(directory)
-	}
-	if err != nil {
-		return fmt.Errorf("write secrets: %w", err)
-	}
-	return nil
-}
-
-func (s *Store) acquire(ctx context.Context) (func(), error) {
-	file, err := os.OpenFile(s.lockPath, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("open secrets lock: %w", err)
-	}
-	if err := file.Chmod(0o600); err != nil {
-		_ = file.Close()
-		return nil, fmt.Errorf("restrict secrets lock: %w", err)
-	}
-	deadline := time.Now().Add(s.lockTimeout)
-	for {
-		err = unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB)
-		if err == nil {
-			var once sync.Once
-			return func() {
-				once.Do(func() {
-					_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
-					_ = file.Close()
-				})
-			}, nil
-		}
-		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
-			_ = file.Close()
-			return nil, fmt.Errorf("lock secrets: %w", err)
-		}
-		if time.Now().After(deadline) {
-			_ = file.Close()
-			return nil, errors.New("timed out acquiring secrets lock")
-		}
-		select {
-		case <-ctx.Done():
-			_ = file.Close()
-			return nil, ctx.Err()
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
-}
-
-func syncDirectory(path string) error {
-	directory, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer directory.Close()
-	return directory.Sync()
 }

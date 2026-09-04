@@ -138,24 +138,13 @@ func TestSecretReaderUsesNoEchoConfirmationAndExplicitStdin(t *testing.T) {
 	if _, err := newInteractiveLineReader(strings.NewReader("password\n"), &output).ReadSecret("Password: ", "Confirm password: ", false); err == nil || !strings.Contains(err.Error(), "standard-input option") {
 		t.Fatalf("non-terminal prompt error = %v", err)
 	}
-}
 
-func TestPromptedValueDoesNotReplaceCommandHistory(t *testing.T) {
-	command := "auth bootstrap-admin add"
-	reader, output := newTestTerminalReader(command+"\rprompted-admin\r", 80)
-	if line := readTerminalLine(t, reader); line != command {
-		t.Fatalf("command = %q, want %q", line, command)
+	mismatchReader, mismatchOutput := newTestTerminalReader("first\rsecond\r", 80)
+	if _, err := mismatchReader.ReadSecret("Password: ", "Confirm password: ", false); err == nil || !strings.Contains(err.Error(), "do not match") {
+		t.Fatalf("confirmation mismatch error = %v", err)
 	}
-	reader.AddHistory(command)
-	value, err := reader.ReadValue("Username: ")
-	if err != nil || value != "prompted-admin" {
-		t.Fatalf("prompted value = %q, error = %v", value, err)
-	}
-	if reader.history.Len() != 1 || reader.history.At(0) != command {
-		t.Fatalf("history = %#v, want only %q", reader.history.entries, command)
-	}
-	if !strings.Contains(output.String(), "Username: ") {
-		t.Fatalf("prompt output = %q", output.String())
+	if strings.Contains(mismatchOutput.String(), "first") || strings.Contains(mismatchOutput.String(), "second") {
+		t.Fatalf("terminal echoed mismatched secrets: %q", mismatchOutput.String())
 	}
 }
 
@@ -189,29 +178,26 @@ func TestScannerWriterPreservesSeparateOutputStreams(t *testing.T) {
 func TestInteractiveConsoleStaysOpenAfterSuccessfulKernelShutdown(t *testing.T) {
 	executor := &countingExecutor{}
 	runner := cli.New([]core.Command{
-		{ID: "system.shutdown", Path: []string{"system", "shutdown"}, Summary: "shutdown", Description: "shutdown", RestartBehavior: "stops_kernel"},
-		{ID: "system.status", Path: []string{"system", "status"}, Summary: "status", Description: "status"},
+		{ID: "kernel.shutdown", Path: []string{"kernel.shutdown"}, Summary: "shutdown", Description: "shutdown", RestartBehavior: "stops_kernel"},
+		{ID: "kernel.status", Path: []string{"kernel.status"}, Summary: "status", Description: "status"},
 	}, executor)
 	var output bytes.Buffer
-	code := interactive(context.Background(), runner, strings.NewReader("system shutdown\nsystem status\n"), &output, &output, false)
+	code := interactive(context.Background(), runner, strings.NewReader("kernel.shutdown\nkernel.status\n"), &output, &output, false)
 	if code != 0 || executor.calls != 2 || strings.Count(output.String(), "requested: true") != 2 {
 		t.Fatalf("code=%d calls=%d output=%q", code, executor.calls, output.String())
 	}
 }
 
-func TestInteractiveConsoleResolvesMetadataPromptedValue(t *testing.T) {
+func TestInteractiveConsoleForwardsRawArguments(t *testing.T) {
 	executor := &countingExecutor{}
 	runner := cli.New([]core.Command{{
 		ID: "test.add", Path: []string{"test", "add"}, Summary: "add", Description: "add",
 		Parameters: []core.Parameter{{Name: "username", Type: "string", Required: true, Prompt: "Username: "}},
 	}}, executor)
 	var output bytes.Buffer
-	code := interactive(context.Background(), runner, strings.NewReader("test add\nprompted-admin\n"), &output, &output, false)
-	if code != 0 || executor.calls != 1 || executor.request.Arguments["username"] != "prompted-admin" {
+	code := interactive(context.Background(), runner, strings.NewReader("test add prompted-admin\n"), &output, &output, false)
+	if code != 0 || executor.calls != 1 || strings.Join(executor.request.Argv, "|") != "prompted-admin" {
 		t.Fatalf("code=%d calls=%d request=%#v output=%q", code, executor.calls, executor.request, output.String())
-	}
-	if !strings.Contains(output.String(), "Username: ") {
-		t.Fatalf("output omitted username prompt: %q", output.String())
 	}
 }
 

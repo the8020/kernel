@@ -1,8 +1,0 @@
-key = "auth.bootstrap.cookie.secure"
-type = "boolean"
-storage = "node"
-default = false
-environment = "THE8020_AUTH_BOOTSTRAP_COOKIE_SECURE"
-runtime_mutable = false
-restart_required = true
-description = "Always emit the bootstrap authentication cookie with the Secure attribute."

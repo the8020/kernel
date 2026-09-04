@@ -40,17 +40,15 @@ func TestInitializeIdentityIsStable(t *testing.T) {
 	if first != second {
 		t.Fatalf("identity changed: %s != %s", first, second)
 	}
-	for _, path := range []string{paths.Packages, paths.ConfigAuth, paths.ConfigSecrets, paths.BootstrapSessions, paths.StateServices, paths.StatePackageIndex, paths.StatePackageData, paths.Database, paths.InstanceFile, paths.NodeSettingsFile, paths.GlobalSettingsFile, paths.Run, paths.Logs, paths.Runtime, paths.RuntimeGroups, paths.RuntimeSandboxHistory, paths.RuntimePorts, paths.RuntimeServices, paths.RuntimeServicePools, paths.RuntimeAttachments, paths.RuntimeTemporary, paths.SSH} {
+	for _, path := range []string{paths.Packages, paths.Users, paths.Database, paths.NodeSettingsFile, paths.Run, paths.Logs, paths.Runtime, paths.RuntimeDefinitions, paths.RuntimeGroups, paths.RuntimeSandboxHistory, paths.RuntimePorts, paths.RuntimeServices, paths.RuntimeServicePools, paths.RuntimeAttachments, paths.RuntimeTemporary, paths.SSH} {
 		if _, err := os.Stat(path); err != nil {
 			t.Errorf("missing %s: %v", path, err)
 		}
 	}
-	secretsDirectory, err := os.Stat(paths.ConfigSecrets)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if secretsDirectory.Mode().Perm() != 0o700 {
-		t.Fatalf("secrets directory mode = %v", secretsDirectory.Mode().Perm())
+	for _, obsolete := range []string{filepath.Join(root, "config"), filepath.Join(root, "state")} {
+		if _, err := os.Stat(obsolete); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("obsolete runtime directory exists: %s (%v)", obsolete, err)
+		}
 	}
 	attachments, err := os.Stat(paths.RuntimeAttachments)
 	if err != nil {
@@ -80,33 +78,21 @@ func TestInitializeIdentityIsStable(t *testing.T) {
 	if sshRoot.Mode().Perm() != 0o700 {
 		t.Fatalf("SSH state permissions=%v", sshRoot.Mode().Perm())
 	}
-	bootstrapSessions, err := os.Stat(paths.BootstrapSessions)
+	settingsFile, err := os.Stat(paths.NodeSettingsFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bootstrapSessions.Mode().Perm() != 0o700 {
-		t.Fatalf("bootstrap authentication-session permissions=%v", bootstrapSessions.Mode().Perm())
-	}
-	for _, path := range []string{paths.NodeSettingsFile, paths.GlobalSettingsFile} {
-		settingsFile, err := os.Stat(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if settingsFile.Mode().Perm() != 0o600 {
-			t.Fatalf("settings file %s permissions=%v", path, settingsFile.Mode().Perm())
-		}
+	if settingsFile.Mode().Perm() != 0o600 {
+		t.Fatalf("settings file %s permissions=%v", paths.NodeSettingsFile, settingsFile.Mode().Perm())
 	}
 }
 
-func TestLayoutUsesExplicitSharedRoots(t *testing.T) {
+func TestFixedLayoutRequiresKernelConfiguration(t *testing.T) {
 	root := t.TempDir()
-	shared := t.TempDir()
-	paths, err := WriteLayout(root, Layout{
-		Packages: filepath.Join(shared, "packages"),
-		Config:   filepath.Join(shared, "config"),
-		State:    filepath.Join(shared, "state"),
-		Users:    filepath.Join(shared, "users"),
-	})
+	if _, err := LoadPaths(root); !errors.Is(err, ErrNotInitialized) {
+		t.Fatalf("uninitialized load error = %v", err)
+	}
+	paths, err := Prepare(root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,47 +100,19 @@ func TestLayoutUsesExplicitSharedRoots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Node != filepath.Join(root, "node") || loaded.Kernel != filepath.Join(root, "node", "kernel") {
-		t.Fatalf("node paths = %#v", loaded)
-	}
-	if loaded.Packages != paths.Packages || loaded.Config != paths.Config || loaded.SharedState != paths.SharedState || loaded.Users != paths.Users {
-		t.Fatalf("loaded shared paths differ: %#v != %#v", loaded, paths)
-	}
-	if err := CheckUnixPermissions(paths.Node); err != nil {
-		t.Fatal(err)
+	if loaded != paths {
+		t.Fatalf("loaded fixed paths differ: %#v != %#v", loaded, paths)
 	}
 }
 
-func TestLayoutManagerUpdatesAllRootsAndRejectsOverlapWithoutReplacingLayout(t *testing.T) {
+func TestPrepareUsesOnlyFixedRoots(t *testing.T) {
 	root := t.TempDir()
-	initial, err := WriteLayout(root, Layout{
-		Packages: filepath.Join(root, "packages"), Config: filepath.Join(root, "config"),
-		State: filepath.Join(root, "state"), Users: filepath.Join(root, "users"),
-	})
+	paths, err := Prepare(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	shared := t.TempDir()
-	manager := NewLayoutManager(root)
-	updated, err := manager.Set(Layout{
-		Packages: filepath.Join(shared, "packages"), Config: filepath.Join(shared, "config"),
-		State: filepath.Join(shared, "state"), Users: filepath.Join(shared, "users"),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if updated.Packages != filepath.Join(shared, "packages") || updated.Config != filepath.Join(shared, "config") || updated.State != filepath.Join(shared, "state") || updated.Users != filepath.Join(shared, "users") {
-		t.Fatalf("updated layout = %#v", updated)
-	}
-	if _, err := manager.Set(Layout{Packages: initial.Node, Config: updated.Config, State: updated.State, Users: updated.Users}); err == nil {
-		t.Fatal("layout overlapping node directory was accepted")
-	}
-	if _, err := manager.Set(Layout{Packages: "relative", Config: updated.Config, State: updated.State, Users: updated.Users}); err == nil {
-		t.Fatal("relative administrative layout path was accepted")
-	}
-	current, err := manager.Current()
-	if err != nil || current != updated {
-		t.Fatalf("layout changed after rejected update: %#v, %v", current, err)
+	if paths.Packages != filepath.Join(root, "packages") || paths.Users != filepath.Join(root, "users") || paths.Database != filepath.Join(root, "database") || paths.NodeSettingsFile != filepath.Join(root, "kernel.toml") {
+		t.Fatalf("unexpected fixed paths: %#v", paths)
 	}
 }
 

@@ -55,7 +55,7 @@ name = "detached"
 type = "boolean"
 option = "detached"
 required = false
-description = "Return after the durable execution starts."
+description = "Return after the in-memory execution starts."
 [[parameters]]
 name = "workspace"
 type = "string"

@@ -9,8 +9,9 @@
 
 # Local Contracts
 
-- Public API: `Client`, `New`, `Execute`, and `Close`.
-- Requests and responses use `core` envelopes and protocol version 1.
+- Public API: `Client`, `New`, `Catalog`, `Execute`, and `Close`.
+- Catalogs, requests, and responses use `core` envelopes and protocol version 2.
+  Conditional catalog reads preserve the last process-local revision.
 - Response decoding preserves JSON numbers as `json.Number` so human output never changes large integers into scientific notation or loses integer precision.
 - The five-minute client deadline exceeds bounded package-download and
   sandboxed schema-evaluation deadlines; do not reintroduce a shorter global

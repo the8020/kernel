@@ -1,3 +1,3 @@
-export function run(input: unknown): unknown {
+export default function smoke(input: unknown): unknown {
   return { smoke: true, input };
 }

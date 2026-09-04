@@ -51,7 +51,7 @@ type Config struct {
 	RuntimeRoot                 string
 	LogRoot                     string
 	InstanceUUID                string
-	CallbackAddress             string
+	KernelSocketPath            string
 	SupervisorHeartbeatInterval time.Duration
 	WorkerStopGrace             time.Duration
 	StartTimeout                time.Duration
@@ -67,7 +67,7 @@ type Backend struct {
 	runtimeRoot                 string
 	logRoot                     string
 	instanceUUID                string
-	callbackAddress             string
+	kernelSocketPath            string
 	supervisorHeartbeatInterval time.Duration
 	workerStopGrace             time.Duration
 	startTimeout                time.Duration
@@ -179,7 +179,7 @@ func New(config Config) (*Backend, error) {
 	}
 	return &Backend{
 		runscPath: config.RunscPath, rootFS: config.RootFS, stateRoot: config.StateRoot, runtimeRoot: config.RuntimeRoot,
-		logRoot: config.LogRoot, instanceUUID: config.InstanceUUID, callbackAddress: config.CallbackAddress,
+		logRoot: config.LogRoot, instanceUUID: config.InstanceUUID, kernelSocketPath: config.KernelSocketPath,
 		supervisorHeartbeatInterval: config.SupervisorHeartbeatInterval, workerStopGrace: config.WorkerStopGrace,
 		startTimeout: config.StartTimeout, runner: config.Runner, logger: config.Logger,
 		subreaper: productionRunner, procRoot: "/proc",
@@ -512,8 +512,8 @@ func (b *Backend) Metrics(ctx context.Context, sandboxID string) (model.Resource
 
 func (b *Backend) ociSpec(sandbox model.SandboxSpec, bundle string) (specs.Spec, error) {
 	processConfig := backend.ProcessConfig{
-		NodeID:          b.instanceUUID,
-		CallbackAddress: b.callbackAddress, SupervisorHost: "127.0.0.1", SupervisorPort: sandbox.Network.SupervisorEndpointPort(),
+		NodeID:           b.instanceUUID,
+		KernelSocketPath: b.kernelSocketPath, SupervisorHost: "127.0.0.1", SupervisorPort: sandbox.Network.SupervisorEndpointPort(),
 		InspectorHost: "127.0.0.1", InspectorPort: sandbox.Network.InspectorEndpointPort(),
 		SupervisorHeartbeatInterval: b.supervisorHeartbeatInterval, WorkerStopGrace: b.workerStopGrace,
 	}
@@ -535,9 +535,7 @@ func (b *Backend) ociSpec(sandbox model.SandboxSpec, bundle string) (specs.Spec,
 		{Destination: "/etc/resolv.conf", Type: "bind", Source: filepath.Join(bundle, "resolv.conf"), Options: []string{"bind", "ro", "nosuid", "nodev", "noexec"}},
 		{Destination: "/etc/hosts", Type: "bind", Source: filepath.Join(bundle, "hosts"), Options: []string{"bind", "ro", "nosuid", "nodev", "noexec"}},
 	}
-	for _, mount := range sandbox.Mounts {
-		mounts = append(mounts, backend.OCIMount(mount))
-	}
+	mounts = append(mounts, backend.OCIMounts(sandbox.Mounts)...)
 	hostname := sandbox.SandboxID
 	if len(hostname) > 63 {
 		hostname = hostname[:63]
@@ -615,7 +613,7 @@ func (b *Backend) forceDelete(ctx context.Context, meta metadata) error {
 func (b *Backend) runscArguments(meta metadata, command string, arguments ...string) []string {
 	return append([]string{
 		"--allow-rootfs-tar-annotation", "--root=" + b.runtimeRoot, "--rootless=true", "--platform=systrap", "--directfs=false",
-		"--file-access=exclusive", "--file-access-mounts=shared", "--network=host",
+		"--file-access=exclusive", "--file-access-mounts=shared", "--host-uds=open", "--network=host",
 		"--overlay2=root:dir=" + filepath.Join(b.sandboxPath(meta.SandboxID), "overlay"),
 		"--log=" + filepath.Join(b.sandboxLogRoot(meta.SandboxID), "runsc-"+command+".log"), command,
 	}, arguments...)

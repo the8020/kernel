@@ -28,6 +28,7 @@ import (
 	"unicode/utf8"
 
 	"the8020/kernel/auth"
+	"the8020/kernel/database"
 	executionservices "the8020/kernel/execution/services"
 	"the8020/kernel/execution/supervisor"
 	executionworkers "the8020/kernel/execution/workers"
@@ -74,18 +75,18 @@ type NodeRouter interface {
 }
 
 type Config struct {
-	Definitions              *workspacepackages.Store
-	Pools                    RuntimePools
-	Router                   BoundaryRouter
-	ObservedRoot             string
-	ReconcileInterval        time.Duration
-	StartupTimeout           time.Duration
-	Logger                   *slog.Logger
-	Authentication           Authentication
-	RuntimeRequests          RuntimeRequestRegistrar
-	NodeID                   string
-	PersistentRouteStatePath string
-	Nodes                    NodeRouter
+	Definitions       *workspacepackages.Store
+	Pools             RuntimePools
+	Router            BoundaryRouter
+	ObservedRoot      string
+	ReconcileInterval time.Duration
+	StartupTimeout    time.Duration
+	Logger            *slog.Logger
+	Authentication    Authentication
+	RuntimeRequests   RuntimeRequestRegistrar
+	NodeID            string
+	Database          database.Store
+	Nodes             NodeRouter
 }
 
 type State string
@@ -193,6 +194,9 @@ type runtimeSandbox struct {
 type runtimeService struct {
 	status          Status
 	sandboxes       []*runtimeSandbox
+	retired         []*runtimeSandbox
+	metrics         *Metrics
+	definition      workspacepackages.Definition
 	rejected        bool
 	rejectedVersion uint64
 }
@@ -226,8 +230,8 @@ type Manager struct {
 }
 
 func New(config Config) (*Manager, error) {
-	if config.Definitions == nil || config.Pools == nil || config.Router == nil {
-		return nil, errors.New("definition store, runtime pools, and service boundary router are required")
+	if config.Definitions == nil || config.Pools == nil || config.Router == nil || config.Database == nil {
+		return nil, errors.New("definition store, runtime pools, service boundary router, and database are required")
 	}
 	if config.ObservedRoot == "" {
 		return nil, errors.New("node-local observed service root is required")
@@ -241,7 +245,7 @@ func New(config Config) (*Manager, error) {
 	if config.StartupTimeout <= 0 {
 		config.StartupTimeout = 30 * time.Second
 	}
-	manager := &Manager{definitions: config.Definitions, pools: config.Pools, observed: config.ObservedRoot, interval: config.ReconcileInterval, startup: config.StartupTimeout, logger: config.Logger, authentication: config.Authentication, runtimeRequests: config.RuntimeRequests, nodes: config.Nodes, services: map[string]*runtimeService{}, persistentRoutes: newPersistentRouteRegistry(config.NodeID, config.PersistentRouteStatePath)}
+	manager := &Manager{definitions: config.Definitions, pools: config.Pools, observed: config.ObservedRoot, interval: config.ReconcileInterval, startup: config.StartupTimeout, logger: config.Logger, authentication: config.Authentication, runtimeRequests: config.RuntimeRequests, nodes: config.Nodes, services: map[string]*runtimeService{}, persistentRoutes: newPersistentRouteRegistry(config.NodeID, config.Database)}
 	if err := config.Router.RegisterServiceBoundary(manager); err != nil {
 		return nil, err
 	}
@@ -262,7 +266,7 @@ func (m *Manager) StartReconciler(parent context.Context) {
 		defer m.wait.Done()
 		lastFailure := ""
 		if err := m.reconcileAll(ctx, false); err != nil && m.logger != nil && !errors.Is(err, context.Canceled) {
-			m.logger.Error("initial filesystem service reconciliation failed", "error", err)
+			m.logger.Error("initial service reconciliation failed", "error", err)
 			lastFailure = err.Error()
 		}
 		ticker := time.NewTicker(m.interval)
@@ -341,7 +345,7 @@ func (m *Manager) reconcileMaintained(ctx context.Context) error {
 	m.mu.Lock()
 	ids := make([]string, 0, len(m.services))
 	for serviceID, runtime := range m.services {
-		if len(runtime.sandboxes) > 0 || runtime.status.State == StatePendingCapacity {
+		if len(runtime.sandboxes) > 0 || len(runtime.retired) > 0 || runtime.status.State == StatePendingCapacity {
 			ids = append(ids, serviceID)
 		}
 	}
@@ -415,6 +419,16 @@ func (m *Manager) Reload(ctx context.Context, serviceID string) (Status, error) 
 		return Status{}, err
 	}
 	m.logDesiredState("reload", serviceID, state)
+	return m.reconcileOne(ctx, serviceID)
+}
+
+// Reconcile applies the current database-authoritative version without
+// changing desired state. Package publication and cross-node revision
+// convergence use this idempotent path after the version row is committed.
+func (m *Manager) Reconcile(ctx context.Context, serviceID string) (Status, error) {
+	if _, err := m.definitions.ReadService(serviceID); err != nil {
+		return Status{}, err
+	}
 	return m.reconcileOne(ctx, serviceID)
 }
 
@@ -529,8 +543,14 @@ func copyInt(value *int) *int { copied := *value; return &copied }
 
 func (m *Manager) reconcileOne(ctx context.Context, serviceID string) (Status, error) {
 	m.reconcile.Lock()
-	defer m.reconcile.Unlock()
-	return m.reconcileOneLocked(ctx, serviceID, true)
+	status, err := m.reconcileOneLocked(ctx, serviceID, true)
+	m.reconcile.Unlock()
+	m.mu.Lock()
+	if runtime := m.services[serviceID]; runtime != nil {
+		status = m.observedStatusLocked(cloneRuntimeStatus(runtime), observedSandboxesOf(runtime))
+	}
+	m.mu.Unlock()
+	return status, err
 }
 
 func (m *Manager) reconcileOneLocked(ctx context.Context, serviceID string, provision bool) (Status, error) {
@@ -538,6 +558,14 @@ func (m *Manager) reconcileOneLocked(ctx context.Context, serviceID string, prov
 	defer unlockCapacity()
 	definition, err := m.definitions.ReadService(serviceID)
 	if err != nil {
+		m.mu.Lock()
+		existing := m.services[serviceID]
+		if errors.Is(err, workspacepackages.ErrPackageNotReady) && existing != nil {
+			status := cloneRuntimeStatus(existing)
+			m.mu.Unlock()
+			return status, nil
+		}
+		m.mu.Unlock()
 		return m.retainFailedVersion(serviceID, 0, err)
 	}
 	if !definition.StateExists {
@@ -549,25 +577,28 @@ func (m *Manager) reconcileOneLocked(ctx context.Context, serviceID string, prov
 	m.mu.Lock()
 	existing := m.services[serviceID]
 	previous := append([]*runtimeSandbox(nil), sandboxesOf(existing)...)
+	var retired []*runtimeSandbox
+	if existing != nil {
+		retired = append(retired, existing.retired...)
+	}
 	sameVersion := existing != nil && existing.status.LoadedVersion == definition.State.Generation && (existing.status.State == StateReady || existing.status.State == StateDegraded || existing.status.State == StateIdle)
 	rejectedVersion := existing != nil && existing.rejected && existing.rejectedVersion == definition.State.Generation
+	failedVersion := existing != nil && existing.status.State == StateFailed && existing.status.DesiredVersion == definition.State.Generation
+	existingStatus := cloneRuntimeStatus(existing)
 	m.mu.Unlock()
 	if !provision && rejectedVersion {
-		return cloneStatus(existing.status), nil
+		return existingStatus, nil
 	}
 	if !provision && len(previous) == 0 {
-		if existing != nil && existing.status.State == StateFailed && existing.status.DesiredVersion == definition.State.Generation {
-			return cloneStatus(existing.status), nil
+		if failedVersion {
+			return existingStatus, nil
 		}
 		requiresCapacity := definition.Effective.Scaling.MinimumWorkers > 0 || definition.Effective.Placement.MinimumSandboxes > 0
 		if !requiresCapacity && (existing == nil || existing.status.State != StatePendingCapacity) {
 			idle := m.statusFromDefinition(definition, StateIdle)
 			idle.LoadedVersion, idle.VersionCount = definition.State.Generation, 1
-			if existing != nil {
-				idle.Metrics = cloneMetrics(existing.status.Metrics)
-			}
 			m.mu.Lock()
-			m.services[serviceID] = &runtimeService{status: idle}
+			m.services[serviceID] = replacementRuntime(existing, idle, nil, retired, definition)
 			m.mu.Unlock()
 			_ = m.writeObserved(idle)
 			cleanupErr := m.cleanupStaleVersionPools(ctx, definition, nil)
@@ -601,13 +632,16 @@ func (m *Manager) reconcileOneLocked(ctx context.Context, serviceID string, prov
 	if existing != nil {
 		starting.LoadedVersion = existing.status.LoadedVersion
 		starting.VersionCount = existing.status.VersionCount
-		starting.Metrics = cloneMetrics(existing.status.Metrics)
 	}
 	starting.Sandboxes = statusesOf(previous)
 	starting.SandboxCount = len(previous)
 	starting.WorkerCount = workerCount(previous)
 	m.mu.Lock()
-	m.services[serviceID] = &runtimeService{status: starting, sandboxes: previous}
+	retainedDefinition := definition
+	if existing != nil && len(previous) > 0 {
+		retainedDefinition = existing.definition
+	}
+	m.services[serviceID] = replacementRuntime(existing, starting, previous, retired, retainedDefinition)
 	m.mu.Unlock()
 	_ = m.writeObserved(starting)
 	if m.logger != nil {
@@ -683,14 +717,13 @@ func (m *Manager) reconcileOneLocked(ctx context.Context, serviceID string, prov
 	status.LastStartupError = failure
 	status.Sandboxes = statusesOf(prepared)
 	status.SandboxCount, status.WorkerCount = len(prepared), workerCount(prepared)
-	if existing != nil {
-		status.Metrics = cloneMetrics(existing.status.Metrics)
-		if existing.status.VersionCount > 0 && existing.status.LoadedVersion != status.LoadedVersion {
-			status.Metrics.WorkerRestarts += uint64(workerCount(previous))
-		}
-	}
+	retired = append(retired, previous...)
 	m.mu.Lock()
-	m.services[serviceID] = &runtimeService{status: status, sandboxes: prepared}
+	metrics := runtimeMetrics(existing)
+	if existing != nil && existing.status.VersionCount > 0 && existing.status.LoadedVersion != status.LoadedVersion {
+		metrics.WorkerRestarts += uint64(workerCount(previous))
+	}
+	m.services[serviceID] = replacementRuntime(existing, status, prepared, retired, definition)
 	m.mu.Unlock()
 	_ = m.writeObserved(status)
 	cleanupErr := m.cleanupStaleVersionPools(ctx, definition, prepared)
@@ -716,6 +749,7 @@ func (m *Manager) cleanupStaleVersionPools(ctx context.Context, definition works
 		activeIDs[sandbox.status.PoolID] = true
 	}
 	var joined error
+	var retained []executionservices.Record
 	for _, record := range records {
 		ownedRelease := strings.HasPrefix(record.ReleaseID, "service-version-") || record.ReleaseID == "service-validation"
 		if record.LogicalServiceID != definition.Identity.ServiceID() || activeIDs[record.ServiceID] || !ownedRelease {
@@ -733,14 +767,54 @@ func (m *Manager) cleanupStaleVersionPools(ctx context.Context, definition works
 		cancel()
 		if stopErr != nil {
 			joined = errors.Join(joined, fmt.Errorf("retire pool %s version %d: %w", record.ServiceID, record.Generation, stopErr))
+			if strings.HasPrefix(record.ReleaseID, "service-version-") {
+				retained = append(retained, record)
+			}
 		} else if stopped {
 			if removeErr := m.pools.RemoveStopped(record.ServiceID); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 				joined = errors.Join(joined, fmt.Errorf("remove retired pool %s version %d: %w", record.ServiceID, record.Generation, removeErr))
 				continue
 			}
+		} else if strings.HasPrefix(record.ReleaseID, "service-version-") {
+			retained = append(retained, record)
 		}
 	}
+	m.syncRetiredSandboxes(definition.Identity.ServiceID(), retained)
 	return joined
+}
+
+func (m *Manager) syncRetiredSandboxes(serviceID string, records []executionservices.Record) {
+	m.mu.Lock()
+	runtime := m.services[serviceID]
+	if runtime == nil {
+		m.mu.Unlock()
+		return
+	}
+	known := make(map[string]*runtimeSandbox, len(runtime.retired))
+	for _, sandbox := range runtime.retired {
+		known[sandbox.status.PoolID] = sandbox
+	}
+	retired := make([]*runtimeSandbox, 0, len(records))
+	for _, record := range records {
+		if record.SandboxID == "" && len(record.WorkerIDs) == 0 {
+			continue
+		}
+		sandbox := known[record.ServiceID]
+		if sandbox == nil {
+			sandbox = &runtimeSandbox{}
+		}
+		sandbox.status.Index = record.SandboxIndex
+		sandbox.status.Version = record.Generation
+		sandbox.status.PoolID = record.ServiceID
+		sandbox.status.RuntimeGroupID = record.RuntimeGroupID
+		sandbox.status.SandboxID = record.SandboxID
+		sandbox.status.WorkerIDs = append([]string(nil), record.WorkerIDs...)
+		retired = append(retired, sandbox)
+	}
+	runtime.retired = retired
+	status := m.observedStatusLocked(cloneRuntimeStatus(runtime), observedSandboxesOf(runtime))
+	m.mu.Unlock()
+	_ = m.writeObserved(status)
 }
 
 func (m *Manager) logVersionCleanupFailure(serviceID string, err error) {
@@ -864,7 +938,7 @@ func (m *Manager) refreshVersion(ctx context.Context, definition workspacepackag
 	current.status.Sandboxes = statusesOf(sandboxes)
 	current.status.SandboxCount = len(sandboxes)
 	current.status.WorkerCount = workerCount(sandboxes)
-	status := cloneStatus(current.status)
+	status := cloneRuntimeStatus(current)
 	m.mu.Unlock()
 	_ = m.writeObserved(status)
 	if len(preparationErrors) > 0 {
@@ -1134,13 +1208,16 @@ func (m *Manager) stopRuntime(ctx context.Context, definition workspacepackages.
 	m.mu.Lock()
 	existing := m.services[definition.Identity.ServiceID()]
 	sandboxes := append([]*runtimeSandbox(nil), sandboxesOf(existing)...)
-	alreadyStopped := existing != nil && existing.status.State == StateStopped && !existing.status.Enabled && existing.status.DesiredVersion == definition.State.Generation && len(sandboxes) == 0
+	var retired []*runtimeSandbox
+	if existing != nil {
+		retired = append(retired, existing.retired...)
+	}
+	alreadyStopped := existing != nil && existing.status.State == StateStopped && !existing.status.Enabled && existing.status.DesiredVersion == definition.State.Generation && len(sandboxes) == 0 && len(retired) == 0
 	status := m.statusFromDefinition(definition, StateDisabled)
 	if existing != nil {
 		status.LoadedVersion = existing.status.LoadedVersion
-		status.Metrics = cloneMetrics(existing.status.Metrics)
 	}
-	if len(sandboxes) > 0 {
+	if len(sandboxes) > 0 || len(retired) > 0 {
 		status.State = StateDraining
 	}
 	status.Sandboxes = statusesOf(sandboxes)
@@ -1148,7 +1225,7 @@ func (m *Manager) stopRuntime(ctx context.Context, definition workspacepackages.
 	if len(sandboxes) > 0 {
 		status.VersionCount = 1
 	}
-	m.services[definition.Identity.ServiceID()] = &runtimeService{status: status, sandboxes: sandboxes}
+	m.services[definition.Identity.ServiceID()] = replacementRuntime(existing, status, sandboxes, retired, definition)
 	m.mu.Unlock()
 	_ = m.writeObserved(status)
 	var joined error
@@ -1163,12 +1240,19 @@ func (m *Manager) stopRuntime(ctx context.Context, definition workspacepackages.
 		}
 	}
 	joined = errors.Join(joined, m.cleanupStaleVersionPools(ctx, definition, remaining))
-	if joined == nil && len(remaining) > 0 {
+	m.mu.Lock()
+	existing = m.services[definition.Identity.ServiceID()]
+	retired = nil
+	if existing != nil {
+		retired = append(retired, existing.retired...)
+	}
+	m.mu.Unlock()
+	if joined == nil && (len(remaining) > 0 || len(retired) > 0) {
 		status.State = StateDraining
 		status.Sandboxes = statusesOf(remaining)
 		status.SandboxCount, status.WorkerCount, status.VersionCount = len(remaining), workerCount(remaining), 1
 		m.mu.Lock()
-		m.services[definition.Identity.ServiceID()] = &runtimeService{status: status, sandboxes: remaining}
+		m.services[definition.Identity.ServiceID()] = replacementRuntime(existing, status, remaining, retired, definition)
 		m.mu.Unlock()
 		_ = m.writeObserved(status)
 		return cloneStatus(status), nil
@@ -1179,7 +1263,7 @@ func (m *Manager) stopRuntime(ctx context.Context, definition workspacepackages.
 		status.State, status.LastStartupError = StateFailed, joined.Error()
 	}
 	m.mu.Lock()
-	m.services[definition.Identity.ServiceID()] = &runtimeService{status: status}
+	m.services[definition.Identity.ServiceID()] = replacementRuntime(existing, status, nil, retired, definition)
 	m.mu.Unlock()
 	_ = m.writeObserved(status)
 	if m.logger != nil && (!alreadyStopped || joined != nil) {
@@ -1192,11 +1276,12 @@ func (m *Manager) retainFailedVersion(serviceID string, version uint64, cause er
 	m.mu.Lock()
 	existing := m.services[serviceID]
 	if existing == nil {
-		existing = &runtimeService{status: Status{ServiceID: serviceID, State: StateFailed, Metrics: emptyMetrics()}}
+		status := Status{ServiceID: serviceID, State: StateFailed, Metrics: emptyMetrics()}
+		existing = replacementRuntime(nil, status, nil, nil, workspacepackages.Definition{})
 		m.services[serviceID] = existing
 	}
 	failureState := StateFailed
-	if len(existing.sandboxes) > 0 {
+	if len(existing.sandboxes) > 0 || len(existing.retired) > 0 {
 		failureState = StateDegraded
 	}
 	duplicate := existing.status.FailedVersion == version && existing.status.LastStartupError == cause.Error() && existing.status.State == failureState
@@ -1205,9 +1290,9 @@ func (m *Manager) retainFailedVersion(serviceID string, version uint64, cause er
 	existing.status.FailedVersion = version
 	existing.status.LastStartupError = cause.Error()
 	if !duplicate {
-		existing.status.Metrics.StartupFailures++
+		runtimeMetrics(existing).StartupFailures++
 	}
-	status := cloneStatus(existing.status)
+	status := cloneRuntimeStatus(existing)
 	m.mu.Unlock()
 	if !duplicate {
 		_ = m.writeObserved(status)
@@ -1224,7 +1309,7 @@ func (m *Manager) retainRejectedVersion(serviceID string, version uint64, cause 
 	if current := m.services[serviceID]; current != nil && current.status.DesiredVersion == version {
 		current.rejected = true
 		current.rejectedVersion = version
-		status = cloneStatus(current.status)
+		status = cloneRuntimeStatus(current)
 	}
 	m.mu.Unlock()
 	return status, err
@@ -1254,15 +1339,25 @@ func (m *Manager) List() ([]Status, error) {
 func (m *Manager) Inspect(serviceID string) (Status, error) {
 	definition, err := m.definitions.ReadService(serviceID)
 	if err != nil {
+		if errors.Is(err, workspacepackages.ErrPackageNotReady) {
+			m.mu.Lock()
+			existing := m.services[serviceID]
+			if existing != nil {
+				status := m.observedStatusLocked(cloneRuntimeStatus(existing), observedSandboxesOf(existing))
+				m.mu.Unlock()
+				return status, nil
+			}
+			m.mu.Unlock()
+		}
 		return Status{}, err
 	}
 	m.mu.Lock()
 	existing := m.services[serviceID]
 	if existing != nil {
-		status := cloneStatus(existing.status)
+		status := cloneRuntimeStatus(existing)
 		status.Enabled, status.DesiredVersion = definition.State.Enabled, definition.State.Generation
 		status.Description, status.Entrypoint, status.Effective = definition.Service.Description, definition.EntrypointPath, definition.Effective
-		status = m.observedStatusLocked(status, existing.sandboxes)
+		status = m.observedStatusLocked(status, observedSandboxesOf(existing))
 		m.mu.Unlock()
 		return status, nil
 	}
@@ -1390,10 +1485,24 @@ func (m *Manager) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	serviceID := identity.ServiceID()
-	definition, definitionErr := m.definitions.ReadService(serviceID)
 	m.mu.Lock()
 	runtime := m.services[serviceID]
 	hasCapacity := runtime != nil && len(runtime.sandboxes) > 0
+	definition := workspacepackages.Definition{}
+	loadedDefinition := hasCapacity && runtime.definition.Identity.Service != ""
+	if loadedDefinition {
+		definition = runtime.definition
+	}
+	m.mu.Unlock()
+	var definitionErr error
+	if !loadedDefinition {
+		definition, definitionErr = m.definitions.ReadService(serviceID)
+	}
+	m.mu.Lock()
+	if !loadedDefinition {
+		runtime = m.services[serviceID]
+		hasCapacity = runtime != nil && len(runtime.sandboxes) > 0
+	}
 	rejectedVersion := runtime != nil && runtime.rejected && runtime.rejectedVersion == definition.State.Generation
 	m.mu.Unlock()
 	if definitionErr != nil {
@@ -1825,7 +1934,7 @@ func (m *Manager) selectSandbox(runtime *runtimeService) *runtimeSandbox {
 	selected := sandboxes[0]
 	selected.active++
 	selected.status.ActiveRequests = selected.active
-	runtime.status.Metrics.ActiveRequests++
+	runtimeMetrics(runtime).ActiveRequests++
 	return selected
 }
 
@@ -1944,7 +2053,7 @@ func (m *Manager) addCapacitySandboxLocked(ctx context.Context, runtime *runtime
 			}
 			current.status.CapacityResource = capacityResource(err)
 			current.status.CapacityReason = err.Error()
-			status := cloneStatus(current.status)
+			status := cloneRuntimeStatus(current)
 			m.mu.Unlock()
 			_ = m.writeObserved(status)
 		} else {
@@ -1969,7 +2078,7 @@ func (m *Manager) addCapacitySandboxLocked(ctx context.Context, runtime *runtime
 	current.status.Sandboxes = statusesOf(current.sandboxes)
 	current.status.SandboxCount = len(current.sandboxes)
 	current.status.WorkerCount = workerCount(current.sandboxes)
-	status := cloneStatus(current.status)
+	status := cloneRuntimeStatus(current)
 	m.mu.Unlock()
 	_ = m.writeObserved(status)
 	return sandbox, nil
@@ -2009,7 +2118,7 @@ func (m *Manager) activateSandbox(runtime *runtimeService, sandbox *runtimeSandb
 	sandbox.status.WorkerIDs = append([]string(nil), workerIDs...)
 	sandbox.active++
 	sandbox.status.ActiveRequests = sandbox.active
-	runtime.status.Metrics.ActiveRequests++
+	runtimeMetrics(runtime).ActiveRequests++
 	if runtime.status.State == StateIdle {
 		runtime.status.State = StateReady
 	}
@@ -2128,7 +2237,7 @@ func (m *Manager) selectPersistentSandbox(runtime *runtimeService, poolID, worke
 	}
 	selected.active++
 	selected.status.ActiveRequests = selected.active
-	runtime.status.Metrics.ActiveRequests++
+	runtimeMetrics(runtime).ActiveRequests++
 	return selected
 }
 
@@ -2153,15 +2262,16 @@ func (m *Manager) finishRequest(runtime *runtimeService, sandbox *runtimeSandbox
 	}
 	sandbox.active = max(sandbox.active-1, 0)
 	sandbox.status.ActiveRequests = sandbox.active
-	runtime.status.Metrics.ActiveRequests = max(runtime.status.Metrics.ActiveRequests-1, 0)
-	runtime.status.Metrics.RequestCount++
-	runtime.status.Metrics.RequestDuration = duration
-	runtime.status.Metrics.BytesStreamed += bytes
+	metrics := runtimeMetrics(runtime)
+	metrics.ActiveRequests = max(metrics.ActiveRequests-1, 0)
+	metrics.RequestCount++
+	metrics.RequestDuration = duration
+	metrics.BytesStreamed += bytes
 	if timeout {
-		runtime.status.Metrics.TimeoutCount++
+		metrics.TimeoutCount++
 	}
 	if status != 0 {
-		runtime.status.Metrics.ResponseStatus[strconv.Itoa(status)]++
+		metrics.ResponseStatus[strconv.Itoa(status)]++
 	}
 }
 
@@ -2289,6 +2399,53 @@ func sandboxesOf(service *runtimeService) []*runtimeSandbox {
 	}
 	return service.sandboxes
 }
+
+func observedSandboxesOf(service *runtimeService) []*runtimeSandbox {
+	if service == nil {
+		return nil
+	}
+	result := make([]*runtimeSandbox, 0, len(service.sandboxes)+len(service.retired))
+	result = append(result, service.sandboxes...)
+	result = append(result, service.retired...)
+	return result
+}
+
+func runtimeMetrics(service *runtimeService) *Metrics {
+	if service != nil && service.metrics != nil {
+		return service.metrics
+	}
+	metrics := emptyMetrics()
+	if service != nil {
+		metrics = cloneMetrics(service.status.Metrics)
+		service.metrics = &metrics
+	}
+	return &metrics
+}
+
+func replacementRuntime(
+	existing *runtimeService,
+	status Status,
+	sandboxes []*runtimeSandbox,
+	retired []*runtimeSandbox,
+	definition workspacepackages.Definition,
+) *runtimeService {
+	metrics := runtimeMetrics(existing)
+	status.Metrics = cloneMetrics(*metrics)
+	return &runtimeService{
+		status: status, sandboxes: sandboxes, retired: retired,
+		metrics: metrics, definition: definition,
+	}
+}
+
+func cloneRuntimeStatus(service *runtimeService) Status {
+	if service == nil {
+		return Status{}
+	}
+	status := cloneStatus(service.status)
+	status.Metrics = cloneMetrics(*runtimeMetrics(service))
+	return status
+}
+
 func (m *Manager) observedStatusLocked(status Status, current []*runtimeSandbox) Status {
 	status.Sandboxes, status.WorkerCount, status.VersionCount = observedSandboxes(current, status)
 	status.SandboxCount = len(status.Sandboxes)

@@ -4,6 +4,8 @@ package packages
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -21,18 +23,35 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
+	"the8020/kernel/database"
 	"the8020/kernel/deployment"
 )
 
 const (
 	packageManifestSchema       = 1
 	serviceManifestSchema       = 2
-	serviceStateSchema          = 2
 	manifestLimit               = 1 << 20
 	packageInspectionEntryLimit = 5000
 )
 
 var namePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// ErrPackageNotReady gates consumers while activation has switched source but
+// has not completed its post hook and atomic database publication.
+var ErrPackageNotReady = errors.New("package is not active")
+
+// ErrInvalidServicePolicy classifies invalid manifest/default/override
+// combinations without coupling the package domain to a transport error code.
+var ErrInvalidServicePolicy = errors.New("invalid service policy")
+
+type invalidServicePolicyError struct{ message string }
+
+func (e *invalidServicePolicyError) Error() string { return e.message }
+func (e *invalidServicePolicyError) Unwrap() error { return ErrInvalidServicePolicy }
+
+func invalidServicePolicy(message string) error {
+	return &invalidServicePolicyError{message: message}
+}
 
 // Identity is the filesystem-derived identity of one package or service.
 type Identity struct {
@@ -119,33 +138,32 @@ type ServiceManifest struct {
 }
 
 type LifecycleOverrides struct {
-	ServiceType      *string `toml:"service_type,omitempty" json:"service_type,omitempty"`
-	SessionKeepAlive *string `toml:"session_keep_alive,omitempty" json:"session_keep_alive,omitempty"`
+	ServiceType      *string `json:"service_type,omitempty"`
+	SessionKeepAlive *string `json:"session_keep_alive,omitempty"`
 }
 
 type ScalingOverrides struct {
-	MinimumWorkers       *int     `toml:"minimum_workers,omitempty" json:"minimum_workers,omitempty"`
-	MaximumWorkers       *int     `toml:"maximum_workers,omitempty" json:"maximum_workers,omitempty"`
-	ConcurrencyPerWorker *int     `toml:"concurrency_per_worker,omitempty" json:"concurrency_per_worker,omitempty"`
-	TargetUtilization    *float64 `toml:"target_utilization,omitempty" json:"target_utilization,omitempty"`
-	WorkerKeepAlive      *string  `toml:"worker_keep_alive,omitempty" json:"worker_keep_alive,omitempty"`
+	MinimumWorkers       *int     `json:"minimum_workers,omitempty"`
+	MaximumWorkers       *int     `json:"maximum_workers,omitempty"`
+	ConcurrencyPerWorker *int     `json:"concurrency_per_worker,omitempty"`
+	TargetUtilization    *float64 `json:"target_utilization,omitempty"`
+	WorkerKeepAlive      *string  `json:"worker_keep_alive,omitempty"`
 }
 
 type PlacementOverrides struct {
-	SandboxGroup      *string `toml:"sandbox_group,omitempty" json:"sandbox_group,omitempty"`
-	MinimumSandboxes  *int    `toml:"minimum_sandboxes,omitempty" json:"minimum_sandboxes,omitempty"`
-	WorkersPerSandbox *int    `toml:"workers_per_sandbox,omitempty" json:"workers_per_sandbox,omitempty"`
+	SandboxGroup      *string `json:"sandbox_group,omitempty"`
+	MinimumSandboxes  *int    `json:"minimum_sandboxes,omitempty"`
+	WorkersPerSandbox *int    `json:"workers_per_sandbox,omitempty"`
 }
 
 // DesiredServiceState is shared desired state. Node-local process identity never
 // belongs in this document.
 type DesiredServiceState struct {
-	Schema     int                `toml:"schema" json:"schema"`
-	Enabled    bool               `toml:"enabled" json:"enabled"`
-	Generation uint64             `toml:"generation" json:"generation"`
-	Lifecycle  LifecycleOverrides `toml:"lifecycle,omitempty" json:"lifecycle"`
-	Scaling    ScalingOverrides   `toml:"scaling,omitempty" json:"scaling"`
-	Placement  PlacementOverrides `toml:"placement,omitempty" json:"placement"`
+	Enabled    bool               `json:"enabled"`
+	Generation uint64             `json:"generation"`
+	Lifecycle  LifecycleOverrides `json:"lifecycle"`
+	Scaling    ScalingOverrides   `json:"scaling"`
+	Placement  PlacementOverrides `json:"placement"`
 }
 
 type TimeoutConfiguration struct {
@@ -292,33 +310,33 @@ type Definition struct {
 }
 
 type Config struct {
-	WorkspaceRoot    string
-	PackagesRoot     string
-	StateRoot        string
-	IndexRoot        string
-	GitPath          string
-	RepositoryMu     *sync.RWMutex
-	Secrets          SecretResolver
-	StateStore       ServiceStateStore
-	StateLockTimeout time.Duration
-	Defaults         FrameworkDefaults
-	Logger           *slog.Logger
+	WorkspaceRoot string
+	PackagesRoot  string
+	GitPath       string
+	RepositoryMu  *sync.RWMutex
+	Secrets       SecretResolver
+	Database      database.Store
+	StateStore    ServiceStateStore
+	IndexStore    PackageIndexStore
+	Defaults      FrameworkDefaults
+	Logger        *slog.Logger
 }
 
 type Store struct {
+	catalog       *Catalog
 	workspaceRoot string
 	packagesRoot  string
 	state         ServiceStateStore
-	stateRoot     string
-	indexRoot     string
+	index         PackageIndexStore
 	gitPath       string
 	repositoryMu  *sync.RWMutex
+	packageLocks  sync.Map
 	secrets       SecretResolver
-	indexMu       sync.RWMutex
 	defaults      FrameworkDefaults
 	logger        *slog.Logger
 	deploymentMu  sync.RWMutex
 	deployment    deployment.SchemaHook
+	databaseIndex bool
 }
 
 func New(config Config) (*Store, error) {
@@ -340,25 +358,20 @@ func New(config Config) (*Store, error) {
 	}); err != nil {
 		return nil, fmt.Errorf("framework defaults: %w", err)
 	}
-	if config.StateLockTimeout <= 0 {
-		config.StateLockTimeout = 5 * time.Second
-	}
 	stateStore := config.StateStore
-	stateRoot := ""
 	if stateStore == nil {
-		stateRoot, err = resolveDirectory(workspace, config.StateRoot, filepath.Join("state", "services"))
+		stateStore, err = NewDatabaseServiceStateStore(config.Database)
 		if err != nil {
-			return nil, fmt.Errorf("service state root: %w", err)
+			return nil, fmt.Errorf("service state database: %w", err)
 		}
-		fileStore, fileErr := NewFileServiceStateStore(stateRoot, config.StateLockTimeout)
-		if fileErr != nil {
-			return nil, fileErr
-		}
-		stateStore = fileStore
 	}
-	indexRoot, err := resolveDirectory(workspace, config.IndexRoot, filepath.Join("state", "package-index"))
-	if err != nil {
-		return nil, fmt.Errorf("package index root: %w", err)
+	indexStore := config.IndexStore
+	databaseIndex := indexStore == nil
+	if indexStore == nil {
+		indexStore, err = NewDatabasePackageIndexStore(config.Database)
+		if err != nil {
+			return nil, fmt.Errorf("package index database: %w", err)
+		}
 	}
 	repositoryMu := config.RepositoryMu
 	if repositoryMu == nil {
@@ -368,11 +381,16 @@ func New(config Config) (*Store, error) {
 	if gitPath == "" {
 		gitPath = "git"
 	}
+	catalog, err := NewCatalog(packagesRoot, config.Logger)
+	if err != nil {
+		return nil, err
+	}
 	return &Store{
+		catalog:       catalog,
 		workspaceRoot: workspace, packagesRoot: packagesRoot, state: stateStore,
-		stateRoot: stateRoot, indexRoot: indexRoot,
+		index:   indexStore,
 		gitPath: gitPath, repositoryMu: repositoryMu, secrets: config.Secrets, defaults: defaults,
-		logger: config.Logger,
+		logger: config.Logger, databaseIndex: databaseIndex,
 	}, nil
 }
 
@@ -382,8 +400,6 @@ type SecretResolver interface {
 }
 
 func (s *Store) PackagesRoot() string { return s.packagesRoot }
-func (s *Store) StateRoot() string    { return s.stateRoot }
-func (s *Store) IndexRoot() string    { return s.indexRoot }
 
 func (s *Store) SetSchemaDeployment(hook deployment.SchemaHook) {
 	s.deploymentMu.Lock()
@@ -398,39 +414,21 @@ func (s *Store) schemaDeployment() deployment.SchemaHook {
 }
 
 func (s *Store) ListPackages() ([]Package, error) {
-	namespaces, err := os.ReadDir(s.packagesRoot)
-	if err != nil {
-		return nil, fmt.Errorf("read packages root: %w", err)
+	if !s.databaseIndex {
+		return s.catalog.ListPackages()
 	}
-	var result []Package
-	for _, namespace := range namespaces {
-		if strings.HasPrefix(namespace.Name(), ".") || (!namespace.IsDir() && namespace.Type()&os.ModeSymlink == 0) {
-			continue
+	entries, err := s.index.List(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	result := make([]Package, 0, len(entries))
+	for _, entry := range entries {
+		item := s.catalog.inspectPackage(Identity{Namespace: entry.Author, Repository: entry.Repository})
+		if entry.State != "ready" {
+			item.Valid = false
+			item.ValidationErrors = append(item.ValidationErrors, "package database state is "+entry.State)
 		}
-		repositories, readErr := os.ReadDir(filepath.Join(s.packagesRoot, namespace.Name()))
-		if readErr != nil {
-			result = append(result, Package{ID: namespace.Name() + "/?", Path: filepath.Join(s.packagesRoot, namespace.Name()), ValidationErrors: []string{readErr.Error()}})
-			continue
-		}
-		for _, repository := range repositories {
-			if strings.HasPrefix(repository.Name(), ".") || (!repository.IsDir() && repository.Type()&os.ModeSymlink == 0) {
-				continue
-			}
-			manifestPath := filepath.Join(s.packagesRoot, namespace.Name(), repository.Name(), "package.toml")
-			if _, statErr := os.Lstat(manifestPath); errors.Is(statErr, os.ErrNotExist) {
-				continue
-			}
-			identity := Identity{Namespace: namespace.Name(), Repository: repository.Name()}
-			item := s.inspectPackage(identity)
-			result = append(result, item)
-			if s.logger != nil {
-				level := slog.LevelInfo
-				if !item.Valid {
-					level = slog.LevelWarn
-				}
-				s.logger.Log(context.Background(), level, "package discovered", "package_id", item.ID, "path", item.Path, "valid", item.Valid, "service_count", item.ServiceCount, "validation_errors", item.ValidationErrors)
-			}
-		}
+		result = append(result, item)
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
 	return result, nil
@@ -463,58 +461,59 @@ func (s *Store) InspectPackage(packageID string) (Package, error) {
 
 // ResolvePackage reads only one fixed package manifest without recursive inspection.
 func (s *Store) ResolvePackage(packageID string) (Package, error) {
-	identity, err := ParsePackageID(packageID)
-	if err != nil {
+	if err := s.requireReadyPackage(context.Background(), packageID); err != nil {
 		return Package{}, err
 	}
-	result := s.inspectPackage(identity)
-	if !result.Valid {
-		return result, fmt.Errorf("package %s is invalid: %s", packageID, strings.Join(result.ValidationErrors, "; "))
+	return s.catalog.ResolvePackage(packageID)
+}
+
+// ActivatedPackageCommit verifies that the installed source is exactly the
+// clean commit currently published as ready. Database table evaluation uses
+// this proof before allowing activated source to change shared schema.
+func (s *Store) ActivatedPackageCommit(ctx context.Context, packageID string) (string, error) {
+	entry, exists, err := s.index.Get(ctx, packageID)
+	if err != nil {
+		return "", err
 	}
-	return result, nil
+	if !exists || entry.State != "ready" || entry.ActiveCommit == "" {
+		return "", fmt.Errorf("package %s has no ready active commit", packageID)
+	}
+	path, exists, err := s.packageDestination(packageID)
+	if err != nil {
+		return "", err
+	}
+	if !exists {
+		return "", fmt.Errorf("package is not installed: %s", packageID)
+	}
+	commit, err := s.installedCommit(ctx, path)
+	if err != nil {
+		return "", err
+	}
+	if !strings.EqualFold(commit, entry.ActiveCommit) {
+		return "", fmt.Errorf("package %s checkout %q does not match ready active commit %q", packageID, commit, entry.ActiveCommit)
+	}
+	return commit, nil
+}
+
+func (s *Store) requireReadyPackage(ctx context.Context, packageID string) error {
+	if !s.databaseIndex {
+		return nil
+	}
+	entry, exists, err := s.index.Get(ctx, packageID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return os.ErrNotExist
+	}
+	if entry.State != "ready" {
+		return fmt.Errorf("%w: %s", ErrPackageNotReady, packageID)
+	}
+	return nil
 }
 
 func (s *Store) inspectPackage(identity Identity) Package {
-	root := filepath.Join(s.packagesRoot, identity.Namespace, identity.Repository)
-	result := Package{ID: identity.PackageID(), Path: root}
-	if err := ValidateName(identity.Namespace); err != nil {
-		result.ValidationErrors = append(result.ValidationErrors, "namespace: "+err.Error())
-	}
-	if err := ValidateName(identity.Repository); err != nil {
-		result.ValidationErrors = append(result.ValidationErrors, "repository: "+err.Error())
-	}
-	canonical, err := canonicalWithin(root, s.packagesRoot)
-	rootValid := err == nil && canonical == root
-	if err != nil {
-		result.ValidationErrors = append(result.ValidationErrors, fmt.Sprintf("%s: %v", root, err))
-	} else if canonical != root {
-		result.ValidationErrors = append(result.ValidationErrors, fmt.Sprintf("package root %s resolves through a symlink", root))
-	}
-	if rootValid {
-		var manifest PackageManifest
-		manifestPath := filepath.Join(root, "package.toml")
-		if err := decodeTOMLWithin(manifestPath, root, &manifest); err != nil {
-			result.ValidationErrors = append(result.ValidationErrors, fmt.Sprintf("%s: %v", manifestPath, err))
-		} else {
-			if manifest.Schema != packageManifestSchema {
-				result.ValidationErrors = append(result.ValidationErrors, fmt.Sprintf("%s: schema must equal %d", manifestPath, packageManifestSchema))
-			}
-			result.Description, result.DocumentationURL, result.License = manifest.Description, manifest.DocumentationURL, manifest.License
-		}
-		services, err := os.ReadDir(filepath.Join(root, "services"))
-		if err == nil {
-			for _, entry := range services {
-				if strings.HasPrefix(entry.Name(), ".") || (!entry.IsDir() && entry.Type()&os.ModeSymlink == 0) {
-					continue
-				}
-				if _, statErr := os.Lstat(filepath.Join(root, "services", entry.Name(), "service.toml")); statErr == nil {
-					result.ServiceCount++
-				}
-			}
-		}
-	}
-	result.Valid = len(result.ValidationErrors) == 0
-	return result
+	return s.catalog.inspectPackage(identity)
 }
 
 func (s *Store) inspectPackageServices(identity Identity, root string) ([]PackageService, error) {
@@ -751,13 +750,9 @@ func (s *Store) ListServices() ([]Service, error) {
 	return result, nil
 }
 
-// ListStateServiceIDs first discovers portable services so their initial
-// desired state is materialized, then lists the store without depending on its
-// physical backend.
+// ListStateServiceIDs reads the installed service declarations published by
+// package activation. It never rescans package source during reconciliation.
 func (s *Store) ListStateServiceIDs() ([]string, error) {
-	if _, err := s.ListServices(); err != nil {
-		return nil, err
-	}
 	records, err := s.state.List()
 	if err != nil {
 		return nil, err
@@ -775,6 +770,9 @@ func (s *Store) ReadService(serviceID string) (Definition, error) {
 	if err != nil {
 		return Definition{}, err
 	}
+	if err := s.requireReadyPackage(context.Background(), identity.PackageID()); err != nil {
+		return Definition{}, err
+	}
 	definition, err := s.readPortableService(identity)
 	if err != nil {
 		return Definition{}, err
@@ -784,15 +782,14 @@ func (s *Store) ReadService(serviceID string) (Definition, error) {
 		return Definition{}, err
 	}
 	if !exists {
-		state, err = s.initializeState(identity, definition.Service)
+		state, err = initialDesiredState(s.defaults, definition.Service, serviceID)
 		if err != nil {
-			return Definition{}, err
+			return Definition{}, fmt.Errorf("service %s defaults: %w", serviceID, err)
 		}
-		exists = true
 	}
 	effective, err := calculateEffective(s.defaults, definition.Service, state)
 	if err != nil {
-		return Definition{}, fmt.Errorf("service %s defaults/state: %w", serviceID, err)
+		return Definition{}, fmt.Errorf("service %s effective policy: %w", serviceID, err)
 	}
 	definition.State, definition.StateExists, definition.Effective = state, exists, effective
 	return definition, nil
@@ -900,6 +897,11 @@ func normalizeAndValidateServicePolicy(manifest *ServiceManifest) error {
 		return errors.New("access.mode must be public or authenticated")
 	}
 	if manifest.Access.Mode == AccessModePublic {
+		// Keep one normalized declaration shape in the database even though the
+		// unauthenticated policy is ignored for public services.
+		manifest.Access.Unauthenticated = UnauthenticatedManifest{
+			Action: UnauthenticatedReject, Status: 401, Message: "Authentication is required.",
+		}
 		return nil
 	}
 	policy := &manifest.Access.Unauthenticated
@@ -983,15 +985,17 @@ func (s *Store) ReadState(serviceID string) (DesiredServiceState, bool, error) {
 	return s.state.Get(serviceID)
 }
 
-// MutateState serializes a desired-state mutation, increments generation once,
-// and durably replaces state.toml.
+// MutateState serializes one desired-policy change and records a new immutable
+// effective version before publishing it as desired.
 func (s *Store) MutateState(ctx context.Context, serviceID string, mutate func(*DesiredServiceState) error) (DesiredServiceState, error) {
 	identity, err := ParseServiceID(serviceID)
 	if err != nil {
 		return DesiredServiceState{}, err
 	}
-	portable, err := s.readPortableService(identity)
-	if err != nil {
+	if err := s.requireReadyPackage(ctx, identity.PackageID()); err != nil {
+		return DesiredServiceState{}, err
+	}
+	if _, err := s.readPortableService(identity); err != nil {
 		return DesiredServiceState{}, err
 	}
 	unlock, err := s.state.Lock(ctx, serviceID)
@@ -1004,17 +1008,13 @@ func (s *Store) MutateState(ctx context.Context, serviceID string, mutate func(*
 		return DesiredServiceState{}, err
 	}
 	if !exists {
-		state, err = initialDesiredState(s.defaults, portable.Service, serviceID)
-		if err != nil {
-			return DesiredServiceState{}, err
-		}
+		return DesiredServiceState{}, fmt.Errorf("service %s is not installed", serviceID)
 	}
 	if mutate != nil {
 		if err := mutate(&state); err != nil {
 			return DesiredServiceState{}, err
 		}
 	}
-	state.Schema = serviceStateSchema
 	state.Generation++
 	definition, err := s.readServiceWithState(identity, state)
 	if err != nil {
@@ -1023,55 +1023,76 @@ func (s *Store) MutateState(ctx context.Context, serviceID string, mutate func(*
 	if err := validateEffective(definition.Effective); err != nil {
 		return DesiredServiceState{}, err
 	}
-	if err := s.state.Put(serviceID, state); err != nil {
+	if desired, ok := s.state.(ServiceDesiredStateStore); ok {
+		commit, commitErr := s.packageCommit(ctx, definition.PackagePath)
+		if commitErr != nil {
+			return DesiredServiceState{}, commitErr
+		}
+		if err := desired.UpdateDesiredDefinition(ctx, definition, state, definition.Effective, commit); err != nil {
+			return DesiredServiceState{}, err
+		}
+	} else if definitions, ok := s.state.(ServiceDefinitionStore); ok {
+		commit, commitErr := s.packageCommit(ctx, definition.PackagePath)
+		if commitErr != nil {
+			return DesiredServiceState{}, commitErr
+		}
+		if err := definitions.InstallDefinition(ctx, definition, state, definition.Effective, commit); err != nil {
+			return DesiredServiceState{}, err
+		}
+	} else if err := s.state.Put(serviceID, state); err != nil {
 		return DesiredServiceState{}, err
 	}
 	return state, nil
 }
 
-func (s *Store) initializeState(identity Identity, manifest ServiceManifest) (DesiredServiceState, error) {
-	serviceID := identity.ServiceID()
-	unlock, err := s.state.Lock(context.Background(), serviceID)
+func (s *Store) packageCommit(ctx context.Context, path string) (string, error) {
+	commit, err := s.gitValue(ctx, path, "rev-parse", "--verify", "HEAD^{commit}")
+	if err == nil && commit != "" {
+		return commit, nil
+	}
+	return FingerprintPackage(path)
+}
+
+// FingerprintPackage gives local, non-Git packages the same deterministic
+// source identity used by schema evaluation.
+func FingerprintPackage(root string) (string, error) {
+	hash := sha256.New()
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() && entry.Name() == ".git" {
+			return filepath.SkipDir
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if _, err := io.WriteString(hash, filepath.ToSlash(relative)+"\x00"); err != nil {
+			return err
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		_, copyErr := io.Copy(hash, file)
+		return errors.Join(copyErr, file.Close())
+	})
 	if err != nil {
-		return DesiredServiceState{}, err
+		return "", err
 	}
-	defer func() { _ = unlock() }()
-	if current, exists, getErr := s.state.Get(serviceID); getErr != nil {
-		return DesiredServiceState{}, getErr
-	} else if exists {
-		return current, nil
-	}
-	state, err := initialDesiredState(s.defaults, manifest, serviceID)
-	if err != nil {
-		return DesiredServiceState{}, err
-	}
-	if err := s.state.Put(serviceID, state); err != nil {
-		return DesiredServiceState{}, err
-	}
-	if s.logger != nil {
-		s.logger.Info("service desired state initialized", "service_id", serviceID, "enabled", state.Enabled, "generation", state.Generation)
-	}
-	return state, nil
+	return "filesystem-" + hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func initialDesiredState(defaults FrameworkDefaults, manifest ServiceManifest, serviceID string) (DesiredServiceState, error) {
-	effective, err := calculateEffective(defaults, manifest, DesiredServiceState{Schema: serviceStateSchema})
-	if err != nil {
+	if _, err := calculateEffective(defaults, manifest, DesiredServiceState{}); err != nil {
 		return DesiredServiceState{}, err
 	}
-	serviceType, sessionKeepAlive := effective.Lifecycle.ServiceType, effective.Lifecycle.SessionKeepAlive.String()
-	minimumWorkers, maximumWorkers := effective.Scaling.MinimumWorkers, effective.Scaling.MaximumWorkers
-	concurrency, targetUtilization := effective.Scaling.ConcurrencyPerWorker, effective.Scaling.TargetUtilization
-	workerKeepAlive := effective.Scaling.WorkerKeepAlive.String()
-	sandboxGroup, minimumSandboxes, workersPerSandbox := effective.Placement.SandboxGroup, effective.Placement.MinimumSandboxes, effective.Placement.WorkersPerSandbox
 	return DesiredServiceState{
-		Schema: serviceStateSchema, Enabled: manifest.Lifecycle.DefaultEnabled,
-		Lifecycle: LifecycleOverrides{ServiceType: &serviceType, SessionKeepAlive: &sessionKeepAlive},
-		Scaling: ScalingOverrides{
-			MinimumWorkers: &minimumWorkers, MaximumWorkers: &maximumWorkers,
-			ConcurrencyPerWorker: &concurrency, TargetUtilization: &targetUtilization, WorkerKeepAlive: &workerKeepAlive,
-		},
-		Placement: PlacementOverrides{SandboxGroup: &sandboxGroup, MinimumSandboxes: &minimumSandboxes, WorkersPerSandbox: &workersPerSandbox},
+		Enabled: manifest.Lifecycle.DefaultEnabled,
 	}, nil
 }
 
@@ -1146,12 +1167,12 @@ func calculateEffective(defaults FrameworkDefaults, manifest ServiceManifest, st
 	if state.Lifecycle.SessionKeepAlive != nil {
 		parsed, err := time.ParseDuration(*state.Lifecycle.SessionKeepAlive)
 		if err != nil {
-			return result, fmt.Errorf("lifecycle.session_keep_alive: %w", err)
+			return result, invalidServicePolicy(fmt.Sprintf("lifecycle.session_keep_alive: %v", err))
 		}
 		result.Lifecycle.SessionKeepAlive = parsed
 	}
 	if err := applyScalingOverrides(&result.Scaling, state.Scaling); err != nil {
-		return result, err
+		return result, invalidServicePolicy(err.Error())
 	}
 	if state.Placement.SandboxGroup != nil {
 		result.Placement.SandboxGroup = *state.Placement.SandboxGroup
@@ -1208,37 +1229,37 @@ func applyScalingOverrides(target *ScalingConfiguration, source ScalingOverrides
 
 func validateEffective(value EffectiveConfiguration) error {
 	if value.Lifecycle.ServiceType != ServiceTypeStateless && value.Lifecycle.ServiceType != ServiceTypeSession {
-		return errors.New("lifecycle.service_type must be stateless or session")
+		return invalidServicePolicy("lifecycle.service_type must be stateless or session")
 	}
 	if value.Lifecycle.SessionKeepAlive <= 0 {
-		return errors.New("lifecycle.session_keep_alive must be positive")
+		return invalidServicePolicy("lifecycle.session_keep_alive must be positive")
 	}
 	if value.Scaling.MinimumWorkers < 0 || value.Scaling.MaximumWorkers < 0 || (value.Scaling.MaximumWorkers != 0 && value.Scaling.MinimumWorkers > value.Scaling.MaximumWorkers) {
-		return errors.New("scaling workers must satisfy minimum_workers >= 0 and maximum_workers = 0 or maximum_workers >= minimum_workers")
+		return invalidServicePolicy("scaling workers must satisfy minimum_workers >= 0 and maximum_workers = 0 or maximum_workers >= minimum_workers")
 	}
 	if value.Scaling.ConcurrencyPerWorker < 1 {
-		return errors.New("scaling.concurrency_per_worker must be at least 1")
+		return invalidServicePolicy("scaling.concurrency_per_worker must be at least 1")
 	}
 	if value.Scaling.TargetUtilization <= 0 || value.Scaling.TargetUtilization > 1 {
-		return errors.New("scaling.target_utilization must be greater than 0 and at most 1")
+		return invalidServicePolicy("scaling.target_utilization must be greater than 0 and at most 1")
 	}
 	if value.Scaling.WorkerKeepAlive <= 0 {
-		return errors.New("scaling.worker_keep_alive must be positive")
+		return invalidServicePolicy("scaling.worker_keep_alive must be positive")
 	}
 	if value.Timeouts.Request <= 0 || value.Timeouts.Drain <= 0 || value.Timeouts.Idle < 0 {
-		return errors.New("request and drain timeouts must be positive and idle timeout cannot be negative")
+		return invalidServicePolicy("request and drain timeouts must be positive and idle timeout cannot be negative")
 	}
 	if value.DependencyMode != "cached-only" && value.DependencyMode != "online" {
-		return errors.New("dependency_mode must be cached-only or online")
+		return invalidServicePolicy("dependency_mode must be cached-only or online")
 	}
 	if value.Placement.SandboxGroup != strings.TrimSpace(value.Placement.SandboxGroup) || strings.ContainsRune(value.Placement.SandboxGroup, '\x00') {
-		return errors.New("placement.sandbox_group must be trimmed and cannot contain a null byte")
+		return invalidServicePolicy("placement.sandbox_group must be trimmed and cannot contain a null byte")
 	}
 	if value.Placement.MinimumSandboxes < 0 {
-		return errors.New("placement.minimum_sandboxes cannot be negative")
+		return invalidServicePolicy("placement.minimum_sandboxes cannot be negative")
 	}
 	if value.Placement.WorkersPerSandbox < 1 {
-		return errors.New("placement.workers_per_sandbox must be at least 1")
+		return invalidServicePolicy("placement.workers_per_sandbox must be at least 1")
 	}
 	return nil
 }

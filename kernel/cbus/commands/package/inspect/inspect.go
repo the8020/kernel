@@ -11,10 +11,11 @@ import (
 
 func New(serviceSet *services.Services) core.Handler {
 	return func(_ context.Context, request core.Request) (core.Result, error) {
-		if serviceSet == nil || serviceSet.Packages == nil {
+		service := serviceSet.PlatformSnapshot().Packages
+		if service == nil {
 			return nil, core.NewError(core.CodeRuntimeUnavailable, "package store is unavailable")
 		}
-		item, err := serviceSet.Packages.InspectPackage(commandutil.String(request, "package_id"))
+		item, err := service.InspectPackage(commandutil.String(request, "package_id"))
 		if err != nil {
 			return nil, commandutil.OperationError(err)
 		}

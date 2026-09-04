@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"sort"
-	"strconv"
 	"strings"
 
 	"the8020/kernel/cbus/core"
@@ -19,17 +18,18 @@ type Executor interface {
 	Execute(context.Context, core.Request) (core.Response, error)
 }
 
+type CatalogProvider interface {
+	Catalog(context.Context, string) (core.Catalog, bool, error)
+}
+
 // Runner shares all command behavior between one-shot and interactive administration.
 type Runner struct {
 	commands       []core.Command
+	revision       string
+	catalog        CatalogProvider
 	executor       Executor
-	valueResolver  ValueResolver
 	secretResolver SecretResolver
 }
-
-// ValueResolver obtains one metadata-declared ordinary argument omitted from
-// the command tokens.
-type ValueResolver func(prompt string) (string, error)
 
 // SecretResolver obtains one metadata-declared secret without putting it in
 // ordinary command tokens. fromStdin is true only for the explicit flag.
@@ -59,17 +59,24 @@ var localHelpTopics = []localHelpTopic{
 
 // New creates a catalog-driven runner.
 func New(commands []core.Command, executor Executor) *Runner {
-	return &Runner{commands: commands, executor: executor}
+	return &Runner{commands: append([]core.Command(nil), commands...), executor: executor}
+}
+
+// NewDynamic creates a runner whose package and kernel command metadata comes
+// from the live kernel process.
+func NewDynamic(catalog CatalogProvider, executor Executor) *Runner {
+	return &Runner{catalog: catalog, executor: executor}
 }
 
 // SetSecretResolver configures client-local secret acquisition.
 func (r *Runner) SetSecretResolver(resolver SecretResolver) { r.secretResolver = resolver }
 
-// SetValueResolver configures client-local acquisition of omitted prompted values.
-func (r *Runner) SetValueResolver(resolver ValueResolver) { r.valueResolver = resolver }
-
 // Run resolves, validates, invokes, and renders one command line.
 func (r *Runner) Run(ctx context.Context, args []string, jsonOutput bool, output io.Writer) int {
+	if err := r.refresh(ctx, false); err != nil {
+		renderLocalError(output, err)
+		return 1
+	}
 	if len(args) == 0 {
 		_, _ = fmt.Fprintln(output, r.Help(nil))
 		return 0
@@ -80,18 +87,35 @@ func (r *Runner) Run(ctx context.Context, args []string, jsonOutput bool, output
 	}
 	command, consumed, err := r.match(args)
 	if err != nil {
-		renderLocalError(output, err)
-		return 2
+		if refreshErr := r.refresh(ctx, true); refreshErr == nil {
+			command, consumed, err = r.match(args)
+		}
+		if err != nil {
+			renderLocalError(output, err)
+			return 2
+		}
 	}
-	arguments, err := parseArguments(command, args[consumed:], r.valueResolver, r.secretResolver)
+	argv, secrets, err := prepareArguments(command, args[consumed:], r.secretResolver)
 	if err != nil {
 		renderLocalError(output, err)
 		return 2
 	}
-	response, err := r.executor.Execute(ctx, core.Request{ProtocolVersion: core.ProtocolVersion, CommandID: command.ID, Arguments: arguments, RequestID: core.NewRequestID()})
+	requestID := core.NewRequestID()
+	response, err := r.executor.Execute(ctx, core.Request{ProtocolVersion: core.ProtocolVersion, CommandID: command.ID, Argv: argv, Secrets: secrets, RequestID: requestID, CatalogRevision: r.revision})
 	if err != nil {
 		renderLocalError(output, err)
 		return 1
+	}
+	if response.Error != nil && (response.Error.Code == core.CodeStaleCatalog || response.Error.Code == core.CodeUnknownCommand) && r.catalog != nil {
+		if refreshErr := r.refresh(ctx, true); refreshErr == nil {
+			if refreshed, _, matchErr := r.match(args); matchErr == nil {
+				response, err = r.executor.Execute(ctx, core.Request{ProtocolVersion: core.ProtocolVersion, CommandID: refreshed.ID, Argv: argv, Secrets: secrets, RequestID: requestID, CatalogRevision: r.revision})
+			}
+		}
+		if err != nil {
+			renderLocalError(output, err)
+			return 1
+		}
 	}
 	if jsonOutput {
 		data, _ := json.MarshalIndent(response, "", "  ")
@@ -102,7 +126,15 @@ func (r *Runner) Run(ctx context.Context, args []string, jsonOutput bool, output
 			renderValue(output, response.Error.Details, 0)
 		}
 	} else {
-		renderValue(output, response.Result, 0)
+		for _, event := range response.Output {
+			_, _ = fmt.Fprintln(output, event.Message)
+			if len(event.Fields) > 0 {
+				renderValue(output, event.Fields, 1)
+			}
+		}
+		if response.Result != nil {
+			renderValue(output, response.Result, 0)
+		}
 	}
 	if !response.Success {
 		return errorExitCode(response.Error.Code)
@@ -110,15 +142,33 @@ func (r *Runner) Run(ctx context.Context, args []string, jsonOutput bool, output
 	return 0
 }
 
+func (r *Runner) refresh(ctx context.Context, force bool) error {
+	if r.catalog == nil {
+		return nil
+	}
+	known := r.revision
+	if force {
+		known = ""
+	}
+	catalog, unchanged, err := r.catalog.Catalog(ctx, known)
+	if err != nil {
+		return err
+	}
+	if unchanged {
+		return nil
+	}
+	r.commands = append([]core.Command(nil), catalog.Commands...)
+	r.revision = catalog.Revision
+	return nil
+}
+
 func (r *Runner) match(tokens []string) (core.Command, int, error) {
 	bestLength := 0
 	var best core.Command
 	for _, command := range r.commands {
-		paths := append([][]string{command.Path}, command.Aliases...)
-		for _, path := range paths {
-			if len(path) <= len(tokens) && len(path) > bestLength && equalTokens(path, tokens[:len(path)]) {
-				best, bestLength = command, len(path)
-			}
+		path := command.Path
+		if len(path) <= len(tokens) && len(path) > bestLength && equalTokens(path, tokens[:len(path)]) {
+			best, bestLength = command, len(path)
 		}
 	}
 	if bestLength == 0 {
@@ -138,159 +188,76 @@ func equalTokens(left, right []string) bool {
 	return true
 }
 
-func parseArguments(command core.Command, tokens []string, resolveValue ValueResolver, resolveSecret SecretResolver) (map[string]any, error) {
-	positionals := make([]core.Parameter, 0, len(command.Parameters))
-	options := make(map[string]core.Parameter, len(command.Parameters))
-	secretOptions := make(map[string]core.Parameter)
-	secrets := make([]core.Parameter, 0)
+func prepareArguments(command core.Command, tokens []string, resolveSecret SecretResolver) ([]string, map[string]string, error) {
+	metadata := append([]core.SecretInput(nil), command.Secrets...)
 	for _, parameter := range command.Parameters {
 		if parameter.Secret {
-			secrets = append(secrets, parameter)
-			secretOptions[parameter.SecretStdinOption] = parameter
-			continue
-		}
-		if parameter.Option == "" {
-			positionals = append(positionals, parameter)
-		} else {
-			options[parameter.Option] = parameter
+			metadata = append(metadata, core.SecretInput{
+				Name: parameter.Name, Required: parameter.Required,
+				Prompt:             parameter.SecretPrompt,
+				ConfirmationPrompt: parameter.SecretConfirmationPrompt,
+				StdinOption:        parameter.SecretStdinOption,
+			})
 		}
 	}
-	sort.Slice(positionals, func(i, j int) bool { return positionals[i].Position < positionals[j].Position })
-	values := map[string]any{}
-	seenOptions := map[string]bool{}
-	readSecretFromStdin := map[string]bool{}
-	positionalIndex := 0
+	if len(metadata) == 0 {
+		return append([]string(nil), tokens...), nil, nil
+	}
+	byOption := map[string]core.SecretInput{}
+	for _, secret := range metadata {
+		if secret.Name == "" {
+			return nil, nil, errors.New("command catalog contains an unnamed secure input")
+		}
+		if secret.StdinOption != "" {
+			if _, exists := byOption[secret.StdinOption]; exists {
+				return nil, nil, fmt.Errorf("command catalog repeats secure option --%s", secret.StdinOption)
+			}
+			byOption[secret.StdinOption] = secret
+		}
+	}
+	argv := make([]string, 0, len(tokens))
+	fromStdin := map[string]bool{}
 	parseOptions := true
-	for index := 0; index < len(tokens); index++ {
-		token := tokens[index]
+	for _, token := range tokens {
 		if parseOptions && token == "--" {
 			parseOptions = false
+			argv = append(argv, token)
 			continue
 		}
 		if parseOptions && strings.HasPrefix(token, "--") {
 			nameValue := strings.TrimPrefix(token, "--")
-			name, raw, hasValue := strings.Cut(nameValue, "=")
-			if parameter, ok := secretOptions[name]; ok {
+			name, _, hasValue := strings.Cut(nameValue, "=")
+			if secret, ok := byOption[name]; ok {
 				if hasValue {
-					return nil, fmt.Errorf("option --%s does not accept a value", name)
+					return nil, nil, fmt.Errorf("option --%s does not accept a value", name)
 				}
-				if seenOptions[name] {
-					return nil, fmt.Errorf("option --%s may only be specified once", name)
+				if fromStdin[secret.Name] {
+					return nil, nil, fmt.Errorf("option --%s may only be specified once", name)
 				}
-				seenOptions[name] = true
-				readSecretFromStdin[parameter.Name] = true
+				fromStdin[secret.Name] = true
 				continue
 			}
-			parameter, ok := options[name]
-			if !ok || name == "" {
-				return nil, fmt.Errorf("unknown option %q for %s", token, core.PathString(command.Path))
-			}
-			if seenOptions[name] {
-				return nil, fmt.Errorf("option --%s may only be specified once", name)
-			}
-			seenOptions[name] = true
-			if parameter.Type == "boolean" && !hasValue {
-				values[parameter.Name] = true
-				continue
-			}
-			if !hasValue {
-				if index+1 >= len(tokens) {
-					return nil, fmt.Errorf("option --%s requires a %s value", name, parameter.Type)
-				}
-				index++
-				raw = tokens[index]
-			}
-			value, err := parseToken(parameter.Type, raw)
-			if err != nil {
-				return nil, fmt.Errorf("invalid --%s: %w", name, err)
-			}
-			values[parameter.Name] = value
+		}
+		argv = append(argv, token)
+	}
+	values := map[string]string{}
+	for _, secret := range metadata {
+		if !secret.Required && !fromStdin[secret.Name] {
 			continue
 		}
-		if positionalIndex >= len(positionals) {
-			return nil, fmt.Errorf("too many arguments for %s", core.PathString(command.Path))
-		}
-		parameter := positionals[positionalIndex]
-		positionalIndex++
-		value, err := parseToken(parameter.Type, token)
-		if err != nil {
-			return nil, fmt.Errorf("invalid <%s>: %w", parameter.Name, err)
-		}
-		values[parameter.Name] = value
-	}
-	for _, parameter := range positionals {
-		if _, present := values[parameter.Name]; present || !parameter.Required || parameter.Prompt == "" {
-			continue
-		}
-		if resolveValue == nil {
-			return nil, missingParameterError(command, parameter)
-		}
-		raw, err := resolveValue(parameter.Prompt)
-		if err != nil {
-			return nil, err
-		}
-		value, err := parseToken(parameter.Type, raw)
-		if err != nil {
-			return nil, fmt.Errorf("invalid <%s>: %w", parameter.Name, err)
-		}
-		values[parameter.Name] = value
-	}
-	for _, parameter := range command.Parameters {
-		if parameter.Secret || !parameter.Required {
-			continue
-		}
-		if _, present := values[parameter.Name]; !present {
-			return nil, missingParameterError(command, parameter)
-		}
-	}
-	for _, parameter := range secrets {
 		if resolveSecret == nil {
-			return nil, fmt.Errorf("%s requires secure secret input", core.PathString(command.Path))
+			return nil, nil, fmt.Errorf("%s requires secure input %q", command.Name, secret.Name)
 		}
-		value, err := resolveSecret(parameter.SecretPrompt, parameter.SecretConfirmationPrompt, readSecretFromStdin[parameter.Name])
+		value, err := resolveSecret(secret.Prompt, secret.ConfirmationPrompt, fromStdin[secret.Name])
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		values[parameter.Name] = value
+		values[secret.Name] = value
 	}
-	for _, parameter := range command.Parameters {
-		if parameter.Required {
-			if _, present := values[parameter.Name]; !present {
-				return nil, missingParameterError(command, parameter)
-			}
-		}
-	}
-	return values, nil
+	return argv, values, nil
 }
 
-func missingParameterError(command core.Command, parameter core.Parameter) error {
-	if parameter.Option != "" {
-		return fmt.Errorf("missing --%s; use help %s", parameter.Option, core.PathString(command.Path))
-	}
-	return fmt.Errorf("missing <%s>; use help %s", parameter.Name, core.PathString(command.Path))
-}
-func parseToken(kind, token string) (any, error) {
-	switch kind {
-	case "string":
-		return token, nil
-	case "integer":
-		value, err := strconv.ParseInt(token, 10, 64)
-		if err != nil {
-			return nil, errors.New("must be an integer")
-		}
-		return value, nil
-	case "boolean":
-		value, err := strconv.ParseBool(token)
-		if err != nil {
-			return nil, errors.New("must be true or false")
-		}
-		return value, nil
-	default:
-		return nil, fmt.Errorf("unsupported type %q", kind)
-	}
-}
-
-// Help renders global or command-specific metadata from the generated catalog and local console commands.
+// Help renders metadata from the current catalog plus local console commands.
 func (r *Runner) Help(path []string) string {
 	if len(path) > 0 {
 		for _, topic := range localHelpTopics {
@@ -313,7 +280,11 @@ func (r *Runner) Help(path []string) string {
 	summaries := make([]summary, 0, len(commands)+len(localHelpTopics))
 	for _, command := range commands {
 		path := core.PathString(command.Path)
-		summaries = append(summaries, summary{path: path, usage: path, summary: command.Summary})
+		usage := path
+		if command.Usage != "" {
+			usage += " " + command.Usage
+		}
+		summaries = append(summaries, summary{path: path, usage: usage, summary: command.Summary})
 	}
 	for _, topic := range localHelpTopics {
 		summaries = append(summaries, summary{path: core.PathString(topic.path), usage: topic.usage, summary: topic.summary})
@@ -338,9 +309,14 @@ func commandHelp(command core.Command) string {
 	builder.WriteString(core.PathString(command.Path))
 	positionals := make([]core.Parameter, 0, len(command.Parameters))
 	options := make([]core.Parameter, 0, len(command.Parameters))
+	secureInputs := append([]core.SecretInput(nil), command.Secrets...)
 	for _, parameter := range command.Parameters {
 		if parameter.Secret {
-			options = append(options, parameter)
+			secureInputs = append(secureInputs, core.SecretInput{
+				Name: parameter.Name, Required: parameter.Required,
+				Prompt: parameter.SecretPrompt, ConfirmationPrompt: parameter.SecretConfirmationPrompt,
+				StdinOption: parameter.SecretStdinOption,
+			})
 		} else if parameter.Option == "" {
 			positionals = append(positionals, parameter)
 		} else {
@@ -349,26 +325,32 @@ func commandHelp(command core.Command) string {
 	}
 	sort.Slice(positionals, func(i, j int) bool { return positionals[i].Position < positionals[j].Position })
 	sort.Slice(options, func(i, j int) bool { return options[i].Option < options[j].Option })
-	for _, parameter := range positionals {
-		if parameter.Required {
-			fmt.Fprintf(&builder, " <%s>", parameter.Name)
-		} else {
-			fmt.Fprintf(&builder, " [%s]", parameter.Name)
+	if command.Usage != "" {
+		builder.WriteByte(' ')
+		builder.WriteString(command.Usage)
+	} else {
+		for _, parameter := range positionals {
+			if parameter.Required {
+				fmt.Fprintf(&builder, " <%s>", parameter.Name)
+			} else {
+				fmt.Fprintf(&builder, " [%s]", parameter.Name)
+			}
 		}
-	}
-	for _, parameter := range options {
-		option := parameter.Option
-		if parameter.Secret {
-			option = parameter.SecretStdinOption
+		for _, parameter := range options {
+			usage := "--" + parameter.Option
+			if parameter.Type != "boolean" {
+				usage += " <" + parameter.Name + ">"
+			}
+			if parameter.Required {
+				fmt.Fprintf(&builder, " %s", usage)
+			} else {
+				fmt.Fprintf(&builder, " [%s]", usage)
+			}
 		}
-		usage := "--" + option
-		if parameter.Type != "boolean" && !parameter.Secret {
-			usage += " <" + parameter.Name + ">"
-		}
-		if parameter.Required && !parameter.Secret {
-			fmt.Fprintf(&builder, " %s", usage)
-		} else {
-			fmt.Fprintf(&builder, " [%s]", usage)
+		for _, secret := range secureInputs {
+			if secret.StdinOption != "" {
+				fmt.Fprintf(&builder, " [--%s]", secret.StdinOption)
+			}
 		}
 	}
 	fmt.Fprintf(&builder, "\n\n%s\n\n%s", command.Summary, command.Description)
@@ -381,17 +363,21 @@ func commandHelp(command core.Command) string {
 	if len(options) > 0 {
 		builder.WriteString("\nOptions:\n")
 		for _, parameter := range options {
-			option, kind := parameter.Option, parameter.Type
-			if parameter.Secret {
-				option, kind = parameter.SecretStdinOption, "secret"
-			}
-			fmt.Fprintf(&builder, "  %-16s %-8s %s\n", "--"+option, kind, parameter.Description)
+			fmt.Fprintf(&builder, "  %-16s %-8s %s\n", "--"+parameter.Option, parameter.Type, parameter.Description)
 		}
 	}
-	if len(command.Aliases) > 0 {
-		builder.WriteString("\nAliases:\n")
-		for _, alias := range command.Aliases {
-			fmt.Fprintf(&builder, "  %s\n", core.PathString(alias))
+	if len(secureInputs) > 0 {
+		builder.WriteString("\nSecure inputs:\n")
+		for _, secret := range secureInputs {
+			label := secret.Name
+			if secret.StdinOption != "" {
+				label = "--" + secret.StdinOption
+			}
+			requirement := "optional"
+			if secret.Required {
+				requirement = "required"
+			}
+			fmt.Fprintf(&builder, "  %-20s %s (%s)\n", label, secret.Name, requirement)
 		}
 	}
 	if len(command.Examples) > 0 {
@@ -540,7 +526,7 @@ func orderedSummaryKeys(values map[string]any) []string {
 		"worker_id":    {"workload_type", "state", "workload_id", "owner_id", "sandbox_id", "in_flight", "failure"},
 		"session_id":   {"user_id", "state", "worker_id", "runtime_group_id", "failure"},
 		"execution_id": {"job_id", "state", "owner_id", "detached", "duration", "failure"},
-		"service_id":   {"description", "canonical_base_path", "state", "enabled", "instance_count", "worker_count", "validation_error"},
+		"service_id":   {"description", "canonical_base_path", "state", "enabled", "version_count", "sandbox_count", "worker_count", "validation_error"},
 		"package_id":   {"description", "valid", "service_count", "validation_error"},
 		"lease_id":     {"protocol", "state", "bind_address", "host_port", "sandbox_id", "internal_port", "purpose", "expires_at"},
 		"id":           {"type", "title", "execution_id", "description"},

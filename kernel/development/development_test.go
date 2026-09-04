@@ -286,7 +286,7 @@ func newTestPlatform(t *testing.T) testPlatform {
 	}
 	driver := newFakeDriver()
 	registry := core.NewRegistry(nil)
-	manager, err := New(Config{Root: root, PackagesRoot: packages, ConfigRoot: filepath.Join(root, "config"), UsersRoot: users, RuntimeRoot: runtimeRoot, ImageRoot: image, ImageRecord: record, Driver: driver, ActivationGateway: NewCommandBusGateway(registry)})
+	manager, err := New(Config{Root: root, PackagesRoot: packages, UsersRoot: users, RuntimeRoot: runtimeRoot, ImageRoot: image, ImageRecord: record, Driver: driver, ActivationGateway: NewCommandBusGateway(registry)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -821,6 +821,9 @@ func TestActivationScansOnlyOnDemandCommitsAndResetsOverlay(t *testing.T) {
 	if len(hook.prepared) != 1 || hook.prepared[0].PackageID != "the8020/dev-core" || !slices.Equal(hook.completed, []bool{true}) {
 		t.Fatalf("schema activation hook = prepared %#v completed %#v", hook.prepared, hook.completed)
 	}
+	if !beneath(hook.prepared[0].Root, platform.root) || beneath(hook.prepared[0].Root, filepath.Join(platform.root, "node", "kernel")) {
+		t.Fatalf("schema candidate uses protected mount source %q", hook.prepared[0].Root)
+	}
 	current, _ := platform.manager.Inspect(sandbox.UserID)
 	if platform.driver.starts != starts+1 || current.SandboxID != oldSandbox || !result.OverlayReset {
 		t.Fatal("activation did not recreate the deterministic sandbox with a clean overlay")
@@ -1201,7 +1204,7 @@ func TestInheritedCleanupNeverGatesStartup(t *testing.T) {
 	driver.listWait = wait
 	driver.views["dev-alice"] = &fakeView{start: SandboxStart{SandboxID: "dev-alice"}, running: true}
 	started := time.Now()
-	manager, err := New(Config{Root: root, PackagesRoot: packages, ConfigRoot: filepath.Join(root, "config"), UsersRoot: users, RuntimeRoot: runtimeRoot, ImageRoot: image, ImageRecord: record, Driver: driver})
+	manager, err := New(Config{Root: root, PackagesRoot: packages, UsersRoot: users, RuntimeRoot: runtimeRoot, ImageRoot: image, ImageRecord: record, Driver: driver})
 	if err != nil {
 		t.Fatal(err)
 	}

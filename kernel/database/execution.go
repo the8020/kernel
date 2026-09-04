@@ -22,10 +22,11 @@ const transactionMaximumDuration = 5 * time.Minute
 
 // StatementRequest is the lossless runtime SQL protocol used by Kysely.
 type StatementRequest struct {
-	Statement   string          `json:"statement"`
-	Parameters  json.RawMessage `json:"parameters,omitempty"`
-	ReturnRows  bool            `json:"return_rows"`
-	Transaction string          `json:"transaction,omitempty"`
+	Statement      string          `json:"statement"`
+	Parameters     json.RawMessage `json:"parameters,omitempty"`
+	ReturnRows     bool            `json:"return_rows"`
+	ReturnInsertID bool            `json:"return_insert_id"`
+	Transaction    string          `json:"transaction,omitempty"`
 }
 
 // StatementResult has one shape for row-returning and mutating statements.
@@ -226,8 +227,10 @@ func (m *Manager) RunStatement(ctx context.Context, scope string, request Statem
 	if affected, affectedErr := result.RowsAffected(); affectedErr == nil {
 		response.AffectedRows = taggedInteger(affected)
 	}
-	if insertID, insertErr := result.LastInsertId(); insertErr == nil {
-		response.InsertID = taggedInteger(insertID)
+	if request.ReturnInsertID {
+		if insertID, insertErr := result.LastInsertId(); insertErr == nil {
+			response.InsertID = taggedInteger(insertID)
+		}
 	}
 	return response, nil
 }
@@ -374,14 +377,11 @@ func (m *Manager) decodeRuntimeParameter(value any) (any, error) {
 			}
 			return decoded, nil
 		case "json":
-			encoded, err := json.Marshal(object["value"])
+			encoded, err := EncodeJSON(m.status.Backend, object["value"])
 			if err != nil {
 				return nil, errors.New("invalid JSON parameter")
 			}
-			if m.status.Backend == BackendPostgreSQL {
-				return json.RawMessage(encoded), nil
-			}
-			return string(encoded), nil
+			return encoded, nil
 		default:
 			return nil, errors.New("unknown tagged database value")
 		}

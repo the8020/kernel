@@ -1,10 +1,14 @@
 # Purpose
 
-- Expose Phase 1C filesystem service discovery, lifecycle, validation, testing, and OpenAPI.
+- Adapt service discovery, lifecycle, validation, testing, and OpenAPI
+  primitives for package runtime operations.
 
 # Ownership
 
-- Own declarative service list/inspect/validate/start/stop/restart/scale/request/OpenAPI handlers.
+- Do not publish CBus metadata; `the8020/services` owns visible `services.*`
+  command programs.
+- Retain thin list/inspect/validate/start/stop/restart/scale/request/OpenAPI
+  handlers behind the private dispatcher.
 
 # Local Contracts
 
@@ -23,12 +27,13 @@
 
 # Work Guidance
 
-- Delegate filesystem state, rolling replacement, pool bounds, scheduling, and cleanup to the high-level web-service manager.
+- Delegate desired-state changes, rolling replacement, pool bounds, scheduling,
+  and cleanup to the high-level web-service manager.
 
 # Verification
 
-- Generated validation and handler tests cover every service command.
+- Handler, package, and service-domain tests cover every operation.
 
 # Child DOX Index
 
-- This domain contract owns its leaf command folders; they contain only one declarative command and thin handler each.
+- Leaf folders retain only thin private handlers.

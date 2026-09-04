@@ -13,6 +13,12 @@
 
 # Local Contracts
 
+- A typed terminal-runtime failure marks the affected pool `FAILED` and
+  `runtime_unavailable` without probing or stopping vanished Workers. The next
+  start releases its old sandbox ownership before recreating the same desired
+  pool, so reconciliation heals explicit kills and terminal runtime failures
+  without leaking stopped sandboxes.
+
 - Public API includes lifecycle/query methods plus `EnsureCapacity`,
   `ReconcileCapacity`, exact-Worker dispatch, HTTP dispatch, and WebSocket
   proxy.

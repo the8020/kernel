@@ -3,9 +3,9 @@ set -euo pipefail
 
 SOURCE_ROOT=${1:-}
 RUNTIME_SOURCE="$SOURCE_ROOT/defaults/config/runtime"
-IMAGE_DEFINITION=${2:-"$SOURCE_ROOT/config/runtime/image"}
+IMAGE_DEFINITION=${2:-"$RUNTIME_SOURCE/image"}
 IMAGE_ROOT=${3:-"$SOURCE_ROOT/node/kernel/runtime/images/full"}
-MANIFEST=${4:-"$SOURCE_ROOT/config/runtime/versions.toml"}
+MANIFEST=${4:-"$RUNTIME_SOURCE/versions.toml"}
 RUNTIME_ROOT=${5:-"$SOURCE_ROOT/node/kernel/runtime"}
 INSTANCE_UUID=${6:-}
 if [[ -z "$SOURCE_ROOT" || ! -f "$MANIFEST" || ! -f "$IMAGE_DEFINITION/Containerfile" || ! -f "$IMAGE_DEFINITION/build.sh" || ! -f "$IMAGE_DEFINITION/deno.json" || ! -f "$IMAGE_DEFINITION/deno.lock" || -z "$INSTANCE_UUID" ]]; then
@@ -131,7 +131,8 @@ cleanup_smoke() {
 trap cleanup_smoke EXIT
 "$CTR_BIN" namespaces create "$SMOKE_NAMESPACE"
 "$CTR_BIN" --namespace "$SMOKE_NAMESPACE" images import --no-unpack --index-name "$IMAGE_NAME" "$OCI_ARCHIVE" >/dev/null
-"$CTR_BIN" --namespace "$SMOKE_NAMESPACE" run --detach --runtime io.containerd.runsc.v1 --net-host --read-only --null-io \
+"$CTR_BIN" --namespace "$SMOKE_NAMESPACE" run --detach --runtime io.containerd.runsc.v1 \
+  --runtime-config-path "$RUNTIME_SOURCE/runsc.toml" --net-host --read-only --null-io \
   --mount type=tmpfs,dst=/tmp,options=nosuid:nodev:noexec:mode=1777:size=67108864 \
   --mount type=tmpfs,dst=/runtime-cache,options=nosuid:nodev:noexec:mode=1777:size=67108864 \
   --env "SANDBOX_ID=$SMOKE_ID" --env "RUNTIME_GROUP_ID=$SMOKE_ID" --env WORKLOAD_TYPE=job \
@@ -155,7 +156,7 @@ grep -Fq '"worker_id":"worker-smoke"' "$RUNTIME_ROOT/tmp/smoke-worker.json"
 grep -Fq '"message_type":"worker_state_change"' "$RUNTIME_ROOT/tmp/smoke-worker.json"
 curl --fail --silent "http://127.0.0.1:$INSPECTOR_PORT/json/list" | grep -Fq 'job:installer:execution-smoke:worker-smoke'
 curl --fail --silent --header "Authorization: Bearer $SMOKE_TOKEN" --header 'Content-Type: application/json' \
-  --data "{\"protocol_version\":$RUNTIME_PROTOCOL,\"message_type\":\"job_start\",\"runtime_group_id\":\"$SMOKE_ID\",\"correlation_id\":\"smoke-job\",\"payload\":{\"input\":{\"value\":1}}}" \
+  --data "{\"protocol_version\":$RUNTIME_PROTOCOL,\"message_type\":\"job_start\",\"runtime_group_id\":\"$SMOKE_ID\",\"correlation_id\":\"smoke-job\",\"payload\":{\"arguments\":[{\"value\":1}],\"secrets\":{}}}" \
   "http://127.0.0.1:$SUPERVISOR_PORT/v1/jobs/worker-smoke/run" > "$RUNTIME_ROOT/tmp/smoke-result.json"
 grep -Fq '"smoke":true' "$RUNTIME_ROOT/tmp/smoke-result.json"
 grep -Fq '"message_type":"job_result"' "$RUNTIME_ROOT/tmp/smoke-result.json"

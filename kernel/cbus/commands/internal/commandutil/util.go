@@ -14,6 +14,7 @@ import (
 	"the8020/kernel/cbus/core"
 	"the8020/kernel/execution/adminrun"
 	"the8020/kernel/execution/supervisor"
+	workspacepackages "the8020/kernel/packages"
 	"the8020/kernel/services"
 	"the8020/kernel/webservices"
 )
@@ -35,8 +36,19 @@ func String(request core.Request, name string) string {
 }
 
 func Int(request core.Request, name string) int {
-	value, _ := request.Arguments[name].(int64)
-	return int(value)
+	switch value := request.Arguments[name].(type) {
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case float64:
+		return int(value)
+	case json.Number:
+		parsed, _ := value.Int64()
+		return int(parsed)
+	default:
+		return 0
+	}
 }
 
 func Bool(request core.Request, name string) bool {
@@ -113,7 +125,13 @@ func OperationError(err error) error {
 	if errors.As(err, &commandError) {
 		return err
 	}
+	var executionError *supervisor.ResponseError
+	if errors.As(err, &executionError) && executionError.Code != "" {
+		return &core.Error{Code: executionError.Code, Message: executionError.Message, Details: executionError.Details}
+	}
 	switch {
+	case errors.Is(err, workspacepackages.ErrInvalidServicePolicy):
+		return core.NewError(core.CodeInvalidArguments, err.Error())
 	case errors.Is(err, os.ErrNotExist):
 		return core.NewError(core.CodeNotFound, err.Error())
 	case errors.Is(err, context.DeadlineExceeded):

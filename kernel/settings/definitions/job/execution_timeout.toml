@@ -1,6 +1,6 @@
 key = "job.default.execution_timeout"
 type = "integer"
-storage = "node"
+storage = "global"
 default = 300000
 environment = "THE8020_JOB_DEFAULT_EXECUTION_TIMEOUT"
 minimum = 100

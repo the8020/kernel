@@ -48,6 +48,16 @@ type Applier interface {
 	Prepare(context.Context, Values) (Prepared, error)
 }
 
+// GlobalStore persists the explicit value of every system-wide setting.
+type GlobalStore interface {
+	Load(context.Context, []Definition) (map[string]any, uint64, error)
+	Set(context.Context, Definition, any) (uint64, error)
+}
+
+type globalRevisionStore interface {
+	Revision(context.Context) (uint64, error)
+}
+
 type sourceValues struct {
 	environment, startup, persisted          any
 	hasEnvironment, hasStartup, hasPersisted bool
@@ -79,6 +89,8 @@ type applierBinding struct {
 type Manager struct {
 	mu          sync.RWMutex
 	files       PersistencePaths
+	global      GlobalStore
+	revision    uint64
 	definitions map[string]Definition
 	ordered     []string
 	sources     map[string]sourceValues
@@ -87,10 +99,9 @@ type Manager struct {
 	appliers    []applierBinding
 }
 
-// PersistencePaths separates node-local and shared global override files.
+// PersistencePaths identifies the sole node-local settings file.
 type PersistencePaths struct {
-	Node   string
-	Global string
+	Node string
 }
 
 // New loads all setting sources with the required precedence.
@@ -98,8 +109,8 @@ func New(definitions []Definition, files PersistencePaths, startup map[string]st
 	if lookupEnv == nil {
 		lookupEnv = os.LookupEnv
 	}
-	if files.Node == "" || files.Global == "" || files.Node == files.Global {
-		return nil, errors.New("distinct node and global settings files are required")
+	if files.Node == "" {
+		return nil, errors.New("node settings file is required")
 	}
 	manager := &Manager{files: files, definitions: make(map[string]Definition), sources: make(map[string]sourceValues), configured: Values{}, active: Values{}}
 	for _, raw := range definitions {
@@ -123,10 +134,6 @@ func New(definitions []Definition, files PersistencePaths, startup map[string]st
 	if err != nil {
 		return nil, err
 	}
-	globalPersisted, err := loadPersisted(files.Global, manager.definitions, StorageGlobal)
-	if err != nil {
-		return nil, err
-	}
 	for _, key := range manager.ordered {
 		definition := manager.definitions[key]
 		source := sourceValues{}
@@ -144,11 +151,7 @@ func New(definitions []Definition, files PersistencePaths, startup map[string]st
 			}
 			source.startup, source.hasStartup = value, true
 		}
-		persisted := nodePersisted
-		if definition.Storage == StorageGlobal {
-			persisted = globalPersisted
-		}
-		if value, ok := persisted[key]; ok {
+		if value, ok := nodePersisted[key]; ok && definition.Storage == StorageNode {
 			source.persisted, source.hasPersisted = value, true
 		}
 		manager.sources[key] = source
@@ -159,6 +162,150 @@ func New(definitions []Definition, files PersistencePaths, startup map[string]st
 		return nil, err
 	}
 	return manager, nil
+}
+
+// AttachGlobal initializes missing defaults and replaces provisional global
+// defaults with the database-authoritative values. It must run before runtime
+// appliers and the public service plane are started.
+func (m *Manager) AttachGlobal(ctx context.Context, store GlobalStore) error {
+	if store == nil {
+		return errors.New("global settings store is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.appliers) != 0 {
+		return errors.New("global settings must attach before runtime appliers")
+	}
+	definitions := make([]Definition, 0)
+	for _, key := range m.ordered {
+		if definition := m.definitions[key]; definition.Storage == StorageGlobal {
+			definitions = append(definitions, definition)
+		}
+	}
+	values, revision, err := store.Load(ctx, definitions)
+	if err != nil {
+		return err
+	}
+	for _, definition := range definitions {
+		raw, exists := values[definition.Key]
+		if !exists {
+			return fmt.Errorf("global setting %s is missing after initialization", definition.Key)
+		}
+		value, err := normalizeValue(definition, raw)
+		if err != nil {
+			return &OperationError{Kind: ErrorInvalid, Key: definition.Key, Err: fmt.Errorf("invalid database setting %s: %w", definition.Key, err)}
+		}
+		source := m.sources[definition.Key]
+		source.persisted, source.hasPersisted = value, true
+		m.sources[definition.Key] = source
+	}
+	for _, key := range m.ordered {
+		value, _ := configuredValue(m.definitions[key], m.sources[key])
+		m.configured[key], m.active[key] = value, value
+	}
+	if err := validateSnapshot(m.configured); err != nil {
+		return err
+	}
+	m.global, m.revision = store, revision
+	return nil
+}
+
+// RefreshGlobal observes a shared revision before loading values, then applies
+// only a newer database snapshot. Restart-required values become visibly
+// pending; runtime-mutable values use the same prepare/commit boundary as a
+// local settings command.
+func (m *Manager) RefreshGlobal(ctx context.Context) (bool, error) {
+	m.mu.RLock()
+	store, currentRevision := m.global, m.revision
+	definitions := make([]Definition, 0)
+	for _, key := range m.ordered {
+		if definition := m.definitions[key]; definition.Storage == StorageGlobal {
+			definitions = append(definitions, definition)
+		}
+	}
+	m.mu.RUnlock()
+	if store == nil {
+		return false, errors.New("global settings database is unavailable")
+	}
+	if revisions, ok := store.(globalRevisionStore); ok {
+		revision, err := revisions.Revision(ctx)
+		if err != nil {
+			return false, err
+		}
+		if revision <= currentRevision {
+			return false, nil
+		}
+	}
+	values, revision, err := store.Load(ctx, definitions)
+	if err != nil {
+		return false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if revision <= m.revision {
+		return false, nil
+	}
+	sources := cloneSources(m.sources)
+	for _, definition := range definitions {
+		value, exists := values[definition.Key]
+		if !exists {
+			return false, fmt.Errorf("global setting %s is missing after refresh", definition.Key)
+		}
+		value, err = normalizeValue(definition, value)
+		if err != nil {
+			return false, &OperationError{Kind: ErrorInvalid, Key: definition.Key, Err: err}
+		}
+		source := sources[definition.Key]
+		source.persisted, source.hasPersisted = value, true
+		sources[definition.Key] = source
+	}
+	candidate := Values{}
+	for _, key := range m.ordered {
+		candidate[key], _ = configuredValue(m.definitions[key], sources[key])
+	}
+	if err := validateSnapshot(candidate); err != nil {
+		return false, err
+	}
+	prepared := make([]Prepared, 0)
+	for _, binding := range m.appliers {
+		changed := false
+		for key := range binding.keys {
+			definition := m.definitions[key]
+			if definition.Storage == StorageGlobal && definition.RuntimeMutable && !equal(candidate[key], m.active[key]) {
+				changed = true
+				break
+			}
+		}
+		if !changed {
+			continue
+		}
+		change, err := binding.applier.Prepare(ctx, cloneValues(candidate))
+		if err != nil {
+			for _, item := range prepared {
+				item.Discard()
+			}
+			return false, err
+		}
+		prepared = append(prepared, change)
+	}
+	for _, definition := range definitions {
+		if definition.RuntimeMutable && !equal(candidate[definition.Key], m.active[definition.Key]) && m.applierFor(definition.Key) == nil {
+			for _, item := range prepared {
+				item.Discard()
+			}
+			return false, fmt.Errorf("setting %s has no runtime owner", definition.Key)
+		}
+	}
+	for _, item := range prepared {
+		item.Commit()
+	}
+	m.sources, m.configured, m.revision = sources, candidate, revision
+	for _, definition := range definitions {
+		if definition.RuntimeMutable {
+			m.active[definition.Key] = candidate[definition.Key]
+		}
+	}
+	return true, nil
 }
 
 // RegisterApplier assigns a responsible runtime owner to the listed keys.
@@ -252,7 +399,11 @@ func (m *Manager) Unset(ctx context.Context, key string) (Info, error) {
 	}
 	sources := cloneSources(m.sources)
 	source := sources[key]
-	source.persisted, source.hasPersisted = nil, false
+	if m.definitions[key].Storage == StorageGlobal {
+		source.persisted, source.hasPersisted = m.definitions[key].Default, true
+	} else {
+		source.persisted, source.hasPersisted = nil, false
+	}
 	sources[key] = source
 	return m.applyLocked(ctx, key, sources)
 }
@@ -285,7 +436,11 @@ func (m *Manager) applyLocked(ctx context.Context, changed string, sources map[s
 	}
 	var persistErr error
 	if definition.Storage == StorageGlobal {
-		persistErr = persistGlobalChange(ctx, m.files.Global, m.definitions, sources, changed)
+		if m.global == nil {
+			persistErr = errors.New("global settings database is unavailable")
+		} else {
+			m.revision, persistErr = m.global.Set(ctx, definition, sources[changed].persisted)
+		}
 	} else {
 		persistErr = persist(m.files.Node, m.definitions, sources, StorageNode)
 	}

@@ -1,6 +1,6 @@
 # Purpose
 
-- Implement `system.shutdown` as declared by the adjacent authoritative TOML.
+- Implement `kernel.shutdown` as declared by the adjacent authoritative TOML.
 
 # Ownership
 
@@ -10,8 +10,8 @@
 # Local Contracts
 
 - Public API: handler constructor `New(*services.Services) core.Handler`.
-- `shutdown` is the short command alias. The idempotent command remains callable
-  while the command server drains; progress is read through `system status`
+- There is no short alias. The idempotent command remains callable while the
+  command server drains; progress is read through `kernel.status`
   until the administrative socket closes.
 
 # Work Guidance

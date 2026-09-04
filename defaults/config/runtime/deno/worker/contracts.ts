@@ -60,16 +60,17 @@ export interface CurrentExecutionMetadata {
 
 export interface AuthContext {
   authenticated: boolean;
-  realm?: "bootstrap-admin";
+  realm?: "user";
   userId?: string;
   username?: string;
   authVersion?: number;
 }
 
 export type KernelOperation =
-  | "auth.bootstrapLogin"
+  | "auth.login"
   | "auth.logoutCurrent"
   | "admin.execute"
+  | "runtime.operation"
   | "database.info"
   | "database.execute"
   | "database.scope.close"
@@ -84,6 +85,7 @@ export interface KernelCallRequest {
   arguments: Record<string, unknown>;
   requestId?: string;
   serviceId?: string;
+  workloadId: string;
   executionId: string;
   workerId: string;
   persistentExecutionId?: string;
@@ -94,8 +96,8 @@ export type KernelCall = (request: KernelCallRequest) => Promise<unknown>;
 export interface WorkerPermissionSet {
   read?: string[];
   write?: string[];
-  net?: string[];
-  import?: string[];
+  net?: true | string[];
+  import?: true | string[];
   env?: string[];
   sys?: string[];
 }
@@ -104,6 +106,12 @@ export interface RuntimeLogEvent {
   level: "debug" | "info" | "warn" | "error";
   message: string;
   fields?: Record<string, unknown>;
+}
+
+export interface WorkerExecutionFailure {
+  message: string;
+  code?: string;
+  details?: Record<string, unknown>;
 }
 
 export interface BaseContext {
@@ -117,18 +125,13 @@ export interface ServiceContext extends BaseContext {
   readonly meta: ServiceRequestMetadata;
 }
 
-export interface JobContext extends BaseContext {
-  readonly executionCount: number;
-}
-
 export type ServiceEntrypoint = (
   request: Request,
   context: ServiceContext,
 ) => Promise<Response>;
 export type JobEntrypoint = (
-  input: unknown,
-  context: JobContext,
-) => Promise<unknown>;
+  ...arguments_: unknown[]
+) => unknown | Promise<unknown>;
 
 export type WorkerControlContext = BaseContext;
 

@@ -1,6 +1,6 @@
 # Purpose
 
-- Implement `system.restart` as declared by the adjacent authoritative TOML.
+- Implement `kernel.restart` as declared by the adjacent authoritative TOML.
 
 # Ownership
 
@@ -10,7 +10,7 @@
 # Local Contracts
 
 - Public API: handler constructor `New(*services.Services) core.Handler`.
-- `restart` is the short command alias; the first lifecycle request wins.
+- There is no short alias; the first lifecycle request wins.
 - The command remains callable while the command server drains so repeated
   restart requests are idempotent.
 

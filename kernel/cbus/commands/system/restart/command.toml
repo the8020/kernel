@@ -1,7 +1,6 @@
 version = 1
-id = "system.restart"
-path = ["system", "restart"]
-aliases = [["restart"]]
+id = "kernel.restart"
+path = ["kernel.restart"]
 summary = "Restart the kernel"
 description = "Requests orderly cleanup and then replaces the running kernel process with the current kernel executable, independent of the run.sh process that opened the administrative console."
 mutates_state = true
@@ -13,4 +12,4 @@ symbol = "New"
 name = "requested"
 type = "boolean"
 [[examples]]
-command = "restart"
+command = "kernel.restart"

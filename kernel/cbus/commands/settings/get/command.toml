@@ -1,9 +1,8 @@
 version = 1
-id = "settings.get"
-path = ["settings", "get"]
-aliases = [["config", "get"]]
-summary = "Get one 80|20 setting"
-description = "Returns the declared node or global storage, source, configured value, and active value for one setting."
+id = "kernel.config.get"
+path = ["kernel.config.get"]
+summary = "Get one kernel setting"
+description = "Returns one node-local kernel setting."
 mutates_state = false
 restart_behavior = "none"
 [handler]
@@ -19,4 +18,4 @@ description = "Dot-separated setting key."
 name = "setting"
 type = "object"
 [[examples]]
-command = "settings get network.main_port"
+command = "kernel.config.get network.main_port"

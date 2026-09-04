@@ -165,6 +165,11 @@ func (m *Manager) Start(ctx context.Context, serviceID, entrypoint string, optio
 	if loadErr == nil && existing.State != "STOPPED" && existing.State != "FAILED" {
 		return Record{}, fmt.Errorf("service %s is already started", serviceID)
 	}
+	if loadErr == nil && existing.State == "FAILED" && existing.RuntimeUnavailable {
+		if err := m.releaseSandbox(ctx, existing); err != nil {
+			return existing, fmt.Errorf("release unavailable runtime group: %w", err)
+		}
+	}
 	if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
 		m.quarantineInvalidRecord(serviceID, loadErr)
 	}
@@ -234,7 +239,7 @@ func (m *Manager) scaleLocked(ctx context.Context, serviceID string, count int) 
 	}
 	live, err := m.workers.List(ctx, record.RuntimeGroupID)
 	if err != nil {
-		return record, err
+		return m.failUnavailableLocked(record, err)
 	}
 	return m.scaleRecordLocked(ctx, record, count, live)
 }
@@ -417,7 +422,7 @@ func (m *Manager) Stop(ctx context.Context, serviceID string) (bool, error) {
 		return false, err
 	}
 	if err := m.workers.ConfigureService(ctx, record.RuntimeGroupID, serviceID, nil, record.ConcurrencyPerWorker); err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
+		if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, workers.ErrRuntimeUnavailable) {
 			record.Failure = err.Error()
 			_ = m.store.Save(serviceID, record)
 			return false, err
@@ -435,7 +440,7 @@ func (m *Manager) Stop(ctx context.Context, serviceID string) (bool, error) {
 	}
 	live, err := m.workers.List(ctx, record.RuntimeGroupID)
 	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
+		if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, workers.ErrRuntimeUnavailable) {
 			return false, err
 		}
 		// Runtime records are recoverable indexes, not authority over a
@@ -571,7 +576,11 @@ func (m *Manager) OpenAPI(ctx context.Context, serviceID string) (map[string]any
 	if record.State != "READY" || len(record.WorkerIDs) == 0 {
 		return nil, fmt.Errorf("service %s has no ready Worker", serviceID)
 	}
-	return m.workers.ServiceOpenAPI(ctx, record.RuntimeGroupID, record.ServiceID)
+	document, err := m.workers.ServiceOpenAPI(ctx, record.RuntimeGroupID, record.ServiceID)
+	if err != nil {
+		_, err = m.failUnavailableLocked(record, err)
+	}
+	return document, err
 }
 
 // FailGroup marks every live service pool in a failed runtime group without
@@ -797,7 +806,7 @@ func (m *Manager) EnsureCapacity(ctx context.Context, serviceID string, growthLi
 	allowedMaximum := min(record.MaximumWorkers, max(growthLimit, len(record.WorkerIDs)))
 	live, err := m.workers.List(ctx, record.RuntimeGroupID)
 	if err != nil {
-		return record, err
+		return m.failUnavailableLocked(record, err)
 	}
 	if workerSetNeedsReconciliation(record, live) {
 		target := len(record.WorkerIDs)
@@ -807,7 +816,7 @@ func (m *Manager) EnsureCapacity(ctx context.Context, serviceID string, growthLi
 		}
 		live, err = m.workers.List(ctx, record.RuntimeGroupID)
 		if err != nil {
-			return record, err
+			return m.failUnavailableLocked(record, err)
 		}
 	}
 	inFlight := map[string]int{}
@@ -875,7 +884,7 @@ func (m *Manager) ReconcileCapacity(ctx context.Context, serviceID string, minim
 	}
 	live, err := m.workers.List(ctx, record.RuntimeGroupID)
 	if err != nil {
-		return record, err
+		return m.failUnavailableLocked(record, err)
 	}
 	if workerSetNeedsReconciliation(record, live) {
 		record, err = m.scaleRecordLocked(ctx, record, len(record.WorkerIDs), live)
@@ -884,7 +893,7 @@ func (m *Manager) ReconcileCapacity(ctx context.Context, serviceID string, minim
 		}
 		live, err = m.workers.List(ctx, record.RuntimeGroupID)
 		if err != nil {
-			return record, err
+			return m.failUnavailableLocked(record, err)
 		}
 	}
 	if len(record.WorkerIDs) < record.MinimumWorkers {
@@ -1010,6 +1019,16 @@ func (m *Manager) fail(record Record, cause error) (Record, error) {
 	record.RuntimeUnavailable = false
 	_ = m.store.Save(record.ServiceID, record)
 	return record, cause
+}
+
+func (m *Manager) failUnavailableLocked(record Record, cause error) (Record, error) {
+	if !errors.Is(cause, workers.ErrRuntimeUnavailable) {
+		return record, cause
+	}
+	record.State = "FAILED"
+	record.Failure = cause.Error()
+	record.RuntimeUnavailable = true
+	return record, errors.Join(cause, m.store.Save(record.ServiceID, record))
 }
 
 func (m *Manager) failStart(record Record, cause error) (Record, error) {

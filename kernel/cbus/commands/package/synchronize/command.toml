@@ -1,6 +1,6 @@
 version = 1
-id = "package.synchronize"
-path = ["package", "synchronize"]
+id = "kernel.packages.synchronize"
+path = ["kernel.packages.synchronize"]
 summary = "Synchronize desired packages"
 description = "Clones or atomically replaces selected indexed package repositories at their desired commit, tag, or latest default-branch commit, then refreshes their services when the runtime is active. Reports only package ID, resolved commit, and success. Omit --packages to synchronize the complete index."
 mutates_state = true
@@ -14,8 +14,18 @@ type = "string"
 option = "packages"
 required = false
 description = "Comma-separated package IDs; omit for all indexed packages."
+[[parameters]]
+name = "git_token"
+type = "string"
+required = false
+description = "Transient Git credential read securely from standard input."
+secret = true
+secret_prompt = "Git token: "
+secret_stdin_option = "git-token-stdin"
 [[result]]
 name = "packages"
 type = "array"
 [[examples]]
-command = "package synchronize --packages the8020/uui,the8020/admin-core"
+command = "kernel.packages.synchronize --packages the8020/uui,the8020/admin-core"
+[[examples]]
+command = "kernel.packages.synchronize --packages acme/private --git-token-stdin"

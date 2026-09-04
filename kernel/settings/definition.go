@@ -57,9 +57,6 @@ func ValidateDefinition(definition Definition) (Definition, error) {
 	if definition.Storage != StorageNode && definition.Storage != StorageGlobal {
 		return definition, fmt.Errorf("setting %s storage must be node or global", definition.Key)
 	}
-	if definition.Storage == StorageGlobal && definition.RuntimeMutable {
-		return definition, fmt.Errorf("global setting %s cannot be runtime mutable without cross-node coordination", definition.Key)
-	}
 	if strings.TrimSpace(definition.Description) == "" {
 		return definition, fmt.Errorf("setting %s has no description", definition.Key)
 	}

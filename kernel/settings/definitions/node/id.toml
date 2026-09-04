@@ -1,0 +1,7 @@
+key = "node.id"
+type = "string"
+storage = "node"
+default = "00000000-0000-0000-0000-000000000000"
+environment = "THE8020_NODE_ID"
+pattern = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+description = "Stable identity of this kernel node. Generated during node initialization."

@@ -7,4 +7,4 @@ minimum = 100
 maximum = 600000
 runtime_mutable = false
 restart_required = true
-description = "Active filesystem-service runtime maintenance interval in milliseconds; package catalog discovery is not periodic."
+description = "Active service runtime maintenance interval in milliseconds; package catalog discovery is not periodic."

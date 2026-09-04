@@ -1,6 +1,6 @@
 key = "database.username"
 type = "string"
-storage = "global"
+storage = "node"
 default = ""
 environment = "THE8020_DATABASE_USERNAME"
 runtime_mutable = false

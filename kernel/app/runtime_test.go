@@ -4,16 +4,108 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"the8020/kernel/database"
 	executionservices "the8020/kernel/execution/services"
+	workspacepackages "the8020/kernel/packages"
 	runtimehost "the8020/kernel/runtime"
 	containerdbackend "the8020/kernel/sandbox/backend/containerd"
 	"the8020/kernel/sandbox/manager"
 	"the8020/kernel/sandbox/model"
+	"the8020/kernel/webservices"
 )
+
+type sharedStateDatabaseStub struct {
+	status database.Status
+	err    error
+	marked error
+}
+
+func (s *sharedStateDatabaseStub) Check(context.Context) (database.Status, error) {
+	return s.status, s.err
+}
+func (s *sharedStateDatabaseStub) MarkUnavailable(err error) { s.marked = err }
+
+type sharedSettingsStub struct {
+	calls int
+	err   error
+}
+
+func (s *sharedSettingsStub) RefreshGlobal(context.Context) (bool, error) {
+	s.calls++
+	return true, s.err
+}
+
+type sharedPackageStateStub struct {
+	calls int
+	err   error
+}
+
+func (s *sharedPackageStateStub) Refresh(context.Context) error {
+	s.calls++
+	return s.err
+}
+
+type servicePlaneGateStub struct {
+	available bool
+	reason    string
+}
+
+type packageRevisionFollowerStub struct {
+	update workspacepackages.PackageSetUpdate
+	acks   []uint64
+}
+
+func (s *packageRevisionFollowerStub) Poll(context.Context) (workspacepackages.PackageSetUpdate, error) {
+	return s.update, nil
+}
+func (s *packageRevisionFollowerStub) Acknowledge(revision uint64) error {
+	s.acks = append(s.acks, revision)
+	s.update = workspacepackages.PackageSetUpdate{}
+	return nil
+}
+
+type serviceRevisionFollowerStub struct {
+	update workspacepackages.ServiceSetUpdate
+	acks   []uint64
+}
+
+func (s *serviceRevisionFollowerStub) Poll(context.Context) (workspacepackages.ServiceSetUpdate, error) {
+	return s.update, nil
+}
+func (s *serviceRevisionFollowerStub) Acknowledge(revision uint64) error {
+	s.acks = append(s.acks, revision)
+	s.update = workspacepackages.ServiceSetUpdate{}
+	return nil
+}
+
+type targetedServiceReconcilerStub struct {
+	calls []string
+	fail  string
+}
+
+func (s *targetedServiceReconcilerStub) Reconcile(_ context.Context, serviceID string) (webservices.Status, error) {
+	s.calls = append(s.calls, "reconcile:"+serviceID)
+	if serviceID == s.fail {
+		return webservices.Status{}, errors.New("reconcile failed")
+	}
+	return webservices.Status{ServiceID: serviceID}, nil
+}
+func (s *targetedServiceReconcilerStub) Retire(_ context.Context, serviceID string) error {
+	s.calls = append(s.calls, "retire:"+serviceID)
+	if serviceID == s.fail {
+		return errors.New("retire failed")
+	}
+	return nil
+}
+
+func (s *servicePlaneGateStub) SetAvailable(available bool, reason string) {
+	s.available, s.reason = available, reason
+}
 
 func TestCloseConcurrentlyStartsAllTasksBeforeWaiting(t *testing.T) {
 	firstStarted := make(chan struct{})
@@ -54,9 +146,87 @@ func TestRuntimeCleanupReportsOrderedStages(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"runtime controllers", "runtime ports", "runtime sandboxes", "runtime backends"}
+	want := []string{"public HTTP", "authentication maintenance", "runtime controllers", "runtime ports", "runtime sandboxes", "runtime backends"}
 	if !reflect.DeepEqual(stages, want) {
 		t.Fatalf("stages=%#v want=%#v", stages, want)
+	}
+}
+
+func TestSharedStateReconciliationGatesFailuresAndRestoresReadyDatabase(t *testing.T) {
+	db := &sharedStateDatabaseStub{status: database.Status{State: database.StateReady}}
+	settings := &sharedSettingsStub{}
+	packages := &sharedPackageStateStub{}
+	gate := &servicePlaneGateStub{}
+	if err := reconcileSharedState(context.Background(), db, settings, gate, packages); err != nil || !gate.available || settings.calls != 1 || packages.calls != 1 {
+		t.Fatalf("ready reconciliation gate=%#v settings=%#v packages=%#v err=%v", gate, settings, packages, err)
+	}
+	db.err = errors.New("connection lost")
+	if err := reconcileSharedState(context.Background(), db, settings, gate, packages); !errors.Is(err, db.err) || gate.available || gate.reason != "database unavailable" || settings.calls != 1 || packages.calls != 1 {
+		t.Fatalf("connection failure gate=%#v settings=%#v err=%v", gate, settings, err)
+	}
+	db.err = nil
+	settings.err = errors.New("invalid shared setting")
+	if err := reconcileSharedState(context.Background(), db, settings, gate, packages); !errors.Is(err, settings.err) || gate.available || gate.reason != "global settings unavailable" || !errors.Is(db.marked, settings.err) || packages.calls != 1 {
+		t.Fatalf("configuration failure gate=%#v marked=%v err=%v", gate, db.marked, err)
+	}
+	settings.err = nil
+	packages.err = errors.New("package checkout unavailable")
+	if err := reconcileSharedState(context.Background(), db, settings, gate, packages); !errors.Is(err, packages.err) || gate.available || gate.reason != "package state unavailable" || packages.calls != 2 {
+		t.Fatalf("package failure gate=%#v packages=%#v err=%v", gate, packages, err)
+	}
+	packages.err = nil
+	if err := reconcileSharedState(context.Background(), db, settings, gate, packages); err != nil || !gate.available || packages.calls != 3 {
+		t.Fatalf("recovery gate=%#v err=%v", gate, err)
+	}
+}
+
+func TestRuntimeSharedStateAppliesOnlyRevisionTargetsAndAcknowledgesAfterSuccess(t *testing.T) {
+	packages := &packageRevisionFollowerStub{}
+	serviceChanges := &serviceRevisionFollowerStub{update: workspacepackages.ServiceSetUpdate{
+		Revision: 7, ReconcileServices: []string{"acme/orders/api"}, RetireServices: []string{"acme/orders/removed"},
+	}}
+	reconciler := &targetedServiceReconcilerStub{}
+	topology := &sharedPackageStateStub{}
+	shared := &runtimeSharedState{packages: packages, serviceChanges: serviceChanges, services: reconciler, topology: topology}
+	if err := shared.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	wantCalls := []string{"retire:acme/orders/removed", "reconcile:acme/orders/api"}
+	if !reflect.DeepEqual(reconciler.calls, wantCalls) || !reflect.DeepEqual(serviceChanges.acks, []uint64{7}) || topology.calls != 1 {
+		t.Fatalf("calls=%#v acks=%#v topology=%d", reconciler.calls, serviceChanges.acks, topology.calls)
+	}
+	if err := shared.Refresh(context.Background()); err != nil || len(reconciler.calls) != len(wantCalls) || topology.calls != 2 {
+		t.Fatalf("unchanged refresh rescanned services: calls=%#v topology=%d err=%v", reconciler.calls, topology.calls, err)
+	}
+
+	serviceChanges.update = workspacepackages.ServiceSetUpdate{Revision: 8, ReconcileServices: []string{"acme/orders/failing"}}
+	reconciler.fail = "acme/orders/failing"
+	if err := shared.Refresh(context.Background()); err != nil || len(serviceChanges.acks) != 1 {
+		t.Fatalf("service-local failure escaped or revision was acknowledged: acks=%#v err=%v", serviceChanges.acks, err)
+	}
+	reconciler.fail = ""
+	if err := shared.Refresh(context.Background()); err != nil || !reflect.DeepEqual(serviceChanges.acks, []uint64{7, 8}) {
+		t.Fatalf("failed revision did not retry: calls=%#v acks=%#v err=%v", reconciler.calls, serviceChanges.acks, err)
+	}
+}
+
+func TestTargetedServiceFailureDoesNotGateUnrelatedPublicServices(t *testing.T) {
+	db := &sharedStateDatabaseStub{status: database.Status{State: database.StateReady}}
+	settings := &sharedSettingsStub{}
+	gate := &servicePlaneGateStub{}
+	packageChanges := &packageRevisionFollowerStub{}
+	serviceChanges := &serviceRevisionFollowerStub{update: workspacepackages.ServiceSetUpdate{
+		Revision: 9, ReconcileServices: []string{"acme/orders/failing"},
+	}}
+	reconciler := &targetedServiceReconcilerStub{fail: "acme/orders/failing"}
+	shared := &runtimeSharedState{packages: packageChanges, serviceChanges: serviceChanges, services: reconciler}
+
+	if err := reconcileSharedState(context.Background(), db, settings, gate, shared); err != nil || !gate.available || len(serviceChanges.acks) != 0 {
+		t.Fatalf("targeted failure gate=%#v acks=%#v err=%v", gate, serviceChanges.acks, err)
+	}
+	reconciler.fail = ""
+	if err := reconcileSharedState(context.Background(), db, settings, gate, shared); err != nil || !gate.available || !reflect.DeepEqual(serviceChanges.acks, []uint64{9}) {
+		t.Fatalf("targeted retry gate=%#v acks=%#v err=%v", gate, serviceChanges.acks, err)
 	}
 }
 
@@ -76,6 +246,18 @@ func TestRuntimeProfileSeparatesBoundedTemporaryAndDenoCacheMounts(t *testing.T)
 	for target, found := range want {
 		if !found {
 			t.Fatalf("bounded mount %s missing: %#v", target, profile.Mounts)
+		}
+	}
+}
+
+func TestRuntimeProfileEnablesRemoteImportsWithEgress(t *testing.T) {
+	profile := runtimeProfile(model.WorkloadJob, "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", nil, model.ResourceLimits{}, true)
+	if !profile.EgressAllowed || profile.DependencyMode != model.DependencyOnline {
+		t.Fatalf("networked runtime profile = %#v", profile)
+	}
+	for _, path := range []string{"/tmp", "/runtime-cache"} {
+		if !slices.Contains(profile.Permissions.ReadPaths, path) || !slices.Contains(profile.Permissions.WritePaths, path) {
+			t.Fatalf("temporary path %s is not readable and writable: %#v", path, profile.Permissions)
 		}
 	}
 }

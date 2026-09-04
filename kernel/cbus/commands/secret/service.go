@@ -7,8 +7,9 @@ import (
 )
 
 func Service(serviceSet *services.Services) (services.SecretService, error) {
-	if serviceSet == nil || serviceSet.Secrets == nil {
+	service := serviceSet.PlatformSnapshot().Secrets
+	if service == nil {
 		return nil, core.NewError(core.CodeRuntimeUnavailable, "secret storage is unavailable")
 	}
-	return serviceSet.Secrets, nil
+	return service, nil
 }

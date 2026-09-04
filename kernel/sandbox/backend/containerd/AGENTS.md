@@ -15,6 +15,9 @@
   image digest, read-only rootfs, no new privileges, empty capabilities, bounded
   mounts, a cgroup-v2 PID limit, one workload type, and the configured supervisor
   heartbeat/Worker-stop intervals. CPU and memory receive no cgroup ceilings.
+- Every container receives the node-local runsc configuration explicitly. It
+  permits opening existing host Unix sockets so the mounted kernel callback
+  socket works, but does not permit creating host sockets.
 - Only containers in the derived namespace carrying matching managed and instance labels are returned or modified. Ownership-only listing reads labels without querying task state for the default restart-destruction path.
 - Post-create label mutation is limited to owner, shared-owner list, logical
   service list, group key, and warm-assignment timestamp metadata; runtime

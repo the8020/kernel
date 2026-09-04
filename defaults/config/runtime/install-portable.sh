@@ -4,9 +4,9 @@ set -euo pipefail
 SOURCE_ROOT=${1:-}
 RUNTIME_SOURCE="$SOURCE_ROOT/defaults/config/runtime"
 IMAGE_ROOT=${2:-"$SOURCE_ROOT/node/kernel/runtime/images/rootless"}
-MANIFEST=${3:-"$SOURCE_ROOT/config/runtime/versions.toml"}
-CONTAINERFILE=${4:-"$SOURCE_ROOT/config/runtime/image/Containerfile"}
-RUNTIME_DEFINITION=${5:-"$SOURCE_ROOT/config/runtime/image/deno.json"}
+MANIFEST=${3:-"$RUNTIME_SOURCE/versions.toml"}
+CONTAINERFILE=${4:-"$RUNTIME_SOURCE/image/Containerfile"}
+RUNTIME_DEFINITION=${5:-"$RUNTIME_SOURCE/image/deno.json"}
 RUNTIME_LOCK=${RUNTIME_DEFINITION%.json}.lock
 BUILD_SCRIPT="$(dirname "$CONTAINERFILE")/build.sh"
 WORK_ROOT=${6:-"$SOURCE_ROOT/node/kernel/runtime"}

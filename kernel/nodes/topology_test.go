@@ -11,7 +11,24 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"the8020/kernel/database"
 )
+
+const testSharedSecret = "shared-node-test-secret"
+
+func newTestNodeDatabase(t *testing.T, root string) *database.Manager {
+	t.Helper()
+	db := database.New(database.Config{Backend: database.BackendSQLite, Location: filepath.Join(root, "system.db"), MaximumOpenConnections: 8, MaximumIdleConnections: 2})
+	if _, err := db.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(context.Background(), `CREATE TABLE IF NOT EXISTS "the8020__system__nodes" ("id" TEXT PRIMARY KEY, "url" TEXT NOT NULL, "recipientAddress" TEXT NOT NULL, "recipientPort" INTEGER NOT NULL, "enabled" INTEGER NOT NULL, "updatedAt" TEXT NOT NULL) STRICT`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
 
 type staticCapacityProvider struct{ capacity Capacity }
 
@@ -29,13 +46,13 @@ func (i *recordingWorkerInvoker) InvokeLocalWorker(_ context.Context, input Work
 }
 
 func TestTopologyPersistsAndReloadsSharedNodes(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config", "nodes.toml")
-	manager, err := New(path, "node-a")
+	root := t.TempDir()
+	manager, err := New(newTestNodeDatabase(t, root), "node-a", testSharedSecret)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer manager.Close()
-	observer, err := New(path, "node-c")
+	observer, err := New(newTestNodeDatabase(t, root), "node-c", testSharedSecret)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,10 +61,13 @@ func TestTopologyPersistsAndReloadsSharedNodes(t *testing.T) {
 	if _, err := manager.Set(context.Background(), node); err != nil {
 		t.Fatal(err)
 	}
+	if err := observer.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	if got, err := observer.Inspect("node-b"); err != nil || got != node {
 		t.Fatalf("running peer node=%#v err=%v", got, err)
 	}
-	reloaded, err := New(path, "node-a")
+	reloaded, err := New(newTestNodeDatabase(t, root), "node-a", testSharedSecret)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,9 +77,32 @@ func TestTopologyPersistsAndReloadsSharedNodes(t *testing.T) {
 	}
 }
 
+func TestTopologyReadsUseTheRefreshedSnapshot(t *testing.T) {
+	db := newTestNodeDatabase(t, t.TempDir())
+	manager, err := New(db, "node-a", testSharedSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	if _, err := manager.Set(context.Background(), Node{ID: "node-b", URL: "https://node-b.example", RecipientAddress: "10.0.0.2", RecipientPort: 9443, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(context.Background(), `DROP TABLE "the8020__system__nodes"`); err != nil {
+		t.Fatal(err)
+	}
+	if nodes := manager.List(); len(nodes) != 1 || nodes[0].ID != "node-b" {
+		t.Fatalf("cached nodes=%#v", nodes)
+	}
+	if _, err := manager.Inspect("node-b"); err != nil {
+		t.Fatalf("cached inspect: %v", err)
+	}
+	if err := manager.Refresh(context.Background()); err == nil {
+		t.Fatal("refresh unexpectedly succeeded without the topology table")
+	}
+}
+
 func TestIndexesArePartitionedAcrossEnabledNodes(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "nodes.toml")
-	manager, err := New(path, "node-b")
+	manager, err := New(newTestNodeDatabase(t, t.TempDir()), "node-b", testSharedSecret)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,8 +128,8 @@ func TestIndexesArePartitionedAcrossEnabledNodes(t *testing.T) {
 
 func TestForwardingRecipientRequiresSharedAuthentication(t *testing.T) {
 	root := t.TempDir()
-	path := filepath.Join(root, "nodes.toml")
-	manager, err := New(path, "node-a")
+	db := newTestNodeDatabase(t, root)
+	manager, err := New(db, "node-a", testSharedSecret)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +150,7 @@ func TestForwardingRecipientRequiresSharedAuthentication(t *testing.T) {
 		t.Fatalf("status=%d", unauthorized.StatusCode)
 	}
 
-	peer, err := New(path, "node-b")
+	peer, err := New(db, "node-b", testSharedSecret)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,8 +172,8 @@ func TestForwardingRecipientRequiresSharedAuthentication(t *testing.T) {
 
 func TestAvailableForwardingUsesAdvertisedCapacity(t *testing.T) {
 	root := t.TempDir()
-	path := filepath.Join(root, "nodes.toml")
-	owner, err := New(path, "node-a")
+	db := newTestNodeDatabase(t, root)
+	owner, err := New(db, "node-a", testSharedSecret)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +187,7 @@ func TestAvailableForwardingUsesAdvertisedCapacity(t *testing.T) {
 	if err := owner.Start(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { _, _ = writer.Write([]byte("capacity-routed")) })); err != nil {
 		t.Fatal(err)
 	}
-	peer, err := New(path, "node-b")
+	peer, err := New(db, "node-b", testSharedSecret)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,8 +210,8 @@ func TestAvailableForwardingUsesAdvertisedCapacity(t *testing.T) {
 }
 
 func TestExactWorkerInvocationForwardsAcrossNodes(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "nodes.toml")
-	owner, err := New(path, "node-a")
+	db := newTestNodeDatabase(t, t.TempDir())
+	owner, err := New(db, "node-a", testSharedSecret)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +226,7 @@ func TestExactWorkerInvocationForwardsAcrossNodes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	peer, err := New(path, "node-b")
+	peer, err := New(db, "node-b", testSharedSecret)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +242,7 @@ func TestExactWorkerInvocationForwardsAcrossNodes(t *testing.T) {
 }
 
 func TestWorkerInvocationRejectsInvalidAndOversizedInputBeforeDispatch(t *testing.T) {
-	manager, err := New(filepath.Join(t.TempDir(), "nodes.toml"), "node-a")
+	manager, err := New(newTestNodeDatabase(t, t.TempDir()), "node-a", testSharedSecret)
 	if err != nil {
 		t.Fatal(err)
 	}

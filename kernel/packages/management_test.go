@@ -1,10 +1,12 @@
 package packages
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,7 +15,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"the8020/kernel/deployment"
 )
@@ -89,9 +90,6 @@ func TestPackageIndexRemoteInspectionSynchronizationAndVersionSelection(t *testi
 	}
 	if !entry.Valid || entry.PackageID != "the8020/demo" || entry.Source != source {
 		t.Fatalf("package index = %#v", entry)
-	}
-	if info, err := os.Stat(entry.Path); err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("package index mode: info=%v err=%v", info, err)
 	}
 
 	inspection, err := store.InspectPackageSource(ctx, source)
@@ -357,8 +355,10 @@ func TestPackageRepositoryUsesSelectedSecretWithoutPersistingOrPassingPlaintext(
 	t.Setenv("TEST_REAL_GIT", gitPath)
 	const token = "github-plain-token"
 	store, err := New(Config{
-		WorkspaceRoot: root, GitPath: wrapper, StateLockTimeout: time.Second,
-		Secrets: testSecretResolver{"github": token},
+		WorkspaceRoot: root, GitPath: wrapper,
+		Secrets:    testSecretResolver{"github": token},
+		StateStore: &memoryServiceStateStore{states: map[string]DesiredServiceState{}},
+		IndexStore: newMemoryPackageIndexStore(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -369,9 +369,8 @@ func TestPackageRepositoryUsesSelectedSecretWithoutPersistingOrPassingPlaintext(
 	if err != nil {
 		t.Fatal(err)
 	}
-	indexData, err := os.ReadFile(index.Path)
-	if err != nil || !strings.Contains(string(indexData), "secret = 'github'") || strings.Contains(string(indexData), token) {
-		t.Fatalf("package metadata = %s, %v", indexData, err)
+	if index.Secret != "github" {
+		t.Fatalf("package metadata = %#v", index)
 	}
 	if _, err := store.PushPackageRepository(context.Background(), "example/repo"); err != nil {
 		t.Fatal(err)
@@ -398,7 +397,7 @@ func TestPackageRepositoryUsesSelectedSecretWithoutPersistingOrPassingPlaintext(
 	}
 }
 
-func TestPackageSynchronizationAppliesSelectedSecretAsHTTPSAuthorization(t *testing.T) {
+func TestPackageSynchronizationAppliesTransientCredentialWithoutPersistingIt(t *testing.T) {
 	gitPath, err := exec.LookPath("git")
 	if err != nil {
 		t.Skip("git is unavailable")
@@ -432,16 +431,28 @@ func TestPackageSynchronizationAppliesSelectedSecretAsHTTPSAuthorization(t *test
 
 	root := t.TempDir()
 	store := newTestStore(t, root)
-	store.secrets = testSecretResolver{"github": token}
+	var logs bytes.Buffer
+	store.logger = slog.New(slog.NewJSONHandler(&logs, nil))
 	if _, err := store.SetPackageIndex(context.Background(), PackageIndex{
 		Author: "example", Repository: "private",
-		Source: server.URL + "/example/private.git", Secret: "github",
+		Source: server.URL + "/example/private.git",
 	}); err != nil {
 		t.Fatal(err)
 	}
-	results, err := store.SynchronizePackages(context.Background(), []string{"example/private"})
+	results, err := store.SynchronizePackagesWithCredential(context.Background(), []string{"example/private"}, token)
 	if err != nil || len(results) != 1 || !results[0].Success || !results[0].Cloned {
 		t.Fatalf("authenticated synchronization = %#v, %v", results, err)
+	}
+	index, exists, err := store.index.Get(context.Background(), "example/private")
+	if err != nil || !exists || index.Secret != "" {
+		t.Fatalf("transient credential changed package index = %#v, %v", index, err)
+	}
+	if output := logs.String(); strings.Contains(output, token) || strings.Contains(output, wantedAuthorization) {
+		t.Fatal("package synchronization logged repository credentials")
+	}
+	encoded := strings.TrimPrefix(wantedAuthorization, "Basic ")
+	if got := redactGitCredential("request failed: "+token+" Authorization: Basic "+encoded, token); strings.Contains(got, token) || strings.Contains(got, encoded) {
+		t.Fatalf("credential error was not redacted: %q", got)
 	}
 }
 

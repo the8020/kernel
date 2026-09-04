@@ -42,7 +42,7 @@ func (c *Client) Execute(ctx context.Context, request core.Request) (core.Respon
 	if err != nil {
 		return core.Response{}, fmt.Errorf("encode command request: %w", err)
 	}
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix/v1/cbus/execute", bytes.NewReader(payload))
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix/v2/cbus/execute", bytes.NewReader(payload))
 	if err != nil {
 		return core.Response{}, err
 	}
@@ -62,6 +62,37 @@ func (c *Client) Execute(ctx context.Context, request core.Request) (core.Respon
 		return core.Response{}, fmt.Errorf("unsupported response protocol version %d", response.ProtocolVersion)
 	}
 	return response, nil
+}
+
+// Catalog fetches the current process-local catalog. When knownRevision still
+// matches, unchanged is true and no catalog body is transferred.
+func (c *Client) Catalog(ctx context.Context, knownRevision string) (catalog core.Catalog, unchanged bool, err error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://unix/v2/cbus/catalog", nil)
+	if err != nil {
+		return catalog, false, err
+	}
+	if knownRevision != "" {
+		request.Header.Set("If-None-Match", `"`+knownRevision+`"`)
+	}
+	response, err := c.http.Do(request)
+	if err != nil {
+		return catalog, false, fmt.Errorf("connect to kernel command bus: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotModified {
+		return catalog, true, nil
+	}
+	if response.StatusCode != http.StatusOK {
+		return catalog, false, fmt.Errorf("fetch command catalog: HTTP %d", response.StatusCode)
+	}
+	decoder := json.NewDecoder(response.Body)
+	if err := decoder.Decode(&catalog); err != nil {
+		return catalog, false, fmt.Errorf("decode command catalog: %w", err)
+	}
+	if catalog.ProtocolVersion != core.ProtocolVersion || catalog.Revision == "" {
+		return catalog, false, fmt.Errorf("unsupported command catalog protocol version %d", catalog.ProtocolVersion)
+	}
+	return catalog, false, nil
 }
 
 // Close releases idle client connections.

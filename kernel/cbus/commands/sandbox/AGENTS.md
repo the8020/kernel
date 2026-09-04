@@ -13,7 +13,7 @@
 - `sandbox list` exposes only sandbox ID, workload type, observed state, concise
   reason, Worker count, warm status, runtime-group ID, and any failure;
   `sandbox inspect` owns the complete specification, status, Workers, resources,
-  leases, and correlated filesystem services. Application-owned logical state
+  leases, and correlated services. Application-owned logical state
   is never discovered or duplicated in sandbox inspection.
 - Assigned service sandboxes use only their first sorted logical service ID as
   the concise reason, formatted as `service:<service-id>`; list and inspection

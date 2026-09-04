@@ -1,7 +1,6 @@
 version = 1
-id = "system.shutdown"
-path = ["system", "shutdown"]
-aliases = [["shutdown"]]
+id = "kernel.shutdown"
+path = ["kernel.shutdown"]
 summary = "Shut down the kernel"
 description = "Requests an orderly shutdown of the running kernel while leaving an interactive administrative console open."
 mutates_state = true
@@ -13,4 +12,4 @@ symbol = "New"
 name = "requested"
 type = "boolean"
 [[examples]]
-command = "shutdown"
+command = "kernel.shutdown"

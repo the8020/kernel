@@ -1,6 +1,6 @@
 key = "services.default_minimum_workers"
 type = "integer"
-storage = "node"
+storage = "global"
 default = 0
 environment = "THE8020_SERVICES_DEFAULT_MINIMUM_WORKERS"
 minimum = 0

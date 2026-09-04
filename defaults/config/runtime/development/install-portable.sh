@@ -3,9 +3,9 @@ set -euo pipefail
 
 SOURCE_ROOT=${1:-}
 RUNTIME_SOURCE="$SOURCE_ROOT/defaults/config/runtime"
-IMAGE_DEFINITION=${2:-"$SOURCE_ROOT/config/runtime/development"}
+IMAGE_DEFINITION=${2:-"$RUNTIME_SOURCE/development"}
 DEVELOPMENT_ROOT=${3:-"$SOURCE_ROOT/node/kernel/runtime/images/development"}
-MANIFEST=${4:-"$SOURCE_ROOT/config/runtime/versions.toml"}
+MANIFEST=${4:-"$RUNTIME_SOURCE/versions.toml"}
 RUNTIME_ROOT=${5:-"$SOURCE_ROOT/node/kernel/runtime"}
 REBUILD=false
 if [[ ${6:-} == --rebuild ]]; then REBUILD=true; fi

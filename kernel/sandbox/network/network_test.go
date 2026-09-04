@@ -132,7 +132,7 @@ func (f *fakeNFTRunner) Run(_ context.Context, input []byte, arguments ...string
 
 func TestNFTFirewallBuildsRestrictedAndDeniedPolicies(t *testing.T) {
 	runner := &fakeNFTRunner{}
-	firewall, err := NewNFTFirewall(NFTFirewallConfig{InstanceUUID: "instance-one", KernelCallbackAddress: "http://10.88.0.1:9123", SandboxSubnet: "10.88.0.0/16", Runner: runner, Resolve: func(_ context.Context, host string) ([]net.IP, error) {
+	firewall, err := NewNFTFirewall(NFTFirewallConfig{InstanceUUID: "instance-one", SandboxSubnet: "10.88.0.0/16", Runner: runner, Resolve: func(_ context.Context, host string) ([]net.IP, error) {
 		if host != "example.com" {
 			return nil, errors.New("unknown host")
 		}
@@ -147,7 +147,7 @@ func TestNFTFirewallBuildsRestrictedAndDeniedPolicies(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := string(runner.input)
-	for _, expected := range []string{"table inet pl_instanceone_groupone", "ip daddr 10.88.0.3 ct state established,related", "ip saddr 10.88.0.1 ip daddr 10.88.0.3", "ip daddr 10.88.0.3 counter drop", "ip daddr 10.88.0.1 tcp dport 9123", "ip saddr 10.88.0.3 ip daddr 192.0.2.5", "ip daddr 198.51.100.0/24", "ip saddr 10.88.0.3 counter drop"} {
+	for _, expected := range []string{"table inet pl_instanceone_groupone", "ip daddr 10.88.0.3 ct state established,related", "ip saddr 10.88.0.1 ip daddr 10.88.0.3", "ip daddr 10.88.0.3 counter drop", "ip saddr 10.88.0.3 ip daddr 192.0.2.5", "ip daddr 198.51.100.0/24", "ip saddr 10.88.0.3 counter drop"} {
 		if !strings.Contains(script, expected) {
 			t.Errorf("script missing %q:\n%s", expected, script)
 		}
@@ -174,8 +174,8 @@ func TestNFTFirewallBuildsRestrictedAndDeniedPolicies(t *testing.T) {
 	if err := firewall.Apply(context.Background(), allocation, model.NetworkConfiguration{EgressEnabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	if script := string(runner.input); !strings.Contains(script, "ip saddr 10.88.0.3 counter drop") {
-		t.Fatalf("empty explicit egress policy did not default-deny:\n%s", script)
+	if script := string(runner.input); !strings.Contains(script, "ip saddr 10.88.0.3 counter accept") {
+		t.Fatalf("unrestricted egress policy was not accepted:\n%s", script)
 	}
 	if err := firewall.Remove(context.Background(), allocation); err != nil {
 		t.Fatal(err)
@@ -185,15 +185,9 @@ func TestNFTFirewallBuildsRestrictedAndDeniedPolicies(t *testing.T) {
 	}
 }
 
-func TestNFTFirewallRequiresAuthenticatedCallbackEndpoint(t *testing.T) {
-	if _, err := NewNFTFirewall(NFTFirewallConfig{InstanceUUID: "instance", KernelCallbackAddress: "http://example.com:8000", SandboxSubnet: "10.88.0.0/16", Runner: &fakeNFTRunner{}}); err == nil {
-		t.Fatal("accepted non-IP callback endpoint")
-	}
-	if _, err := NewNFTFirewall(NFTFirewallConfig{InstanceUUID: "instance", KernelCallbackAddress: "http://10.88.0.1:8000", SandboxSubnet: "invalid", Runner: &fakeNFTRunner{}}); err == nil {
+func TestNFTFirewallRequiresValidSandboxSubnet(t *testing.T) {
+	if _, err := NewNFTFirewall(NFTFirewallConfig{InstanceUUID: "instance", SandboxSubnet: "invalid", Runner: &fakeNFTRunner{}}); err == nil {
 		t.Fatal("accepted invalid sandbox subnet")
-	}
-	if _, err := NewNFTFirewall(NFTFirewallConfig{InstanceUUID: "instance", KernelCallbackAddress: "http://192.0.2.1:8000", SandboxSubnet: "10.88.0.0/16", Runner: &fakeNFTRunner{}}); err == nil {
-		t.Fatal("accepted callback outside sandbox subnet")
 	}
 }
 

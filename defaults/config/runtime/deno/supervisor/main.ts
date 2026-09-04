@@ -6,6 +6,7 @@ import {
 } from "@the8020/protocol";
 import type { KernelCall } from "../worker/contracts.ts";
 import { kernelCallbackRequest } from "./callback_request.ts";
+import { postUnixHTTP } from "./unix_http.ts";
 
 const required = (name: string): string => {
   const value = Deno.env.get(name);
@@ -29,20 +30,13 @@ const workloadType = required("WORKLOAD_TYPE") as
   | "service"
   | "job";
 const token = required("INTERNAL_API_TOKEN");
-const callback = Deno.env.get("KERNEL_CALLBACK_ADDRESS");
+const kernelSocketPath = Deno.env.get("KERNEL_SOCKET_PATH");
 
 const postCallback = async (path: string, body: unknown): Promise<Response> => {
-  if (callback === undefined || callback.length === 0) {
+  if (kernelSocketPath === undefined || kernelSocketPath.length === 0) {
     throw new Error("kernel callback is unavailable");
   }
-  const response = await fetch(new URL(path, callback), {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${token}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
+  const response = await postUnixHTTP(kernelSocketPath, path, token, body);
   if (!response.ok) {
     const detail = (await response.text()).trim();
     throw new Error(
@@ -52,8 +46,8 @@ const postCallback = async (path: string, body: unknown): Promise<Response> => {
   return response;
 };
 
-const kernelCall: KernelCall | undefined = callback === undefined ||
-    callback.length === 0
+const kernelCall: KernelCall | undefined = kernelSocketPath === undefined ||
+    kernelSocketPath.length === 0
   ? undefined
   : async (call) => {
     const callbackRequest = kernelCallbackRequest(call, sandboxId);
@@ -102,7 +96,7 @@ if (!Number.isSafeInteger(heartbeatInterval) || heartbeatInterval < 100) {
 }
 const server = Deno.serve({ hostname: host, port }, supervisor.handler);
 
-if (callback !== undefined && callback.length > 0) {
+if (kernelSocketPath !== undefined && kernelSocketPath.length > 0) {
   const send = async (path: string, body: unknown): Promise<void> => {
     const response = await postCallback(path, body);
     await response.body?.cancel();

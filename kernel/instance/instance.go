@@ -22,96 +22,39 @@ var ErrNotInitialized = errors.New("80|20 node is not initialized")
 
 // Paths contains every path owned by one kernel instance.
 type Paths struct {
-	Root                  string
-	Node                  string
-	Kernel                string
-	Bin                   string
-	Runsc                 string
-	Users                 string
-	Packages              string
-	Config                string
-	ConfigAuth            string
-	ConfigSecrets         string
-	SecretsFile           string
-	RuntimeRootlessImage  string
-	RuntimeFullImage      string
-	DevelopmentImage      string
-	RuntimeVersionsFile   string
-	Database              string
-	SharedState           string
-	StateAuth             string
-	BootstrapSessions     string
-	StateServices         string
-	StatePackageIndex     string
-	StatePackageData      string
-	InstanceFile          string
-	NodeSettingsFile      string
-	GlobalSettingsFile    string
-	Run                   string
-	Logs                  string
-	Runtime               string
-	RuntimeGroups         string
-	RuntimeSandboxHistory string
-	RuntimePorts          string
-	RuntimeServices       string
-	RuntimeServicePools   string
-	RuntimeAttachments    string
-	RuntimeTemporary      string
-	RuntimeDevelopment    string
-	SSH                   string
-	SSHHostKey            string
-	LockFile              string
-	PIDFile               string
-	Socket                string
+	Root                   string
+	Node                   string
+	Kernel                 string
+	Bin                    string
+	Runsc                  string
+	Users                  string
+	Packages               string
+	RuntimeDefinitions     string
+	RuntimeRootlessImage   string
+	RuntimeFullImage       string
+	DevelopmentImage       string
+	RuntimeVersionsFile    string
+	Database               string
+	NodeSettingsFile       string
+	Run                    string
+	Logs                   string
+	Runtime                string
+	RuntimeGroups          string
+	RuntimeSandboxHistory  string
+	RuntimePorts           string
+	RuntimeServices        string
+	RuntimeServicePools    string
+	RuntimeAttachments     string
+	RuntimeTemporary       string
+	RuntimeDevelopment     string
+	RuntimeKernelSocketDir string
+	RuntimeKernelSocket    string
+	SSH                    string
+	SSHHostKey             string
+	LockFile               string
+	PIDFile                string
+	Socket                 string
 }
-
-// Layout is the small, durable mapping between one node and the externally
-// synchronized system directories it uses. All values are canonical absolute
-// paths so kernel behavior never depends on its process working directory.
-type Layout struct {
-	Version  int    `toml:"version" json:"version"`
-	Packages string `toml:"packages" json:"packages"`
-	Config   string `toml:"config" json:"config"`
-	State    string `toml:"state" json:"state"`
-	Users    string `toml:"users" json:"users"`
-}
-
-// LayoutManager exposes the bootstrap layout to the typed administrative
-// surface. Changes are durable immediately and take effect after restart.
-type LayoutManager struct{ root string }
-
-func NewLayoutManager(root string) *LayoutManager { return &LayoutManager{root: root} }
-
-func (m *LayoutManager) Current() (Layout, error) {
-	paths, err := LoadPaths(m.root)
-	if err != nil {
-		return Layout{}, err
-	}
-	return Layout{Version: layoutVersion, Packages: paths.Packages, Config: paths.Config, State: paths.SharedState, Users: paths.Users}, nil
-}
-
-func (m *LayoutManager) Set(layout Layout) (Layout, error) {
-	for name, path := range map[string]string{"packages": layout.Packages, "config": layout.Config, "state": layout.State, "users": layout.Users} {
-		if !filepath.IsAbs(path) {
-			return Layout{}, fmt.Errorf("%s directory must be absolute", name)
-		}
-	}
-	paths, err := PrepareLayout(m.root, layout)
-	if err != nil {
-		return Layout{}, err
-	}
-	for name, path := range map[string]string{"node": paths.Node, "packages": paths.Packages, "config": paths.Config, "state": paths.SharedState, "users": paths.Users} {
-		if err := CheckUnixPermissions(path); err != nil {
-			return Layout{}, fmt.Errorf("%s directory does not support required Unix permissions: %w", name, err)
-		}
-	}
-	if _, err := WriteLayout(m.root, layout); err != nil {
-		return Layout{}, err
-	}
-	return m.Current()
-}
-
-const layoutVersion = 1
 
 // ResolveRoot returns the canonical explicit root, or the exact canonical
 // current working directory when root is empty. An explicit root may name a
@@ -172,171 +115,64 @@ func canonicalRoot(path string) (string, error) {
 
 // NewPaths constructs the default mapped and node-local paths for root.
 func NewPaths(root string) Paths {
-	return NewPathsForLayout(root, Layout{
-		Version: layoutVersion, Packages: filepath.Join(root, "packages"),
-		Config: filepath.Join(root, "config"), State: filepath.Join(root, "state"),
-		Users: filepath.Join(root, "users"),
-	})
-}
-
-// NewPathsForLayout constructs paths from one initialized node layout.
-func NewPathsForLayout(root string, layout Layout) Paths {
 	node := filepath.Join(root, "node")
 	kernel := filepath.Join(node, "kernel")
 	run := filepath.Join(kernel, "run")
 	runtimeState := filepath.Join(kernel, "runtime")
 	runtimeImages := filepath.Join(runtimeState, "images")
+	runtimeDefinitions := filepath.Join(runtimeState, "definitions")
 	return Paths{
-		Root: root, Node: node, Kernel: kernel, Bin: filepath.Join(kernel, "bin"), Runsc: filepath.Join(kernel, "bin", "runsc"), Users: layout.Users, Packages: layout.Packages,
-		Config: layout.Config, ConfigAuth: filepath.Join(layout.Config, "auth"), ConfigSecrets: filepath.Join(layout.Config, "secrets"), SecretsFile: filepath.Join(layout.Config, "secrets", "secrets.toml"),
+		Root: root, Node: node, Kernel: kernel, Bin: filepath.Join(kernel, "bin"), Runsc: filepath.Join(kernel, "bin", "runsc"),
+		Users: filepath.Join(root, "users"), Packages: filepath.Join(root, "packages"), RuntimeDefinitions: runtimeDefinitions,
 		RuntimeRootlessImage: filepath.Join(runtimeImages, "rootless"), RuntimeFullImage: filepath.Join(runtimeImages, "full"),
-		DevelopmentImage: filepath.Join(runtimeImages, "development"), RuntimeVersionsFile: filepath.Join(layout.Config, "runtime", "versions.toml"),
-		Database:    filepath.Join(root, "database"),
-		SharedState: layout.State, StateAuth: filepath.Join(layout.State, "auth"), BootstrapSessions: filepath.Join(layout.State, "auth", "bootstrap-sessions"), StateServices: filepath.Join(layout.State, "services"), StatePackageIndex: filepath.Join(layout.State, "package-index"), StatePackageData: filepath.Join(layout.State, "package-data"),
-		InstanceFile:     filepath.Join(kernel, "instance.toml"),
-		NodeSettingsFile: filepath.Join(kernel, "settings.toml"), GlobalSettingsFile: filepath.Join(layout.Config, "settings.toml"), Run: run,
+		DevelopmentImage: filepath.Join(runtimeImages, "development"), RuntimeVersionsFile: filepath.Join(runtimeDefinitions, "versions.toml"),
+		Database: filepath.Join(root, "database"), NodeSettingsFile: filepath.Join(root, "kernel.toml"), Run: run,
 		Logs: filepath.Join(kernel, "logs"), Runtime: runtimeState,
 		RuntimeGroups: filepath.Join(runtimeState, "groups"), RuntimeSandboxHistory: filepath.Join(runtimeState, "sandbox-history"), RuntimePorts: filepath.Join(runtimeState, "ports"), RuntimeServices: filepath.Join(runtimeState, "services"), RuntimeServicePools: filepath.Join(runtimeState, "service-pools"),
 		RuntimeAttachments: filepath.Join(runtimeState, "attachments"), RuntimeTemporary: filepath.Join(runtimeState, "tmp"),
-		RuntimeDevelopment: filepath.Join(runtimeState, "development"),
-		SSH:                filepath.Join(kernel, "ssh"),
-		SSHHostKey:         filepath.Join(kernel, "ssh", "host_ed25519"),
-		LockFile:           filepath.Join(run, "kernel.lock"),
-		PIDFile:            filepath.Join(run, "kernel.pid"), Socket: filepath.Join(run, "admin.sock"),
+		RuntimeDevelopment:     filepath.Join(runtimeState, "development"),
+		RuntimeKernelSocketDir: filepath.Join(runtimeState, "kernel-api"),
+		RuntimeKernelSocket:    filepath.Join(runtimeState, "kernel-api", "kernel.sock"),
+		SSH:                    filepath.Join(kernel, "ssh"),
+		SSHHostKey:             filepath.Join(kernel, "ssh", "host_ed25519"),
+		LockFile:               filepath.Join(run, "kernel.lock"),
+		PIDFile:                filepath.Join(run, "kernel.pid"), Socket: filepath.Join(run, "admin.sock"),
 	}
 }
 
-// LayoutFile is readable before the remainder of an instance is initialized.
-func LayoutFile(root string) string { return filepath.Join(root, "node", "kernel", "paths.toml") }
-
-// LoadPaths reads the initialized layout below root.
+// LoadPaths resolves the fixed layout after the canonical kernel configuration
+// file has committed node initialization.
 func LoadPaths(root string) (Paths, error) {
-	data, err := os.ReadFile(LayoutFile(root))
+	paths := NewPaths(root)
+	info, err := os.Stat(paths.NodeSettingsFile)
 	if errors.Is(err, os.ErrNotExist) {
 		return Paths{}, ErrNotInitialized
 	}
 	if err != nil {
 		return Paths{}, err
 	}
-	var layout Layout
-	if err := toml.Unmarshal(data, &layout); err != nil {
-		return Paths{}, fmt.Errorf("decode node layout: %w", err)
-	}
-	if layout.Version != layoutVersion {
-		return Paths{}, fmt.Errorf("unsupported node layout version %d", layout.Version)
-	}
-	for name, value := range map[string]string{"packages": layout.Packages, "config": layout.Config, "state": layout.State, "users": layout.Users} {
-		if !filepath.IsAbs(value) {
-			return Paths{}, fmt.Errorf("%s path is not absolute", name)
-		}
-	}
-	for name, value := range map[string]*string{"packages": &layout.Packages, "config": &layout.Config, "state": &layout.State, "users": &layout.Users} {
-		canonical, canonicalErr := canonicalExistingDirectory(*value)
-		if canonicalErr != nil {
-			return Paths{}, fmt.Errorf("resolve %s directory: %w", name, canonicalErr)
-		}
-		*value = canonical
-	}
-	paths := NewPathsForLayout(root, layout)
-	if err := validateLayoutPaths(paths); err != nil {
-		return Paths{}, err
+	if !info.Mode().IsRegular() {
+		return Paths{}, errors.New("kernel.toml must be a regular file")
 	}
 	return paths, nil
 }
 
-// WriteLayout records the selected shared roots without interpreting how an
-// operator synchronizes them.
-func WriteLayout(root string, layout Layout) (Paths, error) {
-	paths, err := PrepareLayout(root, layout)
-	if err != nil {
-		return Paths{}, err
-	}
-	layout = Layout{Version: layoutVersion, Packages: paths.Packages, Config: paths.Config, State: paths.SharedState, Users: paths.Users}
-	data, err := toml.Marshal(layout)
-	if err != nil {
-		return Paths{}, fmt.Errorf("encode node layout: %w", err)
-	}
-	if err := writeLayoutFile(LayoutFile(root), data); err != nil {
-		return Paths{}, err
-	}
-	return paths, nil
-}
-
-// PrepareLayout creates and canonicalizes the selected roots without committing
-// paths.toml. Callers can therefore prove filesystem behavior before a layout
-// becomes active.
-func PrepareLayout(root string, layout Layout) (Paths, error) {
-	layout.Version = layoutVersion
-	for name, value := range map[string]*string{"packages": &layout.Packages, "config": &layout.Config, "state": &layout.State, "users": &layout.Users} {
-		if strings.TrimSpace(*value) == "" {
-			return Paths{}, fmt.Errorf("%s directory is required", name)
+// Prepare creates the fixed node-local and package/user roots and commits an
+// empty kernel.toml marker. Initialize fills the stable node identity.
+func Prepare(root string) (Paths, error) {
+	paths := NewPaths(root)
+	for _, directory := range []string{root, paths.Packages, paths.Users} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			return Paths{}, err
 		}
-		canonical, err := canonicalDirectory(*value)
-		if err != nil {
-			return Paths{}, fmt.Errorf("prepare %s directory: %w", name, err)
-		}
-		*value = canonical
-	}
-	paths := NewPathsForLayout(root, layout)
-	if err := validateLayoutPaths(paths); err != nil {
-		return Paths{}, err
 	}
 	if err := os.MkdirAll(paths.Kernel, 0o700); err != nil {
-		return Paths{}, fmt.Errorf("create node kernel directory: %w", err)
+		return Paths{}, err
+	}
+	if err := ensureEmptyFile(paths.NodeSettingsFile); err != nil {
+		return Paths{}, err
 	}
 	return paths, nil
-}
-
-func validateLayoutPaths(paths Paths) error {
-	shared := map[string]string{"packages": paths.Packages, "config": paths.Config, "state": paths.SharedState, "users": paths.Users}
-	for firstName, first := range shared {
-		if overlaps(first, paths.Node) {
-			return fmt.Errorf("%s directory overlaps node directory", firstName)
-		}
-		for secondName, second := range shared {
-			if firstName < secondName && overlaps(first, second) {
-				return fmt.Errorf("%s and %s directories overlap", firstName, secondName)
-			}
-		}
-	}
-	return nil
-}
-
-func overlaps(first, second string) bool {
-	if first == second {
-		return true
-	}
-	firstToSecond, err := filepath.Rel(first, second)
-	if err == nil && firstToSecond != ".." && !strings.HasPrefix(firstToSecond, ".."+string(filepath.Separator)) {
-		return true
-	}
-	secondToFirst, err := filepath.Rel(second, first)
-	return err == nil && secondToFirst != ".." && !strings.HasPrefix(secondToFirst, ".."+string(filepath.Separator))
-}
-
-func writeLayoutFile(path string, data []byte) error {
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".paths-*.toml")
-	if err != nil {
-		return fmt.Errorf("create node layout temporary file: %w", err)
-	}
-	name := temporary.Name()
-	defer os.Remove(name)
-	if err = temporary.Chmod(0o600); err == nil {
-		_, err = temporary.Write(data)
-	}
-	if err == nil {
-		err = temporary.Sync()
-	}
-	if closeErr := temporary.Close(); err == nil {
-		err = closeErr
-	}
-	if err == nil {
-		err = os.Rename(name, path)
-	}
-	if err != nil {
-		return fmt.Errorf("write node layout: %w", err)
-	}
-	return nil
 }
 
 func canonicalDirectory(path string) (string, error) {
@@ -423,29 +259,18 @@ func verifyProbeMetadata(path string, uid, gid int, mode fs.FileMode) error {
 	return nil
 }
 
-// Initialize creates missing runtime directories, settings, and stable identity.
+// Initialize creates fixed runtime directories and a stable identity in the
+// canonical node-local kernel.toml.
 func Initialize(paths Paths) (string, error) {
-	for _, dir := range []string{paths.Packages, paths.Config, paths.ConfigAuth, paths.SharedState, paths.StateAuth, paths.StateServices, paths.StatePackageIndex, paths.StatePackageData, paths.Users} {
+	for _, dir := range []string{paths.Packages, paths.Users} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return "", fmt.Errorf("create workspace directory %s: %w", dir, err)
+			return "", fmt.Errorf("create shared directory %s: %w", dir, err)
 		}
 		if err := os.Chmod(dir, 0o755); err != nil {
 			return "", fmt.Errorf("set workspace directory permissions %s: %w", dir, err)
 		}
 	}
-	if err := os.MkdirAll(paths.ConfigSecrets, 0o700); err != nil {
-		return "", fmt.Errorf("create secrets directory %s: %w", paths.ConfigSecrets, err)
-	}
-	if err := os.Chmod(paths.ConfigSecrets, 0o700); err != nil {
-		return "", fmt.Errorf("restrict secrets directory %s: %w", paths.ConfigSecrets, err)
-	}
-	if err := os.MkdirAll(paths.BootstrapSessions, 0o700); err != nil {
-		return "", fmt.Errorf("create bootstrap authentication-session directory %s: %w", paths.BootstrapSessions, err)
-	}
-	if err := os.Chmod(paths.BootstrapSessions, 0o700); err != nil {
-		return "", fmt.Errorf("restrict bootstrap authentication-session directory %s: %w", paths.BootstrapSessions, err)
-	}
-	for _, dir := range []string{paths.Kernel, paths.Bin, paths.Database, paths.RuntimeRootlessImage, paths.RuntimeFullImage, paths.DevelopmentImage, paths.Run, paths.Logs, paths.Runtime, paths.RuntimeGroups, paths.RuntimeSandboxHistory, paths.RuntimePorts, paths.RuntimeServices, paths.RuntimeServicePools, paths.RuntimeAttachments, paths.RuntimeTemporary, paths.RuntimeDevelopment, paths.SSH} {
+	for _, dir := range []string{paths.Kernel, paths.Bin, paths.Database, paths.RuntimeDefinitions, paths.RuntimeRootlessImage, paths.RuntimeFullImage, paths.DevelopmentImage, paths.Run, paths.Logs, paths.Runtime, paths.RuntimeGroups, paths.RuntimeSandboxHistory, paths.RuntimePorts, paths.RuntimeServices, paths.RuntimeServicePools, paths.RuntimeAttachments, paths.RuntimeTemporary, paths.RuntimeDevelopment, paths.RuntimeKernelSocketDir, paths.SSH} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return "", fmt.Errorf("create runtime directory %s: %w", dir, err)
 		}
@@ -458,13 +283,15 @@ func Initialize(paths Paths) (string, error) {
 	if err := os.Chmod(paths.RuntimeAttachments, 0o755); err != nil {
 		return "", fmt.Errorf("make runtime attachments sandbox-readable: %w", err)
 	}
+	// This directory is bind-mounted into sandboxes. Its parent remains private;
+	// the socket itself is authenticated with each sandbox's internal token.
+	if err := os.Chmod(paths.RuntimeKernelSocketDir, 0o755); err != nil {
+		return "", fmt.Errorf("make runtime kernel socket directory sandbox-accessible: %w", err)
+	}
 	if err := ensureEmptyFile(paths.NodeSettingsFile); err != nil {
 		return "", err
 	}
-	if err := ensureEmptyFile(paths.GlobalSettingsFile); err != nil {
-		return "", err
-	}
-	return ensureIdentity(paths.InstanceFile)
+	return ensureIdentity(paths.NodeSettingsFile)
 }
 
 func ensureEmptyFile(path string) error {
@@ -480,52 +307,84 @@ func ensureEmptyFile(path string) error {
 
 func ensureIdentity(path string) (string, error) {
 	data, err := os.ReadFile(path)
-	if err == nil {
-		return parseIdentity(string(data))
-	}
-	if !errors.Is(err, os.ErrNotExist) {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return "", fmt.Errorf("read instance identity: %w", err)
+	}
+	var document map[string]any
+	if len(strings.TrimSpace(string(data))) > 0 {
+		if err := toml.Unmarshal(data, &document); err != nil {
+			return "", fmt.Errorf("decode kernel.toml: %w", err)
+		}
+	}
+	if document == nil {
+		document = map[string]any{}
+	}
+	if node, ok := document["node"].(map[string]any); ok {
+		if id, ok := node["id"].(string); ok && id != "" {
+			return parseIdentity(id)
+		}
 	}
 	uuid, err := newUUID()
 	if err != nil {
 		return "", err
 	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if errors.Is(err, os.ErrExist) {
-		data, readErr := os.ReadFile(path)
-		if readErr != nil {
-			return "", fmt.Errorf("read concurrently initialized identity: %w", readErr)
-		}
-		return parseIdentity(string(data))
+	node, _ := document["node"].(map[string]any)
+	if node == nil {
+		node = map[string]any{}
 	}
+	node["id"] = uuid
+	document["node"] = node
+	encoded, err := toml.Marshal(document)
 	if err != nil {
-		return "", fmt.Errorf("create instance identity: %w", err)
+		return "", fmt.Errorf("encode kernel.toml identity: %w", err)
 	}
-	if _, err = fmt.Fprintf(file, "uuid = %q\n", uuid); err != nil {
-		_ = file.Close()
-		return "", fmt.Errorf("write instance identity: %w", err)
-	}
-	if err = file.Sync(); err != nil {
-		_ = file.Close()
-		return "", fmt.Errorf("sync instance identity: %w", err)
-	}
-	if err = file.Close(); err != nil {
-		return "", fmt.Errorf("close instance identity: %w", err)
+	if err := writePrivateFile(path, encoded); err != nil {
+		return "", err
 	}
 	return uuid, nil
 }
 
-func parseIdentity(data string) (string, error) {
-	line := strings.TrimSpace(data)
-	prefix := "uuid = \""
-	if !strings.HasPrefix(line, prefix) || !strings.HasSuffix(line, "\"") {
-		return "", errors.New("invalid node/kernel/instance.toml")
-	}
-	uuid := strings.TrimSuffix(strings.TrimPrefix(line, prefix), "\"")
+func parseIdentity(uuid string) (string, error) {
 	if len(uuid) != 36 {
-		return "", errors.New("invalid UUID in node/kernel/instance.toml")
+		return "", errors.New("invalid node.id in kernel.toml")
+	}
+	for index, character := range uuid {
+		if index == 8 || index == 13 || index == 18 || index == 23 {
+			if character != '-' {
+				return "", errors.New("invalid node.id in kernel.toml")
+			}
+			continue
+		}
+		if !strings.ContainsRune("0123456789abcdefABCDEF", character) {
+			return "", errors.New("invalid node.id in kernel.toml")
+		}
 	}
 	return uuid, nil
+}
+
+func writePrivateFile(path string, data []byte) error {
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".kernel-*.toml")
+	if err != nil {
+		return err
+	}
+	name := temporary.Name()
+	defer os.Remove(name)
+	if err = temporary.Chmod(0o600); err == nil {
+		_, err = temporary.Write(data)
+	}
+	if err == nil {
+		err = temporary.Sync()
+	}
+	if closeErr := temporary.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		err = os.Rename(name, path)
+	}
+	if err != nil {
+		return fmt.Errorf("write kernel.toml: %w", err)
+	}
+	return nil
 }
 
 func newUUID() (string, error) {

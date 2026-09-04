@@ -2,7 +2,7 @@ version = 1
 id = "job.run"
 path = ["job", "run"]
 summary = "Run a Deno job"
-description = "Selects a compatible job runtime group, starts or reuses a Worker, and returns a durable execution record."
+description = "Selects a compatible job runtime group, starts or reuses a Worker, and returns the invocation result without retaining execution history."
 mutates_state = true
 restart_behavior = "none"
 [handler]
@@ -31,7 +31,7 @@ name = "detached"
 type = "boolean"
 option = "detached"
 required = false
-description = "Return after durable submission without waiting for completion."
+description = "Return after in-memory submission without waiting for completion."
 [[parameters]]
 name = "group_key"
 type = "string"
@@ -55,7 +55,7 @@ name = "parallelism"
 type = "integer"
 option = "parallelism"
 required = false
-description = "Per-invocation parallel Worker limit."
+description = "Maximum concurrent executions of this logical job."
 [[parameters]]
 name = "reuse"
 type = "boolean"

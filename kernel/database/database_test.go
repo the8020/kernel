@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,34 @@ import (
 
 func sqliteConfig(location string) Config {
 	return Config{Backend: BackendSQLite, Location: location, MaximumOpenConnections: 32, MaximumIdleConnections: 8}
+}
+
+func TestDecodeTimeAcceptsSQLiteCurrentTimestamp(t *testing.T) {
+	decoded, err := DecodeTime("2026-09-03 20:59:43")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := time.Date(2026, time.September, 3, 20, 59, 43, 0, time.UTC)
+	if !decoded.Equal(want) || decoded.Location() != time.UTC {
+		t.Fatalf("decoded time = %s, want %s", decoded, want)
+	}
+}
+
+func TestJSONEncodingBelongsToTheDatabaseBackend(t *testing.T) {
+	sqlite, err := EncodeJSON(BackendSQLite, map[string]any{"enabled": true})
+	if err != nil || sqlite != `{"enabled":true}` {
+		t.Fatalf("SQLite JSON = %#v, %v", sqlite, err)
+	}
+	postgresql, err := EncodeJSON(BackendPostgreSQL, map[string]any{"enabled": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, ok := postgresql.(json.RawMessage); !ok || string(value) != `{"enabled":true}` {
+		t.Fatalf("PostgreSQL JSON = %#v", postgresql)
+	}
+	if _, err := EncodeJSON("unsupported", nil); err == nil {
+		t.Fatal("unsupported backend accepted")
+	}
 }
 
 func TestSQLiteCreatesPrivateInstanceDatabaseAndExecutesSQL(t *testing.T) {
@@ -124,7 +153,7 @@ func TestConnectivityCheckPreservesCatalogFailureState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.State != StateDegraded || status.CatalogError != "invalid package table" {
+	if status.State != StateInitializationFailed || status.CatalogError != "invalid package table" {
 		t.Fatalf("status = %#v", status)
 	}
 }

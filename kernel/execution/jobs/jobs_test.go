@@ -3,386 +3,402 @@ package jobs
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
+	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"the8020/kernel/execution"
 	"the8020/kernel/execution/coordinator"
-	"the8020/kernel/execution/records"
 	"the8020/kernel/execution/supervisor"
 	"the8020/kernel/execution/workers"
 	"the8020/kernel/sandbox/manager"
 	"the8020/kernel/sandbox/model"
 )
 
-type fakeCoordinator struct{ requests []coordinator.Request }
+type fakeCoordinator struct {
+	mu       sync.Mutex
+	requests []coordinator.Request
+	releases []string
+}
 
 func (f *fakeCoordinator) Ensure(_ context.Context, request coordinator.Request) (manager.Inspection, error) {
+	f.mu.Lock()
 	f.requests = append(f.requests, request)
-	return manager.Inspection{Spec: model.SandboxSpec{SandboxID: "sandbox", RuntimeGroupID: "group", WorkloadType: model.WorkloadJob, Permissions: model.Permissions{ReadPaths: []string{"/programs"}}}}, nil
+	f.mu.Unlock()
+	return manager.Inspection{Spec: model.SandboxSpec{
+		SandboxID: "sandbox", RuntimeGroupID: "group", WorkloadType: model.WorkloadJob,
+		Permissions: model.Permissions{ReadPaths: []string{"/programs"}},
+	}}, nil
+}
+
+func (f *fakeCoordinator) Release(_ context.Context, groupID, allocationID, serviceID string) error {
+	f.mu.Lock()
+	f.releases = append(f.releases, groupID+":"+allocationID+":"+serviceID)
+	f.mu.Unlock()
+	return nil
 }
 
 type fakeWorkers struct {
-	starts  []supervisor.StartWorkerRequest
-	runs    []string
-	stops   []string
-	failure error
+	mu            sync.Mutex
+	starts        []supervisor.StartWorkerRequest
+	stops         []string
+	runs          int
+	arguments     []any
+	secretCopy    map[string]string
+	secretRef     map[string]string
+	failure       error
+	result        *supervisor.JobResult
+	gate          <-chan struct{}
+	runStarted    chan struct{}
+	startBlocking bool
+	startFailure  error
 }
 
-type queueWorkers struct {
-	mu     sync.Mutex
-	starts []string
-	stops  []string
-}
-
-type blockingWorkers struct{ fakeWorkers }
-
-func (f *blockingWorkers) Start(ctx context.Context, _ string, _ supervisor.StartWorkerRequest) (workers.Record, error) {
-	<-ctx.Done()
-	return workers.Record{}, ctx.Err()
-}
-
-func (f *queueWorkers) Start(_ context.Context, group string, request supervisor.StartWorkerRequest) (workers.Record, error) {
+func (f *fakeWorkers) Start(ctx context.Context, group string, request supervisor.StartWorkerRequest) (workers.Record, error) {
+	if f.startBlocking {
+		<-ctx.Done()
+		return workers.Record{}, ctx.Err()
+	}
+	if f.startFailure != nil {
+		return workers.Record{}, f.startFailure
+	}
 	f.mu.Lock()
-	f.starts = append(f.starts, request.Metadata.ExecutionID)
-	f.mu.Unlock()
-	return workers.Record{RuntimeGroupID: group, Worker: supervisor.WorkerStatus{WorkerID: request.Metadata.WorkerID}}, nil
-}
-
-func (f *queueWorkers) RunJob(_ context.Context, _ string, input any, _ []string) (supervisor.JobResult, error) {
-	return supervisor.JobResult{Result: input}, nil
-}
-
-func (f *queueWorkers) Stop(_ context.Context, workerID string, _ bool) error {
-	f.mu.Lock()
-	f.stops = append(f.stops, workerID)
-	f.mu.Unlock()
-	return nil
-}
-
-func (f *queueWorkers) started() []string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return append([]string(nil), f.starts...)
-}
-
-func (f *fakeWorkers) Start(_ context.Context, group string, request supervisor.StartWorkerRequest) (workers.Record, error) {
 	f.starts = append(f.starts, request)
+	f.mu.Unlock()
 	return workers.Record{RuntimeGroupID: group, Worker: supervisor.WorkerStatus{WorkerID: request.Metadata.WorkerID}}, nil
 }
-func (f *fakeWorkers) RunJob(_ context.Context, workerID string, input any, _ []string) (supervisor.JobResult, error) {
-	f.runs = append(f.runs, workerID)
+
+func (f *fakeWorkers) RunJob(ctx context.Context, _ string, arguments []any, secrets map[string]string, _ []string) (supervisor.JobResult, error) {
+	f.mu.Lock()
+	f.runs++
+	f.arguments = append([]any(nil), arguments...)
+	f.secretRef = secrets
+	f.secretCopy = copySecrets(secrets)
+	started := f.runStarted
+	gate := f.gate
+	f.mu.Unlock()
+	if started != nil {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+	}
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return supervisor.JobResult{}, ctx.Err()
+		}
+	}
 	if f.failure != nil {
 		return supervisor.JobResult{}, f.failure
 	}
-	return supervisor.JobResult{Result: input, Logs: []supervisor.LogEvent{{Level: "info", Message: "job log"}}}, nil
+	if f.result != nil {
+		return *f.result, nil
+	}
+	return supervisor.JobResult{
+		Result:             arguments,
+		Logs:               []supervisor.LogEvent{{Level: "info", Message: "job output"}},
+		ModuleDependencies: map[string][]string{"entry": {"dependency"}},
+	}, nil
 }
-func (f *fakeWorkers) Stop(_ context.Context, workerID string, _ bool) error {
+
+func TestSecureValuesAreRedactedFromResultsLogsAndFailures(t *testing.T) {
+	const password = "test-password-never-visible"
+	workersFake := &fakeWorkers{result: &supervisor.JobResult{
+		Result: map[string]any{"nested": []any{"prefix " + password}},
+		Logs: []supervisor.LogEvent{{
+			Level: "error", Message: "failed with " + password,
+			Fields: map[string]any{"detail": password},
+		}},
+	}}
+	manager, _ := New(&fakeCoordinator{}, workersFake, testPolicy())
+	record, err := manager.Run(context.Background(), "secure", "file:///programs/secure.ts", Options{Secrets: map[string]string{"password": password}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rendered := fmt.Sprintf("%#v", record); strings.Contains(rendered, password) || !strings.Contains(rendered, "[secure input]") {
+		t.Fatalf("unredacted successful record: %s", rendered)
+	}
+
+	workersFake.result = nil
+	workersFake.failure = &supervisor.ResponseError{
+		StatusCode: 400, Status: "400 Bad Request", Code: "invalid_arguments",
+		Message: "program rejected " + password,
+		Details: map[string]any{"reason": password},
+	}
+	record, err = manager.Run(context.Background(), "secure", "file:///programs/secure.ts", Options{Secrets: map[string]string{"password": password}})
+	if err == nil || strings.Contains(err.Error(), password) || strings.Contains(record.Failure, password) {
+		t.Fatalf("unredacted failure: record=%#v error=%v", record, err)
+	}
+	var response *supervisor.ResponseError
+	if !errors.As(err, &response) || response.Code != "invalid_arguments" || response.Details["reason"] != "[secure input]" {
+		t.Fatalf("structured failure = %#v, %v", response, err)
+	}
+}
+
+func TestSecretFreeFailurePreservesItsCause(t *testing.T) {
+	workersFake := &fakeWorkers{failure: context.DeadlineExceeded}
+	manager, err := New(&fakeCoordinator{}, workersFake, testPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = manager.Run(context.Background(), "deadline", "file:///programs/deadline.ts", Options{})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("job failure lost its cause: %v", err)
+	}
+}
+
+func (*fakeWorkers) List(context.Context, string) ([]workers.Record, error) { return nil, nil }
+
+func (f *fakeWorkers) StopInGroup(_ context.Context, _ string, workerID string, _ bool) error {
+	f.mu.Lock()
 	f.stops = append(f.stops, workerID)
+	f.mu.Unlock()
 	return nil
 }
 
-func TestJobListQuarantinesOnlyInvalidRecord(t *testing.T) {
-	root := t.TempDir()
-	store, err := records.New(root)
+func TestOneTimeJobReturnsOutputWithoutRetainingHistory(t *testing.T) {
+	coordinatorFake := &fakeCoordinator{}
+	workersFake := &fakeWorkers{}
+	manager, err := New(coordinatorFake, workersFake, testPolicy())
 	if err != nil {
 		t.Fatal(err)
 	}
-	valid := Record{ExecutionID: "execution-valid", State: "SUCCEEDED"}
-	if err := store.Save(valid.ExecutionID, valid); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "execution-broken.json"), []byte(`{"unknown":true}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	manager, err := New(&fakeCoordinator{}, &fakeWorkers{}, store, testPolicy())
+	passwords := map[string]string{"password": "do-not-persist"}
+	record, err := manager.Run(context.Background(), "job", "file:///programs/job.ts", Options{
+		Arguments: []any{"Alice Smith", "--admin"}, Secrets: passwords,
+	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if record.State != "SUCCEEDED" || len(record.Logs) != 1 || !reflect.DeepEqual(record.Result, []any{"Alice Smith", "--admin"}) {
+		t.Fatalf("record = %#v", record)
 	}
 	items, err := manager.List()
-	if err != nil || len(items) != 1 || items[0].ExecutionID != valid.ExecutionID {
-		t.Fatalf("items=%#v err=%v", items, err)
+	if err != nil || len(items) != 0 {
+		t.Fatalf("live jobs = %#v, %v", items, err)
 	}
-	quarantined, err := filepath.Glob(filepath.Join(root, "quarantine", "execution-broken-*.json"))
-	if err != nil || len(quarantined) != 1 {
-		t.Fatalf("quarantined=%#v err=%v", quarantined, err)
+	if _, err := manager.Inspect(record.ExecutionID); err == nil {
+		t.Fatal("completed one-time job was retained")
+	}
+	workersFake.mu.Lock()
+	defer workersFake.mu.Unlock()
+	if !reflect.DeepEqual(workersFake.arguments, []any{"Alice Smith", "--admin"}) || workersFake.secretCopy["password"] != "do-not-persist" || len(workersFake.secretRef) != 0 {
+		t.Fatalf("arguments=%#v copied secrets=%#v live secrets=%#v", workersFake.arguments, workersFake.secretCopy, workersFake.secretRef)
+	}
+	if passwords["password"] != "do-not-persist" {
+		t.Fatal("caller-owned secret map was modified")
+	}
+	coordinatorFake.mu.Lock()
+	defer coordinatorFake.mu.Unlock()
+	if len(coordinatorFake.releases) != 1 || coordinatorFake.releases[0] != "group:"+record.WorkerID+":" {
+		t.Fatalf("runtime releases = %#v", coordinatorFake.releases)
 	}
 }
 
-func TestJobSchedulingCompletionAndReusePreservesHistory(t *testing.T) {
-	store, _ := records.New(t.TempDir())
-	coordinatorFake, workersFake := &fakeCoordinator{}, &fakeWorkers{}
-	policy := testPolicy()
-	policy.MaximumParallel, policy.Reuse = 2, true
-	manager, err := New(coordinatorFake, workersFake, store, policy)
-	if err != nil {
+func TestStructuredArgumentArrayIsPassedUnchanged(t *testing.T) {
+	workersFake := &fakeWorkers{}
+	manager, _ := New(&fakeCoordinator{}, workersFake, testPolicy())
+	input := map[string]any{"table": "users"}
+	if _, err := manager.Run(context.Background(), "hook", "file:///programs/hook.ts", Options{Arguments: []any{input}}); err != nil {
 		t.Fatal(err)
 	}
-	first, err := manager.Run(context.Background(), "job-1", "file:///programs/job.ts", Options{Input: "one"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := manager.Run(context.Background(), "job-1", "file:///programs/job.ts", Options{Input: "two"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first.State != "IDLE" || second.State != "IDLE" || first.ExecutionID == second.ExecutionID || first.WorkerID != second.WorkerID || len(first.Logs) != 1 || len(workersFake.starts) != 1 || len(workersFake.runs) != 2 {
-		t.Fatalf("first=%#v second=%#v starts=%d runs=%d", first, second, len(workersFake.starts), len(workersFake.runs))
-	}
-	items, err := manager.List()
-	if err != nil || len(items) != 2 {
-		t.Fatalf("history=%#v err=%v", items, err)
-	}
-	storedFirst, err := manager.Inspect(first.ExecutionID)
-	if err != nil || storedFirst.Result != "one" || storedFirst.State != "SUCCEEDED" {
-		t.Fatalf("first history=%#v err=%v", storedFirst, err)
+	workersFake.mu.Lock()
+	defer workersFake.mu.Unlock()
+	if len(workersFake.arguments) != 1 || !reflect.DeepEqual(workersFake.arguments[0], input) {
+		t.Fatalf("arguments = %#v", workersFake.arguments)
 	}
 }
 
-func TestJobReuseRequiresCompatibleRelease(t *testing.T) {
-	store, _ := records.New(t.TempDir())
+func TestCompatibleReuseRetainsOnlyIdleWorkerMetadata(t *testing.T) {
 	workersFake := &fakeWorkers{}
 	policy := testPolicy()
 	policy.Reuse = true
-	manager, _ := New(&fakeCoordinator{}, workersFake, store, policy)
-	if _, err := manager.Run(context.Background(), "job", "file:///programs/job.ts", Options{ReleaseID: "release-one"}); err != nil {
-		t.Fatal(err)
+	policy.IdleRuntimeTimeout = time.Hour
+	manager, _ := New(&fakeCoordinator{}, workersFake, policy)
+	defer manager.Close()
+	first, err := manager.Run(context.Background(), "job", "file:///programs/job.ts", Options{Arguments: []any{"one"}})
+	if err != nil || first.State != "IDLE" {
+		t.Fatalf("first=%#v err=%v", first, err)
 	}
-	second, err := manager.Run(context.Background(), "job", "file:///programs/job.ts", Options{ReleaseID: "release-two"})
-	if err != nil {
-		t.Fatal(err)
+	live, err := manager.Inspect(first.ExecutionID)
+	if err != nil || live.Result != nil || live.Logs != nil || live.ModuleDependencies != nil {
+		t.Fatalf("live idle record=%#v err=%v", live, err)
 	}
-	if len(workersFake.starts) != 2 || second.ReleaseID != "release-two" {
-		t.Fatalf("starts=%d second=%#v", len(workersFake.starts), second)
+	second, err := manager.Run(context.Background(), "job", "file:///programs/job.ts", Options{Arguments: []any{"two"}})
+	if err != nil || second.WorkerID != first.WorkerID || second.ExecutionID == first.ExecutionID {
+		t.Fatalf("first=%#v second=%#v err=%v", first, second, err)
 	}
-}
-
-func TestJobNoReuseStopsWorkerFailureAndCancelPersist(t *testing.T) {
-	store, _ := records.New(t.TempDir())
-	workersFake := &fakeWorkers{}
-	policy := testPolicy()
-	policy.MaximumParallel = 1
-	manager, _ := New(&fakeCoordinator{}, workersFake, store, policy)
-	completed, err := manager.Run(context.Background(), "job", "file:///programs/job.ts", Options{Input: 1})
-	if err != nil || completed.State != "SUCCEEDED" || len(workersFake.stops) != 1 {
-		t.Fatalf("completed=%#v stops=%#v err=%v", completed, workersFake.stops, err)
+	if _, err := manager.Inspect(first.ExecutionID); err == nil {
+		t.Fatal("superseded idle execution remained live")
 	}
-	workersFake.failure = errors.New("program crashed")
-	failed, err := manager.Run(context.Background(), "bad", "file:///programs/bad.ts", Options{})
-	if err == nil || failed.State != "FAILED" || failed.Failure != "program crashed" {
-		t.Fatalf("failed=%#v err=%v", failed, err)
-	}
-	workersFake.failure = nil
-	active := Record{ExecutionID: "execution-active", JobID: "job", WorkerID: "worker-active", State: "RUNNING"}
-	if err := store.Save(active.ExecutionID, active); err != nil {
-		t.Fatal(err)
-	}
-	if err := manager.Cancel(context.Background(), active.ExecutionID); err != nil {
-		t.Fatal(err)
-	}
-	cancelled, _ := manager.Inspect(active.ExecutionID)
-	if cancelled.State != "CANCELLED" {
-		t.Fatalf("cancelled=%#v", cancelled)
+	workersFake.mu.Lock()
+	defer workersFake.mu.Unlock()
+	if len(workersFake.starts) != 1 || workersFake.runs != 2 {
+		t.Fatalf("starts=%d runs=%d", len(workersFake.starts), workersFake.runs)
 	}
 }
 
-func TestJobTimeoutIncludesWorkerStartup(t *testing.T) {
-	store, _ := records.New(t.TempDir())
-	manager, err := New(&fakeCoordinator{}, &blockingWorkers{}, store, testPolicy())
-	if err != nil {
-		t.Fatal(err)
-	}
-	started := time.Now()
-	record, err := manager.Run(context.Background(), "slow", "file:///programs/slow.ts", Options{Timeout: 20 * time.Millisecond})
-	if !errors.Is(err, context.DeadlineExceeded) || record.State != "FAILED" || time.Since(started) > time.Second {
-		t.Fatalf("startup timeout record=%#v elapsed=%s err=%v", record, time.Since(started), err)
-	}
-}
-
-func TestJobQueueIsBoundedAndQueuedCancellationDoesNotStopAWorker(t *testing.T) {
-	store, _ := records.New(t.TempDir())
-	_ = store.Save("execution-running", Record{ExecutionID: "execution-running", State: "RUNNING"})
+func TestJobQueueIsBoundedAndCancellationDoesNotStartWorker(t *testing.T) {
+	gate := make(chan struct{})
+	started := make(chan struct{}, 1)
+	workersFake := &fakeWorkers{gate: gate, runStarted: started}
 	policy := testPolicy()
 	policy.MaximumParallel = 1
 	policy.QueuedExecutionLimit = 1
-	workersFake := &queueWorkers{}
-	manager, _ := New(&fakeCoordinator{}, workersFake, store, policy)
+	manager, _ := New(&fakeCoordinator{}, workersFake, policy)
 	defer manager.Close()
-	queued, err := manager.Run(context.Background(), "job-one", "file:///programs/job.ts", Options{Detached: true})
+	first, err := manager.Run(context.Background(), "first", "file:///programs/job.ts", Options{Detached: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first job did not start")
+	}
+	queued, err := manager.Run(context.Background(), "queued", "file:///programs/job.ts", Options{Detached: true})
 	if err != nil || queued.State != "QUEUED" {
 		t.Fatalf("queued=%#v err=%v", queued, err)
 	}
-	if _, err := manager.Run(context.Background(), "job-two", "file:///programs/job.ts", Options{Detached: true}); err == nil || !strings.Contains(err.Error(), "queue limit 1 reached") {
-		t.Fatalf("queue limit error = %v", err)
+	if _, err := manager.Run(context.Background(), "overflow", "file:///programs/job.ts", Options{Detached: true}); err == nil {
+		t.Fatal("queue limit was not enforced")
 	}
 	if err := manager.Cancel(context.Background(), queued.ExecutionID); err != nil {
 		t.Fatal(err)
 	}
-	cancelled, err := manager.Inspect(queued.ExecutionID)
-	if err != nil || cancelled.State != "CANCELLED" || len(workersFake.started()) != 0 {
-		t.Fatalf("cancelled=%#v starts=%#v err=%v", cancelled, workersFake.started(), err)
-	}
-}
-
-func TestJobQueueAdmitsDetachedExecutionsInSubmissionOrder(t *testing.T) {
-	store, _ := records.New(t.TempDir())
-	running := Record{ExecutionID: "execution-running", State: "RUNNING"}
-	_ = store.Save(running.ExecutionID, running)
-	policy := testPolicy()
-	policy.MaximumParallel = 1
-	policy.QueuedExecutionLimit = 2
-	workersFake := &queueWorkers{}
-	manager, _ := New(&fakeCoordinator{}, workersFake, store, policy)
-	defer manager.Close()
-	fixed := time.Date(2026, time.August, 20, 12, 0, 0, 0, time.UTC)
-	manager.now = func() time.Time { return fixed }
-	first, err := manager.Run(context.Background(), "job-one", "file:///programs/one.ts", Options{Detached: true, Input: "one"})
-	if err != nil || first.State != "QUEUED" {
-		t.Fatalf("first=%#v err=%v", first, err)
-	}
-	second, err := manager.Run(context.Background(), "job-two", "file:///programs/two.ts", Options{Detached: true, Input: "two"})
-	if err != nil || second.State != "QUEUED" {
-		t.Fatalf("second=%#v err=%v", second, err)
-	}
-	if !first.QueuedAt.Before(second.QueuedAt) {
-		t.Fatalf("submission order was not made durable: first=%s second=%s", first.QueuedAt, second.QueuedAt)
-	}
-	running.State = "SUCCEEDED"
-	if err := store.Save(running.ExecutionID, running); err != nil {
-		t.Fatal(err)
-	}
-	waitForState(t, manager, first.ExecutionID, "SUCCEEDED")
-	waitForState(t, manager, second.ExecutionID, "SUCCEEDED")
-	started := workersFake.started()
-	if len(started) != 2 || started[0] != first.ExecutionID || started[1] != second.ExecutionID {
-		t.Fatalf("Worker start order = %#v, want [%s %s]", started, first.ExecutionID, second.ExecutionID)
-	}
-}
-
-func TestSynchronousQueuedJobHonorsCallerCancellation(t *testing.T) {
-	store, _ := records.New(t.TempDir())
-	_ = store.Save("execution-running", Record{ExecutionID: "execution-running", State: "RUNNING"})
-	policy := testPolicy()
-	policy.MaximumParallel = 1
-	workersFake := &queueWorkers{}
-	manager, _ := New(&fakeCoordinator{}, workersFake, store, policy)
-	defer manager.Close()
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	record, err := manager.Run(ctx, "job", "file:///programs/job.ts", Options{})
-	if !errors.Is(err, context.Canceled) || record.State != "CANCELLED" || len(workersFake.started()) != 0 {
-		t.Fatalf("record=%#v starts=%#v err=%v", record, workersFake.started(), err)
-	}
-	stored, inspectErr := manager.Inspect(record.ExecutionID)
-	if inspectErr != nil || stored.State != "CANCELLED" {
-		t.Fatalf("stored=%#v err=%v", stored, inspectErr)
-	}
-}
-
-func TestJobUsesExplicitExecutionOwnerForGroupingAndWorkerIdentity(t *testing.T) {
-	store, _ := records.New(t.TempDir())
-	coordinatorFake, workersFake := &fakeCoordinator{}, &fakeWorkers{}
-	manager, _ := New(coordinatorFake, workersFake, store, testPolicy())
-	if _, err := manager.Run(context.Background(), "logical-job", "file:///programs/job.ts", Options{OwnerID: "admin-user"}); err != nil {
-		t.Fatal(err)
-	}
-	if coordinatorFake.requests[0].OwnerID != "admin-user" || workersFake.starts[0].Metadata.OwnerID != "admin-user" || workersFake.starts[0].Metadata.WorkloadID != "logical-job" {
-		t.Fatalf("request=%#v metadata=%#v", coordinatorFake.requests[0], workersFake.starts[0].Metadata)
-	}
-}
-
-func TestRuntimeGroupFailureFailsActiveJobsAndRetiresIdleReuse(t *testing.T) {
-	store, _ := records.New(t.TempDir())
-	active := Record{ExecutionID: "active", RuntimeGroupID: "group", State: "RUNNING", StartedAt: time.Now().Add(-time.Second)}
-	idle := Record{ExecutionID: "idle", RuntimeGroupID: "group", State: "IDLE", Reuse: true}
-	_ = store.Save(active.ExecutionID, active)
-	_ = store.Save(idle.ExecutionID, idle)
-	manager, _ := New(&fakeCoordinator{}, &fakeWorkers{}, store, testPolicy())
-	if err := manager.FailGroup("group", "supervisor timeout"); err != nil {
-		t.Fatal(err)
-	}
-	failed, _ := manager.Inspect(active.ExecutionID)
-	retired, _ := manager.Inspect(idle.ExecutionID)
-	if failed.State != "FAILED" || failed.Failure != "supervisor timeout" || failed.FinishedAt.IsZero() || retired.State != "SUCCEEDED" || retired.Reuse {
-		t.Fatalf("failed=%#v retired=%#v", failed, retired)
-	}
-}
-
-func TestReusableWorkerRetiresAfterIdleTimeout(t *testing.T) {
-	store, _ := records.New(t.TempDir())
-	workersFake := &fakeWorkers{}
-	policy := testPolicy()
-	policy.Reuse = true
-	policy.IdleRuntimeTimeout = 5 * time.Millisecond
-	manager, _ := New(&fakeCoordinator{}, workersFake, store, policy)
-	defer manager.Close()
-	record, err := manager.Run(context.Background(), "job", "file:///programs/job.ts", Options{})
-	if err != nil || record.State != "IDLE" {
-		t.Fatalf("record=%#v err=%v", record, err)
-	}
+	close(gate)
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		current, inspectErr := manager.Inspect(record.ExecutionID)
-		if inspectErr == nil && current.State == "SUCCEEDED" {
+		items, _ := manager.List()
+		if len(items) == 0 {
 			break
 		}
 		time.Sleep(time.Millisecond)
 	}
-	retired, _ := manager.Inspect(record.ExecutionID)
-	if retired.State != "SUCCEEDED" || retired.Reuse || len(workersFake.stops) != 1 {
-		t.Fatalf("retired=%#v stops=%#v", retired, workersFake.stops)
+	workersFake.mu.Lock()
+	defer workersFake.mu.Unlock()
+	if len(workersFake.starts) != 1 {
+		t.Fatalf("starts = %d", len(workersFake.starts))
 	}
+	_ = first
 }
 
-func TestRestoreFailsActiveWithoutReplayAndRestoresIdleRetirement(t *testing.T) {
-	store, _ := records.New(t.TempDir())
-	now := time.Now().UTC()
-	active := Record{ExecutionID: "execution-active", WorkerID: "worker-active", State: "RUNNING", StartedAt: now.Add(-time.Second)}
-	queued := Record{ExecutionID: "execution-queued", WorkerID: "worker-never-started", State: "QUEUED", QueuedAt: now.Add(-2 * time.Second)}
-	idle := Record{ExecutionID: "execution-idle", WorkerID: "worker-idle", State: "IDLE", Reuse: true, FinishedAt: now}
-	_ = store.Save(active.ExecutionID, active)
-	_ = store.Save(queued.ExecutionID, queued)
-	_ = store.Save(idle.ExecutionID, idle)
+func TestSynchronousChildDoesNotQueueBehindItsWaitingParent(t *testing.T) {
+	coordinatorFake := &fakeCoordinator{}
 	workersFake := &fakeWorkers{}
 	policy := testPolicy()
-	policy.IdleRuntimeTimeout = time.Hour
-	manager, _ := New(&fakeCoordinator{}, workersFake, store, policy)
-	defer manager.Close()
-	manager.now = func() time.Time { return now }
-	if err := manager.Restore(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	failed, _ := manager.Inspect(active.ExecutionID)
-	failedQueued, _ := manager.Inspect(queued.ExecutionID)
-	if failed.State != "FAILED" || !strings.Contains(failed.Failure, "not replayed") || failedQueued.State != "FAILED" || !strings.Contains(failedQueued.Failure, "not replayed") || manager.timers[idle.ExecutionID] == nil || len(workersFake.stops) != 1 {
-		t.Fatalf("active=%#v queued=%#v timers=%#v stops=%#v", failed, failedQueued, manager.timers, workersFake.stops)
+	policy.MaximumParallel = 1
+	manager, _ := New(coordinatorFake, workersFake, policy)
+	manager.records["parent"] = Record{ExecutionID: "parent", JobID: "parent-job", State: "RUNNING", Parallelism: 1}
+	ctx := execution.WithCaller(context.Background(), execution.Caller{ExecutionID: "parent", Workload: model.WorkloadJob})
+	record, err := manager.Run(ctx, "child-job", "file:///programs/child.ts", Options{Parallelism: 1})
+	if err != nil || record.State != "SUCCEEDED" {
+		t.Fatalf("child=%#v err=%v", record, err)
 	}
 }
 
-func waitForState(t *testing.T, manager *Manager, executionID, state string) Record {
-	t.Helper()
+func TestParallelismAppliesPerLogicalJob(t *testing.T) {
+	manager, _ := New(&fakeCoordinator{}, &fakeWorkers{}, testPolicy())
+	manager.records["same"] = Record{ExecutionID: "same", JobID: "one", State: "RUNNING"}
+	manager.records["other"] = Record{ExecutionID: "other", JobID: "other", State: "RUNNING"}
+	if manager.canStartLocked(Record{JobID: "one", Parallelism: 1}) {
+		t.Fatal("same logical job exceeded its parallelism")
+	}
+	if !manager.canStartLocked(Record{JobID: "different", Parallelism: 1}) {
+		t.Fatal("unrelated logical jobs incorrectly consumed the per-job limit")
+	}
+}
+
+func TestJobTimeoutIncludesWorkerStartup(t *testing.T) {
+	workersFake := &fakeWorkers{startBlocking: true}
+	manager, _ := New(&fakeCoordinator{}, workersFake, testPolicy())
+	record, err := manager.Run(context.Background(), "slow", "file:///programs/slow.ts", Options{Timeout: 20 * time.Millisecond})
+	if !errors.Is(err, context.DeadlineExceeded) || record.State != "FAILED" {
+		t.Fatalf("record=%#v err=%v", record, err)
+	}
+	items, _ := manager.List()
+	if len(items) != 0 {
+		t.Fatalf("failed history retained: %#v", items)
+	}
+}
+
+func TestWorkerStartFailureReleasesItsSandboxClaim(t *testing.T) {
+	coordinatorFake := &fakeCoordinator{}
+	workersFake := &fakeWorkers{startFailure: errors.New("start failed")}
+	manager, _ := New(coordinatorFake, workersFake, testPolicy())
+	record, err := manager.Run(context.Background(), "broken", "file:///programs/broken.ts", Options{})
+	if err == nil || record.State != "FAILED" {
+		t.Fatalf("record=%#v err=%v", record, err)
+	}
+	coordinatorFake.mu.Lock()
+	defer coordinatorFake.mu.Unlock()
+	if len(coordinatorFake.releases) != 1 || coordinatorFake.releases[0] != "group:"+record.WorkerID+":" {
+		t.Fatalf("runtime releases = %#v", coordinatorFake.releases)
+	}
+}
+
+func TestReusableWorkerReleasesItsClaimAfterIdleTimeout(t *testing.T) {
+	coordinatorFake := &fakeCoordinator{}
+	workersFake := &fakeWorkers{}
+	policy := testPolicy()
+	policy.Reuse = true
+	policy.IdleRuntimeTimeout = time.Millisecond
+	manager, _ := New(coordinatorFake, workersFake, policy)
+	if _, err := manager.Run(context.Background(), "reusable", "file:///programs/reusable.ts", Options{}); err != nil {
+		t.Fatal(err)
+	}
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		record, err := manager.Inspect(executionID)
-		if err == nil && record.State == state {
-			return record
+		coordinatorFake.mu.Lock()
+		released := len(coordinatorFake.releases) == 1
+		coordinatorFake.mu.Unlock()
+		if released {
+			return
 		}
 		time.Sleep(time.Millisecond)
 	}
-	record, err := manager.Inspect(executionID)
-	t.Fatalf("execution %s did not enter %s: record=%#v err=%v", executionID, state, record, err)
-	return Record{}
+	t.Fatal("idle reusable Worker did not release its sandbox claim")
+}
+
+func TestJobUsesExplicitOwnerAndRelease(t *testing.T) {
+	coordinatorFake, workersFake := &fakeCoordinator{}, &fakeWorkers{}
+	manager, _ := New(coordinatorFake, workersFake, testPolicy())
+	if _, err := manager.Run(context.Background(), "logical-job", "file:///programs/job.ts", Options{OwnerID: "the8020/users", Namespace: "the8020", ReleaseID: "commit"}); err != nil {
+		t.Fatal(err)
+	}
+	coordinatorFake.mu.Lock()
+	defer coordinatorFake.mu.Unlock()
+	if coordinatorFake.requests[0].OwnerID != "the8020/users" || coordinatorFake.requests[0].Namespace != "the8020" {
+		t.Fatalf("request = %#v", coordinatorFake.requests[0])
+	}
+	if coordinatorFake.requests[0].AllocationID == "" || coordinatorFake.requests[0].AllocationID != workersFake.starts[0].Metadata.WorkerID {
+		t.Fatalf("allocation request = %#v", coordinatorFake.requests[0])
+	}
+	if len(coordinatorFake.releases) != 1 || coordinatorFake.releases[0] != "group:"+coordinatorFake.requests[0].AllocationID+":" {
+		t.Fatalf("runtime releases = %#v", coordinatorFake.releases)
+	}
+	workersFake.mu.Lock()
+	defer workersFake.mu.Unlock()
+	metadata := workersFake.starts[0].Metadata
+	if metadata.OwnerID != "the8020/users" || metadata.WorkloadID != "logical-job" || metadata.ReleaseID != "commit" {
+		t.Fatalf("metadata = %#v", metadata)
+	}
 }
 
 func testPolicy() Policy {
 	return Policy{
 		Strategy: model.GroupingOwner,
 		Profile: model.RuntimeProfile{
-			WorkloadType: model.WorkloadJob, ImageDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-			DependencyMode: model.DependencyCachedOnly, Permissions: model.Permissions{ReadPaths: []string{"/programs"}}, NetworkMode: "netstack", ResourceClass: "job",
+			WorkloadType:   model.WorkloadJob,
+			ImageDigest:    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			DependencyMode: model.DependencyCachedOnly,
+			Permissions:    model.Permissions{ReadPaths: []string{"/programs"}},
+			NetworkMode:    "netstack", ResourceClass: "job",
 		},
 	}
 }

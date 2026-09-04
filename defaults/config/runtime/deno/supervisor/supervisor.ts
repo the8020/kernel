@@ -12,7 +12,10 @@ import type {
   WorkerPermissionSet,
   WorkloadType,
 } from "../worker/contracts.ts";
-import { RuntimeWorker } from "../worker/runtime_worker.ts";
+import {
+  RuntimeWorker,
+  WorkerExecutionError,
+} from "../worker/runtime_worker.ts";
 import type { WorkerInvocationResult } from "../worker/runtime_worker.ts";
 
 export interface SupervisorOptions {
@@ -213,13 +216,16 @@ export class Supervisor {
     if (this.#draining) throw new Error("runtime group is draining");
     const worker = new RuntimeWorker({
       ...options,
+      permissions: { ...options.permissions, net: true, import: true },
       metadata,
       now: this.options.now,
       onCapacityChange: () => this.#notifyCapacity(),
       onClose: () => {
+        if (metadata.databaseAccess === "none") return;
         void this.options.kernelCall?.({
           operation: "database.scope.close",
           arguments: {},
+          workloadId: metadata.workloadId,
           executionId: metadata.executionId,
           workerId: metadata.workerId,
         }).catch(() => {});
@@ -951,7 +957,20 @@ export class Supervisor {
             decodeURIComponent(jobRun[1]!),
             "job",
           );
-          const result = await worker.runJob(payload.input);
+          if (!Array.isArray(payload.arguments)) {
+            throw new TypeError("job arguments must be an array");
+          }
+          if (
+            payload.secrets === null || typeof payload.secrets !== "object" ||
+            Array.isArray(payload.secrets) ||
+            !Object.values(payload.secrets).every((value) =>
+              typeof value === "string"
+            )
+          ) throw new TypeError("job secrets must be a string map");
+          const result = await worker.runJob(
+            payload.arguments,
+            payload.secrets as Record<string, string>,
+          );
           return {
             result,
             logs: worker.logs,
@@ -1246,7 +1265,7 @@ export class Supervisor {
       return this.#envelopeResponse(
         "error_response",
         correlationId,
-        { error: error instanceof Error ? error.message : String(error) },
+        controlFailure(error),
         400,
       );
     }
@@ -1278,6 +1297,17 @@ export class Supervisor {
     if (worker === undefined) throw new Error(`unknown Worker ${workerId}`);
     return worker;
   }
+}
+
+function controlFailure(error: unknown): Record<string, unknown> {
+  if (error instanceof WorkerExecutionError) {
+    return {
+      error: error.message,
+      ...(error.code === undefined ? {} : { code: error.code }),
+      ...(error.details === undefined ? {} : { details: error.details }),
+    };
+  }
+  return { error: error instanceof Error ? error.message : String(error) };
 }
 
 function controlError(error: unknown): Response {
@@ -1396,8 +1426,8 @@ function trustedAuthContext(
   );
   return {
     authenticated: true,
-    realm: headers.get("x-80-20-internal-auth-realm") === "bootstrap-admin"
-      ? "bootstrap-admin"
+    realm: headers.get("x-80-20-internal-auth-realm") === "user"
+      ? "user"
       : undefined,
     userId: headers.get("x-80-20-internal-auth-user-id") || undefined,
     username: headers.get("x-80-20-internal-auth-username") || undefined,

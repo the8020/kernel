@@ -15,7 +15,6 @@ import (
 	"golang.org/x/term"
 	"the8020/kernel/cbus/cli"
 	"the8020/kernel/cbus/client"
-	"the8020/kernel/cbus/core"
 	"the8020/kernel/instance"
 )
 
@@ -26,7 +25,7 @@ type options struct {
 }
 
 // Main runs the administrative executable and returns a process exit code.
-func Main(catalog []core.Command, args []string, input io.Reader, output, errorOutput io.Writer) int {
+func Main(args []string, input io.Reader, output, errorOutput io.Writer) int {
 	options, err := parseOptions(args)
 	if err != nil {
 		_, _ = fmt.Fprintf(errorOutput, "error: %s\n", err)
@@ -40,33 +39,14 @@ func Main(catalog []core.Command, args []string, input io.Reader, output, errorO
 	paths := instance.NewPaths(root)
 	commandClient := client.New(paths.Socket)
 	defer commandClient.Close()
-	runner := cli.New(catalog, commandClient)
+	runner := cli.NewDynamic(commandClient, commandClient)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if len(options.command) > 0 {
-		runner.SetValueResolver(oneShotValueResolver(input, errorOutput))
 		runner.SetSecretResolver(oneShotSecretResolver(input, errorOutput))
 		return runner.Run(ctx, options.command, options.json, output)
 	}
 	return interactive(ctx, runner, input, output, errorOutput, options.json)
-}
-
-func oneShotValueResolver(input io.Reader, promptOutput io.Writer) cli.ValueResolver {
-	scanner := bufio.NewScanner(input)
-	return func(prompt string) (string, error) {
-		inputFile, isFile := input.(*os.File)
-		if !isFile || !term.IsTerminal(int(inputFile.Fd())) {
-			return "", errors.New("ordinary argument prompting requires a terminal; provide the missing argument in the command")
-		}
-		_, _ = fmt.Fprint(promptOutput, prompt)
-		if !scanner.Scan() {
-			if err := scanner.Err(); err != nil {
-				return "", err
-			}
-			return "", errors.New("terminal input ended before a value was read")
-		}
-		return scanner.Text(), nil
-	}
 }
 
 func oneShotSecretResolver(input io.Reader, promptOutput io.Writer) cli.SecretResolver {
@@ -102,7 +82,7 @@ func oneShotSecretResolver(input io.Reader, promptOutput io.Writer) cli.SecretRe
 			}
 			return prompt
 		}())
-		if err != nil || fromStdin {
+		if err != nil || fromStdin || confirmationPrompt == "" {
 			return value, err
 		}
 		confirmation, err := read(confirmationPrompt)
@@ -146,7 +126,6 @@ func parseOptions(args []string) (options, error) {
 
 func interactive(ctx context.Context, runner *cli.Runner, input io.Reader, output, errorOutput io.Writer, jsonOutput bool) int {
 	lineReader := newInteractiveLineReader(input, output)
-	runner.SetValueResolver(lineReader.ReadValue)
 	runner.SetSecretResolver(lineReader.ReadSecret)
 	commandOutput := lineReader.Writer(output)
 	commandErrorOutput := lineReader.Writer(errorOutput)

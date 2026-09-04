@@ -1,6 +1,6 @@
 key = "services.default_concurrency_per_worker"
 type = "integer"
-storage = "node"
+storage = "global"
 default = 32
 environment = "THE8020_SERVICES_DEFAULT_CONCURRENCY_PER_WORKER"
 minimum = 1

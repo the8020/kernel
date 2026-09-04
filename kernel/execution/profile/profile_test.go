@@ -48,6 +48,39 @@ func TestForWorkerRejectsEgressWhenGlobalProfilePolicyDisablesIt(t *testing.T) {
 	}
 }
 
+func TestForWorkerReturnsAnIndependentImmutableProfile(t *testing.T) {
+	base := testProfile()
+	base.Mounts = make([]model.Mount, 1, 2)
+	base.Mounts[0] = model.Mount{Source: "/source", Target: "/workspace/packages", ReadOnly: true}
+	base.DenoStartupFlags = make([]string, 1, 2)
+	base.DenoStartupFlags[0] = "--cached-only"
+	base.Permissions.ReadPaths = make([]string, 1, 2)
+	base.Permissions.ReadPaths[0] = "/artifacts"
+
+	first, err := ForWorker(base, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := ForWorker(base, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Mounts = append(first.Mounts, model.Mount{Source: "/first", Target: "/first", ReadOnly: true})
+	second.Mounts = append(second.Mounts, model.Mount{Source: "/second", Target: "/second", ReadOnly: true})
+	first.DenoStartupFlags[0] = "--first"
+	first.Permissions.ReadPaths[0] = "/first"
+
+	if got := first.Mounts[1].Target; got != "/first" {
+		t.Fatalf("first mount changed through another derived profile: %q", got)
+	}
+	if got := second.Mounts[1].Target; got != "/second" {
+		t.Fatalf("second mount changed through another derived profile: %q", got)
+	}
+	if len(base.Mounts) != 1 || base.DenoStartupFlags[0] != "--cached-only" || base.Permissions.ReadPaths[0] != "/artifacts" {
+		t.Fatalf("base profile mutated: %#v", base)
+	}
+}
+
 func TestForWorkerWithWorkspaceAddsPolicyApprovedCompatibleMount(t *testing.T) {
 	root := t.TempDir()
 	workspace := filepath.Join(root, "development")

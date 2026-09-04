@@ -21,6 +21,8 @@
 - Every request carries the per-sandbox bearer token and is context bounded;
   lifecycle control requests and responses use the generated versioned envelope
   and must match message type, runtime-group identity, and correlation ID.
+- Job arguments are always encoded as a JSON array, including an empty array
+  for a no-argument program.
 - Service request and response bodies remain streams and are never converted to
   JSON or fully buffered; service redirects are returned unchanged and are never
   followed on the private supervisor hop.
@@ -32,8 +34,9 @@
   JSON input/output without scanning, interpreting the name, or exposing the
   private endpoint publicly.
 - Non-success control responses retain their bounded HTTP status in
-  `ResponseError`; callers may classify a `4xx` response as a rejected request
-  without parsing error text, while authentication tokens remain hidden.
+  `ResponseError`, including a structured execution code/details when supplied;
+  callers may classify a `4xx` response without parsing error text, while
+  authentication tokens remain hidden.
 
 # Work Guidance
 

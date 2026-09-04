@@ -67,7 +67,7 @@ EOF
 echo "first boot: smoke-testing the bundled rootless gVisor runtime" >&2
 if ! "$RUNSC" \
   --allow-rootfs-tar-annotation --root="$SMOKE_RUNSC_ROOT" --rootless=true --platform=systrap --directfs=false \
-  --file-access=exclusive --file-access-mounts=shared --network=none --overlay2="root:dir=$SMOKE_OVERLAY" \
+  --file-access=exclusive --file-access-mounts=shared --host-uds=open --network=none --overlay2="root:dir=$SMOKE_OVERLAY" \
   --log="$SMOKE_STAGE/runsc.log" run --bundle="$SMOKE_BUNDLE" "$SMOKE_ID" >"$SMOKE_OUTPUT" 2>&1; then
   echo "bundled rootless gVisor smoke test failed; run the container with --security-opt seccomp=unconfined" >&2
   tail -80 "$SMOKE_OUTPUT" >&2 || true

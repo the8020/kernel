@@ -1,7 +1,6 @@
 version = 1
-id = "system.status"
-path = ["system", "status"]
-aliases = [["status"]]
+id = "kernel.status"
+path = ["kernel.status"]
 summary = "Show kernel status"
 description = "Returns identity, process, listeners, logging, database readiness and pool pressure, runtime isolation mode, uptime, graceful shutdown/restart progress, and build information for the running kernel."
 mutates_state = false
@@ -64,12 +63,6 @@ type = "boolean"
 name = "database_pending_deployment"
 type = "boolean"
 [[result]]
-name = "database_result_maximum_rows"
-type = "integer"
-[[result]]
-name = "database_result_maximum_bytes"
-type = "integer"
-[[result]]
 name = "database_pool_maximum_open_connections"
 type = "integer"
 [[result]]
@@ -124,4 +117,4 @@ type = "string"
 name = "shutdown_message"
 type = "string"
 [[examples]]
-command = "system status"
+command = "kernel.status"

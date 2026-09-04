@@ -15,15 +15,23 @@
   and Worker identity.
 - Workload types are exactly `service` and `job`. Worker permissions are
   explicit and no broader than the sandbox envelope.
+- Jobs require a function default export and call it as
+  `await module.default(...arguments)`. A named `run` export has no special
+  meaning and no hidden context argument is appended.
 - Service in-flight ownership lasts through complete response-stream consumption
   or cancellation so graceful stop cannot truncate a dispatch.
 - A service Worker becomes idle after readiness and again only after its final
   in-flight request completes; new activity clears that timestamp. The
   supervisor reports the timestamp but does not decide when kernel policy should
   remove the Worker.
+- Graceful shutdown waits on the same in-flight completion signal used by
+  request accounting; do not add drain polling loops.
 - Request metadata carries trusted authentication and current generic execution
   identity plus the kernel-observed client IP address and network scope, without
   cookies, route tokens, or application settings.
+- Kernel calls retain both the Worker's internal version-specific workload ID
+  and the public service ID; they are never substituted for one another during
+  runtime identity validation.
 - The kernel bridge uses `AsyncLocalStorage` to retain an exact request/job
   context for every asynchronous continuation. A persistent execution reuses
   that context and updates it to its current transport request on reconnect. The
@@ -38,8 +46,14 @@
   lifecycle completion remains bound to that execution; arbitrary exports and
   `eval` are never callable.
 - Job logs, execution context, and state reset between compatible reused
-  invocations. Finalization closes the request/job database scope; Worker
-  shutdown also requests prefix cleanup as a leak-safe fallback.
+  invocations. Secure-input maps are execution-local and cleared in `finally`,
+  including failures. Finalization closes the request/job database scope; Worker
+  shutdown also requests prefix cleanup as a leak-safe fallback. A Worker with
+  database access set to `none` never opens or closes a database scope, keeping
+  schema evaluation independent of the database being initialized.
+- Structured command errors raised by the kernel SDK retain their code, message,
+  and details across the Worker boundary; ordinary application failures remain
+  bounded messages.
 
 # Lifecycle
 
@@ -75,8 +89,9 @@
 
 # Verification
 
-- Worker tests cover service/job imports, permission denial, nested Workers,
-  fetch/streaming/WebSocket relay, registered controls, cancellation, crash
-  reporting, compatible job reuse, and inspector names.
+- Worker tests cover default-export-only spread job invocation, secure-input
+  isolation/cleanup, service/job network access, permission denial, nested
+  Workers, fetch/streaming/WebSocket relay, registered controls, cancellation,
+  crash reporting, compatible reuse, and inspector names.
 
 # Child DOX Index

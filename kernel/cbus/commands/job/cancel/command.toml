@@ -2,7 +2,7 @@ version = 1
 id = "job.cancel"
 path = ["job", "cancel"]
 summary = "Cancel a job execution"
-description = "Cancels a queued execution or immediately terminates its active Worker, then persists the cancelled state."
+description = "Cancels a queued execution or immediately terminates its active Worker."
 mutates_state = true
 restart_behavior = "none"
 [handler]

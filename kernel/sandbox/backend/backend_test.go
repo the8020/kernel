@@ -1,11 +1,29 @@
 package backend
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
 	"the8020/kernel/sandbox/model"
 )
+
+func TestOCIMountsEmitParentsBeforeDescendants(t *testing.T) {
+	input := []model.Mount{
+		{Source: "/host/packages", Target: "/workspace/packages", ReadOnly: true},
+		{Source: "/host/project", Target: "/workspace", ReadOnly: true},
+	}
+	converted := OCIMounts(input)
+	if len(converted) != 2 || converted[0].Destination != "/workspace" || converted[1].Destination != "/workspace/packages" {
+		t.Fatalf("OCI mounts = %#v", converted)
+	}
+	if !reflect.DeepEqual(input, []model.Mount{
+		{Source: "/host/packages", Target: "/workspace/packages", ReadOnly: true},
+		{Source: "/host/project", Target: "/workspace", ReadOnly: true},
+	}) {
+		t.Fatalf("input mounts mutated: %#v", input)
+	}
+}
 
 func TestValidateConsoleOptions(t *testing.T) {
 	valid := ConsoleOptions{
@@ -37,7 +55,7 @@ func TestSupervisorProcessReceivesReservedValidationPermissions(t *testing.T) {
 		SandboxID: "sandbox", RuntimeGroupID: "group", WorkloadType: model.WorkloadService,
 		DependencyMode: model.DependencyCachedOnly,
 	}
-	config := ProcessConfig{NodeID: "node-one", SupervisorHost: "127.0.0.1", SupervisorPort: 8000, InspectorHost: "127.0.0.1", InspectorPort: 9229}
+	config := ProcessConfig{NodeID: "node-one", KernelSocketPath: "/run/the8020/kernel.sock", SupervisorHost: "127.0.0.1", SupervisorPort: 8000, InspectorHost: "127.0.0.1", InspectorPort: 9229}
 	environment := RuntimeEnvironment(nil, sandbox, config)
 	if !containsExact(environment, "NODE_ID=node-one") {
 		t.Fatalf("node identity environment missing: %#v", environment)
@@ -46,7 +64,7 @@ func TestSupervisorProcessReceivesReservedValidationPermissions(t *testing.T) {
 		t.Fatalf("dependency mode environment missing: %#v", environment)
 	}
 	arguments := DenoProcessArguments([]string{"deno", "run", "--cached-only", "/opt/runtime/supervisor/main.ts"}, sandbox, config)
-	if !containsArgumentValue(arguments, "--allow-env=", "DEPENDENCY_MODE") || !containsArgumentValue(arguments, "--allow-env=", "NODE_ID") || !containsExact(arguments, "--allow-run=/usr/bin/deno") {
+	if !containsArgumentValue(arguments, "--allow-env=", "DEPENDENCY_MODE") || !containsArgumentValue(arguments, "--allow-env=", "NODE_ID") || !containsArgumentValue(arguments, "--allow-read=", config.KernelSocketPath) || !containsArgumentValue(arguments, "--allow-write=", config.KernelSocketPath) || !containsExact(arguments, "--allow-run=/usr/bin/deno") {
 		t.Fatalf("service supervisor permissions = %#v", arguments)
 	}
 

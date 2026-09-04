@@ -6,10 +6,11 @@
 
 # Ownership
 
-- `config/nodes.toml` is the shared, command-bus-managed node catalog.
-- Running nodes refresh the catalog from the shared file during topology reads,
-  so mutations become visible cluster-wide without a kernel restart.
-- `config/.nodes.key` is the shared kernel-only forwarding credential and must
+- `the8020__system__nodes` is the shared, command-bus-managed node catalog.
+- Running nodes refresh the catalog once per shared-state reconciliation.
+  Request routing and allocation read an immutable in-memory snapshot, so a hot
+  path never scans the node table. Local mutations refresh immediately.
+- The shared forwarding credential is created once in the secrets table and must
   never enter a sandbox.
 - The runtime supplies a read-only local capacity provider; this package exposes
   it to authenticated peers and uses peer reports only for spillover selection.
@@ -46,7 +47,7 @@
 
 # Verification
 
-- Package tests cover deterministic shared persistence, validation,
+- Package tests cover deterministic database persistence, validation,
   authentication, capacity-aware service forwarding, exact local/cross-node
   Worker invocation and bounds, status collection, and allocation partitioning.
 

@@ -1,6 +1,6 @@
 # Purpose
 
-- Expose Phase 1B job submission, durable execution records, inspection, and cancellation.
+- Expose live, non-durable job submission, inspection, and cancellation.
 
 # Ownership
 
@@ -8,8 +8,11 @@
 
 # Local Contracts
 
-- `job list` exposes only execution/job identity, state, owner, detached status, duration, and any failure; `job inspect` owns inputs, results, logs, permissions, runtime identity, and complete timing.
-- Input is one validated JSON value; detached jobs return their durable execution identity immediately even when bounded admission leaves them queued.
+- `job list` and `job inspect` expose only currently live in-process work;
+  completed invocations are not retained.
+- Input is one optional JSON-compatible argument. Detached jobs return their
+  transient execution identity immediately even when bounded admission queues
+  them.
 - `job run --workspace` requests one instance-root-bounded `/workspace` mount;
   `--workspace-write` is required for host writes.
 
@@ -19,7 +22,8 @@
 
 # Verification
 
-- Generated validation and handler tests cover every job command and option.
+- Generated validation, handler, and job-manager tests cover every command,
+  option, and non-durable lifecycle.
 
 # Child DOX Index
 

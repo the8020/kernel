@@ -132,6 +132,7 @@ type fakeSupervisor struct {
 	workers     []supervisor.WorkerStatus
 	statusError error
 	drains      int
+	workerCalls int
 }
 
 func (f *fakeSupervisor) Status(_ context.Context, spec model.SandboxSpec) (supervisor.Status, error) {
@@ -143,6 +144,7 @@ func (f *fakeSupervisor) Status(_ context.Context, spec model.SandboxSpec) (supe
 	return status, nil
 }
 func (f *fakeSupervisor) Workers(context.Context, model.SandboxSpec) ([]supervisor.WorkerStatus, error) {
+	f.workerCalls++
 	return append([]supervisor.WorkerStatus(nil), f.workers...), nil
 }
 func (f *fakeSupervisor) Drain(context.Context, model.SandboxSpec) error { f.drains++; return nil }
@@ -166,6 +168,14 @@ func TestCreateInspectStopDeleteLifecycle(t *testing.T) {
 	}
 	if inspection.Status.ObservedState != model.StateReady || !inspection.Status.SupervisorHealthy || inspection.Status.TaskPID != 42 || inspection.Spec.Network.SandboxIP != "10.88.0.4" {
 		t.Fatalf("inspection: %#v", inspection)
+	}
+	workerCalls := runtimeSupervisor.workerCalls
+	resolved, err := manager.ResolveRuntimeGroup("group-one")
+	if err != nil || resolved.RuntimeGroupID != "group-one" || resolved.SandboxID != "sandbox-one" {
+		t.Fatalf("resolved=%#v err=%v", resolved, err)
+	}
+	if runtimeSupervisor.workerCalls != workerCalls {
+		t.Fatal("runtime-group resolution contacted the supervisor")
 	}
 	runtimeSupervisor.workers = []supervisor.WorkerStatus{{WorkerID: "worker-one", State: "ready"}}
 	inspected, err := manager.Inspect(context.Background(), "sandbox-one")
@@ -193,6 +203,14 @@ func TestCreateInspectStopDeleteLifecycle(t *testing.T) {
 	_, status, err := store.Load("group-one")
 	if err != nil || status.ObservedState != model.StateStopped || runtimeSupervisor.drains != 1 || len(runtimeBackend.stopped) != 1 || !contains(runtimePorts.closed, "sandbox-one") {
 		t.Fatalf("stopped status=%#v err=%v backend=%#v ports=%#v drains=%d", status, err, runtimeBackend.stopped, runtimePorts.closed, runtimeSupervisor.drains)
+	}
+	workerCalls = runtimeSupervisor.workerCalls
+	inspected, err = manager.Inspect(context.Background(), "sandbox-one")
+	if err != nil || inspected.Status.ObservedState != model.StateStopped || len(inspected.Workers) != 0 {
+		t.Fatalf("terminal inspect=%#v err=%v", inspected, err)
+	}
+	if runtimeSupervisor.workerCalls != workerCalls {
+		t.Fatal("terminal sandbox inspection contacted its stopped supervisor")
 	}
 	if err := manager.Delete(context.Background(), "sandbox-one"); err != nil {
 		t.Fatal(err)
@@ -231,6 +249,9 @@ func TestCreateFailureRollsBackAndArchivesFailure(t *testing.T) {
 	_, err := manager.Create(context.Background(), testSandboxSpec(t, "group-failed", "sandbox-failed"))
 	if err == nil || !strings.Contains(err.Error(), "did not become ready") {
 		t.Fatalf("create error=%v", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("create error lost readiness deadline: %v", err)
 	}
 	if _, _, loadErr := store.Load("group-failed"); !errors.Is(loadErr, os.ErrNotExist) {
 		t.Fatalf("failed sandbox remains live: %v", loadErr)
@@ -284,6 +305,9 @@ func TestAddOwnerPersistsSharedGroupOwnershipAndContainerLabel(t *testing.T) {
 	if err != nil || len(updated.Spec.OwnerIDs) != 2 || updated.Spec.OwnerIDs[1] != "second-owner" || len(status.CurrentOwners) != 2 || len(stored.OwnerIDs) != 2 || runtimeBackend.labels[spec.SandboxID]["the8020.owners"] != "job,second-owner" {
 		t.Fatalf("updated=%#v stored=%#v status=%#v labels=%#v err=%v", updated, stored, status, runtimeBackend.labels, err)
 	}
+	if _, exists := runtimeBackend.labels[spec.SandboxID]["the8020.services"]; exists {
+		t.Fatalf("job ownership update emitted an empty service label: %#v", runtimeBackend.labels)
+	}
 	if _, err := manager.AddOwner(context.Background(), spec.RuntimeGroupID, "second-owner"); err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +340,7 @@ func TestRemoveOwnerRetainsSharedSandboxThenDeletesItWhenEmpty(t *testing.T) {
 		t.Fatalf("destroyed=%v err=%v", destroyed, err)
 	}
 	stored, status, err := store.Load(spec.RuntimeGroupID)
-	if err != nil || len(stored.OwnerIDs) != 1 || stored.OwnerIDs[0] != "replica-b" || len(stored.ServiceIDs) != 1 || stored.ServiceIDs[0] != "service-b" || len(status.CurrentOwners) != 1 || runtimeBackend.labels[spec.SandboxID]["the8020.owners"] != "replica-b" {
+	if err != nil || len(stored.OwnerIDs) != 1 || stored.OwnerIDs[0] != "replica-b" || len(stored.ServiceIDs) != 1 || stored.ServiceIDs[0] != "service-b" || len(status.CurrentOwners) != 1 || runtimeBackend.labels[spec.SandboxID]["the8020.owners"] != "replica-b" || runtimeBackend.labels[spec.SandboxID]["the8020.services"] != "service-b" {
 		t.Fatalf("stored=%#v status=%#v labels=%#v err=%v", stored, status, runtimeBackend.labels, err)
 	}
 	destroyed, err = manager.RemoveOwner(context.Background(), spec.RuntimeGroupID, "replica-b", "service-b")

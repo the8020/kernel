@@ -1,6 +1,6 @@
 # Purpose
 
-- Group settings inspection and persisted-override mutation commands.
+- Expose node-local settings as `kernel.config.*` recovery commands.
 
 # Ownership
 
@@ -9,14 +9,13 @@
 
 # Local Contracts
 
-- Query handlers delegate to `settings.Manager`; detailed records expose each
-  definition's declared node/global storage, and mutation handlers translate
-  owned failures to stable command-bus codes.
+- Query and mutation handlers accept only settings declared with node storage
+  and delegate to `settings.Manager`. `the8020/system` owns global
+  `system.settings.*` package commands.
 - Settings list summaries are compact by default and expose complete records,
   including storage, only through the declared `detail` view.
-- Set and unset both use the same settings transaction implementation, which
-  routes the override to the store declared by the setting rather than by the
-  caller.
+- Set and unset share the settings transaction implementation after the storage
+  boundary is checked.
 
 # Work Guidance
 

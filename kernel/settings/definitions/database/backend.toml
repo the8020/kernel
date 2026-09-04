@@ -1,6 +1,6 @@
 key = "database.backend"
 type = "enum"
-storage = "global"
+storage = "node"
 default = "sqlite"
 allowed = ["sqlite", "postgresql"]
 environment = "THE8020_DATABASE_BACKEND"

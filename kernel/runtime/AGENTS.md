@@ -7,19 +7,20 @@
 
 # Ownership
 
-- Load and validate shared `config/runtime/versions.toml`, resolve
+- Load and validate node-local `node/kernel/runtime/definitions/versions.toml`, resolve
   architecture-specific artifact checksums, inspect full
   Linux/containerd/gVisor/CNI/cgroup and node-image readiness plus direct
   node-local runsc/rootfs/capability/seccomp readiness, select `auto`, `full`, or
   `rootless`, expose structured reports, own the generated kernel-side runtime
-  protocol, and own authenticated supervisor callback ingress.
+  protocol, and own authenticated supervisor callback ingress over the
+  node-private Unix socket.
 - Do not create sandboxes, schedule Workers, install host packages, build images, or execute application code.
 
 # Local Contracts
 
 - Public API: `LoadVersions`, `Versions.Checksums`, `NewDoctor`, `NewRootlessDoctor`, `SelectMode`, `NewIsolationReport`, and the version/report model types.
-- The initialized shared manifest originates from the tracked default and is
-  authoritative for that system; floating versions, malformed artifact
+- The installed node-local manifest originates from the tracked default and is
+  authoritative for that node; floating versions, malformed artifact
   checksums, unsafe development-image records, unsupported
   architectures, and protocol/image schema mismatches fail explicitly.
 - Diagnostics read only already materialized records and artifacts beneath
@@ -40,5 +41,6 @@
 
 # Child DOX Index
 
-- `callback/AGENTS.md`: bridge-restricted authenticated supervisor registration and heartbeat ingress.
+- `callback/AGENTS.md`: authenticated job/service runtime API over the
+  bind-mounted Unix socket.
 - `protocol/AGENTS.md`: generated Go runtime-protocol envelope and message types.

@@ -1,20 +1,30 @@
 # Purpose
 
-- Share small typed extraction, JSON/CSV conversion, runtime-availability, command-error, and concise result helpers across runtime handlers.
+- Share small typed extraction, JSON/CSV conversion, runtime-availability,
+  command-error, and concise result helpers across runtime handlers.
 
 # Ownership
 
-- Convert already command-bus-validated primitive arguments into domain values and expose safe runtime failures from one synchronized runtime snapshot.
-- Do not implement domain behavior, command discovery, transport parsing, or service lookup beyond the typed `RuntimeServices` field.
+- Convert already command-bus-validated primitive arguments into domain values
+  and expose safe runtime failures from one synchronized runtime snapshot.
+- Do not implement domain behavior, command discovery, transport parsing, or
+  service lookup beyond the typed `RuntimeServices` field.
 
 # Local Contracts
 
-- Public API is internal to `kernel/cbus/commands`: `Runtime`, primitive accessors, `JSON`, `CSV`, `Duration`, `Permissions`, `AdministrativeExecution`, `WebServiceStatus`, and `OperationError`.
-- Administrative eval/run responses share one concise default shape; the explicit detail view preserves the complete artifact, execution, and resource record.
-- Filesystem service lifecycle responses share one concise version/capacity
-  shape; `--detail` preserves complete configuration, sandbox allocations,
-  Workers, failures, and metrics.
-- User-facing runtime errors retain stable command-bus codes and never silently invoke a fallback runtime.
+- Public API is internal to `kernel/cbus/commands`: `Runtime`, primitive
+  accessors, `JSON`, `CSV`, `Duration`, `Permissions`,
+  `AdministrativeExecution`, `WebServiceStatus`, and `OperationError`.
+- Administrative eval/run responses share one concise default shape; the
+  explicit detail view preserves the complete artifact, execution, and resource
+  record.
+- Service lifecycle responses share one concise version/capacity shape;
+  `--detail` preserves complete configuration, sandbox allocations, Workers,
+  failures, and metrics.
+- User-facing runtime errors retain stable command-bus codes. Structured
+  execution failures cross the supervisor boundary without transport text;
+  invalid effective service policy maps to invalid arguments without parsing
+  error text, and no operation silently invokes a fallback runtime.
 
 # Work Guidance
 
@@ -22,6 +32,7 @@
 
 # Verification
 
-- Command handler tests and generated-registry compilation cover these helpers.
+- Unit tests cover domain-to-command error classification; command handler tests
+  and generated-registry compilation cover result and argument helpers.
 
 # Child DOX Index

@@ -27,8 +27,12 @@ func New(serviceSet *services.Services) core.Handler {
 			value := commandutil.Bool(request, "reuse")
 			reuse = &value
 		}
+		arguments := []any(nil)
+		if input != nil {
+			arguments = []any{input}
+		}
 		record, err := runtimeServices.Jobs.Run(ctx, commandutil.String(request, "job_id"), commandutil.String(request, "entrypoint"), jobs.Options{
-			Input: input, Detached: commandutil.Bool(request, "detached"), GroupKey: commandutil.String(request, "group_key"),
+			Arguments: arguments, Detached: commandutil.Bool(request, "detached"), GroupKey: commandutil.String(request, "group_key"),
 			Namespace: commandutil.String(request, "namespace"), Timeout: commandutil.Duration(request, "timeout"),
 			Parallelism: commandutil.Int(request, "parallelism"), Reuse: reuse, Permissions: commandutil.Permissions(request),
 			Workspace: commandutil.String(request, "workspace"), WorkspaceWritable: commandutil.Bool(request, "workspace_write"),

@@ -41,6 +41,8 @@ type ResponseError struct {
 	Status     string
 	StatusCode int
 	Message    string
+	Code       string
+	Details    map[string]any
 }
 
 func (e *ResponseError) Error() string {
@@ -266,15 +268,24 @@ func (c *Client) InvokeWorker(ctx context.Context, spec model.SandboxSpec, worke
 	return result, nil
 }
 
-func (c *Client) RunJob(ctx context.Context, spec model.SandboxSpec, workerID string, input any, checkModules []string) (JobResult, error) {
+func (c *Client) RunJob(ctx context.Context, spec model.SandboxSpec, workerID string, arguments []any, secrets map[string]string, checkModules []string) (JobResult, error) {
 	var response JobResult
 	if err := c.control(ctx, spec, "/v1/jobs/"+url.PathEscape(workerID)+"/run", protocol.MessageJobStart, struct {
-		Input        any      `json:"input"`
-		CheckModules []string `json:"check_modules,omitempty"`
-	}{Input: input, CheckModules: append([]string(nil), checkModules...)}, protocol.MessageJobResult, &response); err != nil {
+		Arguments    []any             `json:"arguments"`
+		Secrets      map[string]string `json:"secrets"`
+		CheckModules []string          `json:"check_modules,omitempty"`
+	}{Arguments: append([]any{}, arguments...), Secrets: cloneSecrets(secrets), CheckModules: append([]string(nil), checkModules...)}, protocol.MessageJobResult, &response); err != nil {
 		return JobResult{}, err
 	}
 	return response, nil
+}
+
+func cloneSecrets(values map[string]string) map[string]string {
+	result := make(map[string]string, len(values))
+	for name, value := range values {
+		result[name] = value
+	}
+	return result
 }
 
 func (c *Client) ConfigureService(ctx context.Context, spec model.SandboxSpec, serviceID string, workerIDs []string, concurrencyPerWorker int) error {
@@ -423,7 +434,7 @@ func (c *Client) control(ctx context.Context, spec model.SandboxSpec, path strin
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		message, _ := io.ReadAll(io.LimitReader(response.Body, 8192))
-		return &ResponseError{Method: http.MethodPost, Path: path, Status: response.Status, StatusCode: response.StatusCode, Message: strings.TrimSpace(string(message))}
+		return controlResponseError(http.MethodPost, path, response.Status, response.StatusCode, message)
 	}
 	var envelope protocol.Envelope
 	decoder := json.NewDecoder(io.LimitReader(response.Body, 1<<20))
@@ -449,4 +460,24 @@ func (c *Client) control(ctx context.Context, spec model.SandboxSpec, path strin
 		return fmt.Errorf("decode supervisor response payload: %w", err)
 	}
 	return nil
+}
+
+func controlResponseError(method, path, status string, statusCode int, body []byte) *ResponseError {
+	result := &ResponseError{Method: method, Path: path, Status: status, StatusCode: statusCode, Message: strings.TrimSpace(string(body))}
+	var envelope protocol.Envelope
+	if err := json.Unmarshal(body, &envelope); err != nil || envelope.MessageType != protocol.MessageErrorResponse {
+		return result
+	}
+	var payload struct {
+		Error   string         `json:"error"`
+		Code    string         `json:"code,omitempty"`
+		Details map[string]any `json:"details,omitempty"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(envelope.Payload))
+	decoder.UseNumber()
+	if err := decoder.Decode(&payload); err != nil || payload.Error == "" {
+		return result
+	}
+	result.Message, result.Code, result.Details = payload.Error, payload.Code, payload.Details
+	return result
 }

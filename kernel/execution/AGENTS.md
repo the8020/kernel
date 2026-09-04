@@ -17,7 +17,11 @@
 - Each service sandbox owns an independent internal stateless or persistent
   Worker pool with hard per-Worker execution-slot limits. The kernel owns the
   service-wide desired Worker count and sandbox placement; jobs normally own
-  one Worker per execution behind a bounded durable FIFO admission queue.
+  one Worker per execution behind a bounded in-memory FIFO admission queue and
+  leave no execution history after completion.
+- Validated runtime calls carry their caller execution through Go context.
+  Synchronous child-job admission discounts its waiting parent, preventing a
+  bounded Worker pool from deadlocking on its own dependency.
 - Newly generated runtime-group IDs are `rgp-` plus eight random lowercase
   alphanumeric characters; newly generated Worker IDs are the equivalent
   `wrk-` format.

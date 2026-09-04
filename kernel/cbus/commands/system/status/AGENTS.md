@@ -1,6 +1,6 @@
 # Purpose
 
-- Implement `system.status` as declared by the adjacent authoritative TOML.
+- Implement `kernel.status` as declared by the adjacent authoritative TOML.
 
 # Ownership
 
@@ -19,8 +19,9 @@
 - Status reads one synchronized runtime snapshot; while asynchronous runtime composition is incomplete it reports `runtime_ready=false` and the initialization-progress message without delaying the command.
 - Database status is the cached result of the kernel startup or explicit
   connectivity check. Its pool limits and open/in-use/idle/wait counters come
-  from local `database/sql` state; reading system status performs no database
-  I/O.
+  from local `database/sql` state; reading kernel status performs no database
+  I/O. Query result limits remain settings and are not repeated in system
+  status.
 - Shutdown fields report requested and restart intent, integer completed-stage
   percentage/count/total, current step, and current message; the percentage
   represents completed stages, not estimated elapsed time.

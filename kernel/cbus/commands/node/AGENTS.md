@@ -1,22 +1,21 @@
 # Purpose
 
-- Expose shared application-server topology administration through the command bus.
+- Adapt shared topology primitives for package runtime operations.
 
 # Ownership
 
-- Own capacity-aware node listing, validated topology upsert/removal, and
-  initialized shared-root mapping get/set handlers and definitions.
+- Own capacity-aware node listing and validated topology upsert/removal.
+- Do not publish CBus metadata; `the8020/system` owns visible `system.nodes.*`
+  command programs.
 
 # Local Contracts
 
-- Handlers delegate to `kernel/nodes`; they never edit `config/nodes.toml` directly.
-- `node paths get` returns the canonical `packages`, `config`, `state`, and
-  `users` roots. `node paths set` validates all four roots and required Unix
-  metadata semantics, records them atomically in `node/kernel/paths.toml`, and
-  takes effect after restart.
+- Handlers delegate to the database-backed `kernel/nodes` owner. There are no
+  command-bus operations for changing the fixed instance layout.
 - A local recipient address or port change is effective after kernel restart.
-- `node.list` combines shared topology with bounded local/remote capacity
-  reports; an unreachable or disabled node remains visible with its error.
+- The private list adapter combines shared topology with bounded local/remote
+  capacity reports; an unreachable or disabled node remains visible with its
+  error.
 
 # Work Guidance
 

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -18,6 +17,8 @@ import (
 	"golang.org/x/sys/unix"
 
 	"the8020/kernel/auth"
+	"the8020/kernel/cbus/core"
+	"the8020/kernel/cbus/discovery"
 	platformconsole "the8020/kernel/console"
 	"the8020/kernel/database"
 	databaseevaluator "the8020/kernel/database/evaluator"
@@ -27,6 +28,7 @@ import (
 	"the8020/kernel/execution/coordinator"
 	"the8020/kernel/execution/jobs"
 	"the8020/kernel/execution/pool"
+	programrunner "the8020/kernel/execution/programs"
 	"the8020/kernel/execution/records"
 	executionservices "the8020/kernel/execution/services"
 	"the8020/kernel/execution/supervisor"
@@ -38,6 +40,7 @@ import (
 	"the8020/kernel/ports"
 	runtimehost "the8020/kernel/runtime"
 	"the8020/kernel/runtime/callback"
+	runtimeoperations "the8020/kernel/runtime/operations"
 	"the8020/kernel/sandbox/backend"
 	containerdbackend "the8020/kernel/sandbox/backend/containerd"
 	rootlessbackend "the8020/kernel/sandbox/backend/rootless"
@@ -47,8 +50,11 @@ import (
 	sandboxmounts "the8020/kernel/sandbox/mounts"
 	sandboxnetwork "the8020/kernel/sandbox/network"
 	"the8020/kernel/sandbox/state"
+	secretstore "the8020/kernel/secrets"
 	"the8020/kernel/services"
 	"the8020/kernel/settings"
+	settingsdb "the8020/kernel/settings/dbstore"
+	kernelssh "the8020/kernel/ssh"
 	"the8020/kernel/webservices"
 )
 
@@ -65,8 +71,15 @@ type runtimeCleanup struct {
 	jobs          *jobs.Manager
 	policy        manager.ShutdownPolicy
 	console       *platformconsole.Manager
+	publicNetwork *mainnetwork.Manager
+	development   *development.Manager
+	ssh           *kernelssh.Manager
+	nodes         *nodes.Manager
+	stopAuth      func()
 	err           error
 }
+
+const sandboxKernelSocketPath = "/run/the8020/kernel.sock"
 
 type shutdownProgressFunc func(started bool, stepID, step, message string)
 type runtimeCleanupFunc func(context.Context, shutdownProgressFunc) error
@@ -104,6 +117,16 @@ func (c *runtimeCleanup) Close(ctx context.Context, report shutdownProgressFunc)
 		if c.console != nil {
 			c.console.SetRuntime(nil)
 		}
+		reportShutdownProgress(report, true, "public_http", "public HTTP", "draining the public HTTP listener")
+		if c.publicNetwork != nil {
+			c.publicNetwork.Close()
+		}
+		reportShutdownProgress(report, false, "public_http", "public HTTP", "public HTTP listener closed")
+		reportShutdownProgress(report, true, "authentication", "authentication maintenance", "stopping authentication-session cleanup")
+		if c.stopAuth != nil {
+			c.stopAuth()
+		}
+		reportShutdownProgress(report, false, "authentication", "authentication maintenance", "authentication maintenance stopped")
 		reportShutdownProgress(report, true, "runtime_controllers", "runtime controllers", "stopping runtime monitors, reconcilers, schedulers, and timers")
 		if c.monitorCancel != nil {
 			c.monitorCancel()
@@ -142,17 +165,33 @@ func (c *runtimeCleanup) Close(ctx context.Context, report shutdownProgressFunc)
 		if c.backend != nil {
 			endpointTasks = append(endpointTasks, c.backend.Close)
 		}
+		if c.ssh != nil {
+			c.err = errors.Join(c.err, c.ssh.Close(ctx))
+		}
+		if c.console != nil {
+			c.err = errors.Join(c.err, c.console.Close())
+		}
+		if c.development != nil {
+			c.err = errors.Join(c.err, c.development.Close(ctx))
+		}
+		if c.nodes != nil {
+			c.err = errors.Join(c.err, c.nodes.Close())
+		}
 		c.err = errors.Join(c.err, closeConcurrently(endpointTasks...))
 		reportShutdownProgress(report, false, "runtime_backends", "runtime backends", "runtime endpoints closed")
 	})
 	return c.err
 }
 
-func initializeRuntime(ctx context.Context, root, instanceUUID string, paths instance.Paths, settingManager *settings.Manager, packageStore *workspacepackages.Store, developmentManager *development.Manager, router *mainnetwork.Manager, authentication *auth.Manager, systemDatabase *database.Manager, adminBus callback.AdminBus, consoleManager *platformconsole.Manager, nodeManager *nodes.Manager, logger *slog.Logger) (*services.RuntimeServices, runtimeCleanupFunc) {
+func initializeRuntime(ctx context.Context, root, instanceUUID string, paths instance.Paths, settingManager *settings.Manager, systemDatabase *database.Manager, commandRegistry *core.Registry, serviceSet *services.Services, repositoryMu *sync.RWMutex, logger *slog.Logger) (*services.RuntimeServices, runtimeCleanupFunc) {
 	cleanup := &runtimeCleanup{policy: manager.ShutdownDestroy}
 	closeRuntime := cleanup.Close
 	if _, err := systemDatabase.InitializeCatalog(ctx); err != nil {
 		return &services.RuntimeServices{Failure: "database catalog initialization failed: " + err.Error()}, closeRuntime
+	}
+	packageCatalog, err := workspacepackages.NewCatalog(paths.Packages, logger)
+	if err != nil {
+		return &services.RuntimeServices{Failure: "initialize package catalog: " + err.Error()}, closeRuntime
 	}
 	versions, err := runtimehost.LoadVersionsFile(paths.RuntimeVersionsFile)
 	if err != nil {
@@ -224,27 +263,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		return runtimeServices, closeRuntime
 	}
 	subnet := activeString(settingManager, "sandbox.network.subnet", "10.88.0.0/16")
-	callbackBind := "0.0.0.0"
-	callbackState := filepath.Join(paths.Runtime, "callback.json")
-	callbackAdvertise := ""
-	_, allowedNetwork, err := net.ParseCIDR(subnet)
-	if selectedMode == runtimehost.ModeRootless {
-		callbackBind, callbackAdvertise, callbackState = "127.0.0.1", "127.0.0.1", filepath.Join(paths.Runtime, "callback-rootless.json")
-		_, allowedNetwork, err = net.ParseCIDR("127.0.0.0/8")
-	}
-	if err != nil {
-		runtimeServices.Failure = "invalid sandbox callback network: " + err.Error()
-		return runtimeServices, closeRuntime
-	}
-	if callbackAdvertise == "" {
-		gateway, gatewayErr := firstAddress(allowedNetwork)
-		if gatewayErr != nil {
-			runtimeServices.Failure = gatewayErr.Error()
-			return runtimeServices, closeRuntime
-		}
-		callbackAdvertise = gateway.String()
-	}
-	callbackServer, err := callback.New(callback.Config{Store: stateStore, ProtocolVersion: versions.RuntimeProtocolVersion, BindAddress: callbackBind, AdvertiseAddress: callbackAdvertise, AllowedNetwork: allowedNetwork, EndpointState: callbackState, Authentication: authentication, RuntimeRequests: authentication, Database: systemDatabase, AdminBus: adminBus})
+	callbackServer, err := callback.New(callback.Config{Store: stateStore, ProtocolVersion: versions.RuntimeProtocolVersion, SocketPath: paths.RuntimeKernelSocket, Database: systemDatabase, AdminBus: commandRegistry})
 	if err != nil {
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
@@ -273,7 +292,8 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	if selectedMode == runtimehost.ModeFull {
 		logRoot := filepath.Join(paths.Runtime, "logs")
 		fullBackend, connectErr := containerdbackend.Connect(ctx, containerdbackend.Config{
-			Socket: socket, InstanceUUID: instanceUUID, LogRoot: logRoot, CallbackAddress: callbackServer.Address(),
+			Socket: socket, InstanceUUID: instanceUUID, LogRoot: logRoot, KernelSocketPath: sandboxKernelSocketPath,
+			RunscConfigPath:             filepath.Join(paths.RuntimeDefinitions, "runsc.toml"),
 			SupervisorHeartbeatInterval: heartbeatInterval, WorkerStopGrace: workerStopGrace, Logger: logger,
 		})
 		if connectErr != nil {
@@ -282,7 +302,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		}
 		sandboxBackend, cleanup.backend = fullBackend, fullBackend
 		sandboxLogPath = func(sandboxID string) string { return filepath.Join(logRoot, sandboxID+".log") }
-		firewall, firewallErr := sandboxnetwork.NewNFTFirewall(sandboxnetwork.NFTFirewallConfig{InstanceUUID: instanceUUID, KernelCallbackAddress: callbackServer.Address(), SandboxSubnet: subnet})
+		firewall, firewallErr := sandboxnetwork.NewNFTFirewall(sandboxnetwork.NFTFirewallConfig{InstanceUUID: instanceUUID, SandboxSubnet: subnet})
 		if firewallErr != nil {
 			runtimeServices.Failure = firewallErr.Error()
 			return runtimeServices, closeRuntime
@@ -300,7 +320,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		rootlessBackend, backendErr := rootlessbackend.New(rootlessbackend.Config{
 			RunscPath: rootlessReport.RunscPath, RootFS: rootlessReport.RootFS,
 			StateRoot: filepath.Join(paths.Runtime, "rootless", "sandboxes"), RuntimeRoot: filepath.Join(paths.Runtime, "rootless", "runsc"),
-			LogRoot: logRoot, InstanceUUID: instanceUUID, CallbackAddress: callbackServer.Address(),
+			LogRoot: logRoot, InstanceUUID: instanceUUID, KernelSocketPath: sandboxKernelSocketPath,
 			SupervisorHeartbeatInterval: heartbeatInterval, WorkerStopGrace: workerStopGrace,
 			StartTimeout: activeDuration(settingManager, "runtime.sandbox.startup_timeout", 30*time.Second), Logger: logger,
 		})
@@ -354,34 +374,29 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		runtimeServices.Failure = "runtime startup failed: " + err.Error()
 		return runtimeServices, closeRuntime
 	}
-	if consoleManager != nil {
-		consoleManager.SetRuntime(sandboxManager)
-		cleanup.console = consoleManager
-	}
 	workerManager, err := workers.New(sandboxManager, supervisorClient, nodeLimits.MaximumWorkers, maximumWorkersPerSandbox, systemDatabase.Status().Backend)
 	if err != nil {
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
 	}
 	runtimeServices.Workers = workerManager
-	workerManager.SetNodeRouter(nodeManager)
-	nodeManager.SetWorkerInvoker(workerManager)
 	callbackServer.SetWorkerInvoker(workerManager)
+	callbackServer.SetRuntimeIdentityValidator(workerManager)
 	imageDigest := selectedDigest
 	serviceResources := resourceLimits(settingManager, "service")
 	jobResources := resourceLimits(settingManager, "job")
-	egressAllowed := activeBoolDefault(settingManager, "sandbox.network.egress_enabled", false)
-	baseMounts := []model.Mount{{Source: paths.RuntimeAttachments, Target: "/artifacts", ReadOnly: true, Purpose: "runtime-artifacts", Persistence: "kernel"}}
+	egressAllowed := true
+	baseMounts := []model.Mount{
+		{Source: paths.RuntimeAttachments, Target: "/artifacts", ReadOnly: true, Purpose: "runtime-artifacts", Persistence: "kernel"},
+		{Source: paths.RuntimeKernelSocketDir, Target: "/run/the8020", ReadOnly: true, Purpose: "kernel-api", Persistence: "kernel"},
+	}
 	serviceMounts := append(append([]model.Mount(nil), baseMounts...),
-		model.Mount{Source: packageStore.PackagesRoot(), Target: "/workspace/packages", ReadOnly: true, Purpose: "workspace-packages", Persistence: "shared"},
-		model.Mount{Source: paths.StatePackageData, Target: "/state/package-data", ReadOnly: false, Purpose: "package-data", Persistence: "shared"},
+		model.Mount{Source: packageCatalog.PackagesRoot(), Target: "/workspace/packages", ReadOnly: true, Purpose: "workspace-packages", Persistence: "shared"},
 	)
 	serviceProfile := runtimeProfile(model.WorkloadService, imageDigest, serviceMounts, serviceResources, egressAllowed)
-	serviceProfile.Permissions.ReadPaths = append(serviceProfile.Permissions.ReadPaths, "/opt/runtime", "/workspace/packages", "/state/package-data")
-	serviceProfile.Permissions.WritePaths = append(serviceProfile.Permissions.WritePaths, "/state/package-data")
+	serviceProfile.Permissions.ReadPaths = append(serviceProfile.Permissions.ReadPaths, "/opt/runtime", "/workspace/packages")
 	jobProfile := runtimeProfile(model.WorkloadJob, imageDigest, serviceMounts, jobResources, egressAllowed)
-	jobProfile.Permissions.ReadPaths = append(jobProfile.Permissions.ReadPaths, "/opt/runtime", "/workspace/packages", "/state/package-data")
-	jobProfile.Permissions.WritePaths = append(jobProfile.Permissions.WritePaths, "/state/package-data")
+	jobProfile.Permissions.ReadPaths = append(jobProfile.Permissions.ReadPaths, "/opt/runtime", "/workspace/packages")
 	workspaceMounts, err := sandboxmounts.NewPolicy([]string{root}, paths.Kernel, socket, true)
 	if err != nil {
 		runtimeServices.Failure = "initialize development workspace policy: " + err.Error()
@@ -412,11 +427,6 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
 	}
-	jobStore, err := records.New(filepath.Join(paths.Runtime, "jobs"))
-	if err != nil {
-		runtimeServices.Failure = err.Error()
-		return runtimeServices, closeRuntime
-	}
 	serviceManager, err := executionservices.New(groupCoordinator, workerManager, serviceStore, executionservices.Policy{
 		Strategy: grouping(settingManager, "execution.grouping.service"), Profile: serviceProfile, Resources: serviceResources, Lifecycle: lifecycle,
 		WorkspaceMounts: workspaceMounts, Logger: logger,
@@ -425,7 +435,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
 	}
-	jobManager, err := jobs.New(groupCoordinator, workerManager, jobStore, jobs.Policy{
+	jobManager, err := jobs.New(groupCoordinator, workerManager, jobs.Policy{
 		Strategy: grouping(settingManager, "execution.grouping.job"), Profile: jobProfile, Resources: jobResources, Lifecycle: lifecycle,
 		MaximumParallel: activeInt(settingManager, "job.default.maximum_parallel_workers", 4), QueuedExecutionLimit: activeInt(settingManager, "job.default.queued_execution_limit", 1024),
 		ExecutionTimeout: activeDuration(settingManager, "job.default.execution_timeout", 5*time.Minute),
@@ -437,34 +447,264 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		return runtimeServices, closeRuntime
 	}
 	cleanup.jobs = jobManager
-	tableEvaluator, err := databaseevaluator.New(databaseevaluator.Config{Packages: packageStore, Jobs: jobManager, Database: systemDatabase})
+	tableEvaluator, err := databaseevaluator.New(databaseevaluator.Config{Packages: packageCatalog, Jobs: jobManager, Database: systemDatabase})
 	if err != nil {
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
 	}
 	systemDatabase.SetDefinitionEvaluator(tableEvaluator.Evaluate)
 	systemDatabase.SetFullSynchronizer(tableEvaluator.SynchronizeAll)
-	systemDatabase.SetSourceInspector(tableEvaluator.InspectSources)
 	systemDatabase.SetSourceEvaluator(tableEvaluator.InspectDefinition)
-	packageStore.SetSchemaDeployment(tableEvaluator)
-	developmentManager.SetSchemaDeployment(tableEvaluator)
 	_, pendingDeployment, err := systemDatabase.PendingDeployment(ctx)
 	if err != nil {
 		runtimeServices.Failure = "inspect pending database schema deployment: " + err.Error()
 		return runtimeServices, closeRuntime
 	}
-	if pendingDeployment || !systemDatabase.Status().Initialized {
-		var synchronizationErr error
-		if pendingDeployment {
-			_, synchronizationErr = tableEvaluator.RecoverAll(ctx)
-		} else {
-			_, synchronizationErr = tableEvaluator.SynchronizeAll(ctx, true)
-		}
-		if synchronizationErr != nil {
-			runtimeServices.Failure = "initial database schema synchronization failed: " + synchronizationErr.Error()
+	freshDatabase := !systemDatabase.Status().Initialized
+	if freshDatabase {
+		if _, err := tableEvaluator.SynchronizeInitialSchemas(ctx, true); err != nil {
+			runtimeServices.Failure = "initial database schema synchronization failed: " + err.Error()
 			return runtimeServices, closeRuntime
 		}
 	}
+	globalSettings, err := settingsdb.New(systemDatabase)
+	if err != nil {
+		runtimeServices.Failure = "initialize global settings: " + err.Error()
+		return runtimeServices, closeRuntime
+	}
+	if err := settingManager.AttachGlobal(ctx, globalSettings); err != nil {
+		runtimeServices.Failure = "load global settings: " + err.Error()
+		return runtimeServices, closeRuntime
+	}
+	if err := settingManager.RegisterApplier([]string{"logging.enabled", "logging.split_period", "logging.max_file_size", "logging.max_total_size"}, serviceSet.Logging); err != nil {
+		runtimeServices.Failure = err.Error()
+		return runtimeServices, closeRuntime
+	}
+	if err := settingManager.RegisterApplier([]string{
+		"database.maximum_open_connections", "database.maximum_idle_connections",
+		"database.maximum_result_rows", "database.maximum_result_bytes",
+	}, systemDatabase); err != nil {
+		runtimeServices.Failure = err.Error()
+		return runtimeServices, closeRuntime
+	}
+	secretManager, err := secretstore.New(secretstore.Config{Database: systemDatabase})
+	if err != nil {
+		runtimeServices.Failure = "initialize shared secrets: " + err.Error()
+		return runtimeServices, closeRuntime
+	}
+	forwardingSecret, err := secretManager.EnsureRandom(ctx, "system.node.forwarding", 32)
+	if err != nil {
+		runtimeServices.Failure = "initialize node forwarding secret: " + err.Error()
+		return runtimeServices, closeRuntime
+	}
+	packageStore, err := workspacepackages.New(workspacepackages.Config{
+		WorkspaceRoot: root, PackagesRoot: paths.Packages, RepositoryMu: repositoryMu,
+		Secrets: secretManager, Database: systemDatabase, Defaults: serviceFrameworkDefaults(settingManager), Logger: logger,
+	})
+	if err != nil {
+		runtimeServices.Failure = "initialize packages: " + err.Error()
+		return runtimeServices, closeRuntime
+	}
+	programRunner, err := programrunner.New(packageStore, jobManager)
+	if err != nil {
+		runtimeServices.Failure = "initialize program runner: " + err.Error()
+		return runtimeServices, closeRuntime
+	}
+	commandIndexer, err := discovery.New(packageStore, programRunner, commandRegistry)
+	if err != nil {
+		runtimeServices.Failure = "initialize package command index: " + err.Error()
+		return runtimeServices, closeRuntime
+	}
+	runtimeServices.Programs = programRunner
+	runtimeServices.ReindexCommands = func(ctx context.Context) (core.Result, error) {
+		report, err := commandIndexer.Reindex(ctx)
+		return core.Result{"revision": report.Revision, "packages": report.Packages, "commands": report.Commands, "diagnostics": report.Diagnostics}, err
+	}
+	packageCommits, err := tableEvaluator.PackageSet(ctx)
+	if err != nil {
+		runtimeServices.Failure = "inspect installed package set: " + err.Error()
+		return runtimeServices, closeRuntime
+	}
+	activationCoordinator, err := workspacepackages.NewActivationCoordinator(workspacepackages.ActivationCoordinatorConfig{
+		Database: systemDatabase, Schema: tableEvaluator, Packages: packageStore, Jobs: jobManager,
+		ValidateCandidates: commandIndexer.ValidateCandidates,
+		RefreshCommands: func(ctx context.Context) error {
+			_, err := commandIndexer.Reindex(ctx)
+			return err
+		},
+	})
+	if err != nil {
+		runtimeServices.Failure = "initialize package activation: " + err.Error()
+		return runtimeServices, closeRuntime
+	}
+	packageStore.SetSchemaDeployment(activationCoordinator)
+	serviceSet.PublishPackageManagement(packageStore)
+	if freshDatabase {
+		pending, err := activationCoordinator.Pending(ctx)
+		if err != nil {
+			runtimeServices.Failure = "inspect bootstrap package activation: " + err.Error()
+			return runtimeServices, closeRuntime
+		}
+		if pending {
+			err = activationCoordinator.Recover(ctx)
+		} else {
+			err = activationCoordinator.Bootstrap(ctx, packageCommits)
+		}
+		if err != nil {
+			systemDatabase.SetInitializationFailure(context.WithoutCancel(ctx), err)
+			runtimeServices.Failure = "activate bootstrap packages: " + err.Error()
+			return runtimeServices, closeRuntime
+		}
+		if err := systemDatabase.CompleteInitialization(ctx, packageCommits); err != nil {
+			systemDatabase.SetInitializationFailure(context.WithoutCancel(ctx), err)
+			runtimeServices.Failure = "complete database initialization: " + err.Error()
+			return runtimeServices, closeRuntime
+		}
+	} else {
+		if pendingDeployment {
+			if err := activationCoordinator.Recover(ctx); err != nil {
+				runtimeServices.Failure = "recover package activation: " + err.Error()
+				return runtimeServices, closeRuntime
+			}
+		}
+		if err := packageStore.ValidateInstalled(ctx, packageCommits); err != nil {
+			runtimeServices.Failure = "validate installed package set: " + err.Error()
+			return runtimeServices, closeRuntime
+		}
+	}
+	if err := tableEvaluator.UseActivatedPackages(packageStore); err != nil {
+		runtimeServices.Failure = err.Error()
+		return runtimeServices, closeRuntime
+	}
+	argonParameters := auth.Argon2Parameters{
+		Memory:       uint32(activeInt(settingManager, "auth.argon2.memory", 64*1024)),
+		Iterations:   uint32(activeInt(settingManager, "auth.argon2.iterations", 3)),
+		Parallelism:  uint8(activeInt(settingManager, "auth.argon2.parallelism", 1)),
+		SaltLength:   16,
+		OutputLength: 32,
+	}
+	passwordHasher, err := auth.NewPasswordHasher(argonParameters, nil)
+	if err != nil {
+		runtimeServices.Failure = "initialize password hashing: " + err.Error()
+		return runtimeServices, closeRuntime
+	}
+	operationDispatcher, err := runtimeoperations.New(serviceSet, passwordHasher)
+	if err != nil {
+		runtimeServices.Failure = "initialize runtime operations: " + err.Error()
+		return runtimeServices, closeRuntime
+	}
+	callbackServer.SetRuntimeOperations(operationDispatcher)
+	if _, err := commandIndexer.Reindex(ctx); err != nil {
+		runtimeServices.Failure = "index package commands: " + err.Error()
+		return runtimeServices, closeRuntime
+	}
+	packageFollower, err := workspacepackages.NewPackageRevisionFollower(ctx, packageStore, packageCommits)
+	if err != nil {
+		runtimeServices.Failure = "initialize package-set convergence: " + err.Error()
+		return runtimeServices, closeRuntime
+	}
+	serviceFollower, err := workspacepackages.NewServiceRevisionFollower(ctx, packageStore)
+	if err != nil {
+		runtimeServices.Failure = "initialize service-state convergence: " + err.Error()
+		return runtimeServices, closeRuntime
+	}
+	authentication, err := auth.New(auth.Config{
+		Database: systemDatabase, SessionDuration: activeDuration(settingManager, "auth.session_duration", 12*time.Hour),
+		CleanupInterval: activeDuration(settingManager, "auth.cleanup_interval", 15*time.Minute),
+		Cookie: auth.CookieConfig{
+			Name:     activeString(settingManager, "auth.cookie.name", "the8020_auth"),
+			Secure:   activeBoolDefault(settingManager, "auth.cookie.secure", false),
+			SameSite: activeString(settingManager, "auth.cookie.same_site", "lax"),
+		},
+		Argon2: argonParameters,
+		Hasher: passwordHasher,
+	})
+	if err != nil {
+		runtimeServices.Failure = "initialize authentication: " + err.Error()
+		return runtimeServices, closeRuntime
+	}
+	authContext, cancelAuth := context.WithCancel(ctx)
+	var authWait sync.WaitGroup
+	authWait.Add(1)
+	go func() {
+		defer authWait.Done()
+		authentication.RunCleanup(authContext, func(cleanupErr error) {
+			logger.Error("authentication-session cleanup failed", "error", cleanupErr)
+		})
+	}()
+	cleanup.stopAuth = func() { cancelAuth(); authWait.Wait() }
+	nodeManager, err := nodes.New(systemDatabase, instanceUUID, forwardingSecret.Value)
+	if err != nil {
+		runtimeServices.Failure = "initialize node topology: " + err.Error()
+		return runtimeServices, closeRuntime
+	}
+	workerManager.SetNodeRouter(nodeManager)
+	nodeManager.SetWorkerInvoker(workerManager)
+	cleanup.nodes = nodeManager
+	developmentRunsc := developmentRunscConfig(ctx, root, paths, settingManager)
+	developmentManager, err := development.New(development.Config{
+		Root: root, PackagesRoot: paths.Packages, UsersRoot: paths.Users,
+		RuntimeRoot: paths.RuntimeDevelopment, ImageRoot: filepath.Join(paths.DevelopmentImage, "rootfs"),
+		ImageRecord: filepath.Join(paths.DevelopmentImage, "image.json"), MountProfile: development.DefaultMountProfile(),
+		ActivationGateway: development.NewCommandBusGateway(commandRegistry), RepositoryMu: repositoryMu,
+		Driver: development.NewRunscDriver(development.RunscConfig{
+			RunscPath: developmentRunsc.path, RuntimeRoot: filepath.Join(paths.RuntimeDevelopment, "runsc"),
+			SandboxRoot: filepath.Join(paths.RuntimeDevelopment, "sandboxes"), LogRoot: filepath.Join(paths.RuntimeDevelopment, "logs"),
+			Rootless: developmentRunsc.rootless,
+		}),
+		Logger: logger,
+	})
+	if err != nil {
+		runtimeServices.Failure = "initialize development sandboxes: " + err.Error()
+		return runtimeServices, closeRuntime
+	}
+	cleanup.development = developmentManager
+	developmentManager.SetSchemaDeployment(activationCoordinator)
+	mainPort, ok := settingManager.Active("network.main_port")
+	if !ok {
+		runtimeServices.Failure = "network.main_port is not registered"
+		return runtimeServices, closeRuntime
+	}
+	publicNetwork, err := mainnetwork.New(int(mainPort.(int64)), activeString(settingManager, "network.root_alias", "the8020/uui/shell/"))
+	if err != nil {
+		runtimeServices.Failure = err.Error()
+		return runtimeServices, closeRuntime
+	}
+	cleanup.publicNetwork = publicNetwork
+	if err := settingManager.RegisterApplier([]string{"network.main_port"}, publicNetwork); err != nil {
+		runtimeServices.Failure = err.Error()
+		return runtimeServices, closeRuntime
+	}
+	consoleManager, err := platformconsole.New(platformconsole.Config{Authentication: authentication, Development: developmentManager})
+	if err != nil {
+		runtimeServices.Failure = "initialize sandbox console broker: " + err.Error()
+		return runtimeServices, closeRuntime
+	}
+	cleanup.console = consoleManager
+	consoleManager.SetRuntime(sandboxManager)
+	if err := publicNetwork.RegisterRoute(platformconsole.Route, consoleManager); err != nil {
+		runtimeServices.Failure = "register sandbox console route: " + err.Error()
+		return runtimeServices, closeRuntime
+	}
+	sshPort, ok := settingManager.Active("network.ssh_port")
+	if !ok {
+		runtimeServices.Failure = "network.ssh_port is not registered"
+		return runtimeServices, closeRuntime
+	}
+	sshManager, err := kernelssh.New(kernelssh.Config{
+		Port: int(sshPort.(int64)), HostKeyPath: paths.SSHHostKey, Authentication: authentication,
+		Development: developmentManager, Consoles: consoleManager, Logger: logger,
+	})
+	if err != nil {
+		runtimeServices.Failure = "initialize SSH server: " + err.Error()
+		return runtimeServices, closeRuntime
+	}
+	cleanup.ssh = sshManager
+	if err := settingManager.RegisterApplier([]string{"network.ssh_port"}, sshManager); err != nil {
+		runtimeServices.Failure = err.Error()
+		return runtimeServices, closeRuntime
+	}
+	callbackServer.SetAuthentication(authentication, authentication)
 	adminManager, err := adminrun.New(adminrun.Config{InstanceRoot: root, ArtifactsRoot: paths.RuntimeAttachments, Jobs: jobManager, Metrics: sandboxManager})
 	if err != nil {
 		runtimeServices.Failure = err.Error()
@@ -485,33 +725,37 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
 	}
-	filesystemServices, err := webservices.New(webservices.Config{
-		Definitions:              packageStore,
-		Pools:                    serviceManager,
-		Router:                   router,
-		ObservedRoot:             paths.RuntimeServices,
-		ReconcileInterval:        activeDuration(settingManager, "services.reconcile_interval", time.Second),
-		StartupTimeout:           activeDuration(settingManager, "services.startup_timeout", 30*time.Second),
-		Logger:                   logger,
-		Authentication:           authentication,
-		RuntimeRequests:          authentication,
-		NodeID:                   instanceUUID,
-		PersistentRouteStatePath: filepath.Join(paths.StateServices, "persistent-routes.json"),
-		Nodes:                    nodeManager,
+	webServiceManager, err := webservices.New(webservices.Config{
+		Definitions:       packageStore,
+		Pools:             serviceManager,
+		Router:            publicNetwork,
+		ObservedRoot:      paths.RuntimeServices,
+		ReconcileInterval: activeDuration(settingManager, "services.reconcile_interval", time.Second),
+		StartupTimeout:    activeDuration(settingManager, "services.startup_timeout", 30*time.Second),
+		Logger:            logger,
+		Authentication:    authentication,
+		RuntimeRequests:   authentication,
+		NodeID:            instanceUUID,
+		Database:          systemDatabase,
+		Nodes:             nodeManager,
 	})
 	if err != nil {
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
 	}
 	nodeManager.SetCapacityProvider(&runtimeNodeCapacityProvider{sandboxes: sandboxManager, workers: workerManager, services: serviceManager})
-	if err := nodeManager.Start(filesystemServices); err != nil {
+	if err := nodeManager.Start(webServiceManager); err != nil {
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
 	}
-	cleanup.webservices, runtimeServices.Services = filesystemServices, filesystemServices
-	callbackServer.SetPersistentExecutionCompleter(filesystemServices)
-	filesystemServices.StartReconciler(ctx)
-	startRuntimeMonitor(cleanup, sandboxManager, serviceManager, jobManager, heartbeatInterval, heartbeatTimeout, logger)
+	serviceSet.PublishPlatform(services.PlatformServices{
+		Network: publicNetwork, Nodes: nodeManager, Auth: authentication, Secrets: secretManager,
+		Packages: packageStore, Development: developmentManager,
+	})
+	cleanup.webservices, runtimeServices.Services = webServiceManager, webServiceManager
+	callbackServer.SetPersistentExecutionCompleter(webServiceManager)
+	webServiceManager.StartReconciler(ctx)
+	startRuntimeMonitor(cleanup, sandboxManager, serviceManager, jobManager, systemDatabase, settingManager, &runtimeSharedState{packages: packageFollower, serviceChanges: serviceFollower, services: webServiceManager, commands: commandIndexer, topology: nodeManager}, publicNetwork, heartbeatInterval, heartbeatTimeout, logger)
 	return runtimeServices, closeRuntime
 }
 
@@ -665,9 +909,6 @@ func restoreRuntimeWorkloads(ctx context.Context, sandboxManager *manager.Manage
 	if err != nil {
 		logRuntimeRecoveryError(logger, "propagate reconciled runtime failures", err)
 	}
-	if err := jobManager.Restore(ctx); err != nil {
-		logRuntimeRecoveryError(logger, "restore jobs", err)
-	}
 	serviceRecords, err := serviceManager.List()
 	if err != nil {
 		logRuntimeRecoveryError(logger, "inspect persisted services before port restore", err)
@@ -725,7 +966,136 @@ func propagateReconciledFailures(items []manager.Inspection, sinks ...runtimeFai
 	return healthySandboxes, joined
 }
 
-func startRuntimeMonitor(cleanup *runtimeCleanup, sandboxes *manager.Manager, serviceManager *executionservices.Manager, jobManager *jobs.Manager, interval, timeout time.Duration, logger *slog.Logger) {
+type sharedStateDatabase interface {
+	Check(context.Context) (database.Status, error)
+	MarkUnavailable(error)
+}
+
+type sharedSettings interface {
+	RefreshGlobal(context.Context) (bool, error)
+}
+
+type sharedPackageState interface {
+	Refresh(context.Context) error
+}
+
+type servicePlaneGate interface {
+	SetAvailable(bool, string)
+}
+
+func reconcileSharedState(ctx context.Context, db sharedStateDatabase, global sharedSettings, gate servicePlaneGate, packages ...sharedPackageState) error {
+	status, err := db.Check(ctx)
+	if err != nil {
+		gate.SetAvailable(false, "database unavailable")
+		return err
+	}
+	if status.State != database.StateReady {
+		err = fmt.Errorf("database state is %s", status.State)
+		if status.Error != "" {
+			err = errors.New(status.Error)
+		}
+		gate.SetAvailable(false, "database unavailable")
+		return err
+	}
+	if _, err = global.RefreshGlobal(ctx); err != nil {
+		db.MarkUnavailable(err)
+		gate.SetAvailable(false, "global settings unavailable")
+		return err
+	}
+	if len(packages) > 0 && packages[0] != nil {
+		if err = packages[0].Refresh(ctx); err != nil {
+			gate.SetAvailable(false, "package state unavailable")
+			return err
+		}
+	}
+	gate.SetAvailable(true, "")
+	return nil
+}
+
+type packageRevisionFollower interface {
+	Poll(context.Context) (workspacepackages.PackageSetUpdate, error)
+	Acknowledge(uint64) error
+}
+
+type serviceRevisionFollower interface {
+	Poll(context.Context) (workspacepackages.ServiceSetUpdate, error)
+	Acknowledge(uint64) error
+}
+
+type targetedServiceReconciler interface {
+	Reconcile(context.Context, string) (webservices.Status, error)
+	Retire(context.Context, string) error
+}
+
+type commandReindexer interface {
+	Reindex(context.Context) (discovery.Report, error)
+}
+
+type runtimeSharedState struct {
+	packages       packageRevisionFollower
+	serviceChanges serviceRevisionFollower
+	services       targetedServiceReconciler
+	commands       commandReindexer
+	topology       interface{ Refresh(context.Context) error }
+}
+
+func (s *runtimeSharedState) Refresh(ctx context.Context) error {
+	if s.topology != nil {
+		if err := s.topology.Refresh(ctx); err != nil {
+			return err
+		}
+	}
+	if err := s.refreshPackages(ctx); err != nil {
+		return err
+	}
+	return s.refreshServices(ctx)
+}
+
+func (s *runtimeSharedState) refreshPackages(ctx context.Context) error {
+	update, err := s.packages.Poll(ctx)
+	if err != nil || update.Revision == 0 {
+		return err
+	}
+	if err := s.apply(ctx, update.ReconcileServices, update.RetireServices); err != nil {
+		// Source and database state already converged. Keep the revision pending so
+		// the affected services retry, but do not make their local runtime failure
+		// look like a shared-state outage for every unrelated service.
+		return nil
+	}
+	if s.commands != nil {
+		if _, err := s.commands.Reindex(ctx); err != nil {
+			return err
+		}
+	}
+	return s.packages.Acknowledge(update.Revision)
+}
+
+func (s *runtimeSharedState) refreshServices(ctx context.Context) error {
+	update, err := s.serviceChanges.Poll(ctx)
+	if err != nil || update.Revision == 0 {
+		return err
+	}
+	if err := s.apply(ctx, update.ReconcileServices, update.RetireServices); err != nil {
+		// Reconciliation records and logs the service-local failure. Leaving the
+		// revision unacknowledged makes the next cheap poll retry it idempotently.
+		return nil
+	}
+	return s.serviceChanges.Acknowledge(update.Revision)
+}
+
+func (s *runtimeSharedState) apply(ctx context.Context, reconcile, retire []string) error {
+	var joined error
+	for _, serviceID := range retire {
+		joined = errors.Join(joined, s.services.Retire(ctx, serviceID))
+	}
+	for _, serviceID := range reconcile {
+		_, err := s.services.Reconcile(ctx, serviceID)
+		joined = errors.Join(joined, err)
+	}
+	return joined
+}
+
+func startRuntimeMonitor(cleanup *runtimeCleanup, sandboxes *manager.Manager, serviceManager *executionservices.Manager, jobManager *jobs.Manager, systemDatabase sharedStateDatabase, global sharedSettings, packages sharedPackageState, publicNetwork servicePlaneGate, interval, timeout time.Duration, logger *slog.Logger) {
 	monitorContext, cancel := context.WithCancel(context.Background())
 	cleanup.monitorCancel = cancel
 	cleanup.monitorWait.Add(1)
@@ -775,14 +1145,46 @@ func startRuntimeMonitor(cleanup *runtimeCleanup, sandboxes *manager.Manager, se
 			}
 		}
 	}()
+	cleanup.monitorWait.Add(1)
+	go func() {
+		defer cleanup.monitorWait.Done()
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		available := true
+		for {
+			select {
+			case <-monitorContext.Done():
+				return
+			case <-ticker.C:
+				checkContext, cancel := context.WithTimeout(monitorContext, 5*time.Second)
+				err := reconcileSharedState(checkContext, systemDatabase, global, publicNetwork, packages)
+				cancel()
+				if err != nil && available {
+					available = false
+					if logger != nil {
+						logger.Error("shared database unavailable; public service plane gated", "error", err)
+					}
+				} else if err == nil && !available {
+					available = true
+					if logger != nil {
+						logger.Info("shared database recovered; public service plane restored")
+					}
+				}
+			}
+		}
+	}()
 }
 
 func runtimeProfile(workload model.WorkloadType, digest string, mounts []model.Mount, resources model.ResourceLimits, egressAllowed bool) model.RuntimeProfile {
 	profileMounts := append([]model.Mount(nil), mounts...)
 	profileMounts = append(profileMounts, model.Mount{Target: "/tmp", MaximumSize: resources.TmpfsMaximum, Purpose: "temporary", Persistence: "ephemeral"})
 	profileMounts = append(profileMounts, model.Mount{Target: "/runtime-cache", MaximumSize: resources.TmpfsMaximum, Purpose: "temporary", Persistence: "ephemeral"})
-	return model.RuntimeProfile{WorkloadType: workload, ImageDigest: digest, DependencyMode: model.DependencyCachedOnly,
-		Permissions: model.Permissions{ReadPaths: []string{"/artifacts"}, WritePaths: []string{"/tmp"}}, Mounts: profileMounts,
+	dependencyMode := model.DependencyCachedOnly
+	if egressAllowed {
+		dependencyMode = model.DependencyOnline
+	}
+	return model.RuntimeProfile{WorkloadType: workload, ImageDigest: digest, DependencyMode: dependencyMode,
+		Permissions: model.Permissions{ReadPaths: []string{"/artifacts", "/tmp", "/runtime-cache"}, WritePaths: []string{"/tmp", "/runtime-cache"}}, Mounts: profileMounts,
 		NetworkMode: "netstack", EgressAllowed: egressAllowed, ResourceClass: resourceClass(workload, resources),
 	}
 }
@@ -871,21 +1273,4 @@ func activeDuration(manager *settings.Manager, key string, fallback time.Duratio
 		return fallback
 	}
 	return time.Duration(value) * time.Millisecond
-}
-
-func firstAddress(network *net.IPNet) (net.IP, error) {
-	address := append(net.IP(nil), network.IP...)
-	if address.To4() == nil {
-		return nil, errors.New("sandbox callback network must be IPv4")
-	}
-	for index := len(address) - 1; index >= 0; index-- {
-		address[index]++
-		if address[index] != 0 {
-			break
-		}
-	}
-	if !network.Contains(address) {
-		return nil, errors.New("sandbox callback gateway is outside the configured subnet")
-	}
-	return address, nil
 }

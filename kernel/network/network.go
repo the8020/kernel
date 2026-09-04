@@ -36,6 +36,8 @@ type routeTable struct {
 	routes          map[string]http.Handler
 	serviceBoundary http.Handler
 	rootAlias       string
+	available       bool
+	unavailable     string
 }
 
 // New binds and starts the initial listener.
@@ -44,7 +46,7 @@ func New(port int, rootAlias string) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	router := &routeTable{routes: map[string]http.Handler{}, rootAlias: rootTarget}
+	router := &routeTable{routes: map[string]http.Handler{}, rootAlias: rootTarget, available: true}
 	candidate, err := prepareListener(port, router)
 	if err != nil {
 		return nil, err
@@ -75,6 +77,19 @@ func (m *Manager) Port() int {
 		return 0
 	}
 	return m.active.port
+}
+
+// SetAvailable gates the complete public plane while shared database state is
+// unavailable. The listener remains bound so readiness and recovery are
+// observable without restarting the kernel.
+func (m *Manager) SetAvailable(available bool, reason string) {
+	if reason == "" {
+		reason = "service plane is unavailable"
+	}
+	m.router.mu.Lock()
+	m.router.available = available
+	m.router.unavailable = reason
+	m.router.mu.Unlock()
 }
 
 // RegisterRoute adds a longest-prefix HTTP route to the active and future listeners.
@@ -116,6 +131,13 @@ func (m *Manager) UnregisterRoute(prefix string) {
 }
 
 func (r *routeTable) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	r.mu.RLock()
+	available, unavailable := r.available, r.unavailable
+	r.mu.RUnlock()
+	if !available {
+		http.Error(writer, unavailable, http.StatusServiceUnavailable)
+		return
+	}
 	if request.URL.Path == "/health" {
 		writer.WriteHeader(http.StatusOK)
 		_, _ = writer.Write([]byte("OK"))

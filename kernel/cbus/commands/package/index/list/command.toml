@@ -1,6 +1,6 @@
 version = 1
-id = "package.index.list"
-path = ["package", "index", "list"]
+id = "kernel.packages.list"
+path = ["kernel.packages.list"]
 summary = "List desired packages"
 description = "Lists the fixed-depth package index, including source and optional commit or tag selection."
 mutates_state = false
@@ -12,4 +12,4 @@ symbol = "New"
 name = "packages"
 type = "array"
 [[examples]]
-command = "package index list"
+command = "kernel.packages.list"

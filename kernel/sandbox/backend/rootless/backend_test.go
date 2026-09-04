@@ -124,6 +124,17 @@ func TestRootlessBackendBuildsRestrictedOCIAndRunsLifecycle(t *testing.T) {
 	}
 }
 
+func TestRunscArgumentsOnlyOpenMountedHostSockets(t *testing.T) {
+	backend := testBackend(t)
+	arguments := backend.runscArguments(metadata{SandboxID: "sandbox-one"}, "run", "sandbox-one")
+	if !containsArgument(arguments, "--host-uds=open") {
+		t.Fatalf("host UDS mode missing: %#v", arguments)
+	}
+	if containsArgument(arguments, "--host-uds=all") || containsArgument(arguments, "--host-uds=create") {
+		t.Fatalf("host UDS creation enabled: %#v", arguments)
+	}
+}
+
 func TestListOwnedReadsMetadataWithoutRunscStateProbe(t *testing.T) {
 	backend := testBackend(t)
 	sandbox := testSandbox(t)
@@ -215,7 +226,7 @@ func testBackend(t *testing.T) *Backend {
 	}
 	value, err := New(Config{
 		RunscPath: runsc, RootFS: rootFS, StateRoot: filepath.Join(root, "state"), RuntimeRoot: filepath.Join(root, "runtime"),
-		LogRoot: filepath.Join(root, "logs"), InstanceUUID: "instance-one", CallbackAddress: "http://127.0.0.1:19000",
+		LogRoot: filepath.Join(root, "logs"), InstanceUUID: "instance-one", KernelSocketPath: "/run/the8020/kernel.sock",
 		SupervisorHeartbeatInterval: time.Second, WorkerStopGrace: time.Second, Runner: &fakeRunner{},
 	})
 	if err != nil {

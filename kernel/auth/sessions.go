@@ -1,21 +1,18 @@
 package auth
 
 import (
-	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
-	"sort"
-	"strings"
 	"time"
 
-	"github.com/pelletier/go-toml/v2"
+	"the8020/kernel/database"
 )
 
 var (
@@ -24,48 +21,32 @@ var (
 	ErrInvalidSessionID = errors.New("invalid authentication session ID")
 )
 
+const sessionsTable = `"the8020__users__sessions"`
+
 type SessionRecord struct {
-	SessionID   string    `toml:"-" json:"session_id"`
-	Schema      int       `toml:"schema" json:"schema"`
-	Username    string    `toml:"username" json:"username"`
-	SecretHash  string    `toml:"secret_hash" json:"-"`
-	AuthVersion uint64    `toml:"auth_version" json:"auth_version"`
-	CreatedAt   time.Time `toml:"created_at" json:"created_at"`
-	ExpiresAt   time.Time `toml:"expires_at" json:"expires_at"`
+	SessionID   string    `json:"session_id"`
+	Username    string    `json:"username"`
+	SecretHash  string    `json:"-"`
+	AuthVersion uint64    `json:"auth_version"`
+	CreatedAt   time.Time `json:"created_at"`
+	ExpiresAt   time.Time `json:"expires_at"`
 }
 
 type SessionStoreConfig struct {
-	Root   string
-	Random io.Reader
-	Now    func() time.Time
+	Database database.Store
+	Random   io.Reader
+	Now      func() time.Time
 }
 
 type SessionStore struct {
-	root   string
-	random io.Reader
-	now    func() time.Time
+	database database.Store
+	random   io.Reader
+	now      func() time.Time
 }
 
 func NewSessionStore(config SessionStoreConfig) (*SessionStore, error) {
-	if config.Root == "" {
-		return nil, errors.New("bootstrap authentication-session root is required")
-	}
-	root, err := filepath.Abs(config.Root)
-	if err != nil {
-		return nil, fmt.Errorf("resolve authentication-session root: %w", err)
-	}
-	if err := os.MkdirAll(root, 0o700); err != nil {
-		return nil, fmt.Errorf("create authentication-session root: %w", err)
-	}
-	info, err := os.Lstat(root)
-	if err != nil {
-		return nil, fmt.Errorf("inspect authentication-session root: %w", err)
-	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return nil, errors.New("authentication-session root must be a real directory")
-	}
-	if err := os.Chmod(root, 0o700); err != nil {
-		return nil, fmt.Errorf("restrict authentication-session root: %w", err)
+	if config.Database == nil {
+		return nil, errors.New("database is required")
 	}
 	if config.Random == nil {
 		config.Random = rand.Reader
@@ -73,10 +54,14 @@ func NewSessionStore(config SessionStoreConfig) (*SessionStore, error) {
 	if config.Now == nil {
 		config.Now = time.Now
 	}
-	return &SessionStore{root: root, random: config.Random, now: config.Now}, nil
+	return &SessionStore{database: config.Database, random: config.Random, now: config.Now}, nil
 }
 
-func (s *SessionStore) Root() string { return s.root }
+// Check confirms that the package-owned authentication-session table is
+// queryable without scanning its contents. An empty table is ready.
+func (s *SessionStore) Check() error {
+	return checkTable(s.database, sessionsTable)
+}
 
 func (s *SessionStore) Create(username string, authVersion uint64, duration time.Duration) (SessionRecord, string, error) {
 	if err := ValidateUsername(username); err != nil {
@@ -95,20 +80,15 @@ func (s *SessionStore) Create(username string, authVersion uint64, duration time
 			return SessionRecord{}, "", fmt.Errorf("generate authentication session secret: %w", err)
 		}
 		now := s.now().UTC()
-		record := SessionRecord{Schema: authSchema, SessionID: sessionID, Username: username, SecretHash: hashSessionSecret(secret), AuthVersion: authVersion, CreatedAt: now, ExpiresAt: now.Add(duration)}
-		data, err := toml.Marshal(record)
-		if err != nil {
-			return SessionRecord{}, "", fmt.Errorf("encode authentication session: %w", err)
-		}
-		path, err := s.createPath(sessionID)
+		record := SessionRecord{SessionID: sessionID, Username: username, SecretHash: hashSessionSecret(secret), AuthVersion: authVersion, CreatedAt: now, ExpiresAt: now.Add(duration)}
+		result, err := s.database.ExecContext(context.Background(), `INSERT INTO `+sessionsTable+` ("sessionId", "username", "secretHash", "authVersion", "createdAt", "expiresAt") VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT ("sessionId") DO NOTHING`, record.SessionID, record.Username, record.SecretHash, int64(record.AuthVersion), database.EncodeTime(s.database, record.CreatedAt), database.EncodeTime(s.database, record.ExpiresAt))
 		if err != nil {
 			return SessionRecord{}, "", err
 		}
-		if err := publishFile(path, data, 0o600); err != nil {
-			if errors.Is(err, os.ErrExist) {
-				continue
-			}
-			return SessionRecord{}, "", fmt.Errorf("publish authentication session: %w", err)
+		if affected, err := result.RowsAffected(); err != nil {
+			return SessionRecord{}, "", err
+		} else if affected == 0 {
+			continue
 		}
 		return record, "v1." + sessionID + "." + secret, nil
 	}
@@ -121,14 +101,13 @@ func (s *SessionStore) ValidateToken(token string) (SessionRecord, error) {
 		return SessionRecord{}, ErrUnauthenticated
 	}
 	record, err := s.Read(sessionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SessionRecord{}, ErrUnauthenticated
+	}
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return SessionRecord{}, ErrUnauthenticated
-		}
 		return SessionRecord{}, err
 	}
-	presented := hashSessionSecret(secret)
-	if subtle.ConstantTimeCompare([]byte(presented), []byte(record.SecretHash)) != 1 {
+	if subtle.ConstantTimeCompare([]byte(hashSessionSecret(secret)), []byte(record.SecretHash)) != 1 {
 		return SessionRecord{}, ErrUnauthenticated
 	}
 	if !s.now().UTC().Before(record.ExpiresAt) {
@@ -139,153 +118,61 @@ func (s *SessionStore) ValidateToken(token string) (SessionRecord, error) {
 }
 
 func (s *SessionStore) Read(sessionID string) (SessionRecord, error) {
-	path, err := s.path(sessionID)
-	if err != nil {
-		return SessionRecord{}, err
+	if !validLowerHex(sessionID, 32) {
+		return SessionRecord{}, ErrInvalidSessionID
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return SessionRecord{}, err
-	}
+	return scanSession(s.database.QueryRowContext(context.Background(), `SELECT "sessionId", "username", "secretHash", "authVersion", "createdAt", "expiresAt" FROM `+sessionsTable+` WHERE "sessionId" = $1`, sessionID))
+}
+
+func scanSession(row rowScanner) (SessionRecord, error) {
 	var record SessionRecord
-	if err := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields().Decode(&record); err != nil {
-		return SessionRecord{}, fmt.Errorf("parse authentication session %s: %w", sessionID, err)
+	var authVersion int64
+	var created, expires any
+	if err := row.Scan(&record.SessionID, &record.Username, &record.SecretHash, &authVersion, &created, &expires); err != nil {
+		return SessionRecord{}, err
 	}
-	record.SessionID = sessionID
+	if authVersion < 1 {
+		return SessionRecord{}, errors.New("authentication session version must be positive")
+	}
+	record.AuthVersion = uint64(authVersion)
+	var err error
+	if record.CreatedAt, err = database.DecodeTime(created); err != nil {
+		return SessionRecord{}, fmt.Errorf("authentication session created time: %w", err)
+	}
+	if record.ExpiresAt, err = database.DecodeTime(expires); err != nil {
+		return SessionRecord{}, fmt.Errorf("authentication session expiry time: %w", err)
+	}
 	if err := validateSessionRecord(record); err != nil {
-		return SessionRecord{}, fmt.Errorf("validate authentication session %s: %w", sessionID, err)
+		return SessionRecord{}, err
 	}
 	return record, nil
 }
 
-func (s *SessionStore) List() ([]SessionRecord, error) {
-	shards, err := os.ReadDir(s.root)
-	if err != nil {
-		return nil, err
-	}
-	var records []SessionRecord
-	for _, shard := range shards {
-		if !shard.IsDir() || !validLowerHex(shard.Name(), 2) {
-			continue
-		}
-		entries, err := os.ReadDir(filepath.Join(s.root, shard.Name()))
-		if err != nil {
-			return nil, err
-		}
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".toml") {
-				continue
-			}
-			sessionID := strings.TrimSuffix(entry.Name(), ".toml")
-			if !validLowerHex(sessionID, 32) || !strings.HasPrefix(sessionID, shard.Name()) {
-				continue
-			}
-			record, err := s.Read(sessionID)
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			if err != nil {
-				return nil, err
-			}
-			records = append(records, record)
-		}
-	}
-	sort.Slice(records, func(i, j int) bool { return records[i].SessionID < records[j].SessionID })
-	return records, nil
-}
-
 func (s *SessionStore) Delete(sessionID string) error {
-	path, err := s.path(sessionID)
-	if err != nil {
-		return err
+	if !validLowerHex(sessionID, 32) {
+		return ErrInvalidSessionID
 	}
-	if err := os.Remove(path); errors.Is(err, os.ErrNotExist) {
-		return nil
-	} else if err != nil {
-		return fmt.Errorf("delete authentication session: %w", err)
-	}
-	return syncDirectory(filepath.Dir(path))
-}
-
-func (s *SessionStore) RevokeUser(username string) (int, error) {
-	records, err := s.List()
-	if err != nil {
-		return 0, err
-	}
-	removed := 0
-	var joined error
-	for _, record := range records {
-		if record.Username != username {
-			continue
-		}
-		if err := s.Delete(record.SessionID); err != nil {
-			joined = errors.Join(joined, err)
-		} else {
-			removed++
-		}
-	}
-	return removed, joined
+	_, err := s.database.ExecContext(context.Background(), `DELETE FROM `+sessionsTable+` WHERE "sessionId" = $1`, sessionID)
+	return err
 }
 
 func (s *SessionStore) CleanupExpired(now time.Time) (int, error) {
-	records, err := s.List()
+	result, err := s.database.ExecContext(context.Background(), `DELETE FROM `+sessionsTable+` WHERE "expiresAt" <= $1`, database.EncodeTime(s.database, now))
 	if err != nil {
 		return 0, err
 	}
-	removed := 0
-	var joined error
-	for _, record := range records {
-		if now.UTC().Before(record.ExpiresAt) {
-			continue
-		}
-		if err := s.Delete(record.SessionID); err != nil {
-			joined = errors.Join(joined, err)
-		} else {
-			removed++
-		}
-	}
-	return removed, joined
-}
-
-func (s *SessionStore) createPath(sessionID string) (string, error) {
-	if !validLowerHex(sessionID, 32) {
-		return "", ErrInvalidSessionID
-	}
-	shard := filepath.Join(s.root, sessionID[:2])
-	info, err := os.Lstat(shard)
-	if errors.Is(err, os.ErrNotExist) {
-		if err := os.Mkdir(shard, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
-			return "", fmt.Errorf("create authentication-session shard: %w", err)
-		}
-		info, err = os.Lstat(shard)
-	}
-	if err != nil {
-		return "", fmt.Errorf("inspect authentication-session shard: %w", err)
-	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return "", errors.New("authentication-session shard must be a real directory")
-	}
-	if err := os.Chmod(shard, 0o700); err != nil {
-		return "", err
-	}
-	return filepath.Join(shard, sessionID+".toml"), nil
-}
-
-func (s *SessionStore) path(sessionID string) (string, error) {
-	if !validLowerHex(sessionID, 32) {
-		return "", ErrInvalidSessionID
-	}
-	return filepath.Join(s.root, sessionID[:2], sessionID+".toml"), nil
+	affected, err := result.RowsAffected()
+	return int(affected), err
 }
 
 func validateSessionRecord(record SessionRecord) error {
-	if record.Schema != authSchema || !validLowerHex(record.SessionID, 32) || record.AuthVersion == 0 {
-		return errors.New("invalid authentication session identity or schema")
+	if !validLowerHex(record.SessionID, 32) || record.AuthVersion == 0 {
+		return errors.New("invalid authentication session identity")
 	}
 	if err := ValidateUsername(record.Username); err != nil {
 		return err
 	}
-	if !strings.HasPrefix(record.SecretHash, "sha256:") || !validLowerHex(strings.TrimPrefix(record.SecretHash, "sha256:"), 64) {
+	if !isSessionHash(record.SecretHash) {
 		return errors.New("invalid authentication session secret hash")
 	}
 	if record.CreatedAt.IsZero() || record.ExpiresAt.IsZero() || !record.ExpiresAt.After(record.CreatedAt) {
@@ -294,12 +181,19 @@ func validateSessionRecord(record SessionRecord) error {
 	return nil
 }
 
+func isSessionHash(value string) bool {
+	return len(value) == len("sha256:")+64 && value[:len("sha256:")] == "sha256:" && validLowerHex(value[len("sha256:"):], 64)
+}
+
 func parseSessionToken(token string) (string, string, error) {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 || parts[0] != "v1" || !validLowerHex(parts[1], 32) || !validLowerHex(parts[2], 64) {
+	if len(token) != 3+32+1+64 || token[:3] != "v1." || token[35] != '.' {
 		return "", "", ErrUnauthenticated
 	}
-	return parts[1], parts[2], nil
+	sessionID, secret := token[3:35], token[36:]
+	if !validLowerHex(sessionID, 32) || !validLowerHex(secret, 64) {
+		return "", "", ErrUnauthenticated
+	}
+	return sessionID, secret, nil
 }
 
 func hashSessionSecret(secret string) string {

@@ -12,10 +12,11 @@ import (
 )
 
 func service(serviceSet *services.Services) (services.DevelopmentService, error) {
-	if serviceSet == nil || serviceSet.Development == nil {
+	service := serviceSet.PlatformSnapshot().Development
+	if service == nil {
 		return nil, core.NewError(core.CodeRuntimeUnavailable, "development sandbox manager is unavailable")
 	}
-	return serviceSet.Development, nil
+	return service, nil
 }
 func operation(err error) error {
 	if err == nil {

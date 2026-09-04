@@ -1,17 +1,17 @@
-export interface BootstrapLoginInput {
+export interface LoginInput {
   username: string;
   password: string;
 }
 
-export interface BootstrapUser {
+export interface User {
   id: string;
   username: string;
-  realm: "bootstrap-admin";
+  realm: "user";
 }
 
-export interface BootstrapLoginResult {
+export interface LoginResult {
   authenticated: boolean;
-  user?: BootstrapUser;
+  user?: User;
   setCookie?: string;
   error?: "invalid_credentials" | "disabled" | "internal_error";
 }
@@ -34,8 +34,75 @@ export interface SetSecretInput {
   value: string;
 }
 
+export interface CommandArgumentSpec {
+  values?: readonly string[];
+  booleans?: readonly string[];
+}
+
+export interface ParsedCommandArguments {
+  positionals: string[];
+  options: Record<string, string | boolean>;
+}
+
+/** Parse package-owned command flags while preserving positional token text. */
+export function parseCommandArguments(
+  arguments_: readonly string[],
+  spec: CommandArgumentSpec = {},
+): ParsedCommandArguments {
+  const valueOptions = new Set(spec.values ?? []);
+  const booleanOptions = new Set(spec.booleans ?? []);
+  const options: Record<string, string | boolean> = {};
+  const positionals: string[] = [];
+  let parseOptions = true;
+  for (let index = 0; index < arguments_.length; index++) {
+    const token = arguments_[index]!;
+    if (parseOptions && token === "--") {
+      parseOptions = false;
+      continue;
+    }
+    if (!parseOptions || !token.startsWith("--") || token === "--") {
+      positionals.push(token);
+      continue;
+    }
+    const option = token.slice(2);
+    const equals = option.indexOf("=");
+    const name = equals < 0 ? option : option.slice(0, equals);
+    const inline = equals < 0 ? undefined : option.slice(equals + 1);
+    if (name.length === 0 || options[name] !== undefined) {
+      throw invalidArguments(`invalid or repeated option --${name}`);
+    }
+    if (booleanOptions.has(name)) {
+      if (inline !== undefined && inline !== "true" && inline !== "false") {
+        throw invalidArguments(`--${name} must be true or false`);
+      }
+      options[name] = inline === undefined ? true : inline === "true";
+      continue;
+    }
+    if (!valueOptions.has(name)) {
+      throw invalidArguments(`unknown option --${name}`);
+    }
+    const value = inline ?? arguments_[++index];
+    if (value === undefined) {
+      throw invalidArguments(`--${name} requires a value`);
+    }
+    options[name] = value;
+  }
+  return { positionals, options };
+}
+
+export function requiredCommandArgument(
+  values: readonly string[],
+  index: number,
+  name: string,
+): string {
+  const value = values[index];
+  if (value === undefined || value.length === 0) {
+    throw invalidArguments(`${name} is required`);
+  }
+  return value;
+}
+
 export interface PackageIndex {
-  schema: number;
   author: string;
   repository: string;
   source?: string;
@@ -44,7 +111,6 @@ export interface PackageIndex {
   secret?: string;
   local: boolean;
   package_id: string;
-  path: string;
   valid: boolean;
   validation_error?: string;
 }
@@ -176,6 +242,10 @@ export class AdminCommandError extends Error {
   }
 }
 
+function invalidArguments(message: string): AdminCommandError {
+  return new AdminCommandError({ code: "invalid_arguments", message });
+}
+
 export type TaggedDatabaseValue =
   | { type: "bigint"; value: string }
   | { type: "decimal"; value: string; precision: number; scale: number }
@@ -198,7 +268,7 @@ export interface DatabaseInfo {
     | "CONNECTED"
     | "INITIALIZING"
     | "READY"
-    | "DEGRADED";
+    | "INITIALIZATION_FAILED";
   initialized: boolean;
   catalog_version: number;
 }
@@ -246,9 +316,10 @@ export interface DatabaseSynchronizationResult {
 
 export type KernelOperation =
   | "auth.currentUser"
-  | "auth.bootstrapLogin"
+  | "auth.login"
   | "auth.logoutCurrent"
   | "admin.execute"
+  | "runtime.operation"
   | "database.info"
   | "database.execute"
   | "database.scope.close"
@@ -264,6 +335,7 @@ export type KernelInvoke = (
 ) => Promise<unknown>;
 
 export const kernelInvokeSymbol = Symbol.for("the8020.kernel.invoke");
+export const kernelSecretSymbol = Symbol.for("the8020.kernel.secret");
 export const kernelDatabaseBackendSymbol = Symbol.for(
   "the8020.kernel.databaseBackend",
 );
@@ -280,6 +352,23 @@ export function kernelDatabaseBackend(): DatabaseBackend {
   return backend;
 }
 
+function executionSecret(name: string): string {
+  if (typeof name !== "string" || name.length === 0) {
+    throw new TypeError("secret name is required");
+  }
+  const resolve = (globalThis as unknown as Record<symbol, unknown>)[
+    kernelSecretSymbol
+  ];
+  if (typeof resolve !== "function") {
+    throw new Error("kernel execution context is unavailable");
+  }
+  const value = (resolve as (name: string) => string | undefined)(name);
+  if (value === undefined) {
+    throw new Error(`execution secret ${name} is unavailable`);
+  }
+  return value;
+}
+
 function invoke<Result>(
   operation: KernelOperation,
   input: Record<string, unknown>,
@@ -291,6 +380,52 @@ function invoke<Result>(
     return Promise.reject(new Error("kernel API is unavailable"));
   }
   return (bridge as KernelInvoke)(operation, input) as Promise<Result>;
+}
+
+interface RuntimeOperationResponse<Result> {
+  success: boolean;
+  result?: Result;
+  error?: AdminCommandErrorValue;
+}
+
+async function executeRuntimeOperation<Result>(
+  operation: string,
+  input: Record<string, unknown> = {},
+): Promise<Result> {
+  if (operation.length === 0) {
+    return Promise.reject(new TypeError("runtime operation is required"));
+  }
+  const response = await invoke<RuntimeOperationResponse<Result>>(
+    "runtime.operation",
+    { operation, input },
+  );
+  if (
+    response === null || typeof response !== "object" ||
+    typeof response.success !== "boolean"
+  ) throw new Error("invalid kernel runtime operation response");
+  if (!response.success) {
+    if (
+      response.error === undefined || typeof response.error.code !== "string" ||
+      typeof response.error.message !== "string"
+    ) throw new Error("kernel runtime operation failed");
+    throw new AdminCommandError(response.error);
+  }
+  return response.result as Result;
+}
+
+async function runtimeOperationField<Result>(
+  operation: string,
+  input: Record<string, unknown>,
+  field: string,
+): Promise<Result> {
+  const result = await executeRuntimeOperation<Record<string, unknown>>(
+    operation,
+    input,
+  );
+  if (result === null || typeof result !== "object" || !(field in result)) {
+    throw new Error(`runtime operation ${operation} returned no ${field}`);
+  }
+  return result[field] as Result;
 }
 
 export interface WorkerInvokeInput {
@@ -379,7 +514,11 @@ function optionalArguments(
 function databaseArguments(
   statement: string,
   parameters: DatabaseValue[],
-  options: { returnRows?: boolean; transaction?: string } = {},
+  options: {
+    returnRows?: boolean;
+    returnInsertId?: boolean;
+    transaction?: string;
+  } = {},
 ): Record<string, unknown> {
   if (typeof statement !== "string" || statement.trim().length === 0) {
     throw new TypeError("SQL statement is required");
@@ -399,6 +538,9 @@ function databaseArguments(
     ...(options.returnRows === undefined
       ? {}
       : { return_rows: options.returnRows }),
+    ...(options.returnInsertId === undefined
+      ? {}
+      : { return_insert_id: options.returnInsertId }),
     ...(options.transaction === undefined
       ? {}
       : { transaction: options.transaction }),
@@ -416,12 +558,34 @@ function validDatabaseValue(value: unknown): value is DatabaseValue {
     type === "bytes" || type === "json";
 }
 
+function settingOperations(scope: "global" | "node") {
+  const operation = (action: string) => `settings.${scope}.${action}`;
+  return Object.freeze({
+    list(): Promise<Record<string, unknown>[]> {
+      return runtimeOperationField(operation("list"), {}, "settings");
+    },
+    get(key: string): Promise<Record<string, unknown>> {
+      return runtimeOperationField(operation("get"), { key }, "setting");
+    },
+    set(key: string, value: string): Promise<Record<string, unknown>> {
+      return runtimeOperationField(
+        operation("set"),
+        { key, value },
+        "setting",
+      );
+    },
+    unset(key: string): Promise<Record<string, unknown>> {
+      return runtimeOperationField(operation("unset"), { key }, "setting");
+    },
+  });
+}
+
 export const kernel = Object.freeze({
   auth: Object.freeze({
-    currentUser(): Promise<BootstrapUser | undefined> {
-      return invoke<BootstrapUser | undefined>("auth.currentUser", {});
+    currentUser(): Promise<User | undefined> {
+      return invoke<User | undefined>("auth.currentUser", {});
     },
-    bootstrapLogin(input: BootstrapLoginInput): Promise<BootstrapLoginResult> {
+    login(input: LoginInput): Promise<LoginResult> {
       if (
         input === null || typeof input !== "object" ||
         typeof input.username !== "string" || typeof input.password !== "string"
@@ -430,7 +594,7 @@ export const kernel = Object.freeze({
           new TypeError("username and password are required"),
         );
       }
-      return invoke<BootstrapLoginResult>("auth.bootstrapLogin", {
+      return invoke<LoginResult>("auth.login", {
         username: input.username,
         password: input.password,
       });
@@ -458,18 +622,157 @@ export const kernel = Object.freeze({
     },
   }),
   execution: Object.freeze({
+    secret: executionSecret,
+    optionalSecret(name: string): string | undefined {
+      try {
+        return executionSecret(name);
+      } catch {
+        return undefined;
+      }
+    },
     completePersistent(): Promise<void> {
       return invoke<void>("execution.completePersistent", {});
     },
   }),
+  crypto: Object.freeze({
+    password: Object.freeze({
+      async hash(password: string): Promise<string> {
+        if (typeof password !== "string") {
+          throw new TypeError("password must be a string");
+        }
+        return await runtimeOperationField<string>(
+          "crypto.password.hash",
+          { password },
+          "hash",
+        );
+      },
+    }),
+  }),
+  services: Object.freeze({
+    list<Result = Record<string, unknown>>(): Promise<Result[]> {
+      return runtimeOperationField("service.list", {}, "services");
+    },
+    inspect<Result = Record<string, unknown>>(
+      serviceId: string,
+    ): Promise<Result> {
+      return runtimeOperationField(
+        "service.inspect",
+        { service_id: serviceId },
+        "service",
+      );
+    },
+    start(serviceId: string, detail = false): Promise<Record<string, unknown>> {
+      return executeRuntimeOperation("service.start", {
+        service_id: serviceId,
+        detail,
+      });
+    },
+    stop(serviceId: string, detail = false): Promise<Record<string, unknown>> {
+      return executeRuntimeOperation("service.stop", {
+        service_id: serviceId,
+        detail,
+      });
+    },
+    restart(
+      serviceId: string,
+      detail = false,
+    ): Promise<Record<string, unknown>> {
+      return executeRuntimeOperation("service.restart", {
+        service_id: serviceId,
+        detail,
+      });
+    },
+    scale(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+      return executeRuntimeOperation("service.scale", input);
+    },
+    validate(serviceId: string): Promise<Record<string, unknown>> {
+      return executeRuntimeOperation("service.validate", {
+        service_id: serviceId,
+      });
+    },
+    openapi(serviceId: string): Promise<Record<string, unknown>> {
+      return runtimeOperationField(
+        "service.openapi",
+        { service_id: serviceId },
+        "openapi",
+      );
+    },
+    request(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+      return runtimeOperationField("service.request", input, "response");
+    },
+  }),
+  nodes: Object.freeze({
+    list(): Promise<Record<string, unknown>> {
+      return executeRuntimeOperation("node.list");
+    },
+    set(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+      return runtimeOperationField("node.set", input, "node");
+    },
+    remove(nodeId: string): Promise<Record<string, unknown>> {
+      return executeRuntimeOperation("node.remove", { node_id: nodeId });
+    },
+  }),
+  settings: Object.freeze({
+    global: settingOperations("global"),
+    node: settingOperations("node"),
+  }),
+  development: Object.freeze({
+    imageStatus(): Promise<Record<string, unknown>> {
+      return runtimeOperationField("development.image.status", {}, "image");
+    },
+    sandbox: Object.freeze({
+      list(): Promise<unknown[]> {
+        return runtimeOperationField(
+          "development.sandbox.list",
+          {},
+          "sandboxes",
+        );
+      },
+      run(
+        action: string,
+        userId: string,
+        input: Record<string, unknown> = {},
+      ): Promise<Record<string, unknown>> {
+        return executeRuntimeOperation(
+          `development.sandbox.${action.replaceAll("-", "_")}`,
+          { user_id: userId, ...input },
+        );
+      },
+    }),
+    activate: Object.freeze({
+      preview(
+        input: Record<string, unknown>,
+      ): Promise<Record<string, unknown>> {
+        return runtimeOperationField(
+          "development.activate.preview",
+          input,
+          "preview",
+        );
+      },
+      run(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+        return runtimeOperationField(
+          "development.activate.run",
+          input,
+          "activation",
+        );
+      },
+    }),
+  }),
   database: Object.freeze({
+    check(): Promise<Record<string, unknown>> {
+      return executeRuntimeOperation("database.check");
+    },
     info(): Promise<DatabaseInfo> {
       return invoke<DatabaseInfo>("database.info", {});
     },
     execute(
       statement: string,
       parameters: DatabaseValue[] = [],
-      options: { returnRows?: boolean; transaction?: string } = {},
+      options: {
+        returnRows?: boolean;
+        returnInsertId?: boolean;
+        transaction?: string;
+      } = {},
     ): Promise<DatabaseExecuteResult> {
       return invoke<DatabaseExecuteResult>(
         "database.execute",
@@ -491,28 +794,34 @@ export const kernel = Object.freeze({
     }),
     tables: Object.freeze({
       async list(): Promise<DatabaseTableSummary[]> {
-        const result = await executeAdminCommand<
+        const result = await executeRuntimeOperation<
           { tables: DatabaseTableSummary[] }
         >("database.table.list");
         return result.tables;
       },
       async definitions(): Promise<DatabaseDefinitionSummary[]> {
-        const result = await executeAdminCommand<
+        const result = await executeRuntimeOperation<
           { definitions: DatabaseDefinitionSummary[] }
         >("database.table.definitions");
         return result.definitions;
       },
       async inspect(tableId: string): Promise<Record<string, unknown>> {
-        const result = await executeAdminCommand<
+        const result = await executeRuntimeOperation<
           { table: Record<string, unknown> }
         >("database.table.inspect", { table_id: tableId });
+        return result.table;
+      },
+      async compare(tableId: string): Promise<Record<string, unknown>> {
+        const result = await executeRuntimeOperation<
+          { table: Record<string, unknown> }
+        >("database.table.compare", { table_id: tableId });
         return result.table;
       },
       async synchronize(
         tableId: string,
         sourcePackage?: string,
       ): Promise<DatabaseSynchronizationResult> {
-        const result = await executeAdminCommand<
+        const result = await executeRuntimeOperation<
           { table: DatabaseSynchronizationResult }
         >(
           "database.table.sync",
@@ -524,7 +833,7 @@ export const kernel = Object.freeze({
         return result.table;
       },
       async synchronizeAll(): Promise<DatabaseSynchronizationResult[]> {
-        const result = await executeAdminCommand<
+        const result = await executeRuntimeOperation<
           { tables: DatabaseSynchronizationResult[] }
         >("database.table.sync_all");
         return result.tables;
@@ -535,7 +844,7 @@ export const kernel = Object.freeze({
         dropTable?: boolean;
         confirm: true;
       }): Promise<void> {
-        await executeAdminCommand(
+        await executeRuntimeOperation(
           "database.table.trim",
           optionalArguments({
             table_id: input.tableId,
@@ -549,20 +858,22 @@ export const kernel = Object.freeze({
   }),
   secrets: Object.freeze({
     async list(): Promise<SecretSummary[]> {
-      const result = await executeAdminCommand<{ secrets: SecretSummary[] }>(
+      const result = await executeRuntimeOperation<
+        { secrets: SecretSummary[] }
+      >(
         "secret.list",
       );
       return result.secrets;
     },
     async get(name: string): Promise<Secret> {
-      const result = await executeAdminCommand<{ secret: Secret }>(
+      const result = await executeRuntimeOperation<{ secret: Secret }>(
         "secret.get",
         { name },
       );
       return result.secret;
     },
     async set(input: SetSecretInput): Promise<SecretSummary> {
-      const result = await executeAdminCommand<{ secret: SecretSummary }>(
+      const result = await executeRuntimeOperation<{ secret: SecretSummary }>(
         "secret.set",
         { name: input.name, value: input.value },
       );
@@ -570,22 +881,36 @@ export const kernel = Object.freeze({
     },
   }),
   packages: Object.freeze({
+    list<Result = Record<string, unknown>>(): Promise<Result[]> {
+      return runtimeOperationField("package.list", {}, "packages");
+    },
+    inspect<Result = Record<string, unknown>>(
+      packageId: string,
+    ): Promise<Result> {
+      return runtimeOperationField(
+        "package.inspect",
+        { package_id: packageId },
+        "package",
+      );
+    },
     index: Object.freeze({
       async list(): Promise<PackageIndex[]> {
-        const result = await executeAdminCommand<{ packages: PackageIndex[] }>(
+        const result = await executeRuntimeOperation<
+          { packages: PackageIndex[] }
+        >(
           "package.index.list",
         );
         return result.packages;
       },
       async inspect(packageId: string): Promise<PackageIndex> {
-        const result = await executeAdminCommand<{ package: PackageIndex }>(
+        const result = await executeRuntimeOperation<{ package: PackageIndex }>(
           "package.index.inspect",
           { package_id: packageId },
         );
         return result.package;
       },
       async set(input: SetPackageIndexInput): Promise<PackageIndex> {
-        const result = await executeAdminCommand<{ package: PackageIndex }>(
+        const result = await executeRuntimeOperation<{ package: PackageIndex }>(
           "package.index.set",
           optionalArguments(input as unknown as Record<string, unknown>),
         );
@@ -594,7 +919,7 @@ export const kernel = Object.freeze({
     }),
     source: Object.freeze({
       async inspect(source: string): Promise<PackageSourceInspection> {
-        const result = await executeAdminCommand<
+        const result = await executeRuntimeOperation<
           { source: PackageSourceInspection }
         >("package.source.inspect", { source });
         return result.source;
@@ -602,7 +927,7 @@ export const kernel = Object.freeze({
     }),
     versions: Object.freeze({
       async list(packageId: string, limit?: number): Promise<PackageVersions> {
-        const result = await executeAdminCommand<
+        const result = await executeRuntimeOperation<
           { package: PackageVersions }
         >(
           "package.version.list",
@@ -613,12 +938,16 @@ export const kernel = Object.freeze({
     }),
     async synchronize(
       packageIds: string[] = [],
+      gitToken?: string,
     ): Promise<PackageSynchronization[]> {
-      const result = await executeAdminCommand<
+      const result = await executeRuntimeOperation<
         { packages: PackageSynchronization[] }
       >(
         "package.synchronize",
-        packageIds.length === 0 ? {} : { packages: packageIds.join(",") },
+        optionalArguments({
+          packages: packageIds.length === 0 ? undefined : packageIds.join(","),
+          git_token: gitToken,
+        }),
       );
       return result.packages;
     },
@@ -626,7 +955,7 @@ export const kernel = Object.freeze({
       async create(
         input: CreateLocalPackageInput,
       ): Promise<LocalPackageResult> {
-        const result = await executeAdminCommand<
+        const result = await executeRuntimeOperation<
           { package: LocalPackageResult }
         >(
           "package.local.create",
@@ -636,20 +965,50 @@ export const kernel = Object.freeze({
       },
     }),
     repository: Object.freeze({
+      list(): Promise<unknown[]> {
+        return runtimeOperationField(
+          "package.repository.list",
+          {},
+          "repositories",
+        );
+      },
+      status(packageId: string): Promise<Record<string, unknown>> {
+        return runtimeOperationField(
+          "package.repository.status",
+          { package_id: packageId },
+          "repository",
+        );
+      },
+      initialize(
+        input: Record<string, unknown>,
+      ): Promise<Record<string, unknown>> {
+        return runtimeOperationField(
+          "package.repository.init",
+          input,
+          "repository",
+        );
+      },
+      remote(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+        return runtimeOperationField(
+          "package.repository.remote",
+          input,
+          "repository",
+        );
+      },
       async inspect(packageId: string): Promise<PackageRepository> {
-        const result = await executeAdminCommand<
+        const result = await executeRuntimeOperation<
           { repository: PackageRepository }
         >("package.repository.inspect", { package_id: packageId });
         return result.repository;
       },
       async pull(packageId: string): Promise<PackageRepository> {
-        const result = await executeAdminCommand<
+        const result = await executeRuntimeOperation<
           { repository: PackageRepository }
         >("package.repository.pull", { package_id: packageId });
         return result.repository;
       },
       async push(packageId: string): Promise<PackageRepository> {
-        const result = await executeAdminCommand<
+        const result = await executeRuntimeOperation<
           { repository: PackageRepository }
         >("package.repository.push", { package_id: packageId });
         return result.repository;
@@ -657,7 +1016,7 @@ export const kernel = Object.freeze({
       async checkout(
         input: CheckoutPackageRepositoryInput,
       ): Promise<PackageRepository> {
-        const result = await executeAdminCommand<
+        const result = await executeRuntimeOperation<
           { repository: PackageRepository }
         >(
           "package.repository.checkout",

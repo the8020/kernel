@@ -1,6 +1,6 @@
 # Purpose
 
-- Implement `settings.get` as declared by the adjacent authoritative TOML.
+- Implement `kernel.config.get` as declared by the adjacent authoritative TOML.
 
 # Ownership
 
@@ -9,7 +9,7 @@
 # Local Contracts
 
 - Public API: handler constructor `New(*services.Services) core.Handler`.
-- The complete result includes the setting's declared `node` or `global`
+- Accept only node-local settings. The complete result includes the declared
   storage; callers never select a store.
 
 # Work Guidance

@@ -41,6 +41,7 @@ type Coordinator struct {
 type Request struct {
 	WorkloadType     model.WorkloadType
 	OwnerID          string
+	AllocationID     string
 	ExecutionID      string
 	Namespace        string
 	ExplicitGroupKey string
@@ -87,14 +88,18 @@ func (c *Coordinator) Ensure(ctx context.Context, request Request) (manager.Insp
 	if err != nil {
 		return manager.Inspection{}, err
 	}
+	allocationID := request.AllocationID
+	if allocationID == "" {
+		allocationID = request.OwnerID
+	}
 	if selection.Existing {
-		return c.sandboxes.AddOwner(ctx, selection.RuntimeGroupID, request.OwnerID, request.LogicalServiceID)
+		return c.sandboxes.AddOwner(ctx, selection.RuntimeGroupID, allocationID, request.LogicalServiceID)
 	}
 	if err := request.ResourceLimits.Validate(); err != nil {
 		return manager.Inspection{}, err
 	}
 	if c.warm != nil && request.LogicalServiceID == "" {
-		inspection, assigned, assignErr := c.warm.Assign(ctx, selection.ProfileHash, selection.GroupKey, request.OwnerID)
+		inspection, assigned, assignErr := c.warm.Assign(ctx, selection.ProfileHash, selection.GroupKey, allocationID)
 		if assignErr != nil {
 			return manager.Inspection{}, fmt.Errorf("assign warm runtime group: %w", assignErr)
 		}
@@ -129,7 +134,11 @@ func (c *Coordinator) Ensure(ctx context.Context, request Request) (manager.Insp
 		serviceIDs = []string{request.LogicalServiceID}
 		placementGroup = *request.PlacementGroup
 	}
-	spec := model.SandboxSpec{SandboxID: sandboxID, RuntimeGroupID: runtimeGroupID, WorkloadType: request.WorkloadType, GroupKey: selection.GroupKey, PlacementGroup: placementGroup, OwnerIDs: []string{request.OwnerID}, ServiceIDs: serviceIDs, ImageDigest: request.Profile.ImageDigest, RuntimeProfile: request.Profile, ProfileHash: profileHash, ResourceLimits: request.ResourceLimits, Network: model.NetworkConfiguration{Mode: "netstack", NetworkName: "the8020", EgressEnabled: request.Profile.EgressAllowed && len(egressHosts) > 0, AllowedHosts: egressHosts}, InternalPorts: []int{8000, 9229}, Mounts: append([]model.Mount(nil), request.Profile.Mounts...), Permissions: request.Profile.Permissions, DependencyMode: request.Profile.DependencyMode, Lifecycle: request.Lifecycle, Labels: map[string]string{"the8020.owner": request.OwnerID, "the8020.owners": request.OwnerID, "the8020.group_key": selection.GroupKey, "the8020.placement_group": placementGroup, "the8020.created_at": time.Now().UTC().Format(time.RFC3339Nano)}, InternalToken: token}
+	labels := map[string]string{"the8020.owner": allocationID, "the8020.owners": allocationID, "the8020.group_key": selection.GroupKey, "the8020.created_at": time.Now().UTC().Format(time.RFC3339Nano)}
+	if placementGroup != "" {
+		labels["the8020.placement_group"] = placementGroup
+	}
+	spec := model.SandboxSpec{SandboxID: sandboxID, RuntimeGroupID: runtimeGroupID, WorkloadType: request.WorkloadType, GroupKey: selection.GroupKey, PlacementGroup: placementGroup, OwnerIDs: []string{allocationID}, ServiceIDs: serviceIDs, ImageDigest: request.Profile.ImageDigest, RuntimeProfile: request.Profile, ProfileHash: profileHash, ResourceLimits: request.ResourceLimits, Network: model.NetworkConfiguration{Mode: "netstack", NetworkName: "the8020", EgressEnabled: request.Profile.EgressAllowed, AllowedHosts: egressHosts}, InternalPorts: []int{8000, 9229}, Mounts: append([]model.Mount(nil), request.Profile.Mounts...), Permissions: request.Profile.Permissions, DependencyMode: request.Profile.DependencyMode, Lifecycle: request.Lifecycle, Labels: labels, InternalToken: token}
 	inspection, err := c.sandboxes.Create(ctx, spec)
 	if err != nil {
 		return manager.Inspection{}, fmt.Errorf("create runtime group: %w", err)

@@ -429,9 +429,12 @@ func (s *Store) mutatePackageRepository(ctx context.Context, packageID string, m
 	updated.Path = repository.Path
 	if prepared && hook != nil {
 		if err := hook.Complete(ctx, true); err != nil {
-			return RepositoryMutation{}, fmt.Errorf("complete package database schema deployment: %w", err)
+			return RepositoryMutation{}, fmt.Errorf("complete package activation: %w", err)
 		}
 		prepared = false
+	}
+	if err := finalizePackageDirectory(repository.Path); err != nil {
+		return RepositoryMutation{}, err
 	}
 	return RepositoryMutation{
 		Repository: updated, Changed: changed,
@@ -481,14 +484,19 @@ func copyRepository(source, destination string) error {
 }
 
 func (s *Store) repositoryAuthentication(packageID, remoteURL string) ([]string, error) {
+	return s.repositoryAuthenticationWithCredential(packageID, remoteURL, "")
+}
+
+func (s *Store) repositoryAuthenticationWithCredential(packageID, remoteURL, transientToken string) ([]string, error) {
 	parsed, err := url.Parse(remoteURL)
 	if err != nil || parsed.User != nil {
 		return nil, errors.New("Git remote URL must not contain credentials")
 	}
-	s.indexMu.RLock()
-	entry, err := s.readPackageIndexUnlocked(packageID)
-	s.indexMu.RUnlock()
-	if errors.Is(err, os.ErrNotExist) {
+	if transientToken != "" {
+		return gitAuthorizationEnvironment(parsed, transientToken)
+	}
+	entry, exists, err := s.index.Get(context.Background(), packageID)
+	if err == nil && !exists {
 		return nil, nil
 	}
 	if err != nil {
@@ -500,20 +508,33 @@ func (s *Store) repositoryAuthentication(packageID, remoteURL string) ([]string,
 	if s.secrets == nil {
 		return nil, errors.New("package repository secret storage is unavailable")
 	}
-	if parsed.Scheme != "https" || parsed.Host == "" {
-		return nil, errors.New("a selected Git secret requires an HTTPS remote without embedded credentials")
-	}
 	value, err := s.secrets.SecretValue(entry.Secret)
 	if err != nil {
 		return nil, fmt.Errorf("resolve package Git secret %q: %w", entry.Secret, err)
 	}
-	header := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + value))
+	return gitAuthorizationEnvironment(parsed, value)
+}
+
+func gitAuthorizationEnvironment(parsed *url.URL, token string) ([]string, error) {
+	if parsed.Scheme != "https" || parsed.Host == "" {
+		return nil, errors.New("a Git credential requires an HTTPS remote without embedded credentials")
+	}
+	header := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
 	scope := parsed.Scheme + "://" + parsed.Host + "/"
 	return []string{
 		"GIT_CONFIG_COUNT=1",
 		"GIT_CONFIG_KEY_0=http." + scope + ".extraHeader",
 		"GIT_CONFIG_VALUE_0=Authorization: Basic " + header,
 	}, nil
+}
+
+func redactGitCredential(message, token string) string {
+	if token == "" {
+		return message
+	}
+	encoded := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
+	message = strings.ReplaceAll(message, token, "[secure input]")
+	return strings.ReplaceAll(message, encoded, "[secure input]")
 }
 
 func (s *Store) repositoryRemote(ctx context.Context, path string) (string, string, error) {

@@ -4,6 +4,7 @@ import type {
   KernelOperation,
   RuntimeLogEvent,
   ServiceRequestMetadata,
+  WorkerExecutionFailure,
   WorkerPermissionSet,
 } from "./contracts.ts";
 
@@ -21,9 +22,22 @@ interface WorkerMessage {
   correlationId?: string;
   payload?: unknown;
   error?: string;
+  failure?: WorkerExecutionFailure;
   status?: number;
   headers?: [string, string][];
   body?: ReadableStream<Uint8Array> | null;
+}
+
+export class WorkerExecutionError extends Error {
+  readonly code?: string;
+  readonly details?: Record<string, unknown>;
+
+  constructor(failure: WorkerExecutionFailure) {
+    super(failure.message);
+    this.name = "WorkerExecutionError";
+    this.code = failure.code;
+    this.details = failure.details;
+  }
 }
 
 interface Pending {
@@ -79,6 +93,7 @@ export class RuntimeWorker {
   #draining = false;
   #failure?: string;
   #inFlight = 0;
+  #idleWaiters = new Set<() => void>();
   #idleSinceMilliseconds: number | undefined;
   #logs: RuntimeLogEvent[] = [];
   #kernelCall?: KernelCall;
@@ -180,12 +195,18 @@ export class RuntimeWorker {
       const pending = this.#pending.get(message.correlationId);
       if (pending === undefined) return;
       this.#pending.delete(message.correlationId);
-      if (message.error !== undefined || !pending.retainInFlight) {
+      if (
+        message.error !== undefined || message.failure !== undefined ||
+        !pending.retainInFlight
+      ) {
         this.#completeInFlight();
       }
       pending.cleanup();
-      if (message.error !== undefined) pending.reject(new Error(message.error));
-      else pending.resolve(message);
+      if (message.failure !== undefined) {
+        pending.reject(new WorkerExecutionError(message.failure));
+      } else if (message.error !== undefined) {
+        pending.reject(new Error(message.error));
+      } else pending.resolve(message);
     };
     this.#port.start();
     this.#worker.onerror = (event) => {
@@ -210,9 +231,10 @@ export class RuntimeWorker {
       const payload = message.payload as Partial<KernelCallPayload> | undefined;
       if (
         payload === undefined ||
-        (payload.operation !== "auth.bootstrapLogin" &&
+        (payload.operation !== "auth.login" &&
           payload.operation !== "auth.logoutCurrent" &&
           payload.operation !== "admin.execute" &&
+          payload.operation !== "runtime.operation" &&
           payload.operation !== "database.info" &&
           payload.operation !== "database.execute" &&
           payload.operation !== "database.scope.close" &&
@@ -234,19 +256,12 @@ export class RuntimeWorker {
       ) {
         throw new Error("database SQL is not available to this Worker");
       }
-      if (
-        payload.operation !== "database.info" &&
-        (payload.request === undefined ||
-          typeof payload.request.requestId !== "string" ||
-          typeof payload.request.serviceId !== "string")
-      ) {
-        throw new Error("kernel API call requires an execution context");
-      }
       const result = await this.#kernelCall({
         operation: payload.operation,
         arguments: payload.arguments as Record<string, unknown>,
         requestId: payload.request?.requestId,
-        serviceId: payload.request?.serviceId,
+        serviceId: payload.request?.serviceId ?? this.metadata.workloadId,
+        workloadId: this.metadata.workloadId,
         executionId: this.metadata.executionId,
         workerId: this.metadata.workerId,
         persistentExecutionId: payload.request?.persistentExecutionId,
@@ -298,9 +313,15 @@ export class RuntimeWorker {
     }));
   }
 
-  async runJob(input: unknown): Promise<unknown> {
+  async runJob(
+    arguments_: unknown[],
+    secrets: Record<string, string> = {},
+  ): Promise<unknown> {
     this.#logs = [];
-    const message = await this.#request({ type: "job_run", payload: input });
+    const message = await this.#request({
+      type: "job_run",
+      payload: { arguments: arguments_, secrets },
+    });
     return (message as WorkerMessage).payload;
   }
 
@@ -457,9 +478,7 @@ export class RuntimeWorker {
     if (this.#closed) return;
     this.#draining = true;
     const deadline = Date.now() + graceMilliseconds;
-    while (this.#inFlight > 0 && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
+    await this.#waitForIdle(Math.max(0, deadline - Date.now()));
     if (this.#inFlight > 0) {
       this.kill();
       return;
@@ -537,13 +556,36 @@ export class RuntimeWorker {
     this.#pending.clear();
     this.#inFlight = 0;
     this.#idleSinceMilliseconds = undefined;
+    this.#notifyIdle();
     this.#onCapacityChange?.();
   }
 
   #completeInFlight(): void {
     this.#inFlight = Math.max(0, this.#inFlight - 1);
-    if (this.#inFlight === 0) this.#idleSinceMilliseconds = this.#now();
+    if (this.#inFlight === 0) {
+      this.#idleSinceMilliseconds = this.#now();
+      this.#notifyIdle();
+    }
     this.#onCapacityChange?.();
+  }
+
+  #waitForIdle(maximumMilliseconds: number): Promise<void> {
+    if (this.#inFlight === 0) return Promise.resolve();
+    return new Promise((resolve) => {
+      const finish = (): void => {
+        this.#idleWaiters.delete(finish);
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(finish, maximumMilliseconds);
+      this.#idleWaiters.add(finish);
+    });
+  }
+
+  #notifyIdle(): void {
+    const waiters = [...this.#idleWaiters];
+    this.#idleWaiters.clear();
+    for (const finish of waiters) finish();
   }
 
   #trackResponseBody(

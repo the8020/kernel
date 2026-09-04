@@ -1,8 +1,8 @@
 version = 1
-id = "package.index.inspect"
-path = ["package", "index", "inspect"]
+id = "kernel.packages.inspect"
+path = ["kernel.packages.inspect"]
 summary = "Inspect desired package"
-description = "Reads one exact package-index document."
+description = "Reads one exact desired and active package record."
 mutates_state = false
 restart_behavior = "none"
 [handler]
@@ -18,4 +18,4 @@ description = "Author/repository package ID."
 name = "package"
 type = "object"
 [[examples]]
-command = "package index inspect the8020/uui"
+command = "kernel.packages.inspect the8020/uui"

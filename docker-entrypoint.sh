@@ -5,7 +5,6 @@ readonly INSTANCE_ROOT=/8020
 readonly KERNEL=/usr/local/bin/kernel
 readonly ADMIN=/usr/local/bin/admin
 readonly PORTABLE_SMOKE=/usr/local/lib/the8020/smoke-portable.sh
-readonly BOOTSTRAP_MARKER="$INSTANCE_ROOT/node/kernel/container-bootstrap.complete"
 
 if (( $# > 0 )); then
   if (( $# != 1 )) || [[ "$1" != "serve" ]]; then
@@ -13,29 +12,21 @@ if (( $# > 0 )); then
   fi
 fi
 
-if [[ ! -f "$INSTANCE_ROOT/node/kernel/paths.toml" ]]; then
+if [[ ! -f "$INSTANCE_ROOT/kernel.toml" ]]; then
   echo "80|20 instance data is missing from $INSTANCE_ROOT; use a new named volume or the image's bundled instance" >&2
   exit 1
 fi
 
-bootstrap_required=false
-bootstrap_username=""
-bootstrap_password=""
-if [[ ! -f "$BOOTSTRAP_MARKER" ]]; then
-  bootstrap_required=true
-  bootstrap_username=${THE8020_USERNAME-admin}
-  bootstrap_password=${THE8020_PASSWORD-admin}
-  if [[ -z "$bootstrap_username" ]]; then
-    echo "THE8020_USERNAME must not be empty on the first container boot" >&2
-    exit 1
-  fi
-  if [[ -z "$bootstrap_password" ]]; then
-    echo "THE8020_PASSWORD must not be empty on the first container boot" >&2
-    exit 1
-  fi
+initial_username=${THE8020_USERNAME:-}
+initial_password=${THE8020_PASSWORD:-}
+
+if [[ -n "$initial_username" && -z "$initial_password" ]] ||
+  [[ -z "$initial_username" && -n "$initial_password" ]]; then
+  echo "THE8020_USERNAME and THE8020_PASSWORD must be supplied together" >&2
+  exit 1
 fi
 
-# Do not pass bootstrap inputs to the kernel or any sandbox process. They are
+# Do not pass initial-user inputs to the kernel or any sandbox process. They are
 # consulted only by this entrypoint while completing the first boot.
 unset THE8020_USERNAME THE8020_PASSWORD || true
 
@@ -66,7 +57,7 @@ kernel_pid=$!
 
 admin_ready=false
 for _ in {1..300}; do
-  if "$ADMIN" --root "$INSTANCE_ROOT" system status >/dev/null 2>&1; then
+  if "$ADMIN" --root "$INSTANCE_ROOT" kernel.status >/dev/null 2>&1; then
     admin_ready=true
     break
   fi
@@ -86,22 +77,38 @@ if [[ "$admin_ready" != true ]]; then
   exit 1
 fi
 
-if [[ "$bootstrap_required" == true ]]; then
-  users_json=$("$ADMIN" --root "$INSTANCE_ROOT" --json auth bootstrap-admin list)
+if [[ -n "$initial_username" ]]; then
+  users_ready=false
+  users_json=""
+  for _ in {1..300}; do
+    if users_json=$("$ADMIN" --root "$INSTANCE_ROOT" --json users.list 2>/dev/null); then
+      users_ready=true
+      break
+    fi
+    if ! kill -0 "$kernel_pid" 2>/dev/null; then
+      break
+    fi
+    sleep 0.1
+  done
+  if [[ "$users_ready" != true ]]; then
+    echo "the8020/users commands did not become available within 30 seconds" >&2
+    exit 1
+  fi
   users_json=${users_json//$'\n'/}
   users_json=${users_json//$'\r'/}
   users_json=${users_json//$'\t'/}
   users_json=${users_json// /}
   if [[ "$users_json" == *'"result":{"users":[]}'* ]]; then
-    printf '%s\n' "$bootstrap_password" |
-      "$ADMIN" --root "$INSTANCE_ROOT" auth bootstrap-admin add "$bootstrap_username" --password-stdin >/dev/null
-    echo "created first-boot 80|20 administrator: $bootstrap_username" >&2
+    printf '%s\n' "$initial_password" |
+      "$ADMIN" --root "$INSTANCE_ROOT" users.add "$initial_username" --password-stdin >/dev/null
+    echo "created initial 80|20 user: $initial_username" >&2
   else
-    echo "existing 80|20 administrators found; first-boot account creation skipped" >&2
+    echo "initial user input ignored because users already exist" >&2
   fi
-  unset bootstrap_password
-  install -m 0600 /dev/null "$BOOTSTRAP_MARKER"
 fi
+unset initial_username initial_password
+
+echo "80|20 is ready" >&2
 
 kernel_status=0
 while true; do

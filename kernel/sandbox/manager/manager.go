@@ -429,7 +429,7 @@ func (m *Manager) AddOwner(ctx context.Context, runtimeGroupID, ownerID string, 
 	if err := m.store.SaveStatus(runtimeGroupID, updatedStatus); err != nil {
 		return Inspection{}, errors.Join(err, m.store.SaveSpec(priorSpec))
 	}
-	if err := m.backend.UpdateLabels(ctx, updatedSpec.SandboxID, map[string]string{"the8020.owners": strings.Join(updatedSpec.OwnerIDs, ","), "the8020.services": strings.Join(updatedSpec.ServiceIDs, ",")}); err != nil {
+	if err := m.backend.UpdateLabels(ctx, updatedSpec.SandboxID, ownershipLabels(updatedSpec, false)); err != nil {
 		rollbackErr := errors.Join(m.store.SaveSpec(priorSpec), m.store.SaveStatus(runtimeGroupID, priorStatus))
 		return Inspection{}, errors.Join(fmt.Errorf("update runtime-group owner labels: %w", err), rollbackErr)
 	}
@@ -473,16 +473,23 @@ func (m *Manager) RemoveOwner(ctx context.Context, runtimeGroupID, ownerID, logi
 	if err := m.store.SaveStatus(runtimeGroupID, updatedStatus); err != nil {
 		return false, errors.Join(err, m.store.SaveSpec(spec))
 	}
-	labels := map[string]string{
-		"the8020.owner":    updatedSpec.OwnerIDs[0],
-		"the8020.owners":   strings.Join(updatedSpec.OwnerIDs, ","),
-		"the8020.services": strings.Join(updatedSpec.ServiceIDs, ","),
-	}
+	labels := ownershipLabels(updatedSpec, true)
 	if err := m.backend.UpdateLabels(ctx, updatedSpec.SandboxID, labels); err != nil {
 		rollbackErr := errors.Join(m.store.SaveSpec(spec), m.store.SaveStatus(runtimeGroupID, status))
 		return false, errors.Join(fmt.Errorf("update runtime-group owner labels: %w", err), rollbackErr)
 	}
 	return false, nil
+}
+
+func ownershipLabels(spec model.SandboxSpec, primary bool) map[string]string {
+	labels := map[string]string{"the8020.owners": strings.Join(spec.OwnerIDs, ",")}
+	if primary {
+		labels["the8020.owner"] = spec.OwnerIDs[0]
+	}
+	if len(spec.ServiceIDs) > 0 {
+		labels["the8020.services"] = strings.Join(spec.ServiceIDs, ",")
+	}
+	return labels
 }
 
 func removeString(values []string, candidate string) []string {
@@ -514,12 +521,25 @@ func (m *Manager) List() ([]Inspection, error) {
 	return result, nil
 }
 
+// ResolveRuntimeGroup returns the persisted specification for one exact runtime
+// group without contacting the supervisor or backend. Callers that already own
+// a runtime-group identity can use it for precise routing.
+func (m *Manager) ResolveRuntimeGroup(runtimeGroupID string) (model.SandboxSpec, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	spec, _, err := m.store.Load(runtimeGroupID)
+	return spec, err
+}
+
 func (m *Manager) Inspect(ctx context.Context, sandboxID string) (Inspection, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	spec, status, err := m.find(sandboxID)
 	if err != nil {
 		return Inspection{}, err
+	}
+	if status.ObservedState != model.StateReady && status.ObservedState != model.StateActive && status.ObservedState != model.StateDraining {
+		return Inspection{Spec: spec, Status: status}, nil
 	}
 	workers, workerErr := m.supervisor.Workers(ctx, spec)
 	metrics, metricsErr := m.sampleMetrics(ctx, spec)
@@ -1003,7 +1023,7 @@ func (m *Manager) waitReady(ctx context.Context, spec model.SandboxSpec) (superv
 		select {
 		case <-readyContext.Done():
 			if lastError != nil {
-				return supervisor.Status{}, fmt.Errorf("supervisor did not become ready: %w", lastError)
+				return supervisor.Status{}, fmt.Errorf("supervisor did not become ready (%v): %w", lastError, readyContext.Err())
 			}
 			return supervisor.Status{}, fmt.Errorf("supervisor did not become ready: %w", readyContext.Err())
 		case <-ticker.C:

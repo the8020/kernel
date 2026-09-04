@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-const catalogVersion = 1
+const catalogVersion = 2
 const postgresSchemaLock int64 = 802020260901
 
 type deploymentLockContextKey struct{}
@@ -117,14 +117,7 @@ type PendingDeployment struct {
 
 type DefinitionEvaluator func(context.Context, []string) (DefinitionSet, error)
 type FullSynchronizer func(context.Context, bool) ([]SynchronizationResult, error)
-type SourceInspector func(context.Context, []TableSource) (map[string]SourceStatus, error)
 type SourceEvaluator func(context.Context, TableSource) (*EvaluatedTable, error)
-
-type SourceStatus struct {
-	Exists        bool
-	CurrentCommit string
-	Error         string
-}
 
 func (m *Manager) SetDefinitionEvaluator(evaluator DefinitionEvaluator) {
 	m.evaluatorMu.Lock()
@@ -135,12 +128,6 @@ func (m *Manager) SetDefinitionEvaluator(evaluator DefinitionEvaluator) {
 func (m *Manager) SetFullSynchronizer(synchronizer FullSynchronizer) {
 	m.evaluatorMu.Lock()
 	m.fullSynchronizer = synchronizer
-	m.evaluatorMu.Unlock()
-}
-
-func (m *Manager) SetSourceInspector(inspector SourceInspector) {
-	m.evaluatorMu.Lock()
-	m.sourceInspector = inspector
 	m.evaluatorMu.Unlock()
 }
 
@@ -463,13 +450,10 @@ type TableSummary struct {
 	State                string `json:"state"`
 	SynchronizationState string `json:"synchronization_state"`
 	DescriptorHash       string `json:"descriptor_hash"`
-	DescriptorJSON       string `json:"descriptor_json,omitempty"`
 	SynchronizedAt       string `json:"synchronized_at,omitempty"`
 	ActiveColumns        int    `json:"active_columns"`
 	RetiredColumns       int    `json:"retired_columns"`
 	Error                string `json:"error,omitempty"`
-	DefinitionState      string `json:"definition_state,omitempty"`
-	CurrentSourceCommit  string `json:"current_source_commit,omitempty"`
 }
 
 type DefinitionSummary struct {
@@ -486,9 +470,12 @@ type DefinitionSummary struct {
 
 type TableDetail struct {
 	TableSummary
+	descriptorJSON        string
 	Descriptor            TableDescriptor  `json:"descriptor"`
 	CurrentDescriptor     *TableDescriptor `json:"current_descriptor,omitempty"`
 	CurrentDescriptorHash string           `json:"current_descriptor_hash,omitempty"`
+	DefinitionState       string           `json:"definition_state,omitempty"`
+	CurrentSourceCommit   string           `json:"current_source_commit,omitempty"`
 	Columns               []CatalogColumn  `json:"columns"`
 	Physical              []PhysicalColumn `json:"physical_columns"`
 	PhysicalIndexes       []PhysicalIndex  `json:"physical_indexes"`
@@ -499,6 +486,7 @@ type TableDetail struct {
 type CatalogColumn struct {
 	TableID        string `json:"table_id"`
 	ColumnName     string `json:"column_name"`
+	Ordinal        int    `json:"ordinal"`
 	LogicalType    string `json:"logical_type"`
 	DefinitionHash string `json:"definition_hash"`
 	DefinitionJSON string `json:"definition_json"`
@@ -694,7 +682,7 @@ func (m *Manager) InitializeCatalog(ctx context.Context) (Status, error) {
 		m.status.State = StateReady
 	}
 	if catalogError != "" {
-		m.status.State = StateDegraded
+		m.status.State = StateInitializationFailed
 	}
 	m.status.Error = ""
 	m.status.CatalogError = catalogError
@@ -717,7 +705,7 @@ func validateCatalogContract(ctx context.Context, tx *sql.Tx) error {
 			FROM _8020_catalog WHERE 1 = 0`,
 		`SELECT table_id, descriptor_hash, descriptor_json, source_package, source_commit, source_module,
 			state, synchronization_state, synchronized_at, error FROM _8020_tables WHERE 1 = 0`,
-		`SELECT table_id, column_name, logical_type, definition_hash, definition_json, state
+		`SELECT table_id, column_name, ordinal, logical_type, definition_hash, definition_json, state
 			FROM _8020_columns WHERE 1 = 0`,
 		`SELECT table_id, module_path FROM _8020_dependencies WHERE 1 = 0`,
 		`SELECT deployment_id, previous_package_set_hash, previous_package_set_json, candidate_package_set_hash,
@@ -784,13 +772,13 @@ func (m *Manager) AcquireDeploymentLock(ctx context.Context) (context.Context, f
 
 func (m *Manager) setCatalogFailure(err error) {
 	m.statusMu.Lock()
-	m.status.State = StateDegraded
+	m.status.State = StateInitializationFailed
 	m.status.Error = err.Error()
 	m.status.CatalogError = err.Error()
 	m.statusMu.Unlock()
 }
 
-func (m *Manager) markInitialized(ctx context.Context, packageCommits map[string]string) error {
+func (m *Manager) CompleteInitialization(ctx context.Context, packageCommits map[string]string) error {
 	m.schemaMu.Lock()
 	defer m.schemaMu.Unlock()
 	tx, err := m.db.BeginTx(ctx, nil)
@@ -851,7 +839,7 @@ func (m *Manager) SetInitializationFailure(ctx context.Context, failure error) {
 			message, time.Now().UTC().Format(time.RFC3339Nano))
 	}
 	m.statusMu.Lock()
-	m.status.State = StateDegraded
+	m.status.State = StateInitializationFailed
 	m.status.Error = message
 	m.status.CatalogError = message
 	m.statusMu.Unlock()
@@ -916,11 +904,6 @@ func (m *Manager) Synchronize(ctx context.Context, tables []EvaluatedTable, opti
 			failures = append(failures, err)
 		}
 	}
-	if len(failures) == 0 && options.Full {
-		if err := m.markInitialized(ctx, options.PackageCommits); err != nil {
-			failures = append(failures, err)
-		}
-	}
 	return results, errors.Join(failures...)
 }
 
@@ -938,7 +921,7 @@ func (m *Manager) FinalizeFullSynchronization(ctx context.Context, tableIDs []st
 	if err := m.ValidateCatalogReferences(ctx); err != nil {
 		return err
 	}
-	return m.markInitialized(ctx, packageCommits)
+	return nil
 }
 
 // ValidateCatalogReferences verifies logical links after a bounded deployment
@@ -1281,7 +1264,7 @@ func validTableID(value string) bool {
 	if len(value) == 0 || len(value) > 63 {
 		return false
 	}
-	if len(value) == 63 && value[52] == '_' {
+	if len(value) == 63 && value[56] == '_' {
 		if value[0] == '_' {
 			return false
 		}
@@ -1289,7 +1272,7 @@ func validTableID(value string) bool {
 			if (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '_' {
 				return false
 			}
-			if index > 52 && !((character >= 'a' && character <= 'f') || (character >= '0' && character <= '9')) {
+			if index > 56 && !((character >= 'a' && character <= 'f') || (character >= '0' && character <= '9')) {
 				return false
 			}
 		}
@@ -1975,16 +1958,17 @@ func writeCatalogTable(ctx context.Context, tx *sql.Tx, evaluated EvaluatedTable
 		return err
 	}
 	active := map[string]bool{}
-	for _, column := range evaluated.Descriptor.Columns {
+	for ordinal, column := range evaluated.Descriptor.Columns {
 		active[column.Name] = true
 		encoded, _ := json.Marshal(column)
 		hash := sha256.Sum256(encoded)
 		_, err := tx.ExecContext(ctx, `INSERT INTO _8020_columns
-			(table_id, column_name, logical_type, definition_hash, definition_json, state)
-			VALUES ($1, $2, $3, $4, $5, 'active')
-			ON CONFLICT (table_id, column_name) DO UPDATE SET logical_type = excluded.logical_type,
-			definition_hash = excluded.definition_hash, definition_json = excluded.definition_json, state = 'active'`,
-			evaluated.Descriptor.TableID, column.Name, column.LogicalType, hex.EncodeToString(hash[:]), string(encoded))
+			(table_id, column_name, ordinal, logical_type, definition_hash, definition_json, state)
+			VALUES ($1, $2, $3, $4, $5, $6, 'active')
+			ON CONFLICT (table_id, column_name) DO UPDATE SET ordinal = excluded.ordinal,
+			logical_type = excluded.logical_type, definition_hash = excluded.definition_hash,
+			definition_json = excluded.definition_json, state = 'active'`,
+			evaluated.Descriptor.TableID, column.Name, ordinal, column.LogicalType, hex.EncodeToString(hash[:]), string(encoded))
 		if err != nil {
 			return err
 		}
@@ -2114,8 +2098,6 @@ func (m *Manager) ListTables(ctx context.Context) ([]TableSummary, error) {
 		return nil, err
 	}
 	result := []TableSummary{}
-	sources := []TableSource{}
-	catalogued := map[string]bool{}
 	for rows.Next() {
 		var table TableSummary
 		if err := rows.Scan(&table.TableID, &table.SourcePackage, &table.SourceCommit, &table.SourceModule, &table.State,
@@ -2124,63 +2106,11 @@ func (m *Manager) ListTables(ctx context.Context) ([]TableSummary, error) {
 			rows.Close()
 			return nil, err
 		}
-		catalogued[table.TableID] = true
-		sources = append(sources, TableSource{
-			TableID: table.TableID, SourcePackage: table.SourcePackage,
-			SourceCommit: table.SourceCommit, SourceModule: table.SourceModule,
-		})
 		result = append(result, table)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
-	m.evaluatorMu.RLock()
-	inspector := m.sourceInspector
-	m.evaluatorMu.RUnlock()
-	if inspector != nil && len(sources) > 0 {
-		statuses, err := inspector(ctx, sources)
-		if err != nil {
-			return nil, err
-		}
-		for index := range result {
-			status := statuses[result[index].TableID]
-			result[index].CurrentSourceCommit = status.CurrentCommit
-			switch {
-			case status.Error != "":
-				result[index].DefinitionState = "error"
-				result[index].Error = joinStatusError(result[index].Error, status.Error)
-			case !status.Exists:
-				result[index].DefinitionState = "missing"
-			case status.CurrentCommit != result[index].SourceCommit:
-				result[index].DefinitionState = "commit_mismatch"
-			default:
-				result[index].DefinitionState = "present"
-			}
-		}
-	}
-	physical, err := m.physicalTableNames(ctx)
-	if err != nil {
-		return nil, err
-	}
-	physicalSet := make(map[string]bool, len(physical))
-	for _, tableID := range physical {
-		physicalSet[tableID] = true
-		if catalogued[tableID] {
-			continue
-		}
-		result = append(result, TableSummary{
-			TableID: tableID, State: "uncatalogued", SynchronizationState: "uncatalogued",
-			DefinitionState: "unknown", Error: "physical table is not recorded in the 80|20 catalog",
-		})
-	}
-	for index := range result {
-		if result[index].State == "uncatalogued" || physicalSet[result[index].TableID] {
-			continue
-		}
-		result[index].SynchronizationState = "drift"
-		result[index].Error = joinStatusError(result[index].Error, "physical table is missing")
-	}
-	sort.Slice(result, func(i, j int) bool { return result[i].TableID < result[j].TableID })
 	return result, nil
 }
 
@@ -2192,30 +2122,6 @@ func joinStatusError(current, next string) string {
 		return current
 	}
 	return current + "; " + next
-}
-
-func (m *Manager) physicalTableNames(ctx context.Context) ([]string, error) {
-	statement := `SELECT name FROM sqlite_schema WHERE type = 'table'
-		AND substr(name, 1, 7) <> 'sqlite_' AND substr(name, 1, 6) <> '_8020_' ORDER BY name`
-	if m.status.Backend == BackendPostgreSQL {
-		statement = `SELECT table_name FROM information_schema.tables
-			WHERE table_schema = current_schema() AND table_type = 'BASE TABLE'
-			AND left(table_name, 6) <> '_8020_' ORDER BY table_name`
-	}
-	rows, err := m.db.QueryContext(ctx, statement)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	result := []string{}
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, err
-		}
-		result = append(result, name)
-	}
-	return result, rows.Err()
 }
 
 // ListDefinitions compares activated TypeScript definitions with the
@@ -2313,7 +2219,8 @@ func (m *Manager) SynchronizeDefinition(ctx context.Context, tableID, sourcePack
 	return result, syncErr
 }
 
-// InspectTable returns catalog and physical state with drift differences.
+// InspectTable returns persisted catalog and physical state without evaluating
+// activated TypeScript. It is the fast path used while browsing administration.
 func (m *Manager) InspectTable(ctx context.Context, tableID string) (TableDetail, error) {
 	if tableID == "" || len(tableID) > 255 || strings.ContainsRune(tableID, '\x00') {
 		return TableDetail{}, errors.New("valid table name is required")
@@ -2325,7 +2232,7 @@ func (m *Manager) InspectTable(ctx context.Context, tableID string) (TableDetail
 	err := m.db.QueryRowContext(ctx, `SELECT table_id, source_package, source_commit, source_module, state,
 		synchronization_state, descriptor_hash, descriptor_json, synchronized_at, error FROM _8020_tables WHERE table_id = $1`, tableID).
 		Scan(&detail.TableID, &detail.SourcePackage, &detail.SourceCommit, &detail.SourceModule, &detail.State,
-			&detail.SynchronizationState, &detail.DescriptorHash, &detail.DescriptorJSON, &detail.SynchronizedAt, &detail.Error)
+			&detail.SynchronizationState, &detail.DescriptorHash, &detail.descriptorJSON, &detail.SynchronizedAt, &detail.Error)
 	if errors.Is(err, sql.ErrNoRows) {
 		exists, existenceErr := m.physicalTableExists(ctx, tableID)
 		if existenceErr != nil {
@@ -2337,7 +2244,6 @@ func (m *Manager) InspectTable(ctx context.Context, tableID string) (TableDetail
 		detail.TableID = tableID
 		detail.State = "uncatalogued"
 		detail.SynchronizationState = "uncatalogued"
-		detail.DefinitionState = "unknown"
 		detail.Error = "physical table is not recorded in the 80|20 catalog"
 		detail.Physical, err = m.physicalColumns(ctx, m.db, tableID)
 		if err != nil {
@@ -2357,16 +2263,18 @@ func (m *Manager) InspectTable(ctx context.Context, tableID string) (TableDetail
 	if err != nil {
 		return TableDetail{}, err
 	}
-	if err := json.Unmarshal([]byte(detail.DescriptorJSON), &detail.Descriptor); err != nil {
+	if err := json.Unmarshal([]byte(detail.descriptorJSON), &detail.Descriptor); err != nil {
 		return TableDetail{}, err
 	}
-	rows, err := m.db.QueryContext(ctx, `SELECT table_id, column_name, logical_type, definition_hash, definition_json, state FROM _8020_columns WHERE table_id = $1 ORDER BY column_name`, tableID)
+	rows, err := m.db.QueryContext(ctx, `SELECT table_id, column_name, ordinal, logical_type, definition_hash, definition_json, state
+		FROM _8020_columns WHERE table_id = $1
+		ORDER BY ordinal, CASE WHEN state = 'retired' THEN 0 ELSE 1 END, column_name`, tableID)
 	if err != nil {
 		return TableDetail{}, err
 	}
 	for rows.Next() {
 		var column CatalogColumn
-		if err := rows.Scan(&column.TableID, &column.ColumnName, &column.LogicalType, &column.DefinitionHash, &column.DefinitionJSON, &column.State); err != nil {
+		if err := rows.Scan(&column.TableID, &column.ColumnName, &column.Ordinal, &column.LogicalType, &column.DefinitionHash, &column.DefinitionJSON, &column.State); err != nil {
 			rows.Close()
 			return TableDetail{}, err
 		}
@@ -2403,34 +2311,53 @@ func (m *Manager) InspectTable(ctx context.Context, tableID string) (TableDetail
 	}
 	detail.Differences = append(detail.Differences, compareChecks(m.status.Backend, detail.Descriptor, detail.PhysicalChecks, retiredColumns)...)
 	detail.Differences = append(detail.Differences, compareRetiredPhysical(detail.Columns, detail.Descriptor, detail.Physical)...)
+	sort.Strings(detail.Differences)
+	if len(detail.Differences) > 0 && detail.State == "active" {
+		detail.SynchronizationState = "drift"
+	}
+	return detail, nil
+}
+
+// CompareTable adds the current activated TypeScript definition to a persisted
+// table inspection. This intentionally expensive operation is explicit.
+func (m *Manager) CompareTable(ctx context.Context, tableID string) (TableDetail, error) {
+	detail, err := m.InspectTable(ctx, tableID)
+	if err != nil {
+		return TableDetail{}, err
+	}
+	if detail.SourcePackage == "" {
+		detail.DefinitionState = "unknown"
+		return detail, nil
+	}
 	m.evaluatorMu.RLock()
 	sourceEvaluator := m.sourceEvaluator
 	m.evaluatorMu.RUnlock()
-	if sourceEvaluator != nil {
-		current, sourceErr := sourceEvaluator(ctx, TableSource{
-			TableID: detail.TableID, SourcePackage: detail.SourcePackage,
-			SourceCommit: detail.SourceCommit, SourceModule: detail.SourceModule,
-		})
-		switch {
-		case sourceErr != nil:
-			detail.DefinitionState = "error"
-			detail.Error = joinStatusError(detail.Error, sourceErr.Error())
-			detail.Differences = append(detail.Differences, "activated definition is invalid: "+sourceErr.Error())
-		case current == nil:
-			detail.DefinitionState = "missing"
-			detail.Differences = append(detail.Differences, "activated definition file is missing")
-		default:
-			detail.CurrentDescriptor = &current.Descriptor
-			detail.CurrentDescriptorHash = current.DescriptorHash
-			detail.CurrentSourceCommit = current.SourceCommit
-			detail.DefinitionState = "present"
-			if current.DescriptorHash != detail.DescriptorHash {
-				detail.DefinitionState = "changed"
-				detail.Differences = append(detail.Differences, "activated definition differs from deployed descriptor")
-			} else if current.SourceCommit != detail.SourceCommit {
-				detail.DefinitionState = "commit_mismatch"
-				detail.Differences = append(detail.Differences, "activated package commit differs from catalog source commit")
-			}
+	if sourceEvaluator == nil {
+		return TableDetail{}, errors.New("database table evaluator is unavailable")
+	}
+	current, sourceErr := sourceEvaluator(ctx, TableSource{
+		TableID: detail.TableID, SourcePackage: detail.SourcePackage,
+		SourceCommit: detail.SourceCommit, SourceModule: detail.SourceModule,
+	})
+	switch {
+	case sourceErr != nil:
+		detail.DefinitionState = "error"
+		detail.Error = joinStatusError(detail.Error, sourceErr.Error())
+		detail.Differences = append(detail.Differences, "activated definition is invalid: "+sourceErr.Error())
+	case current == nil:
+		detail.DefinitionState = "missing"
+		detail.Differences = append(detail.Differences, "activated definition file is missing")
+	default:
+		detail.CurrentDescriptor = &current.Descriptor
+		detail.CurrentDescriptorHash = current.DescriptorHash
+		detail.CurrentSourceCommit = current.SourceCommit
+		detail.DefinitionState = "present"
+		if current.DescriptorHash != detail.DescriptorHash {
+			detail.DefinitionState = "changed"
+			detail.Differences = append(detail.Differences, "activated definition differs from deployed descriptor")
+		} else if current.SourceCommit != detail.SourceCommit {
+			detail.DefinitionState = "commit_mismatch"
+			detail.Differences = append(detail.Differences, "activated package commit differs from catalog source commit")
 		}
 	}
 	sort.Strings(detail.Differences)
@@ -2484,7 +2411,7 @@ func compareCatalog(detail TableDetail) []string {
 		return []string{"stored descriptor is invalid"}
 	}
 	hash := sha256.Sum256(encoded)
-	if hex.EncodeToString(hash[:]) != detail.DescriptorHash || string(encoded) != detail.DescriptorJSON {
+	if hex.EncodeToString(hash[:]) != detail.DescriptorHash || string(encoded) != detail.descriptorJSON {
 		differences = append(differences, "stored table descriptor hash differs")
 	}
 	actual := make(map[string]CatalogColumn, len(detail.Columns))
@@ -2746,7 +2673,7 @@ func CanonicalTableID(namespace, packageName, tableName string) (string, error) 
 		return full, nil
 	}
 	hash := sha256.Sum256([]byte(full))
-	return full[:52] + "_" + hex.EncodeToString(hash[:])[:10], nil
+	return full[:56] + "_" + hex.EncodeToString(hash[:])[:6], nil
 }
 
 func normalizeIdentity(value string) string {

@@ -18,10 +18,12 @@ func New(serviceSet *services.Services) core.Handler {
 			"instance_root":   serviceSet.Instance.Paths.Root,
 			"uptime":          time.Since(serviceSet.Instance.StartedAt).Round(time.Millisecond).String(),
 			"admin_socket":    serviceSet.Instance.Paths.Socket,
-			"main_port":       serviceSet.Network.Port(),
 			"logging_enabled": serviceSet.Logging.Enabled(),
 			"active_log_file": serviceSet.Logging.ActiveFile(),
 			"build_id":        serviceSet.Instance.BuildID,
+		}
+		if network := serviceSet.PlatformSnapshot().Network; network != nil {
+			result["main_port"] = network.Port()
 		}
 		shutdown := serviceSet.Lifecycle.Snapshot()
 		result["shutdown_requested"] = shutdown.Requested
@@ -44,8 +46,6 @@ func New(serviceSet *services.Services) core.Handler {
 			result["database_catalog_version"] = database.CatalogVersion
 			result["database_initialized"] = database.Initialized
 			result["database_pending_deployment"] = database.PendingDeployment
-			result["database_result_maximum_rows"] = database.MaximumResultRows
-			result["database_result_maximum_bytes"] = database.MaximumResultBytes
 			result["database_pool_maximum_open_connections"] = database.MaximumOpenConnections
 			result["database_pool_maximum_idle_connections"] = database.MaximumIdleConnections
 			result["database_pool_open_connections"] = database.OpenConnections

@@ -1,6 +1,6 @@
 key = "services.default_target_utilization_percent"
 type = "integer"
-storage = "node"
+storage = "global"
 default = 70
 environment = "THE8020_SERVICES_DEFAULT_TARGET_UTILIZATION_PERCENT"
 minimum = 1

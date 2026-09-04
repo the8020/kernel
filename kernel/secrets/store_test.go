@@ -9,14 +9,32 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"the8020/kernel/database"
 )
+
+func testDatabase(t *testing.T, root string) *database.Manager {
+	t.Helper()
+	db := database.New(database.Config{
+		Backend: database.BackendSQLite, Location: filepath.Join(root, "system.db"),
+		MaximumOpenConnections: 8, MaximumIdleConnections: 2,
+	})
+	if _, err := db.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(context.Background(), `CREATE TABLE IF NOT EXISTS "the8020__secrets__secrets" ("name" TEXT PRIMARY KEY, "value" TEXT NOT NULL, "updatedAt" TEXT NOT NULL) STRICT`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
 
 func TestStorePersistsSortedNonDisclosingSummariesAndOverwrite(t *testing.T) {
 	root := t.TempDir()
-	path := filepath.Join(root, "private", "secrets.toml")
+	db := testDatabase(t, root)
 	firstTime := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
 	now := firstTime
-	store, err := New(Config{Path: path, Now: func() time.Time { return now }})
+	store, err := New(Config{Database: db, Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,27 +68,17 @@ func TestStorePersistsSortedNonDisclosingSummariesAndOverwrite(t *testing.T) {
 	if err != nil || secret.Value != "replacement-token" || !secret.UpdatedAt.Equal(now) {
 		t.Fatalf("secret = %#v, %v", secret, err)
 	}
-	reloaded, err := New(Config{Path: path})
+	reloaded, err := New(Config{Database: testDatabase(t, root)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if value, err := reloaded.SecretValue("github-work"); err != nil || value != "replacement-token" {
 		t.Fatalf("reloaded value = %q, %v", value, err)
 	}
-	for _, name := range []string{path, path + ".lock"} {
-		info, err := os.Stat(name)
-		if err != nil || info.Mode().Perm() != 0o600 {
-			t.Fatalf("mode for %s = %v, %v", name, info.Mode().Perm(), err)
-		}
-	}
-	if info, err := os.Stat(filepath.Dir(path)); err != nil || info.Mode().Perm() != 0o700 {
-		t.Fatalf("directory mode = %v, %v", info.Mode().Perm(), err)
-	}
 }
 
-func TestStoreRejectsInvalidNamesValuesAndDocuments(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "secrets", "secrets.toml")
-	store, err := New(Config{Path: path})
+func TestStoreRejectsInvalidNamesAndValues(t *testing.T) {
+	store, err := New(Config{Database: testDatabase(t, t.TempDir())})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,57 +93,15 @@ func TestStoreRejectsInvalidNamesValuesAndDocuments(t *testing.T) {
 	if _, err := store.Get("missing"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing error = %v", err)
 	}
-	if err := os.WriteFile(path, []byte("schema = 99\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := New(Config{Path: path}); err == nil || !strings.Contains(err.Error(), "schema") {
-		t.Fatalf("invalid document error = %v", err)
-	}
 }
 
-func TestStoreRejectsPublicOrLinkedSecretFiles(t *testing.T) {
-	t.Run("public", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "secrets", "secrets.toml")
-		store, err := New(Config{Path: path})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := store.Set(context.Background(), "github", "token"); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Chmod(path, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := store.List(); err == nil || !strings.Contains(err.Error(), "private regular file") {
-			t.Fatalf("public file error = %v", err)
-		}
-	})
-	t.Run("symlink", func(t *testing.T) {
-		root := t.TempDir()
-		target := filepath.Join(root, "target.toml")
-		if err := os.WriteFile(target, []byte("schema = 1\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		path := filepath.Join(root, "secrets", "secrets.toml")
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Symlink(target, path); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := New(Config{Path: path}); err == nil || !strings.Contains(err.Error(), "private regular file") {
-			t.Fatalf("symlink error = %v", err)
-		}
-	})
-}
-
-func TestStoresSerializeSharedFileMutations(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "secrets", "secrets.toml")
-	left, err := New(Config{Path: path})
+func TestStoresSerializeSharedDatabaseMutations(t *testing.T) {
+	db := testDatabase(t, t.TempDir())
+	left, err := New(Config{Database: db})
 	if err != nil {
 		t.Fatal(err)
 	}
-	right, err := New(Config{Path: path})
+	right, err := New(Config{Database: db})
 	if err != nil {
 		t.Fatal(err)
 	}

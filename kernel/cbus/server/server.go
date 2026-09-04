@@ -55,7 +55,8 @@ func (s *Server) Start() error {
 		}
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/cbus/execute", s.execute)
+	mux.HandleFunc("GET /v2/cbus/catalog", s.catalog)
+	mux.HandleFunc("POST /v2/cbus/execute", s.execute)
 	s.listener = listener
 	s.http = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
@@ -66,6 +67,19 @@ func (s *Server) Start() error {
 		s.serveError <- err
 	}()
 	return nil
+}
+
+func (s *Server) catalog(writer http.ResponseWriter, request *http.Request) {
+	catalog := s.registry.Catalog()
+	etag := `"` + catalog.Revision + `"`
+	writer.Header().Set("Cache-Control", "no-cache")
+	writer.Header().Set("ETag", etag)
+	if request.Header.Get("If-None-Match") == etag {
+		writer.WriteHeader(http.StatusNotModified)
+		return
+	}
+	writer.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(writer).Encode(catalog)
 }
 
 func (s *Server) execute(writer http.ResponseWriter, request *http.Request) {

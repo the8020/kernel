@@ -20,6 +20,7 @@ import (
 	"time"
 
 	platformauth "the8020/kernel/auth"
+	"the8020/kernel/database"
 	executionservices "the8020/kernel/execution/services"
 	executionworkers "the8020/kernel/execution/workers"
 	workspacepackages "the8020/kernel/packages"
@@ -151,7 +152,7 @@ func (a *fakeAuthentication) ValidateCookie(value string) (platformauth.AuthCont
 	if value != "valid-opaque-cookie" {
 		return platformauth.AuthContext{}, platformauth.ErrUnauthenticated
 	}
-	return platformauth.AuthContext{Authenticated: true, Realm: platformauth.BootstrapRealm, UserID: "bootstrap-admin:Admin", Username: "Admin", AuthVersion: 7, SessionID: "kernel-only-session"}, nil
+	return platformauth.AuthContext{Authenticated: true, Realm: platformauth.UserRealm, UserID: "user:Admin", Username: "Admin", AuthVersion: 7, SessionID: "kernel-only-session"}, nil
 }
 
 type dispatchedRequest struct {
@@ -707,8 +708,76 @@ func TestBackgroundMaintenanceDoesNotRediscoverPackageCatalog(t *testing.T) {
 	manager.mu.Lock()
 	_, explicitlyDiscovered := manager.services["the8020/demo/static"]
 	manager.mu.Unlock()
-	if !explicitlyDiscovered {
-		t.Fatal("explicit reconciliation did not discover the new service")
+	if explicitlyDiscovered {
+		t.Fatal("reconciliation discovered a service that package activation had not published")
+	}
+	if _, err := store.SynchronizePackageDefinitions(context.Background(), "the8020/demo", "test-commit-two"); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ReconcileAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	manager.mu.Lock()
+	_, activated := manager.services["the8020/demo/static"]
+	manager.mu.Unlock()
+	if !activated {
+		t.Fatal("reconciliation did not load the activated service declaration")
+	}
+}
+
+func TestPackageActivationKeepsExistingVersionServingWithoutColdStarting(t *testing.T) {
+	root := t.TempDir()
+	store := writeTestService(t, root, "the8020/demo/variables", `[scaling]
+minimum_workers = 1
+`)
+	pools, router := newFakePools(), &fakeRouter{}
+	manager := newTestManager(t, store, pools, router, filepath.Join(root, "node", "kernel", "services"))
+	status, err := manager.Start(context.Background(), "the8020/demo/variables")
+	if err != nil || status.State != StateReady || status.WorkerCount != 1 {
+		t.Fatalf("started status=%#v err=%v", status, err)
+	}
+	manifest := filepath.Join(root, "packages", "the8020", "demo", "services", "variables", "service.toml")
+	if err := os.Rename(manifest, manifest+".unavailable"); err != nil {
+		t.Fatal(err)
+	}
+	assertHTTPStatus(t, router.boundary, "/the8020/demo/variables/", http.StatusOK)
+
+	db := database.New(database.Config{
+		Backend: database.BackendSQLite, Location: filepath.Join(root, "database", "system.db"),
+		MaximumOpenConnections: 2, MaximumIdleConnections: 1,
+	})
+	if _, err := db.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(context.Background(), `UPDATE "the8020__packages__packages" SET "state" = 'activating' WHERE "packageId" = $1`, "the8020/demo"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := manager.ReconcileAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	status, err = manager.Inspect("the8020/demo/variables")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.State != StateReady || status.WorkerCount != 1 || status.Metrics.StartupFailures != 0 {
+		t.Fatalf("activation-gated status=%#v", status)
+	}
+	assertHTTPStatus(t, router.boundary, "/the8020/demo/variables/", http.StatusOK)
+
+	if err := manager.Retire(context.Background(), "the8020/demo/variables"); err != nil {
+		t.Fatal(err)
+	}
+	pools.mu.Lock()
+	starts := countEventPrefix(pools.events, "start:")
+	pools.mu.Unlock()
+	assertHTTPStatus(t, router.boundary, "/the8020/demo/variables/", http.StatusServiceUnavailable)
+	pools.mu.Lock()
+	after := countEventPrefix(pools.events, "start:")
+	pools.mu.Unlock()
+	if after != starts {
+		t.Fatalf("activation gate cold-started candidate code: starts before=%d after=%d", starts, after)
 	}
 }
 
@@ -1041,7 +1110,7 @@ func TestServiceStatusDistinguishesStartupRestartAndDrainFromObservedCapacity(t 
 	}
 }
 
-func TestCanonicalBoundaryRereadsDiskStripsPrefixAndUsesTrustedMetadata(t *testing.T) {
+func TestCanonicalBoundaryReadsDatabaseStateStripsPrefixAndUsesTrustedMetadata(t *testing.T) {
 	root := t.TempDir()
 	store := writeTestService(t, root, "the8020/demo/variables", "")
 	pools, router := newFakePools(), &fakeRouter{}
@@ -1087,17 +1156,16 @@ func TestCanonicalBoundaryRereadsDiskStripsPrefixAndUsesTrustedMetadata(t *testi
 	assertHTTPStatus(t, manager, "/the8020/demo/variables/%2e%2e/secret", http.StatusBadRequest)
 	assertHTTPStatus(t, manager, "/the8020/demo/variables/%5cescape", http.StatusBadRequest)
 
-	statePath := filepath.Join(root, "state", "services", "the8020", "demo", "variables", "state.toml")
-	writeTestFile(t, statePath, "schema = 2\nenabled = false\ngeneration = 1\n")
-	assertHTTPStatus(t, manager, "/the8020/demo/variables/path", http.StatusServiceUnavailable)
-	writeTestFile(t, statePath, "schema = 2\nenabled = true\ngeneration = 1\n")
-	writeTestFile(t, filepath.Join(root, "packages", "the8020", "demo", "services", "variables", "service.toml"), "schema = [\n")
-	assertHTTPStatus(t, manager, "/the8020/demo/variables/path", http.StatusServiceUnavailable)
-	select {
-	case request := <-pools.dispatched:
-		t.Fatalf("request with unreadable current access policy reached a Worker: %#v", request)
-	default:
+	if _, err := manager.Stop(context.Background(), "the8020/demo/variables"); err != nil {
+		t.Fatal(err)
 	}
+	assertHTTPStatus(t, manager, "/the8020/demo/variables/path", http.StatusServiceUnavailable)
+	if _, err := manager.Start(context.Background(), "the8020/demo/variables"); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(root, "packages", "the8020", "demo", "services", "variables", "service.toml"), "schema = [\n")
+	assertHTTPStatus(t, manager, "/the8020/demo/variables/path", http.StatusTeapot)
+	<-pools.dispatched
 }
 
 func TestClientNetworkScope(t *testing.T) {
@@ -1172,8 +1240,8 @@ message = "Sign in first."
 	forwarded := <-pools.dispatched
 	for name, want := range map[string]string{
 		"X-80-20-Internal-Auth-Authenticated": "true",
-		"X-80-20-Internal-Auth-Realm":         platformauth.BootstrapRealm,
-		"X-80-20-Internal-Auth-User-Id":       "bootstrap-admin:Admin",
+		"X-80-20-Internal-Auth-Realm":         platformauth.UserRealm,
+		"X-80-20-Internal-Auth-User-Id":       "user:Admin",
 		"X-80-20-Internal-Auth-Username":      "Admin",
 		"X-80-20-Internal-Auth-Version":       "7",
 	} {
@@ -1199,6 +1267,12 @@ action = "redirect"
 status = 307
 redirect_url = "https://identity.example.test/login?return=fixed"
 `)
+	if _, err := store.SynchronizePackageDefinitions(context.Background(), "the8020/demo", "test-commit-two"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Reconcile(context.Background(), "the8020/demo/protected"); err != nil {
+		t.Fatal(err)
+	}
 	redirected := httptest.NewRecorder()
 	manager.ServeHTTP(redirected, httptest.NewRequest(http.MethodGet, "/the8020/demo/protected/value?return=https://attacker.test", nil))
 	if redirected.Code != 307 || redirected.Header().Get("Location") != "https://identity.example.test/login?return=fixed" {
@@ -1326,7 +1400,7 @@ func TestSessionServiceEstablishesHTTPRouteThenReconnectsWebSocketToExactSandbox
 	}
 
 	poolRecord := pools.records[initial.poolID]
-	staleToken, _, err := manager.persistentRoutes.create("example/realtime/channel", initial.poolID, poolRecord.RuntimeGroupID, poolRecord.SandboxID, "bootstrap-admin:Admin", 2*time.Minute, false)
+	staleToken, _, err := manager.persistentRoutes.create("example/realtime/channel", initial.poolID, poolRecord.RuntimeGroupID, poolRecord.SandboxID, "user:Admin", 2*time.Minute, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1339,7 +1413,7 @@ func TestSessionServiceEstablishesHTTPRouteThenReconnectsWebSocketToExactSandbox
 	if staleResponse.Code != http.StatusConflict {
 		t.Fatalf("stale route status=%d body=%q", staleResponse.Code, staleResponse.Body.String())
 	}
-	if _, err := manager.persistentRoutes.lookup(staleToken, "example/realtime/channel", "bootstrap-admin:Admin"); !errors.Is(err, errRouteNotFound) {
+	if _, err := manager.persistentRoutes.lookup(staleToken, "example/realtime/channel", "user:Admin"); !errors.Is(err, errRouteNotFound) {
 		t.Fatalf("stale route remained registered: %v", err)
 	}
 }
@@ -1389,6 +1463,19 @@ func TestReloadRoutesOnlyToCurrentGenerationWhileOldPoolDrains(t *testing.T) {
 	if reloaded.LoadedVersion == initial.LoadedVersion || reloaded.Sandboxes[0].PoolID == oldPool {
 		t.Fatalf("reload did not switch version: initial=%#v reloaded=%#v", initial, reloaded)
 	}
+	versions := map[uint64]bool{}
+	foundOldPool := false
+	for _, sandbox := range reloaded.Sandboxes {
+		versions[sandbox.Version] = true
+		foundOldPool = foundOldPool || sandbox.PoolID == oldPool
+	}
+	if reloaded.VersionCount != 2 || !versions[initial.LoadedVersion] || !versions[reloaded.LoadedVersion] || !foundOldPool {
+		t.Fatalf("running versions are not fully observable: %#v", reloaded)
+	}
+	listed, err := manager.List()
+	if err != nil || len(listed) != 1 || listed[0].VersionCount != 2 || listed[0].SandboxCount != reloaded.SandboxCount || listed[0].WorkerCount != reloaded.WorkerCount {
+		t.Fatalf("logical service list did not aggregate versions: %#v err=%v", listed, err)
+	}
 	if pools.records[oldPool].State != "DRAINING" {
 		t.Fatalf("old occupied pool was not draining: %#v", pools.records[oldPool])
 	}
@@ -1416,20 +1503,79 @@ func TestReloadRoutesOnlyToCurrentGenerationWhileOldPoolDrains(t *testing.T) {
 	if _, exists := pools.records[oldPool]; exists {
 		t.Fatalf("empty draining version record was not removed: %#v", pools.records[oldPool])
 	}
+	settled, err := manager.Inspect("example/realtime/channel")
+	if err != nil || settled.VersionCount != 1 {
+		t.Fatalf("settled version status=%#v err=%v", settled, err)
+	}
+	for _, sandbox := range settled.Sandboxes {
+		if sandbox.PoolID == oldPool {
+			t.Fatalf("retired pool remains visible after removal: %#v", settled)
+		}
+	}
+}
+
+func TestRequestMetricsRemainLogicalAcrossVersionReplacement(t *testing.T) {
+	root := t.TempDir()
+	serviceID := "the8020/demo/variables"
+	store := writeTestService(t, root, serviceID, `[scaling]
+minimum_workers = 1
+maximum_workers = 2
+concurrency_per_worker = 1
+[placement]
+minimum_sandboxes = 1
+workers_per_sandbox = 1
+`)
+	pools, router := newFakePools(), &fakeRouter{}
+	pools.dispatched = make(chan dispatchedRequest, 1)
+	pools.release = make(chan struct{})
+	manager := newTestManager(t, store, pools, router, filepath.Join(root, "node", "kernel", "services"))
+	initial, err := manager.Start(context.Background(), serviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		manager.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/the8020/demo/variables/slow", nil))
+		close(done)
+	}()
+	oldPool := (<-pools.dispatched).poolID
+	pools.mu.Lock()
+	pools.occupiedSlots[oldPool] = 1
+	pools.mu.Unlock()
+
+	reloaded, err := manager.Reload(context.Background(), serviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.LoadedVersion == initial.LoadedVersion || reloaded.VersionCount != 2 || reloaded.Metrics.ActiveRequests != 1 {
+		t.Fatalf("replacement status=%#v", reloaded)
+	}
+	close(pools.release)
+	<-done
+	pools.mu.Lock()
+	pools.occupiedSlots[oldPool] = 0
+	pools.mu.Unlock()
+	if err := manager.reconcileMaintained(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	settled, err := manager.Inspect(serviceID)
+	if err != nil || settled.VersionCount != 1 || settled.Metrics.ActiveRequests != 0 || settled.Metrics.RequestCount != 1 {
+		t.Fatalf("settled logical metrics=%#v err=%v", settled, err)
+	}
 }
 
 func TestPersistentRouteReceivedByAnotherNodeForwardsToOwner(t *testing.T) {
 	root := t.TempDir()
 	store := writeTestService(t, root, "example/realtime/channel", persistentServiceManifest)
-	statePath := filepath.Join(root, "state", "services", "persistent-routes.json")
-	owner := newPersistentRouteRegistry("node-a", statePath)
-	token, _, err := owner.create("example/realtime/channel", "remote-pool", "remote-group", "remote-sandbox", "bootstrap-admin:Admin", 2*time.Minute, false)
+	db := newTestRouteDatabase(t, root)
+	owner := newPersistentRouteRegistry("node-a", db)
+	token, _, err := owner.create("example/realtime/channel", "remote-pool", "remote-group", "remote-sandbox", "user:Admin", 2*time.Minute, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	pools, router := newFakePools(), &fakeRouter{}
 	nodeRouter := &fakeNodeRouter{local: "node-b"}
-	manager, err := New(Config{Definitions: store, Pools: pools, Router: router, ObservedRoot: filepath.Join(root, "node", "kernel", "services"), NodeID: "node-b", PersistentRouteStatePath: statePath, Nodes: nodeRouter})
+	manager, err := New(Config{Definitions: store, Pools: pools, Router: router, ObservedRoot: filepath.Join(root, "node", "kernel", "services"), NodeID: "node-b", Database: db, Nodes: nodeRouter})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1823,16 +1969,34 @@ func TestCanonicalBoundaryStreamsRequestAndResponseWithoutCompleteBuffering(t *t
 	}
 }
 
-func TestFirstValidationCreatesStateAndTwoNodesReconcileSharedDesiredState(t *testing.T) {
+func TestTwoNodesAutomaticallyObserveSharedDesiredStateRevisions(t *testing.T) {
 	root := t.TempDir()
-	storeA := writeTestService(t, root, "the8020/demo/variables", "")
-	storeB, err := workspacepackages.New(workspacepackages.Config{WorkspaceRoot: root})
-	if err != nil {
-		t.Fatal(err)
-	}
+	storeA := writeTestService(t, root, "the8020/demo/variables", `[scaling]
+minimum_workers = 0
+maximum_workers = 4
+concurrency_per_worker = 32
+target_utilization = 0.7
+worker_keep_alive = "2m"
+[placement]
+minimum_sandboxes = 0
+workers_per_sandbox = 4
+`)
+	storeB := newTestWorkspaceStore(t, root)
 	poolsA, poolsB := newFakePools(), newFakePools()
 	managerA := newTestManager(t, storeA, poolsA, &fakeRouter{}, filepath.Join(root, "node-a", "kernel", "runtime", "services"))
 	managerB := newTestManager(t, storeB, poolsB, &fakeRouter{}, filepath.Join(root, "node-b", "kernel", "runtime", "services"))
+	followerA, err := workspacepackages.NewServiceRevisionFollower(context.Background(), storeA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	followerB, err := workspacepackages.NewServiceRevisionFollower(context.Background(), storeB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	watchContext, stopWatching := context.WithCancel(context.Background())
+	defer stopWatching()
+	errorsA := observeServiceRevisions(watchContext, followerA, managerA)
+	errorsB := observeServiceRevisions(watchContext, followerB, managerB)
 
 	validation := managerA.Validate(context.Background(), "the8020/demo/variables")
 	if !validation.Valid || validation.OpenAPI["openapi"] != "3.1.0" {
@@ -1841,39 +2005,38 @@ func TestFirstValidationCreatesStateAndTwoNodesReconcileSharedDesiredState(t *te
 	if len(poolsA.records) != 0 {
 		t.Fatalf("validation pool record leaked: %#v", poolsA.records)
 	}
-	statePath := filepath.Join(root, "state", "services", "the8020", "demo", "variables", "state.toml")
-	if _, err := os.Stat(statePath); err != nil {
-		t.Fatalf("validation did not initialize shared state: %v", err)
+	if state, exists, err := storeB.ReadState("the8020/demo/variables"); err != nil || !exists || state.Generation != 0 {
+		t.Fatalf("activated database state=%#v exists=%t err=%v", state, exists, err)
 	}
 	if _, err := managerA.Start(context.Background(), "the8020/demo/variables"); err != nil {
 		t.Fatal(err)
 	}
-	if err := managerB.ReconcileAll(context.Background()); err != nil {
-		t.Fatal(err)
+	waitForServiceStatus(t, managerB, func(status Status) bool {
+		return status.State == StateIdle && status.LoadedVersion == 1 && status.SandboxCount == 0 && status.WorkerCount == 0
+	})
+	minimumWorkers := 2
+	if status, err := managerA.Scale(context.Background(), "the8020/demo/variables", ScaleOptions{MinimumWorkers: &minimumWorkers}); err != nil || status.LoadedVersion != 2 || status.WorkerCount != 2 {
+		t.Fatalf("node A scale=%#v err=%v", status, err)
 	}
-	for name, manager := range map[string]*Manager{"node-a": managerA, "node-b": managerB} {
-		status, err := manager.Inspect("the8020/demo/variables")
-		if err != nil || status.State != StateReady || status.LoadedVersion != 1 || status.SandboxCount != 1 {
-			t.Fatalf("%s status=%#v err=%v", name, status, err)
-		}
-	}
-	if status, err := managerB.Restart(context.Background(), "the8020/demo/variables"); err != nil || status.LoadedVersion != 2 {
+	waitForServiceStatus(t, managerB, func(status Status) bool {
+		return status.State == StateReady && status.LoadedVersion == 2 && status.WorkerCount == 2
+	})
+	if status, err := managerB.Restart(context.Background(), "the8020/demo/variables"); err != nil || status.LoadedVersion != 3 {
 		t.Fatalf("node B restart=%#v err=%v", status, err)
 	}
-	if err := managerA.ReconcileAll(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if status, err := managerA.Inspect("the8020/demo/variables"); err != nil || status.LoadedVersion != 2 {
-		t.Fatalf("node A did not observe restart: %#v err=%v", status, err)
-	}
+	waitForServiceStatus(t, managerA, func(status Status) bool { return status.LoadedVersion == 3 })
 	if status, err := managerA.Stop(context.Background(), "the8020/demo/variables"); err != nil || status.State != StateStopped {
 		t.Fatalf("node A stop=%#v err=%v", status, err)
 	}
-	if err := managerB.ReconcileAll(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if status, err := managerB.Inspect("the8020/demo/variables"); err != nil || status.State != StateStopped || status.DesiredVersion != 3 {
-		t.Fatalf("node B did not observe stop: %#v err=%v", status, err)
+	waitForServiceStatus(t, managerB, func(status Status) bool {
+		return status.State == StateStopped && status.DesiredVersion == 4
+	})
+	for name, failures := range map[string]<-chan error{"node-a": errorsA, "node-b": errorsB} {
+		select {
+		case err := <-failures:
+			t.Fatalf("%s revision observer: %v", name, err)
+		default:
+		}
 	}
 	for _, path := range []string{
 		filepath.Join(root, "node-a", "kernel", "runtime", "services", "the8020", "demo", "variables", "status.json"),
@@ -1885,9 +2048,64 @@ func TestFirstValidationCreatesStateAndTwoNodesReconcileSharedDesiredState(t *te
 	}
 }
 
+func observeServiceRevisions(ctx context.Context, follower *workspacepackages.ServiceRevisionFollower, manager *Manager) <-chan error {
+	failures := make(chan error, 1)
+	go func() {
+		ticker := time.NewTicker(time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				update, err := follower.Poll(ctx)
+				if err != nil {
+					failures <- err
+					return
+				}
+				if update.Revision == 0 {
+					continue
+				}
+				for _, serviceID := range update.RetireServices {
+					if err := manager.Retire(ctx, serviceID); err != nil {
+						failures <- err
+						return
+					}
+				}
+				for _, serviceID := range update.ReconcileServices {
+					if _, err := manager.Reconcile(ctx, serviceID); err != nil {
+						failures <- err
+						return
+					}
+				}
+				if err := follower.Acknowledge(update.Revision); err != nil {
+					failures <- err
+					return
+				}
+			}
+		}
+	}()
+	return failures
+}
+
+func waitForServiceStatus(t *testing.T, manager *Manager, ready func(Status) bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		status, err := manager.Inspect("the8020/demo/variables")
+		if err == nil && ready(status) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("service state did not converge: status=%#v err=%v", status, err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func newTestManager(t *testing.T, store *workspacepackages.Store, pools *fakePools, router *fakeRouter, observed string) *Manager {
 	t.Helper()
-	manager, err := New(Config{Definitions: store, Pools: pools, Router: router, ObservedRoot: observed, ReconcileInterval: 10 * time.Millisecond, StartupTimeout: time.Second})
+	manager, err := New(Config{Definitions: store, Pools: pools, Router: router, ObservedRoot: observed, ReconcileInterval: 10 * time.Millisecond, StartupTimeout: time.Second, Database: newTestRouteDatabase(t, t.TempDir())})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1916,8 +2134,8 @@ func writeTestService(t *testing.T, root, serviceID, defaults string) *workspace
 	}
 	writeTestFile(t, filepath.Join(serviceRoot, "service.toml"), manifest)
 	writeTestFile(t, filepath.Join(serviceRoot, "service.ts"), "export default {};\n")
-	store, err := workspacepackages.New(workspacepackages.Config{WorkspaceRoot: root})
-	if err != nil {
+	store := newTestWorkspaceStore(t, root)
+	if _, err := store.SynchronizePackageDefinitions(context.Background(), identity.PackageID(), "test-commit"); err != nil {
 		t.Fatal(err)
 	}
 	return store
@@ -1954,7 +2172,59 @@ workers_per_sandbox = %d
 `, serviceType, minimumWorkers, maximumWorkers, serviceID, minimumSandboxes, workersPerSandbox)
 	writeTestFile(t, filepath.Join(serviceRoot, "service.toml"), manifest)
 	writeTestFile(t, filepath.Join(serviceRoot, "service.ts"), "export default {};\n")
-	store, err := workspacepackages.New(workspacepackages.Config{WorkspaceRoot: root})
+	store := newTestWorkspaceStore(t, root)
+	if _, err := store.SynchronizePackageDefinitions(context.Background(), identity.PackageID(), "test-commit"); err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+func newTestWorkspaceStore(t *testing.T, root string) *workspacepackages.Store {
+	t.Helper()
+	db := database.New(database.Config{
+		Backend: database.BackendSQLite, Location: filepath.Join(root, "database", "system.db"),
+		MaximumOpenConnections: 8, MaximumIdleConnections: 2,
+	})
+	if _, err := db.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE IF NOT EXISTS "the8020__packages__packages" ("packageId" TEXT PRIMARY KEY, "author" TEXT NOT NULL, "repository" TEXT NOT NULL, "source" TEXT, "requestedCommit" TEXT, "requestedTag" TEXT, "secretName" TEXT, "local" INTEGER NOT NULL, "activeCommit" TEXT, "state" TEXT NOT NULL, "error" TEXT, "revision" INTEGER NOT NULL, "createdAt" TEXT NOT NULL, "updatedAt" TEXT NOT NULL) STRICT`,
+		`CREATE TABLE IF NOT EXISTS "the8020__system__revisions" ("domain" TEXT PRIMARY KEY, "revision" INTEGER NOT NULL, "updatedAt" TEXT NOT NULL) STRICT`,
+		`CREATE INDEX IF NOT EXISTS "the8020__system__revisions__revision__index" ON "the8020__system__revisions" ("revision")`,
+		`CREATE TABLE IF NOT EXISTS "the8020__services__services" ("serviceId" TEXT PRIMARY KEY, "packageId" TEXT NOT NULL, "packageCommit" TEXT NOT NULL, "manifestHash" TEXT NOT NULL, "description" TEXT NOT NULL, "entrypoint" TEXT NOT NULL, "accessMode" TEXT NOT NULL, "unauthenticatedAction" TEXT NOT NULL, "unauthenticatedStatus" INTEGER NOT NULL, "unauthenticatedMessage" TEXT NOT NULL, "unauthenticatedRedirectUrl" TEXT NOT NULL, "declaredServiceType" TEXT, "declaredSessionKeepAliveMs" INTEGER, "declaredMinimumWorkers" INTEGER, "declaredMaximumWorkers" INTEGER, "declaredConcurrencyPerWorker" INTEGER, "declaredTargetUtilization" REAL, "declaredWorkerKeepAliveMs" INTEGER, "declaredSandboxGroup" TEXT, "declaredMinimumSandboxes" INTEGER, "declaredWorkersPerSandbox" INTEGER, "enabled" INTEGER NOT NULL, "active" INTEGER NOT NULL, "desiredVersion" INTEGER NOT NULL, "createdAt" TEXT NOT NULL, "updatedAt" TEXT NOT NULL) STRICT`,
+		`CREATE TABLE IF NOT EXISTS "the8020__services__overrides" ("serviceId" TEXT PRIMARY KEY, "serviceType" TEXT, "sessionKeepAliveMs" INTEGER, "minimumWorkers" INTEGER, "maximumWorkers" INTEGER, "concurrencyPerWorker" INTEGER, "targetUtilization" REAL, "workerKeepAliveMs" INTEGER, "sandboxGroup" TEXT, "minimumSandboxes" INTEGER, "workersPerSandbox" INTEGER, "updatedAt" TEXT NOT NULL) STRICT`,
+		`CREATE TABLE IF NOT EXISTS "the8020__services__versions" ("serviceId" TEXT NOT NULL, "version" INTEGER NOT NULL, "packageCommit" TEXT NOT NULL, "manifestHash" TEXT NOT NULL, "policyHash" TEXT NOT NULL, "serviceType" TEXT NOT NULL, "sessionKeepAliveMs" INTEGER NOT NULL, "minimumWorkers" INTEGER NOT NULL, "maximumWorkers" INTEGER NOT NULL, "concurrencyPerWorker" INTEGER NOT NULL, "targetUtilization" REAL NOT NULL, "workerKeepAliveMs" INTEGER NOT NULL, "sandboxGroup" TEXT NOT NULL, "minimumSandboxes" INTEGER NOT NULL, "workersPerSandbox" INTEGER NOT NULL, "createdAt" TEXT NOT NULL, PRIMARY KEY ("serviceId", "version")) STRICT`,
+	} {
+		if _, err := db.ExecContext(context.Background(), statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := database.EncodeTime(db, time.Now().UTC())
+	namespaces, err := os.ReadDir(filepath.Join(root, "packages"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, namespace := range namespaces {
+		if !namespace.IsDir() {
+			continue
+		}
+		repositories, err := os.ReadDir(filepath.Join(root, "packages", namespace.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, repository := range repositories {
+			if !repository.IsDir() {
+				continue
+			}
+			packageID := namespace.Name() + "/" + repository.Name()
+			if _, err := db.ExecContext(context.Background(), `INSERT INTO "the8020__packages__packages" ("packageId", "author", "repository", "source", "requestedCommit", "requestedTag", "secretName", "local", "activeCommit", "state", "error", "revision", "createdAt", "updatedAt") VALUES ($1, $2, $3, NULL, NULL, NULL, NULL, $4, 'test-commit', 'ready', NULL, 1, $5, $5) ON CONFLICT ("packageId") DO NOTHING`, packageID, namespace.Name(), repository.Name(), true, now); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store, err := workspacepackages.New(workspacepackages.Config{WorkspaceRoot: root, Database: db})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2002,6 +2272,16 @@ func assertEventBefore(t *testing.T, events []string, first, second string) {
 	if firstIndex < 0 || secondIndex < 0 || firstIndex >= secondIndex {
 		t.Fatalf("events = %#v; want %q before %q", events, first, second)
 	}
+}
+
+func countEventPrefix(events []string, prefix string) int {
+	count := 0
+	for _, event := range events {
+		if strings.HasPrefix(event, prefix) {
+			count++
+		}
+	}
+	return count
 }
 
 func mustIdentity(t *testing.T, serviceID string) workspacepackages.Identity {

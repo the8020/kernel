@@ -41,7 +41,8 @@ func TestUnixHTTPTransport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !response.Success || response.Result["value"] != json.Number("3") {
+	result := response.Result.(map[string]any)
+	if !response.Success || result["value"] != json.Number("3") {
 		t.Fatalf("response: %#v", response)
 	}
 	unknown, err := commandClient.Execute(ctx, core.Request{CommandID: "missing"})
@@ -51,11 +52,22 @@ func TestUnixHTTPTransport(t *testing.T) {
 	if unknown.Error == nil || unknown.Error.Code != core.CodeUnknownCommand {
 		t.Fatalf("unknown response: %#v", unknown)
 	}
+	catalog, unchanged, err := commandClient.Catalog(ctx, "")
+	if err != nil || unchanged || catalog.Revision == "" || len(catalog.Commands) != 1 || catalog.Commands[0].ID != "test.echo" {
+		t.Fatalf("catalog=%#v unchanged=%t error=%v", catalog, unchanged, err)
+	}
+	if _, unchanged, err = commandClient.Catalog(ctx, catalog.Revision); err != nil || !unchanged {
+		t.Fatalf("conditional catalog unchanged=%t error=%v", unchanged, err)
+	}
 	statusCommand := core.Command{ID: "test.status"}
 	if err := registry.Register(statusCommand, func(_ context.Context, _ core.Request) (core.Result, error) {
 		return core.Result{"state": "shutting_down"}, nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+	updated, unchanged, err := commandClient.Catalog(ctx, catalog.Revision)
+	if err != nil || unchanged || updated.Revision == catalog.Revision || len(updated.Commands) != 2 {
+		t.Fatalf("updated catalog=%#v unchanged=%t error=%v", updated, unchanged, err)
 	}
 	commandServer.BeginShutdown("test.status")
 	rejected, err := commandClient.Execute(ctx, core.Request{CommandID: "test.echo", Arguments: map[string]any{"value": int64(4)}})
@@ -63,7 +75,8 @@ func TestUnixHTTPTransport(t *testing.T) {
 		t.Fatalf("rejected response=%#v err=%v", rejected, err)
 	}
 	progress, err := commandClient.Execute(ctx, core.Request{CommandID: "test.status"})
-	if err != nil || !progress.Success || progress.Result["state"] != "shutting_down" {
+	progressResult := progress.Result.(map[string]any)
+	if err != nil || !progress.Success || progressResult["state"] != "shutting_down" {
 		t.Fatalf("progress response=%#v err=%v", progress, err)
 	}
 }

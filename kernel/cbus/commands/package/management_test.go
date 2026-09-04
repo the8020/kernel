@@ -30,10 +30,10 @@ type synchronizationWebServices struct {
 	fail     string
 }
 
-func (service *synchronizationWebServices) Reload(_ context.Context, serviceID string) (webservices.Status, error) {
+func (service *synchronizationWebServices) Reconcile(_ context.Context, serviceID string) (webservices.Status, error) {
 	service.reloaded = append(service.reloaded, serviceID)
 	if serviceID == service.fail {
-		return webservices.Status{}, errors.New("reload failed")
+		return webservices.Status{}, errors.New("reconcile failed")
 	}
 	return webservices.Status{ServiceID: serviceID}, nil
 }
@@ -103,7 +103,7 @@ func TestSynchronizeReportsServiceRefreshFailureAfterPackageCommit(t *testing.T)
 	if !errors.As(err, &commandError) || commandError.Code != core.CodeRuntimeOperation {
 		t.Fatalf("error = %#v", err)
 	}
-	if len(results) != 1 || results[0].Success || !strings.Contains(commandError.Message, "example/failure: package synchronized but service refresh failed: reload failed") {
+	if len(results) != 1 || results[0].Success || !strings.Contains(commandError.Message, "example/failure: package synchronized but service refresh failed: reconcile failed") {
 		t.Fatalf("failure result = %#v", results)
 	}
 	details, ok := commandError.Details["packages"].([]SynchronizationResult)

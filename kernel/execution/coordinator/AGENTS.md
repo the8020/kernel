@@ -10,7 +10,13 @@
 # Local Contracts
 
 - Public API: `New`, `Coordinator.Ensure`, `Coordinator.Release`, and `Request`.
-- User, service, and job requests all use the same path. Matching keys reuse only healthy profile-compatible same-type groups and durably add a new shared owner; otherwise a clean matching warm sandbox is assigned or a fresh sandbox is created.
+- Service and job requests use the same path. Matching keys reuse only healthy
+  profile-compatible same-type groups and add a new shared owner; otherwise a
+  clean matching warm sandbox is assigned or a fresh sandbox is created.
+- Logical owner identity selects a grouping key; an optional allocation ID is
+  the independent lifecycle claim stored on that sandbox. Services normally use
+  one identity for both, while every job Worker uses its own claim so concurrent
+  same-owner jobs can release independently.
 - Cold construction requests its compact collision-checked sandbox ID from the
   sandbox manager, creates a compact `rgp-` runtime-group ID, and retains a
   generic opaque security token.

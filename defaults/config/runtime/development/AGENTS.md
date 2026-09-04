@@ -7,7 +7,7 @@
 
 - Own helper/runtime files, rootful materialization, portable rootless assembly,
   and pinned developer-tool identity. Each initialized system receives the
-  platform-owned definition under `config/runtime/development/`; materialized
+  platform-owned definition under `node/kernel/runtime/definitions/development/`; materialized
   rootfs and records live under
   `node/kernel/runtime/images/development/`.
 - Do not own sandbox storage, package Git commits, activation, or developer

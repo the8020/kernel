@@ -13,7 +13,8 @@
   methods, and generic `OpenConsole` PTY or direct-stream exec.
 - Every sandbox uses the pinned node-local `runsc`, `--rootless=true`, systrap,
   host networking with loopback-only supervisor/inspector listeners, an
-  explicit bounded mount set, empty process capabilities, and no new privileges.
+  explicit bounded mount set, open-only access to explicitly mounted host Unix
+  sockets, empty process capabilities, and no new privileges.
 - Only safe IDs and metadata carrying the current kernel instance UUID are observed or modified. Instance-owned metadata can be listed without invoking `runsc state`, allowing stale startup sandboxes to be force-deleted directly.
 - Mutable metadata is limited to shared ownership, logical service membership,
   placement group, and warm-assignment labels; runtime identity remains
@@ -33,6 +34,6 @@
 
 # Verification
 
-- Unit tests cover OCI restrictions, path mapping, ownership, lifecycle commands, bounded subreaper-child discovery, state conversion, and metrics; Linux installation runs real rootless gVisor smoke and browser-console tests.
+- Unit tests cover OCI restrictions, path mapping, ownership, lifecycle commands, bounded subreaper-child discovery, state conversion, and metrics. The opt-in Linux E2E test starts the real supervisor through rootless gVisor and verifies its bind-mounted kernel Unix socket; installation also runs real rootless gVisor smoke and browser-console tests.
 
 # Child DOX Index

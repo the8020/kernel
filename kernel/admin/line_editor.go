@@ -155,29 +155,13 @@ func (r *interactiveLineReader) AddHistory(line string) {
 	r.history.finalizeLatest()
 }
 
-func (r *interactiveLineReader) ReadValue(prompt string) (string, error) {
-	line, ok, err := r.ReadLine(prompt)
-	if r.history != nil {
-		// Prompted values are inputs to the current command, not standalone
-		// commands that should replace it in session history.
-		r.history.dropLatest()
-	}
-	if err != nil {
-		return "", err
-	}
-	if !ok {
-		return "", errors.New("input ended before a value was read")
-	}
-	return line, nil
-}
-
 func (r *interactiveLineReader) ReadSecret(prompt, confirmationPrompt string, fromStdin bool) (string, error) {
 	if r.terminal != nil {
 		value, err := r.terminal.ReadPassword(prompt)
 		if err != nil {
 			return "", err
 		}
-		if fromStdin {
+		if fromStdin || confirmationPrompt == "" {
 			return value, nil
 		}
 		confirmation, err := r.terminal.ReadPassword(confirmationPrompt)

@@ -11,7 +11,7 @@
 
 # Local Contracts
 
-- Public API: exported model types, `RuntimeProfile.Hash`,
+- Public API: exported model types, `CanonicalMounts`, `RuntimeProfile.Hash`,
   `SandboxSpec.Validate`, `ValidTransition`, `NewID`, `NewSandboxID`,
   `IsSandboxID`, `NewRuntimeGroupID`, and `NewWorkerID`.
 - New sandbox, runtime-group, and Worker IDs are respectively `sbx-`, `rgp-`,
@@ -21,14 +21,16 @@
   permission envelope, mounts, network mode, global egress allowance, Deno
   flags, and resource class; a profile cannot carry egress hosts when egress is
   disabled.
+- Canonical mounts are copied and ordered deterministically with parent targets
+  before descendants; callers never need backend-specific mount ordering.
 - A spec cannot mix workload types or owners, its mounts and permission envelope
   must exactly match its immutable runtime profile, and image identity must be a
   SHA-256 digest.
 - Service specs retain one exact placement-group value plus the logical service
-  IDs already present. The lists are used to prevent duplicate allocations in one
-  sandbox; an empty placement group remains a valid shared value.
-- Sandbox resource limits contain only PID and temporary-filesystem bounds;
-  CPU and RAM fields are observations, not limits or placement inputs.
+  IDs already present. The lists are used to prevent duplicate allocations in
+  one sandbox; an empty placement group remains a valid shared value.
+- Sandbox resource limits contain only PID and temporary-filesystem bounds; CPU
+  and RAM fields are observations, not limits or placement inputs.
 
 # Lifecycle
 

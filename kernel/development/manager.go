@@ -30,12 +30,10 @@ import (
 type Config struct {
 	Root              string
 	PackagesRoot      string
-	ConfigRoot        string
 	UsersRoot         string
 	RuntimeRoot       string
 	ImageRoot         string
 	ImageRecord       string
-	MountProfileFile  string
 	MountProfile      []MountDefinition
 	ActivationGateway ActivationGateway
 	Driver            SandboxDriver
@@ -77,7 +75,7 @@ const sandboxSchema = 1
 const authorizedKeysLimit = 64 << 10
 
 func New(config Config) (*Manager, error) {
-	for name, path := range map[string]string{"root": config.Root, "packages": config.PackagesRoot, "config": config.ConfigRoot, "users": config.UsersRoot, "runtime": config.RuntimeRoot, "image": config.ImageRoot} {
+	for name, path := range map[string]string{"root": config.Root, "packages": config.PackagesRoot, "users": config.UsersRoot, "runtime": config.RuntimeRoot, "image": config.ImageRoot} {
 		if !filepath.IsAbs(path) {
 			return nil, fmt.Errorf("development %s path must be absolute", name)
 		}
@@ -91,7 +89,7 @@ func New(config Config) (*Manager, error) {
 		return nil, err
 	}
 	config.Root, config.PackagesRoot = root, packages
-	for _, directory := range []string{config.ConfigRoot, config.UsersRoot, config.RuntimeRoot} {
+	for _, directory := range []string{config.UsersRoot, config.RuntimeRoot} {
 		if err := os.MkdirAll(directory, 0o700); err != nil {
 			return nil, err
 		}
@@ -99,7 +97,7 @@ func New(config Config) (*Manager, error) {
 			return nil, err
 		}
 	}
-	for name, path := range map[string]*string{"config": &config.ConfigRoot, "users": &config.UsersRoot, "runtime": &config.RuntimeRoot} {
+	for name, path := range map[string]*string{"users": &config.UsersRoot, "runtime": &config.RuntimeRoot} {
 		canonical, canonicalErr := canonicalDirectory(*path)
 		if canonicalErr != nil {
 			return nil, fmt.Errorf("development %s path: %w", name, canonicalErr)

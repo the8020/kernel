@@ -98,6 +98,30 @@ func TestCloseClearsActivePort(t *testing.T) {
 	}
 }
 
+func TestAvailabilityGateKeepsListenerBoundAndRecovers(t *testing.T) {
+	port := freePort(t)
+	manager, err := New(port, testRootAlias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	manager.SetAvailable(false, "database unavailable")
+	response, err := http.Get("http://127.0.0.1:" + strconv.Itoa(port) + "/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusServiceUnavailable || string(body) != "database unavailable\n" {
+		t.Fatalf("gated response=%d %q", response.StatusCode, body)
+	}
+	if manager.Port() != port {
+		t.Fatal("availability gate released the listener")
+	}
+	manager.SetAvailable(true, "")
+	getOK(t, port, "/health")
+}
+
 func TestUnavailableReplacementPreservesOldListener(t *testing.T) {
 	oldPort := freePort(t)
 	manager, err := New(oldPort, testRootAlias)

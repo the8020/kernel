@@ -143,7 +143,9 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 		}
 	}()
 
-	activationRoot, err := os.MkdirTemp(m.config.RuntimeRoot, "activation-")
+	// Candidate sources must be mountable by the trusted schema evaluator.
+	// Kernel runtime state is deliberately protected from every sandbox mount.
+	activationRoot, err := os.MkdirTemp(m.config.Root, ".activation-")
 	if err != nil {
 		return result, err
 	}
@@ -243,6 +245,7 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 	}
 
 	byID := map[string]ActivationPackageResult{}
+	switched := []preparedActivation{}
 	for index := range prepared {
 		item := &prepared[index]
 		shared, _ := m.packageRoot(item.changes.PackageID)
@@ -261,6 +264,7 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 			continue
 		}
 		sourceSwitched = true
+		switched = append(switched, *item)
 		item.result.Status, item.result.ResultingHead = "committed", item.commit
 		byID[item.changes.PackageID] = item.result
 	}
@@ -270,12 +274,20 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 		}
 	}
 	if failed {
+		for _, item := range switched {
+			shared, _ := m.packageRoot(item.changes.PackageID)
+			_, _ = gitCommand(context.WithoutCancel(ctx), shared, nil, "reset", "--hard", item.current)
+		}
+		if preparedSchema {
+			_ = hook.Complete(context.WithoutCancel(ctx), false)
+			preparedSchema = false
+		}
 		result.Status = "failed"
 		return result, errors.New("one or more packages failed activation")
 	}
 	if preparedSchema {
 		if err := hook.Complete(ctx, true); err != nil {
-			return result, fmt.Errorf("complete database schema activation: %w", err)
+			return result, fmt.Errorf("complete package activation: %w", err)
 		}
 		preparedSchema = false
 	}

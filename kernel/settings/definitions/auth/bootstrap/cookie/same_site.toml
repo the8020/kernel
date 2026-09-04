@@ -1,9 +1,0 @@
-key = "auth.bootstrap.cookie.same_site"
-type = "enum"
-storage = "node"
-default = "lax"
-environment = "THE8020_AUTH_BOOTSTRAP_COOKIE_SAME_SITE"
-allowed = ["lax", "strict", "none"]
-runtime_mutable = false
-restart_required = true
-description = "SameSite policy for the bootstrap authentication cookie."

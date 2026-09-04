@@ -16,6 +16,11 @@
 - Mount and read only the activated shared package tree. Private development
   overlays are never schema sources; staged activation roots temporarily replace
   only their matching package mounts.
+- Explicit inspection and synchronization accept activated source only when its
+  checkout is clean and exactly matches the ready commit in the shared package
+  index. Candidate activation evaluates its isolated staged root instead.
+- Depend only on the read-only package catalog. Database-backed desired package
+  and service state is composed after initial table synchronization.
 - Evaluator Workers have no database access, no writes, imports,
   external network, administration, or direct credentials.
 - Initial and explicit full synchronization discovers all package tables.

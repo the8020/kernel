@@ -17,6 +17,6 @@
   },
   "tasks": {
     "check": "deno fmt --check . ../protocol/generated.ts && deno lint . ../protocol/generated.ts && deno check supervisor/main.ts worker/runtime_worker_test.ts supervisor/supervisor_test.ts http/http_test.ts",
-    "test": "deno test --unstable-worker-options --allow-read=.,../protocol --allow-net=127.0.0.1 ."
+    "test": "deno test --unstable-worker-options --allow-read=.,../protocol --allow-net --allow-import ."
   }
 }

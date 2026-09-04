@@ -1,8 +1,8 @@
 version = 1
-id = "package.index.set"
-path = ["package", "index", "set"]
+id = "kernel.packages.set"
+path = ["kernel.packages.set"]
 summary = "Set desired package source and version"
-description = "Atomically creates or replaces one package-index document. Commit and tag are mutually exclusive; omitting both selects the latest default-branch commit."
+description = "Atomically creates or updates one desired package record. Commit and tag are mutually exclusive; omitting both selects the latest default-branch commit."
 mutates_state = true
 restart_behavior = "none"
 [handler]
@@ -54,4 +54,4 @@ description = "Stored secret name used by authenticated Git operations; an empty
 name = "package"
 type = "object"
 [[examples]]
-command = "package index set the8020/uui --source https://github.com/the8020/uui.git"
+command = "kernel.packages.set the8020 uui --source https://github.com/the8020/uui.git"

@@ -10,7 +10,7 @@
 # Local Contracts
 
 - Public API: `Main`.
-- Both modes share the generated catalog and `cbus/cli` runner.
+- Both modes share the live kernel catalog and `cbus/cli` runner.
 - Default targeting is the exact canonical current directory; `--root` is the only override and `--json` preserves structured responses.
 - Global `help` lists every catalog command together with local `help` and `exit` commands; local commands must not be relegated to footer text.
 - Interactive TTY editing delegates raw mode, terminal-width-aware wrapped rows, cursor movement, editing keys, and bracketed paste to the maintained `golang.org/x/term` terminal implementation. Do not maintain a project-owned escape parser or cursor renderer.
@@ -19,10 +19,6 @@
 - Metadata-declared secrets use the terminal library's no-echo reader with
   confirmation and never enter command history. Redirected automation is
   accepted only through each command's explicit standard-input flag.
-- Metadata-declared ordinary prompts acquire omitted required positional values
-  in terminal one-shot and interactive modes before secret input. Prompted
-  values do not become standalone interactive history entries; redirected
-  one-shot use must supply them as command tokens.
 - Terminal mode is used only when both input and output are terminals, receives the detected terminal dimensions, and must always be restored on exit. Redirected and scripted input keeps the scanner path without terminal escape output.
 - Raw-terminal `Ctrl-C` exits the interactive client immediately; when `run.sh` owns the kernel, the restored terminal then receives that wrapper's live graceful-shutdown progress.
 - Lifecycle commands never exit the interactive client. The prompt remains
@@ -38,10 +34,10 @@
 
 - `line_editor_test.go` verifies library-backed cursor editing, deletion, narrow
   wrapped-row history movement without prompt duplication, history bounds,
-  metadata-prompted value acquisition without history pollution, single-prompt
-  bracketed multiline paste, CRLF input handling, raw-terminal CRLF output
-  alignment, the non-terminal scanner fallback, and continued console input
-  after a lifecycle command.
+  no-echo secure input and confirmation, single-prompt bracketed multiline
+  paste, CRLF input handling, raw-terminal CRLF output alignment, the
+  non-terminal scanner fallback, and continued console input after a lifecycle
+  command.
 - Console editing or output changes require a real narrow-width PTY smoke using wrapped input, bracketed multiline paste, history recall, left/right movement, and a live command response; in-memory byte assertions alone are insufficient.
 - `app/integration_test.go` exercises one-shot and interactive use against the same live catalog and verifies that interactive help exposes `exit`.
 

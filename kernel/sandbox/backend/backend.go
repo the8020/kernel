@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -111,7 +111,7 @@ func ValidateConsoleOptions(options ConsoleOptions) error {
 
 type ProcessConfig struct {
 	NodeID                      string
-	CallbackAddress             string
+	KernelSocketPath            string
 	SupervisorHost              string
 	SupervisorPort              int
 	InspectorHost               string
@@ -135,12 +135,12 @@ func RuntimeEnvironment(existing []string, sandbox model.SandboxSpec, config Pro
 		"DEPENDENCY_MODE":    string(sandbox.DependencyMode),
 		"INTERNAL_API_TOKEN": sandbox.InternalToken, "SUPERVISOR_HOST": config.SupervisorHost,
 		"SUPERVISOR_PORT": strconv.Itoa(config.SupervisorPort), "INSPECTOR_PORT": strconv.Itoa(config.InspectorPort),
-		"RUNTIME_PROFILE_HASH": sandbox.ProfileHash, "KERNEL_CALLBACK_ADDRESS": config.CallbackAddress,
+		"RUNTIME_PROFILE_HASH": sandbox.ProfileHash, "KERNEL_SOCKET_PATH": config.KernelSocketPath,
 		"HEARTBEAT_INTERVAL_MS": strconv.FormatInt(config.SupervisorHeartbeatInterval.Milliseconds(), 10),
 		"WORKER_STOP_GRACE_MS":  strconv.FormatInt(config.WorkerStopGrace.Milliseconds(), 10),
 	}
 	for key, value := range additions {
-		if value != "" || key != "KERNEL_CALLBACK_ADDRESS" {
+		if value != "" || key != "KERNEL_SOCKET_PATH" {
 			values[key] = value
 		}
 	}
@@ -167,18 +167,22 @@ func DenoProcessArguments(args []string, sandbox model.SandboxSpec, config Proce
 		}
 		result = append(result, argument)
 	}
-	readPaths := append([]string{"/opt/runtime", "/artifacts"}, sandbox.Permissions.ReadPaths...)
-	writePaths := append([]string{"/tmp", "/runtime-cache"}, sandbox.Permissions.WritePaths...)
+	readPaths := append([]string{"/opt/runtime", "/artifacts", config.KernelSocketPath}, sandbox.Permissions.ReadPaths...)
+	// Deno models Unix-socket connect as write access to the socket path. This
+	// grants only the mounted callback socket; it does not make its read-only
+	// parent mount writable.
+	writePaths := append([]string{"/tmp", "/runtime-cache", config.KernelSocketPath}, sandbox.Permissions.WritePaths...)
 	networkHosts := append([]string{config.SupervisorHost + ":" + strconv.Itoa(config.SupervisorPort)}, sandbox.Permissions.NetworkHosts...)
-	if callback, err := url.Parse(config.CallbackAddress); err == nil && callback.Host != "" {
-		networkHosts = append(networkHosts, callback.Host)
-	}
 	result = replaceArgument(result, "--allow-read=", readPaths)
 	result = replaceArgument(result, "--allow-write=", writePaths)
 	result = replaceArgument(result, "--allow-net=", networkHosts)
 	result = replaceArgument(result, "--allow-import=", sandbox.Permissions.ImportHosts)
+	if sandbox.RuntimeProfile.EgressAllowed {
+		result = unrestrictedPermission(result, "--allow-net")
+		result = unrestrictedPermission(result, "--allow-import")
+	}
 	result = replaceArgument(result, "--allow-env=", append([]string{
-		"NODE_ID", "SANDBOX_ID", "RUNTIME_GROUP_ID", "WORKLOAD_TYPE", "IMAGE_DIGEST", "DEPENDENCY_MODE", "INTERNAL_API_TOKEN", "KERNEL_CALLBACK_ADDRESS",
+		"NODE_ID", "SANDBOX_ID", "RUNTIME_GROUP_ID", "WORKLOAD_TYPE", "IMAGE_DIGEST", "DEPENDENCY_MODE", "INTERNAL_API_TOKEN", "KERNEL_SOCKET_PATH",
 		"SUPERVISOR_HOST", "SUPERVISOR_PORT", "INSPECTOR_PORT", "RUNTIME_PROFILE_HASH", "HEARTBEAT_INTERVAL_MS", "WORKER_STOP_GRACE_MS",
 	}, sandbox.Permissions.Environment...))
 	if sandbox.Permissions.SystemInfo {
@@ -195,6 +199,17 @@ func DenoProcessArguments(args []string, sandbox model.SandboxSpec, config Proce
 	return result
 }
 
+func unrestrictedPermission(args []string, flag string) []string {
+	result := make([]string, 0, len(args)+1)
+	for _, argument := range args {
+		if argument == flag || strings.HasPrefix(argument, flag+"=") {
+			continue
+		}
+		result = append(result, argument)
+	}
+	return insertBeforeEntrypoint(result, flag)
+}
+
 func OCIMount(mount model.Mount) specs.Mount {
 	if mount.Purpose == "temporary" {
 		return specs.Mount{Destination: mount.Target, Type: "tmpfs", Source: "tmpfs", Options: []string{"nosuid", "nodev", "noexec", "mode=1777", "size=" + strconv.FormatInt(mount.MaximumSize, 10)}}
@@ -204,6 +219,15 @@ func OCIMount(mount model.Mount) specs.Mount {
 		mode = "ro"
 	}
 	return specs.Mount{Destination: mount.Target, Type: "bind", Source: mount.Source, Options: []string{"rbind", mode, "nosuid", "nodev", "noexec", "rprivate"}}
+}
+
+func OCIMounts(mounts []model.Mount) []specs.Mount {
+	ordered := model.CanonicalMounts(mounts)
+	result := make([]specs.Mount, len(ordered))
+	for index, mount := range ordered {
+		result[index] = OCIMount(mount)
+	}
+	return result
 }
 
 func replaceArgument(args []string, prefix string, additions []string) []string {
@@ -262,6 +286,9 @@ func ValidateProcessConfig(config ProcessConfig) error {
 	}
 	if config.WorkerStopGrace < 10*time.Millisecond || config.WorkerStopGrace > time.Minute {
 		return errors.New("Worker stop grace must be between 10 milliseconds and 1 minute")
+	}
+	if !filepath.IsAbs(config.KernelSocketPath) {
+		return errors.New("absolute kernel socket path is required")
 	}
 	return nil
 }

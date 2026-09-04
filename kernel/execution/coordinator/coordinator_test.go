@@ -138,6 +138,29 @@ func TestEnsureSharedGroupPersistsEveryOwner(t *testing.T) {
 	}
 }
 
+func TestEnsureSeparatesLogicalGroupingFromAllocationClaims(t *testing.T) {
+	backend := &fakeSandboxes{}
+	coordinator, _ := New(backend, 64)
+	firstRequest := testRequest(t, "package-owner", model.WorkloadJob)
+	firstRequest.AllocationID = "worker-one"
+	first, err := coordinator.Ensure(context.Background(), firstRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondRequest := testRequest(t, "package-owner", model.WorkloadJob)
+	secondRequest.AllocationID = "worker-two"
+	second, err := coordinator.Ensure(context.Background(), secondRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Spec.RuntimeGroupID != second.Spec.RuntimeGroupID || len(backend.creates) != 1 {
+		t.Fatalf("allocations did not share their logical owner's group: first=%#v second=%#v", first, second)
+	}
+	if len(second.Spec.OwnerIDs) != 2 || second.Spec.OwnerIDs[0] != "worker-one" || second.Spec.OwnerIDs[1] != "worker-two" {
+		t.Fatalf("allocation claims = %#v", second.Spec.OwnerIDs)
+	}
+}
+
 func TestEnsureSharedExplicitKeyStillSeparatesWorkloadTypes(t *testing.T) {
 	backend := &fakeSandboxes{}
 	coordinator, _ := New(backend, 64)
@@ -209,6 +232,21 @@ func TestEnsureAssignsCompatibleWarmGroupBeforeColdCreate(t *testing.T) {
 	wantHash, _ := request.Profile.Hash()
 	if result.Spec.RuntimeGroupID != "group-warm" || warm.profile != wantHash || warm.groupKey != "job:owner:owner-one" || warm.owner != "owner-one" || len(backend.creates) != 0 {
 		t.Fatalf("result=%#v warm=%#v creates=%#v", result, warm, backend.creates)
+	}
+}
+
+func TestEnsureCarriesUnrestrictedEgressWithoutHostAllowlist(t *testing.T) {
+	backend := &fakeSandboxes{}
+	coordinator, _ := New(backend, 64)
+	request := testRequest(t, "networked", model.WorkloadJob)
+	request.Profile.EgressAllowed = true
+	request.Profile.DependencyMode = model.DependencyOnline
+	result, err := coordinator.Ensure(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Spec.Network.EgressEnabled || len(result.Spec.Network.AllowedHosts) != 0 {
+		t.Fatalf("network policy = %#v", result.Spec.Network)
 	}
 }
 

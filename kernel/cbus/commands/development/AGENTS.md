@@ -1,14 +1,11 @@
 # Purpose
 
-- Expose development images, persistent user sandboxes, and activation through the
-  existing declarative command bus.
+- Retain development implementation adapters for private runtime operations.
 
 # Ownership
 
-- Own the `development image status`, `development sandbox`, and
-  `development activate` command definitions and thin handlers.
-- Package repository commands remain under the existing `package` command
-  domain.
+- Do not publish CBus metadata; `the8020/dev-core` owns visible `dev-core.*`
+  command programs.
 
 # Local Contracts
 
@@ -26,9 +23,8 @@
 
 # Verification
 
-- Generator tests cover the declarative catalog; handler and development-domain
-  tests cover arguments, delegation, and results in one-shot and interactive
-  clients.
+- Handler, package, and development-domain tests cover arguments, delegation,
+  and results.
 
 # Child DOX Index
 

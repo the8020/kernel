@@ -10,6 +10,8 @@
   package table descriptors.
 - The Go kernel is the only holder of database credentials. Sandboxed code uses
   the authenticated runtime callback API.
+- Kernel-owned domain repositories receive only the small internal `Store`
+  interface. The connection pool itself remains private to this package.
 
 # Local Contracts
 
@@ -18,11 +20,11 @@
   locally. PostgreSQL uses one database advisory lock across initialization and
   deployment.
 - Readiness distinguishes `UNAVAILABLE`, `CONNECTED`, `INITIALIZING`, `READY`,
-  and `DEGRADED`. Catalog failure blocks the service plane but never the command
-  socket or raw SQL recovery path.
+  and `INITIALIZATION_FAILED`. Catalog failure blocks the service plane but
+  never the command socket or raw SQL recovery path.
 - Embedded engine SQL owns only `_8020_catalog`, `_8020_tables`,
-  `_8020_columns`, `_8020_dependencies`, and `_8020_pending_deployment`.
-  Every non-catalog table comes from an activated package TypeScript descriptor.
+  `_8020_columns`, `_8020_dependencies`, and `_8020_pending_deployment`. Every
+  non-catalog table comes from an activated package TypeScript descriptor.
 - A fresh database synchronizes all installed definitions in bounded batches
   before becoming initialized. An initialized ordinary boot validates only the
   small catalog contract and pending deployment state; full definition and drift
@@ -31,6 +33,9 @@
   structures and safe additions, retires removals without deleting data, and
   returns `migration_required` for unsupported changes. Only confirmed `Trim`
   deletes selected retired objects. Raw administrative DDL remains available.
+- Catalog list and table inspection never evaluate activated TypeScript.
+  Per-table comparison and definition scans are explicit deeper operations so
+  routine administration remains fast.
 - Package/schema switching uses one durable pending record. Candidate schema is
   prepared before source replacement; completion records the active commit set.
   Restart recovery aligns catalog state to the package tree that is actually
@@ -38,8 +43,18 @@
   otherwise ready database.
 - Runtime SQL has one unified row/non-row operation and opaque kernel-held
   transactions bound to an exact execution scope. Scope cleanup rolls back all
-  remaining transactions. Values use explicit lossless tags for bigint,
+  remaining transactions. Mutations return an insert ID only when the caller
+  explicitly identifies an insert, preventing connection-local stale IDs from
+  leaking into updates or deletes. Values use explicit lossless tags for bigint,
   decimal, datetime, bytes, and JSON.
+- Kernel-owned repositories normalize engine-native stored values through this
+  package's shared encoders and decoders. Sandboxed package CRUD uses the
+  descriptor-aware `@the8020/db` codec; deliberately raw SQL results remain
+  engine-native where their logical type cannot be inferred without parsing SQL.
+- Backend SQL syntax, placeholder handling, execution transport, and physical
+  value decoding are shared database concerns. Fix dialect discrepancies here or
+  in `@the8020/db`'s compiler/driver as their contract dictates; never make an
+  individual service, login flow, or repository compensate for them.
 - Query results fail, rather than truncate, above the runtime-mutable per-node
   row/byte limits. Defaults are 10,000 rows and 10 MiB. Pool defaults are 32
   open and 8 idle connections; pools grow on demand.

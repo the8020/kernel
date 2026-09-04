@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/url"
 	"os"
 	"os/exec"
 	"sort"
@@ -37,17 +36,15 @@ type NFTFirewall struct {
 	runner       NFTRunner
 	resolve      func(context.Context, string) ([]net.IP, error)
 	dnsResolvers []string
-	kernelHost   string
-	kernelPort   int
+	bridgeHost   string
 	sandboxNet   *net.IPNet
 }
 
 type NFTFirewallConfig struct {
-	InstanceUUID          string
-	KernelCallbackAddress string
-	SandboxSubnet         string
-	Runner                NFTRunner
-	Resolve               func(context.Context, string) ([]net.IP, error)
+	InstanceUUID  string
+	SandboxSubnet string
+	Runner        NFTRunner
+	Resolve       func(context.Context, string) ([]net.IP, error)
 }
 
 func NewNFTFirewall(config NFTFirewallConfig) (*NFTFirewall, error) {
@@ -63,22 +60,16 @@ func NewNFTFirewall(config NFTFirewallConfig) (*NFTFirewall, error) {
 	if config.Resolve != nil {
 		resolve = config.Resolve
 	}
-	parsed, err := url.Parse(config.KernelCallbackAddress)
-	if err != nil || parsed.Scheme != "http" || net.ParseIP(parsed.Hostname()).To4() == nil || parsed.Port() == "" {
-		return nil, errors.New("kernel callback address must be an HTTP IP endpoint")
-	}
-	port, err := strconv.Atoi(parsed.Port())
-	if err != nil || port < 1 || port > 65535 {
-		return nil, errors.New("kernel callback address has an invalid port")
-	}
 	_, sandboxNet, err := net.ParseCIDR(config.SandboxSubnet)
 	if err != nil || sandboxNet.IP.To4() == nil {
 		return nil, errors.New("sandbox subnet must be a valid IPv4 CIDR")
 	}
-	if !sandboxNet.Contains(net.ParseIP(parsed.Hostname())) {
-		return nil, errors.New("kernel callback address must belong to the sandbox subnet")
+	bridgeHost := append(net.IP(nil), sandboxNet.IP.To4()...)
+	bridgeHost[3]++
+	if !sandboxNet.Contains(bridgeHost) {
+		return nil, errors.New("sandbox subnet does not contain a bridge address")
 	}
-	return &NFTFirewall{instanceUUID: config.InstanceUUID, runner: config.Runner, resolve: resolve, dnsResolvers: systemDNSResolvers(), kernelHost: parsed.Hostname(), kernelPort: port, sandboxNet: sandboxNet}, nil
+	return &NFTFirewall{instanceUUID: config.InstanceUUID, runner: config.Runner, resolve: resolve, dnsResolvers: systemDNSResolvers(), bridgeHost: bridgeHost.String(), sandboxNet: sandboxNet}, nil
 }
 
 func (f *NFTFirewall) Apply(ctx context.Context, allocation Allocation, policy model.NetworkConfiguration) error {
@@ -89,12 +80,13 @@ func (f *NFTFirewall) Apply(ctx context.Context, allocation Allocation, policy m
 	table := firewallTable(f.instanceUUID, allocation.RuntimeGroupID)
 	rules := []string{
 		fmt.Sprintf("ip daddr %s ct state established,related counter accept", ip.String()),
-		fmt.Sprintf("ip saddr %s ip daddr %s counter accept", f.kernelHost, ip.String()),
+		fmt.Sprintf("ip saddr %s ip daddr %s counter accept", f.bridgeHost, ip.String()),
 		fmt.Sprintf("ip daddr %s counter drop", ip.String()),
 		fmt.Sprintf("ip saddr %s ct state established,related counter accept", ip.String()),
-		fmt.Sprintf("ip saddr %s ip daddr %s tcp dport %d counter accept", ip.String(), f.kernelHost, f.kernelPort),
 	}
-	if policy.EgressEnabled && len(policy.AllowedHosts) > 0 {
+	if policy.EgressEnabled && len(policy.AllowedHosts) == 0 {
+		rules = append(rules, fmt.Sprintf("ip saddr %s counter accept", ip.String()))
+	} else if policy.EgressEnabled {
 		var allowed []firewallTarget
 		usesDNS := false
 		for _, host := range policy.AllowedHosts {

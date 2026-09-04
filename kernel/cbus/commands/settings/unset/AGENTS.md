@@ -1,6 +1,6 @@
 # Purpose
 
-- Implement `settings.unset` as declared by the adjacent authoritative TOML.
+- Implement `kernel.config.unset` as declared by the adjacent authoritative TOML.
 
 # Ownership
 
@@ -9,7 +9,8 @@
 # Local Contracts
 
 - Public API: handler constructor `New(*services.Services) core.Handler`.
-- The setting definition selects the store from which the override is removed.
+- Accept only node-local settings and remove the override from node
+  configuration.
 
 # Work Guidance
 
@@ -17,7 +18,7 @@
 
 # Verification
 
-- Application integration validates node/global removal and restoration of the
-  next lower-precedence value.
+- Application integration validates node-local removal and restoration of the
+  default value.
 
 # Child DOX Index

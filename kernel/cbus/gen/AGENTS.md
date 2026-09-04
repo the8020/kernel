@@ -19,7 +19,7 @@
   build-module Go envelope, tracked TypeScript envelope, and byte-identical Go
   mirror in one deterministic pass.
 - Handler paths are explicit, root-relative, inside `kernel/`, and package imports derive from the declared file directory.
-- Duplicate IDs/keys/routes/options, alias conflicts, missing or invalid setting
+- Duplicate IDs/keys/routes/options, missing or invalid setting
   storage, invalid types/defaults/paths, missing files, and missing constructor
   symbols fail generation.
 - Extend schemas explicitly in TOML structs, validators, generated core metadata, and tests together. Ordinary prompts are valid only on required positional parameters.
@@ -33,8 +33,8 @@
 - `main_test.go` covers recursion, determinism, duplicates/conflicts, setting
   storage, types, ordinary-prompt constraints, missing/outside handlers, shared
   handlers, invalid symbols, catalog completeness, runtime-protocol coverage,
-  and protocol-version agreement. It also executes every development and
-  package-repository command example through the shared one-shot/interactive
-  CLI parsing path.
+  protocol-version agreement, and the lifecycle command paths used by
+  `run.sh`. It also executes every development and package-repository command
+  example through the shared one-shot/interactive CLI parsing path.
 
 # Child DOX Index

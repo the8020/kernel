@@ -107,6 +107,17 @@ type Mount struct {
 	Persistence string `json:"persistence"`
 }
 
+// CanonicalMounts returns a deterministic copy with parent targets before
+// descendants so OCI runtimes can resolve overlapping mount trees safely.
+func CanonicalMounts(mounts []Mount) []Mount {
+	canonical := append([]Mount(nil), mounts...)
+	sort.Slice(canonical, func(i, j int) bool {
+		left, right := canonical[i], canonical[j]
+		return left.Target+"\x00"+left.Source+"\x00"+left.OwnerScope < right.Target+"\x00"+right.Source+"\x00"+right.OwnerScope
+	})
+	return canonical
+}
+
 type ResourceLimits struct {
 	PIDMaximum   int64 `json:"pid_maximum"`
 	TmpfsMaximum int64 `json:"tmpfs_maximum"`
@@ -180,11 +191,7 @@ func (p RuntimeProfile) Hash() (string, error) {
 	canonical.Permissions.ImportHosts = sortedUnique(p.Permissions.ImportHosts)
 	canonical.Permissions.Environment = sortedUnique(p.Permissions.Environment)
 	canonical.DenoStartupFlags = sortedUnique(p.DenoStartupFlags)
-	canonical.Mounts = append([]Mount(nil), p.Mounts...)
-	sort.Slice(canonical.Mounts, func(i, j int) bool {
-		left, right := canonical.Mounts[i], canonical.Mounts[j]
-		return left.Target+"\x00"+left.Source+"\x00"+left.OwnerScope < right.Target+"\x00"+right.Source+"\x00"+right.OwnerScope
-	})
+	canonical.Mounts = CanonicalMounts(p.Mounts)
 	data, err := json.Marshal(canonical)
 	if err != nil {
 		return "", err

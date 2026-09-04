@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	runtimeoptions "github.com/containerd/containerd/api/types/runtimeoptions/v1"
 	containerdclient "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/core/containers"
 	"github.com/containerd/containerd/v2/pkg/cio"
@@ -53,7 +54,8 @@ type Config struct {
 	InstanceUUID                string
 	Snapshotter                 string
 	LogRoot                     string
-	CallbackAddress             string
+	KernelSocketPath            string
+	RunscConfigPath             string
 	SupervisorPort              int
 	SupervisorHeartbeatInterval time.Duration
 	WorkerStopGrace             time.Duration
@@ -66,7 +68,8 @@ type Backend struct {
 	instanceUUID                string
 	snapshotter                 string
 	logRoot                     string
-	callbackAddress             string
+	kernelSocketPath            string
+	runscConfigPath             string
 	supervisorPort              int
 	supervisorHeartbeatInterval time.Duration
 	workerStopGrace             time.Duration
@@ -79,8 +82,11 @@ func Connect(ctx context.Context, config Config) (*Backend, error) {
 	if config.Socket == "" {
 		config.Socket = "/run/containerd/containerd.sock"
 	}
-	if !filepath.IsAbs(config.Socket) || strings.TrimSpace(config.InstanceUUID) == "" {
-		return nil, errors.New("absolute containerd socket and instance UUID are required")
+	if !filepath.IsAbs(config.Socket) || !filepath.IsAbs(config.RunscConfigPath) || strings.TrimSpace(config.InstanceUUID) == "" {
+		return nil, errors.New("absolute containerd socket, runsc config path, and instance UUID are required")
+	}
+	if info, err := os.Stat(config.RunscConfigPath); err != nil || !info.Mode().IsRegular() {
+		return nil, errors.New("regular runsc config file is required")
 	}
 	if config.Snapshotter == "" {
 		config.Snapshotter = defaultSnapshotter
@@ -107,7 +113,7 @@ func Connect(ctx context.Context, config Config) (*Backend, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connect containerd: %w", err)
 	}
-	backend := &Backend{client: client, namespace: NamespaceForInstance(config.InstanceUUID), instanceUUID: config.InstanceUUID, snapshotter: config.Snapshotter, logRoot: config.LogRoot, callbackAddress: config.CallbackAddress, supervisorPort: config.SupervisorPort, supervisorHeartbeatInterval: config.SupervisorHeartbeatInterval, workerStopGrace: config.WorkerStopGrace, logger: config.Logger}
+	backend := &Backend{client: client, namespace: NamespaceForInstance(config.InstanceUUID), instanceUUID: config.InstanceUUID, snapshotter: config.Snapshotter, logRoot: config.LogRoot, kernelSocketPath: config.KernelSocketPath, runscConfigPath: config.RunscConfigPath, supervisorPort: config.SupervisorPort, supervisorHeartbeatInterval: config.SupervisorHeartbeatInterval, workerStopGrace: config.WorkerStopGrace, logger: config.Logger}
 	probeContext, cancel := context.WithTimeout(backend.withNamespace(ctx), 5*time.Second)
 	defer cancel()
 	if _, err := client.Version(probeContext); err != nil {
@@ -344,9 +350,9 @@ func (b *Backend) Create(ctx context.Context, sandbox model.SandboxSpec) (observ
 	container, err := b.client.NewContainer(ctx, sandbox.SandboxID,
 		containerdclient.WithImage(image),
 		containerdclient.WithNewSnapshotView(sandbox.SandboxID+"-rootfs", image),
-		containerdclient.WithNewSpec(oci.WithImageConfig(image), sandboxSpecOption(sandbox, b.instanceUUID, b.callbackAddress, b.supervisorPort, b.supervisorHeartbeatInterval, b.workerStopGrace)),
+		containerdclient.WithNewSpec(oci.WithImageConfig(image), sandboxSpecOption(sandbox, b.instanceUUID, b.kernelSocketPath, b.supervisorPort, b.supervisorHeartbeatInterval, b.workerStopGrace)),
 		containerdclient.WithContainerLabels(labels),
-		containerdclient.WithRuntime(RuntimeName, nil),
+		containerdclient.WithRuntime(RuntimeName, &runtimeoptions.Options{ConfigPath: b.runscConfigPath}),
 	)
 	if err != nil {
 		return observation, fmt.Errorf("create gVisor container: %w", err)
@@ -604,7 +610,7 @@ func (b *Backend) withNamespace(ctx context.Context) context.Context {
 	return namespaces.WithNamespace(ctx, b.namespace)
 }
 
-func sandboxSpecOption(sandbox model.SandboxSpec, instanceUUID, callbackAddress string, supervisorPort int, heartbeatInterval, workerStopGrace time.Duration) oci.SpecOpts {
+func sandboxSpecOption(sandbox model.SandboxSpec, instanceUUID, kernelSocketPath string, supervisorPort int, heartbeatInterval, workerStopGrace time.Duration) oci.SpecOpts {
 	return func(_ context.Context, _ oci.Client, _ *containers.Container, generated *oci.Spec) error {
 		if generated.Process == nil || generated.Root == nil || generated.Linux == nil {
 			return errors.New("containerd generated an incomplete Linux OCI specification")
@@ -633,15 +639,13 @@ func sandboxSpecOption(sandbox model.SandboxSpec, instanceUUID, callbackAddress 
 		if !foundNetwork {
 			generated.Linux.Namespaces = append(generated.Linux.Namespaces, specs.LinuxNamespace{Type: specs.NetworkNamespace, Path: sandbox.Network.NamespacePath})
 		}
-		for _, mount := range sandbox.Mounts {
-			generated.Mounts = append(generated.Mounts, backend.OCIMount(mount))
-		}
+		generated.Mounts = append(generated.Mounts, backend.OCIMounts(sandbox.Mounts)...)
 		if sandbox.Network.SupervisorPort != 0 {
 			supervisorPort = sandbox.Network.SupervisorPort
 		}
 		processConfig := backend.ProcessConfig{
-			NodeID:          instanceUUID,
-			CallbackAddress: callbackAddress, SupervisorHost: "0.0.0.0", SupervisorPort: supervisorPort,
+			NodeID:           instanceUUID,
+			KernelSocketPath: kernelSocketPath, SupervisorHost: "0.0.0.0", SupervisorPort: supervisorPort,
 			InspectorHost: "0.0.0.0", InspectorPort: sandbox.Network.InspectorEndpointPort(),
 			SupervisorHeartbeatInterval: heartbeatInterval, WorkerStopGrace: workerStopGrace,
 		}
@@ -667,7 +671,7 @@ func mergeEnvironment(existing []string, additions map[string]string) []string {
 		}
 	}
 	for key, value := range additions {
-		if value == "" && key == "KERNEL_CALLBACK_ADDRESS" {
+		if value == "" && key == "KERNEL_SOCKET_PATH" {
 			continue
 		}
 		values[key] = value
@@ -684,10 +688,10 @@ func mergeEnvironment(existing []string, additions map[string]string) []string {
 	return result
 }
 
-func parentPermissionArgs(args []string, sandbox model.SandboxSpec, callbackAddress string, supervisorPort int) []string {
+func parentPermissionArgs(args []string, sandbox model.SandboxSpec, kernelSocketPath string, supervisorPort int) []string {
 	return backend.DenoProcessArguments(args, sandbox, backend.ProcessConfig{
-		NodeID:          sandbox.SandboxID,
-		CallbackAddress: callbackAddress, SupervisorHost: "0.0.0.0", SupervisorPort: supervisorPort,
+		NodeID:           sandbox.SandboxID,
+		KernelSocketPath: kernelSocketPath, SupervisorHost: "0.0.0.0", SupervisorPort: supervisorPort,
 		InspectorHost: "0.0.0.0", InspectorPort: sandbox.Network.InspectorEndpointPort(),
 		SupervisorHeartbeatInterval: 5 * time.Second, WorkerStopGrace: time.Second,
 	})

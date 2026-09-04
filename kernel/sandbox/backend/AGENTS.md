@@ -20,17 +20,22 @@
 - Production backends implement the optional `ConsoleBackend` contract to exec
   one process with a direct argument vector, environment, and absolute working
   directory, using either byte-transparent streams or bounded PTY geometry.
-  Attached streams expose distinct stdout/stderr, stdin half-close, and the
-  real process exit status to their transport.
-  Lifecycle-only fakes do not need
-  to implement it.
+  Attached streams expose distinct stdout/stderr, stdin half-close, and the real
+  process exit status to their transport. Lifecycle-only fakes do not need to
+  implement it.
 - The shared OCI helpers own Deno parent permissions, stable node identity,
   control endpoints, dependency-mode environment, and bounded mount conversion.
-  Service supervisors alone may execute the pinned Deno binary for in-sandbox
-  type checking; application Workers never receive run permission.
+  Mount conversion emits a deterministic parent-before-descendant order so
+  overlapping targets work identically in both concrete backends. The supervisor
+  receives Deno read/write permission for the exact callback socket because Deno
+  requires both for Unix-socket connection; the surrounding bind mount remains
+  read-only. Service supervisors alone may execute the pinned Deno binary for
+  in-sandbox type checking; application Workers never receive run permission.
 - Backend calls are context bounded and idempotent where lifecycle
   reconciliation requires retries.
-- `ListOwned` enumerates instance-owned metadata without task or supervisor health probes so default crash-restart destruction is independent of stale runtime responsiveness; `List` remains the full observed-task inventory.
+- `ListOwned` enumerates instance-owned metadata without task or supervisor
+  health probes so default crash-restart destruction is independent of stale
+  runtime responsiveness; `List` remains the full observed-task inventory.
 
 # Work Guidance
 

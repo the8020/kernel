@@ -8,10 +8,8 @@ import (
 	"strings"
 )
 
-const mountProfileSchema = 1
-
 // DefaultMountProfile returns the package, helper-script, and temporary mount
-// profile. Callers may instead provide an operator-authored TOML profile.
+// profile. Tests and embedders may provide a profile directly.
 func DefaultMountProfile() []MountDefinition {
 	return []MountDefinition{
 		{ID: "packages", Target: "/workspace/packages", Behavior: MountSandboxSource, Writable: true},
@@ -26,35 +24,6 @@ func cloneMountProfile(profile []MountDefinition) []MountDefinition {
 
 func loadMountProfile(config Config) ([]MountDefinition, error) {
 	profile := cloneMountProfile(config.MountProfile)
-	if len(profile) == 0 && config.MountProfileFile != "" {
-		if !filepath.IsAbs(config.MountProfileFile) {
-			return nil, errors.New("development mount profile path must be absolute")
-		}
-		profilePath, err := filepath.EvalSymlinks(config.MountProfileFile)
-		if errors.Is(err, os.ErrNotExist) {
-			profile = DefaultMountProfile()
-		} else if err != nil {
-			return nil, fmt.Errorf("resolve development mount profile: %w", err)
-		}
-		if len(profile) > 0 {
-			if err := validateMountProfile(config, profile); err != nil {
-				return nil, err
-			}
-			return cloneMountProfile(profile), nil
-		}
-		profilePath = filepath.Clean(profilePath)
-		if !beneath(profilePath, config.ConfigRoot) {
-			return nil, errors.New("development mount profile must remain inside shared config")
-		}
-		var document MountProfileDocument
-		if err := readTOML(profilePath, &document); err != nil {
-			return nil, fmt.Errorf("read development mount profile: %w", err)
-		}
-		if document.Schema != mountProfileSchema {
-			return nil, fmt.Errorf("development mount profile schema must be %d", mountProfileSchema)
-		}
-		profile = document.Mounts
-	}
 	if len(profile) == 0 {
 		profile = DefaultMountProfile()
 	}
@@ -155,7 +124,7 @@ func applicationMountSource(config Config, relative string) (string, error) {
 	if source == config.Root || !beneath(source, config.Root) {
 		return "", errors.New("application source escaped the configured root")
 	}
-	for _, restricted := range []string{"node", "config", "state", "users"} {
+	for _, restricted := range []string{"node", "database", "users"} {
 		if beneath(source, filepath.Join(config.Root, restricted)) {
 			return "", fmt.Errorf("application source may not expose %s", restricted)
 		}

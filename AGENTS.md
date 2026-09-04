@@ -10,6 +10,14 @@
   over adapters, snapshots, reconciliation, polling, or compensating patches.
   A hot or periodic path may not scan an unbounded collection, retain unbounded
   output, or hold a broad lock across filesystem, process, or network I/O.
+- Treat the component where an error surfaces as evidence, not automatically as
+  the fix scope. Establish ownership from the contract and full data flow before
+  changing code.
+- Diagnose failures through their full ownership boundary and repair the shared
+  contract at its owning layer. Do not add caller-specific coercions, retries,
+  fallbacks, compatibility shims, or duplicate logic to mask a shared defect;
+  change a caller only when it violates an already-correct contract, and prove
+  the root repair with both a focused regression and the affected end-to-end path.
 - we are building a runtime platform for companies and developers
 - the platform's purpose is to replace individually hosted and managed
   microservices with one system
@@ -128,12 +136,12 @@ relevant child AGENTS.md
   `The value is sent directly to kernel secret storage and is not shown again.`
   in the UI.
 - `run.sh` and the kernel binary may run from any current directory. `run.sh`
-  initializes an absent instance with its default mapped roots before building
-  images; direct kernel invocation retains guided initialization for selecting
-  independently synchronized packages, configuration, state, and user-data
-  roots. Both validate Unix permission support and keep node-local settings,
-  locks, sockets, logs, images, and runtime data under `node/`. Runtime
-  instances never use the source repository's `.development/` tree as state.
+  initializes an absent fixed-layout instance before building images. The only
+  node configuration file is `<instance>/kernel.toml`; shared durable state is
+  database-backed. Both validate Unix permission support and keep locks,
+  sockets, logs, images, and observed runtime data under `node/`. Runtime
+  instances never use the source repository's `.development/` tree as state or
+  create legacy top-level `config/` or `state/` roots.
   The interactive wrapper repairs inherited terminal state before output and
   on exit so an interrupted raw-mode client cannot cascade line indentation.
 - The root `Dockerfile` builds a Debian slim image, runs the ordinary default
@@ -143,18 +151,20 @@ relevant child AGENTS.md
   retains `/8020` as persistent instance data, and selects rootless gVisor;
   ordinary `docker build` uses its existing build sandbox rather than nesting
   gVisor, while Docker runs require an unconfined outer seccomp profile and
-  complete the pinned runsc smoke before kernel startup. The entrypoint creates
-  exactly one first-boot bootstrap administrator from `THE8020_USERNAME` and
-  `THE8020_PASSWORD`, defaulting both to `admin`, records completion under
-  `node/kernel/`, and never reapplies those environment values later.
+  complete the pinned runsc smoke before kernel startup. When paired
+  `THE8020_USERNAME` and `THE8020_PASSWORD` values are supplied, the entrypoint
+  may call the package-owned `users.add` command if the users table is empty;
+  otherwise those values are ignored. It prints `80|20 is ready` after that
+  optional handling. A user is never required for control-plane startup.
 
 - Interactive kernel shutdown must acknowledge `Ctrl-C` immediately and emit
   one ordinary line whenever the graceful-shutdown stage or completed-stage
   percentage changes until the process exits; unchanged status polls must never
   repeat output. Independent cleanup must overlap where its ownership
   dependencies allow.
-- The administrative console exposes top-level `restart` and `shutdown`
-  aliases and remains open after either request. Restart performs the same
+- The administrative console exposes `kernel.restart` and `kernel.shutdown`
+  and remains open after either request. It has no compatibility aliases.
+  Restart performs the same
   graceful cleanup and then replaces the kernel process with the current binary,
   independent of whether the active `run.sh` owns that process.
 - Uncaught UUI program exceptions must open the package-configured standard
@@ -162,21 +172,21 @@ relevant child AGENTS.md
   bounded exception, stack, and source context, support copying the dump, and
   allow returning directly to the package-configured Home program.
 - Every kernel setting definition must declare whether its persisted override is
-  node-local or global. Node overrides belong in `node/kernel/settings.toml`; global
-  overrides belong in shared `config/settings.toml`. Both stores use the same
-  typed settings commands. Every externally configurable kernel-setting
+  node-local or global. Node overrides belong in `<instance>/kernel.toml`; global
+  overrides belong in `the8020__system__settings`. Both use the same typed
+  settings commands. Every externally configurable kernel-setting
   environment variable uses the `THE8020_` prefix. Application-specific
   configuration is not a kernel setting and is never injected into generic
   request metadata.
-- Filesystem-service schema 2 declares `stateless` or `session` lifecycle,
+- Service manifests declare `stateless` or `session` lifecycle,
   positive session keepalive, minimum/maximum Workers, concurrency and target
   utilization per Worker, positive Worker keepalive, optional sandbox group,
   minimum warm sandboxes, and positive Workers per sandbox. Minimum and maximum
   Workers default to zero; zero minimum permits scale-to-zero and zero maximum
   is service-unlimited while kernel capacity still applies. Worker and session
-  keepalive default to two and ten minutes respectively. Known complete
-  schema-one manifests/state map exactly into this model; incomplete persisted
-  state is rejected rather than guessed, and all new writes use schema 2.
+  keepalive default to two and ten minutes respectively. Installed declarations
+  and complete operator overrides are canonical database rows; old filesystem
+  state has no compatibility path.
 - HTTP, streaming, SSE, and WebSocket transports are available to both service
   types. Session routing remains a generic kernel/supervisor capability: an
   opaque `X-80-20-Route` maps to the exact node, sandbox, Worker, and logical
@@ -205,23 +215,29 @@ relevant child AGENTS.md
   terminated program are static package-owned constants until a package-owned
   configuration system is introduced; the kernel and generic runtime never
   validate, override, persist, or transport them.
-- Ordinary service sandboxes mount the complete package tree read-only at
-  `/workspace/packages` and shared application state read-write at
-  `/state/package-data`. Packages own their data subdirectories and schemas; the
-  kernel only supplies the mount and never scans, parses, snapshots,
-  reconciles, or polls that state.
-- Shared `state/package-index/<author>/<repository>.toml` is kernel-owned desired
-  package state, separate from application data. An empty index receives the
-  tracked first-party defaults and one automatic synchronization only during
-  fresh installation; later builds and restarts never synchronize packages.
-  Typed package commands and `@the8020/kernel` inspect sources and versions, set
-  index entries, explicitly synchronize one or more clean Git worktrees, and
-  create local packages. Synchronization reports only package ID, commit, and
-  success, atomically replaces changed repositories, and refreshes only their
-  declared services; no package source is compiled or tested by the kernel.
-- Global named secrets live only in the private
-  `config/secrets/secrets.toml` kernel store. Package-index documents may retain
-  one secret name but never its value. Kernel-owned Git operations resolve that
+- Ordinary service and job sandboxes mount the complete activated package tree
+  read-only at `/workspace/packages`. Application durable shared state uses the
+  kernel-owned database API; no generic package-data filesystem is mounted.
+- Services and jobs have the same trusted `@the8020/kernel` API access over the
+  bind-mounted node-private `/run/the8020/kernel.sock`. Both may use unrestricted
+  outbound network and remote imports; only temporary and runtime-cache paths
+  are writable by default.
+- Active packages expose administrative commands through
+  `cbus/commands/<path>/command.toml` and non-discoverable ordinary programs.
+  The kernel assembles one process-local immutable catalog from those files,
+  refreshes it at startup and package lifecycle boundaries, and never persists
+  the assembled catalog. Package command arguments remain raw strings.
+- `the8020__packages__packages` is the authoritative desired and active package
+  index. A fresh database stages the small source-owned bootstrap package list,
+  evaluates and synchronizes every staged table in one job, runs package hooks,
+  and publishes the package set before the service plane becomes ready. Normal
+  boots trust the initialized catalog and do not rescan table modules. Package
+  changes stage and validate only candidate packages, synchronize their schema,
+  run pre/post activation hooks exactly once, atomically switch source, and
+  refresh only affected services. Hook and deployment phases are durable and
+  recoverable; PostgreSQL serializes deployment through an advisory lock.
+- Global named secrets live only in `the8020__secrets__secrets`. Package records
+  may retain one secret name but never its value. Kernel-owned Git operations resolve that
   value only for the selected package, inject it as a host-scoped transient
   HTTPS authorization header, and never write credentials into a repository
   URL or Git configuration. Administrative secret lists and writes omit stored
@@ -236,18 +252,20 @@ relevant child AGENTS.md
   is no separate user-session workload, session command family, session Worker
   adapter, or session restoration subsystem; authentication sessions, UUI
   application sessions, SSH connections, and the admin socket are distinct.
-- Node-local service and job records are recoverable runtime artifacts, never a global
+- Node-local service records are recoverable runtime artifacts, never a global
   startup gate. Only current record shapes are accepted; unreadable or obsolete
-  records move out of the live registry for diagnosis, and one workload's
+  records move out of the live registry for diagnosis, and one service's
   decode, restore, or Worker failure must not prevent unrelated services or the
-  filesystem-service router from starting. A fully
+  package-service router from starting. Ordinary jobs retain only live
+  in-process state and are never persisted, replayed, or added to automatic
+  execution history. A fully
   retired service-pool record must be removed so an absent inherited sandbox
   cannot create an endless reconciliation failure after restart.
 - Kernel development uses destructive schema evolution. Do not add compatibility
   adapters, persisted-data migrations, deprecated aliases, or dual sources of
   truth for old kernels; discard and initialize a fresh instance when a schema,
   settings key, runtime record, or node layout changes.
-- Filesystem-service catalog discovery is fixed-depth and runs once at kernel
+- Installed-service catalog discovery is fixed-depth and runs once at kernel
   startup or on explicit full reconciliation. The maintenance timer touches
   only services with live runtime capacity or pending-capacity retries; service
   commands and cold requests reconcile their selected service directly.
@@ -386,16 +404,16 @@ relevant child AGENTS.md
   checksum-verified project-local Go toolchain and node-local gVisor, generates
   the generic protocol, builds exactly `kernel` and `admin`, initializes the
   selected instance layout when absent, atomically refreshes platform-owned
-  `config/runtime/` and read-only development helper scripts, and materializes
+  `node/kernel/runtime/definitions/` and read-only development helper scripts, and materializes
   verified service and development images
   under `node/kernel/runtime/images/`. Complete generic image-input digests
   make unchanged installs fast; required packages and Deno bundling execute
   inside the pinned gVisor image build. The default verification gate runs Go
   and generic runtime checks only. `--skip-runtime-host` prevents full-mode
   host mutation while retaining rootless gVisor, and `--skip-verification`
-  skips only test gates. Installation checks Git, seeds first-party package-index
-  defaults only when the mapped index is empty, and synchronizes mapped package
-  repositories through the same typed command handler used at runtime. It never
+  skips only test gates. Installation checks Git and stages the source-owned
+  bootstrap package set as clean Git repositories only for a fresh fixed-layout
+  instance; first kernel boot publishes it transactionally in the database. It never
   builds, formats, lints, type-checks, or tests application packages and never
   runs a UUI build or browser E2E.
 - `run.sh` may be invoked from any directory. It treats that current directory
@@ -405,7 +423,8 @@ relevant child AGENTS.md
   image or executes Deno during startup. When a kernel is already running, `run.sh`
   gracefully restarts it after the rebuild, waits for the replacement control
   plane, then attaches without owning its lifecycle; otherwise it starts a
-  kernel. The interactive admin remains open after `restart` or `shutdown`;
+  kernel. The interactive admin remains open after `kernel.restart` or
+  `kernel.shutdown`;
   kernel restart gracefully exec-replaces the process itself and therefore
   works for both attached and wrapper-started kernels. When the admin exits and
   `run.sh` owns the still-live kernel, the
@@ -415,9 +434,10 @@ relevant child AGENTS.md
   process remains alive; runtime recovery never gates the console.
   `THE8020_SKIP_RUNTIME_HOST=true` forwards the rootless-only install
   mode.
-- The source workspace `/workspace/8020/` contains sibling independent Git
-  repositories `kernel`, `uui`, `admin-core`, `demo`, and `dev-core`; the kernel
-  repository contains no source `packages/` copy. Each package owns its
+- The source workspace `/workspace/8020/` contains sibling package repositories
+  `admin-core`, `admin-db`, `db`, `demo`, `dev-core`, `packages`, `secrets`,
+  `services`, `system`, `users`, and `uui`, alongside `kernel`; the kernel
+  repository contains no source package copies. Each package owns its
   formatting, linting, type checking, tests, browser bundles, release, and
   activation readiness. Initialized instances clone indexed repositories into
   their mapped `packages/<namespace>/<repository>/` tree, which service
@@ -455,24 +475,21 @@ relevant child AGENTS.md
   official Debian or Ubuntu repositories in both portable and rootful modes;
   bounded container-root capabilities and an image-qualified native durable
   system root support persistent interactive package installation. The
-  portable and full runtime images include Bash for this administrator-only
+  portable and full runtime images include Bash for this authenticated-user
   debug path.
-- Each initialized instance maps externally synchronized `packages/`, `config/`,
-  `state/`, and `users/` roots in `node/kernel/paths.toml`. `config/` owns
-  system-wide settings, administrator credentials, node topology, development
-  mounts, and the installed generic runtime definition/source under
-  `config/runtime/`; `state/` owns shared operational state, including
-  kernel-owned `state/package-index/` and package-owned `state/package-data/`;
-  `users/<username>/` owns that user's durable
-  data; the private top-level `database/` owns the default single-node SQLite
+- Each initialized instance has fixed top-level `packages/`, `users/`,
+  `database/`, `scripts/`, and `node/` roots plus one `kernel.toml`. Shared
+  settings, users, authentication sessions, package state, service policy and
+  versions, persistent routes, topology, and named secrets are ordinary package
+  tables in the system database. `users/<username>/` owns that user's durable
+  filesystem data; the private top-level `database/` owns the default single-node SQLite
   system database and is never sandbox-mounted. SQLite uses WAL so readers can
   run alongside its single writer; each kernel owns a dynamically opened
   `database/sql` pool with runtime-mutable node-local open/idle limits defaulting
-  to 32/8 and exposes pool pressure through `system status`. `node/` owns every
-  node-local artifact. Global setting overrides live in
-  `config/settings.toml`, node setting overrides live in
-  `node/kernel/settings.toml`, and authentication/configuration material is never
-  mounted into sandboxes.
+  to 32/8 and exposes pool pressure through `kernel.status`. `node/` owns every
+  observed or ephemeral node-local artifact. Per-node settings stay in
+  `kernel.toml`, and credentials or configuration are never mounted into
+  sandboxes.
 - Source-owned commands and development toolchains remain repository-local;
   installation places each rootless node's pinned runsc and images under its
   own `node/kernel/`. Full-mode
@@ -483,7 +500,7 @@ relevant child AGENTS.md
 - Tracked generic Deno execution code, protocol source, portable image-build
   tooling, and image-installed development helpers belong under
   `defaults/config/runtime/` and are refreshed into initialized
-  `config/runtime/`. Source-tree `.development/` holds only disposable
+  `node/kernel/runtime/definitions/`. Source-tree `.development/` holds only disposable
   framework-development toolchains, downloads, caches, generated build glue,
   and test instances; no initialized instance reads it as runtime state.
   Materialized images, build caches, downloads, smoke records, and temporary

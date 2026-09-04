@@ -47,7 +47,7 @@ func TestCatalogBootstrapAndAdditiveSynchronization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.State != StateConnected || status.CatalogVersion != 1 || status.Initialized {
+	if status.State != StateConnected || status.CatalogVersion != 2 || status.Initialized {
 		t.Fatalf("catalog status = %#v", status)
 	}
 	descriptor := testDescriptor()
@@ -56,6 +56,9 @@ func TestCatalogBootstrapAndAdditiveSynchronization(t *testing.T) {
 	})
 	if err != nil || len(results) != 1 || results[0].State != "synchronized" {
 		t.Fatalf("synchronize = %#v, %v", results, err)
+	}
+	if err := manager.CompleteInitialization(ctx, map[string]string{"acme/orders": "packages-1"}); err != nil {
+		t.Fatal(err)
 	}
 	if !manager.Status().Initialized {
 		t.Fatal("initial schema synchronization did not initialize catalog")
@@ -90,6 +93,9 @@ func TestDeploymentOutcomeRemainsVisibleAfterRollback(t *testing.T) {
 	if _, err := manager.Synchronize(ctx, nil, SynchronizationOptions{
 		Full: true, PackageCommits: map[string]string{"acme/orders": "one"},
 	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.CompleteInitialization(ctx, map[string]string{"acme/orders": "one"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := manager.BeginDeployment(ctx, []DeploymentCandidate{{PackageID: "acme/orders", CandidateCommit: "two"}}); err != nil {
@@ -132,7 +138,7 @@ func TestCatalogBootstrapRejectsAnInvalidExistingCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	status, err := manager.InitializeCatalog(ctx)
-	if err == nil || status.State != StateDegraded || !strings.Contains(status.CatalogError, "validate database catalog") {
+	if err == nil || status.State != StateInitializationFailed || !strings.Contains(status.CatalogError, "validate database catalog") {
 		t.Fatalf("invalid catalog status = %#v, %v", status, err)
 	}
 }
@@ -253,7 +259,7 @@ func TestCanonicalTableIDIsPortableAndStable(t *testing.T) {
 	long, err := CanonicalTableID(namespace, packageName, tableName)
 	full := strings.Join([]string{normalizeIdentity(namespace), normalizeIdentity(packageName), normalizeIdentity(tableName)}, "__")
 	digest := sha256.Sum256([]byte(full))
-	want := full[:52] + "_" + hex.EncodeToString(digest[:])[:10]
+	want := full[:56] + "_" + hex.EncodeToString(digest[:])[:6]
 	if err != nil || long != want || len(long) != 63 {
 		t.Fatalf("long canonical ID = %q (%d), %v", long, len(long), err)
 	}
@@ -353,7 +359,7 @@ func TestPhysicalAndLogicalCatalogDriftIsDetected(t *testing.T) {
 	}
 }
 
-func TestManualMatchingTableIsAdoptedAndUncataloguedTablesAreVisible(t *testing.T) {
+func TestManualMatchingTableIsAdoptedAndUncataloguedTablesRequireExplicitInspection(t *testing.T) {
 	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
 	t.Cleanup(func() { _ = manager.Close() })
 	ctx := context.Background()
@@ -382,14 +388,8 @@ func TestManualMatchingTableIsAdoptedAndUncataloguedTablesAreVisible(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	var manual TableSummary
-	for _, table := range tables {
-		if table.TableID == "manual_notes" {
-			manual = table
-		}
-	}
-	if manual.State != "uncatalogued" || manual.SynchronizationState != "uncatalogued" {
-		t.Fatalf("uncatalogued table = %#v", manual)
+	if len(tables) != 1 || tables[0].TableID != descriptor.TableID {
+		t.Fatalf("catalog-only list = %#v", tables)
 	}
 	detail, err := manager.InspectTable(ctx, "manual_notes")
 	if err != nil || len(detail.Physical) != 2 || detail.State != "uncatalogued" {
@@ -540,7 +540,7 @@ func TestSynchronizeDefinitionEvaluatesOnlyTheSelectedTable(t *testing.T) {
 	}
 }
 
-func TestTableListReportsSourceAndPhysicalAlerts(t *testing.T) {
+func TestTableBrowsingAvoidsSourceEvaluationAndComparisonIsExplicit(t *testing.T) {
 	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
 	t.Cleanup(func() { _ = manager.Close() })
 	ctx := context.Background()
@@ -551,8 +551,12 @@ func TestTableListReportsSourceAndPhysicalAlerts(t *testing.T) {
 	if _, err := manager.Synchronize(ctx, []EvaluatedTable{evaluatedTable(t, descriptor)}, SynchronizationOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	manager.SetSourceInspector(func(_ context.Context, sources []TableSource) (map[string]SourceStatus, error) {
-		return map[string]SourceStatus{sources[0].TableID: {CurrentCommit: "different"}}, nil
+	evaluations := 0
+	manager.SetSourceEvaluator(func(_ context.Context, source TableSource) (*EvaluatedTable, error) {
+		evaluations++
+		table := evaluatedTable(t, descriptor)
+		table.SourceCommit = "different"
+		return &table, nil
 	})
 	if _, err := manager.Execute(ctx, `DROP TABLE "acme__orders__orders"`, nil); err != nil {
 		t.Fatal(err)
@@ -561,7 +565,62 @@ func TestTableListReportsSourceAndPhysicalAlerts(t *testing.T) {
 	if err != nil || len(tables) != 1 {
 		t.Fatalf("list = %#v, %v", tables, err)
 	}
-	if tables[0].DefinitionState != "missing" || tables[0].SynchronizationState != "drift" || !strings.Contains(tables[0].Error, "physical table is missing") {
-		t.Fatalf("alert = %#v", tables[0])
+	if evaluations != 0 || tables[0].SynchronizationState != "synchronized" || tables[0].Error != "" {
+		t.Fatalf("catalog-only list = %#v", tables[0])
+	}
+	detail, err := manager.InspectTable(ctx, descriptor.TableID)
+	if err != nil || evaluations != 0 || detail.DefinitionState != "" {
+		t.Fatalf("fast detail = %#v evaluations=%d error=%v", detail, evaluations, err)
+	}
+	compared, err := manager.CompareTable(ctx, descriptor.TableID)
+	if err != nil || evaluations != 1 || compared.DefinitionState != "commit_mismatch" || compared.CurrentSourceCommit != "different" {
+		t.Fatalf("comparison = %#v evaluations=%d error=%v", compared, evaluations, err)
+	}
+}
+
+func TestCatalogColumnsPreserveAuthoredOrderAfterRetirement(t *testing.T) {
+	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
+	t.Cleanup(func() { _ = manager.Close() })
+	ctx := context.Background()
+	if _, err := manager.InitializeCatalog(ctx); err != nil {
+		t.Fatal(err)
+	}
+	descriptor := TableDescriptor{
+		FormatVersion: 1,
+		TableID:       "acme__orders__ordered",
+		Columns: []ColumnDescriptor{
+			{Name: "id", LogicalType: "text", PrimaryKey: true},
+			{Name: "zebra", LogicalType: "text", Nullable: true},
+			{Name: "alpha", LogicalType: "text", Nullable: true},
+			{Name: "middle", LogicalType: "text", Nullable: true},
+		},
+		PrimaryKey: []string{"id"},
+	}
+	if _, err := manager.Synchronize(ctx, []EvaluatedTable{evaluatedTable(t, descriptor)}, SynchronizationOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	descriptor.Columns = append(descriptor.Columns[:1], descriptor.Columns[2:]...)
+	if _, err := manager.Synchronize(ctx, []EvaluatedTable{evaluatedTable(t, descriptor)}, SynchronizationOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := manager.InspectTable(ctx, descriptor.TableID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wanted := []string{"id", "zebra", "alpha", "middle"}
+	wantedOrdinals := []int{0, 1, 1, 2}
+	if len(detail.Columns) != len(wanted) {
+		t.Fatalf("columns = %#v", detail.Columns)
+	}
+	for index, name := range wanted {
+		if detail.Columns[index].ColumnName != name {
+			t.Fatalf("column order = %#v", detail.Columns)
+		}
+		if detail.Columns[index].Ordinal != wantedOrdinals[index] {
+			t.Fatalf("column ordinal = %#v", detail.Columns[index])
+		}
+	}
+	if detail.Columns[1].State != "retired" {
+		t.Fatalf("retired column = %#v", detail.Columns[1])
 	}
 }
