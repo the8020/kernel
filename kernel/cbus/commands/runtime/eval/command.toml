@@ -120,9 +120,6 @@ type = "string"
 name = "duration"
 type = "string"
 [[result]]
-name = "resources"
-type = "object"
-[[result]]
 name = "execution_id"
 type = "string"
 [[examples]]

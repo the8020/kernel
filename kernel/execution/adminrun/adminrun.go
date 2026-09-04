@@ -20,14 +20,10 @@ import (
 type JobRunner interface {
 	Run(context.Context, string, string, jobs.Options) (jobs.Record, error)
 }
-type MetricsReader interface {
-	Metrics(string) (model.ResourceMetrics, error)
-}
 type Config struct {
 	InstanceRoot  string
 	ArtifactsRoot string
 	Jobs          JobRunner
-	Metrics       MetricsReader
 	MaximumFiles  int
 	MaximumBytes  int64
 }
@@ -35,7 +31,6 @@ type Manager struct {
 	instanceRoot  string
 	artifactsRoot string
 	jobs          JobRunner
-	metrics       MetricsReader
 	maximumFiles  int
 	maximumBytes  int64
 }
@@ -53,10 +48,9 @@ type Options struct {
 	WorkspaceWritable bool
 }
 type Result struct {
-	ArtifactID string                 `json:"artifact_id"`
-	Entrypoint string                 `json:"entrypoint"`
-	Execution  jobs.Record            `json:"execution"`
-	Resources  *model.ResourceMetrics `json:"resources,omitempty"`
+	ArtifactID string      `json:"artifact_id"`
+	Entrypoint string      `json:"entrypoint"`
+	Execution  jobs.Record `json:"execution"`
 }
 
 func New(config Config) (*Manager, error) {
@@ -83,7 +77,7 @@ func New(config Config) (*Manager, error) {
 	if config.MaximumBytes <= 0 {
 		config.MaximumBytes = 64 << 20
 	}
-	return &Manager{instanceRoot: instance, artifactsRoot: artifacts, jobs: config.Jobs, metrics: config.Metrics, maximumFiles: config.MaximumFiles, maximumBytes: config.MaximumBytes}, nil
+	return &Manager{instanceRoot: instance, artifactsRoot: artifacts, jobs: config.Jobs, maximumFiles: config.MaximumFiles, maximumBytes: config.MaximumBytes}, nil
 }
 
 func (m *Manager) Eval(ctx context.Context, code string, options Options) (Result, error) {
@@ -156,15 +150,7 @@ func (m *Manager) submit(ctx context.Context, jobID, artifactID, relative string
 	if err != nil {
 		return Result{ArtifactID: artifactID, Entrypoint: entrypoint, Execution: record}, err
 	}
-	result := Result{ArtifactID: artifactID, Entrypoint: entrypoint, Execution: record}
-	if !options.Detached && m.metrics != nil {
-		metrics, metricsErr := m.metrics.Metrics(record.SandboxID)
-		if metricsErr != nil {
-			return result, fmt.Errorf("read execution resources: %w", metricsErr)
-		}
-		result.Resources = &metrics
-	}
-	return result, nil
+	return Result{ArtifactID: artifactID, Entrypoint: entrypoint, Execution: record}, nil
 }
 
 func artifactPermissions(requested *supervisor.WorkerPermissions, artifactRoot string) *supervisor.WorkerPermissions {

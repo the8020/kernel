@@ -14,7 +14,7 @@
 - Eval/run always submit sandboxed runtime work and never invoke host Deno.
 - Eval/run may forward one explicit instance-root-bounded development workspace
   to the ordinary job path; host writes remain opt-in.
-- Eval/run show state, program result, emitted logs, and human-readable duration by default; `--detail` exposes the complete artifact, execution, permission, timing, and sandbox resource record.
+- Eval/run show state, program result, emitted logs, and human-readable duration by default; `--detail` exposes the complete artifact, execution, permission, and timing record. Live sandbox resources belong to sandbox inspection rather than a post-completion read after an ephemeral job has released its sandbox.
 
 # Work Guidance
 

@@ -314,7 +314,6 @@ func (f fakeAdminRun) result() adminrun.Result {
 			Result:      map[string]any{"ok": true},
 			Duration:    1250 * time.Millisecond,
 		},
-		Resources: &model.ResourceMetrics{CPUUsageMicros: 12345678901, MemoryCurrent: 4096},
 	}
 }
 func (f fakeAdminRun) Eval(_ context.Context, _ string, options adminrun.Options) (adminrun.Result, error) {

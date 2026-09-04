@@ -705,7 +705,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		return runtimeServices, closeRuntime
 	}
 	callbackServer.SetAuthentication(authentication, authentication)
-	adminManager, err := adminrun.New(adminrun.Config{InstanceRoot: root, ArtifactsRoot: paths.RuntimeAttachments, Jobs: jobManager, Metrics: sandboxManager})
+	adminManager, err := adminrun.New(adminrun.Config{InstanceRoot: root, ArtifactsRoot: paths.RuntimeAttachments, Jobs: jobManager})
 	if err != nil {
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime

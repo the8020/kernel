@@ -9,7 +9,6 @@ import (
 
 	"the8020/kernel/execution/jobs"
 	"the8020/kernel/execution/supervisor"
-	"the8020/kernel/sandbox/model"
 )
 
 type fakeJobs struct {
@@ -17,16 +16,6 @@ type fakeJobs struct {
 	sandboxID         string
 	options           jobs.Options
 	calls             int
-}
-
-type fakeMetrics struct {
-	sandboxID string
-	value     model.ResourceMetrics
-}
-
-func (f *fakeMetrics) Metrics(sandboxID string) (model.ResourceMetrics, error) {
-	f.sandboxID = sandboxID
-	return f.value, nil
 }
 
 func (f *fakeJobs) Run(_ context.Context, jobID, entrypoint string, options jobs.Options) (jobs.Record, error) {
@@ -84,11 +73,10 @@ func TestAdministrativeExecutionRejectsNonJobWorkloadType(t *testing.T) {
 	}
 }
 
-func TestAdministrativeExecutionIncludesSynchronousResourceSnapshot(t *testing.T) {
+func TestSynchronousAdministrativeExecutionReturnsCompletedJob(t *testing.T) {
 	root, artifacts := t.TempDir(), filepath.Join(t.TempDir(), "artifacts")
 	fake := &fakeJobs{sandboxID: "sandbox-test"}
-	metrics := &fakeMetrics{value: model.ResourceMetrics{CPUUsageMicros: 42, MemoryPeak: 2048}}
-	manager, err := New(Config{InstanceRoot: root, ArtifactsRoot: artifacts, Jobs: fake, Metrics: metrics})
+	manager, err := New(Config{InstanceRoot: root, ArtifactsRoot: artifacts, Jobs: fake})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,8 +84,8 @@ func TestAdministrativeExecutionIncludesSynchronousResourceSnapshot(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if metrics.sandboxID != "sandbox-test" || result.Execution.SandboxID != "sandbox-test" || result.Resources == nil || result.Resources.CPUUsageMicros != 42 || result.Resources.MemoryPeak != 2048 {
-		t.Fatalf("metrics sandbox=%q execution=%#v resources=%#v", metrics.sandboxID, result.Execution, result.Resources)
+	if result.Execution.SandboxID != "sandbox-test" || result.Execution.State != "SUCCEEDED" {
+		t.Fatalf("execution=%#v", result.Execution)
 	}
 	if fake.options.Permissions == nil || len(fake.options.Permissions.Read) != 1 || fake.options.Permissions.Read[0] != "/artifacts/"+result.ArtifactID {
 		t.Fatalf("default artifact permissions=%#v", fake.options.Permissions)
