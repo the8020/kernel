@@ -153,11 +153,13 @@ relevant child AGENTS.md
   retains `/8020` as persistent instance data, and selects rootless gVisor;
   ordinary `docker build` uses its existing build sandbox rather than nesting
   gVisor, while Docker runs require an unconfined outer seccomp profile and
-  complete the pinned runsc smoke before kernel startup. When paired
-  `THE8020_USERNAME` and `THE8020_PASSWORD` values are supplied, the entrypoint
-  may call the package-owned `users.add` command if the users table is empty;
-  otherwise those values are ignored. It prints `80|20 is ready` after that
-  optional handling. A user is never required for control-plane startup.
+  complete the pinned runsc smoke before kernel startup. The entrypoint creates
+  the first user whenever the users table is empty, defaulting to username
+  `admin` and password `admin`; `THE8020_USERNAME` and `THE8020_PASSWORD`
+  independently override those defaults. Existing users are never changed. It
+  prints `80|20 is ready` after first-user handling. The kernel control plane
+  remains independent of users, while Docker readiness requires this initial
+  user to exist.
 
 - Interactive kernel shutdown must acknowledge `Ctrl-C` immediately and emit
   one ordinary line whenever the graceful-shutdown stage or completed-stage
