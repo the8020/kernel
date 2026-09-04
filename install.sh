@@ -396,6 +396,8 @@ if [[ "$RUN_VERIFICATION" == true ]]; then
   export DENO_DIR="$NODE_RUNTIME/verification-deno-cache"
   (cd "$RUNTIME_SOURCE/deno" && "$DENO_CMD" task check && "$DENO_CMD" task test)
   sh -n "$SOURCE_ROOT/defaults/scripts/activate"
+  bash -n "$SOURCE_ROOT/defaults/scripts/install-codex.sh"
+  bash -n "$SOURCE_ROOT/defaults/scripts/install-claude.sh"
   "$DENO_CMD" fmt --check "$SOURCE_ROOT/defaults/scripts/activate.ts"
   "$DENO_CMD" lint "$SOURCE_ROOT/defaults/scripts/activate.ts"
   "$DENO_CMD" check "$SOURCE_ROOT/defaults/scripts/activate.ts"
