@@ -18,7 +18,7 @@
 
 - Public API: `New`, `NewSandboxID`, `ReleaseSandboxID`, `Manager.Create`,
   `AssignWarm`, `AddOwner`, `RemoveOwner`, `Capacity`, `List`,
-  `ResolveRuntimeGroup`, `Inspect`, `Metrics`, `OpenConsole`, `CheckHealth`,
+  `ResolveRuntimeGroup`, `Inspect`, `Refresh`, `Metrics`, `OpenConsole`, `CheckHealth`,
   `Stop`, `Kill`, `Delete`, `ListHistory`, `InspectHistory`, `CleanupHistory`,
   `Reconcile`, `Startup`, and `Shutdown`.
 - Reconcile startup restores healthy persisted runtime groups and deletes owned
@@ -37,16 +37,17 @@
   cleanup-pending terminal records remain live and inspectable until explicit
   retry succeeds. History listing is a separately requested bounded index query;
   inspection uses a history ID and never searches live state.
-- Heartbeat monitoring merges metrics into the newest status and conditionally
-  publishes failure against the newest heartbeat, so a concurrent fresh callback
-  cannot be overwritten or killed by a stale monitor snapshot.
-- Inspection combines supervisor Worker count with raw backend CPU, memory, and
-  process samples. Resource observations are diagnostic only and are not
-  converted into placement utilization.
-- Inspection probes runtime-local Workers and metrics only while the persisted
-  lifecycle is ready, active, or draining. Terminal and transitional sandboxes
-  remain inspectable from authoritative persisted state without contacting a
-  supervisor that cannot be available.
+- Heartbeat callbacks maintain an indexed in-memory deadline queue. Monitoring
+  claims at most 256 stale candidates per pass without scanning the sandbox
+  catalog, performs targeted backend/cgroup inspection only for those entries,
+  and conditionally publishes failure against the newest heartbeat so a
+  concurrent fresh callback cannot be overwritten or killed by an older
+  observation.
+- Ordinary `List` and `Inspect` combine recovery status with the latest cached
+  supervisor snapshot and perform no supervisor/backend I/O. `Refresh` explicitly
+  samples one selected sandbox's absolute supervisor snapshot and raw CPU,
+  memory, and process diagnostics concurrently, then updates the memory cache.
+  Resource observations never become placement utilization.
 - Exact runtime-group resolution returns only the persisted specification and
   never contacts the supervisor or backend; identity-routing callers use it when
   they already hold the runtime-group ID.
@@ -58,9 +59,13 @@
 - Creation admits declared reservations only while node-wide sandbox-count and
   temporary-storage budgets remain. `Capacity` exposes those limits and current
   reservations without inferring health from usage.
-- All public operations are synchronized; dependency calls are context bounded.
-  Readiness failures preserve the governing cancellation or deadline while
-  retaining the last probe error as diagnostics.
+- Capacity admission is reserved under one short lock. Runtime-group lifecycle
+  operations use striped locks and never serialize unrelated backend, network,
+  supervisor, or filesystem I/O. Admission reads only preloaded live/history
+  identity indexes and cached capacity while holding its lock. Explicit global reconciliation excludes only
+  another reconciliation; heartbeat health work has no global lock. Dependency
+  calls remain context bounded; readiness failures preserve cancellation or
+  deadline while retaining the last probe error as diagnostics.
 - `OpenConsole` resolves only a persisted ready sandbox and requires the
   selected production backend's optional console capability.
 
@@ -75,7 +80,9 @@
   generic console routing, node-budget admission, warm assignment/shared-owner
   add/remove and final-owner destruction, failure archival, lifecycle
   transitions, sandbox-scoped port release, Worker-count and raw CPU/RAM
-  metrics, heartbeat timeout, OOM evidence preservation/full cleanup, deletion,
-  reconstruction, missing groups, owned orphans, and startup/shutdown policies.
+  metrics, cache-only healthy monitoring, heartbeat timeout, stale-sandbox OOM
+  evidence preservation/full cleanup, deletion,
+  reconstruction, cached versus targeted live inspection, parallel unrelated
+  creations, missing groups, owned orphans, and startup/shutdown policies.
 
 # Child DOX Index

@@ -29,14 +29,15 @@
 - Request metadata carries trusted authentication and current generic execution
   identity plus the kernel-observed client IP address and network scope, without
   cookies, route tokens, or application settings.
-- Kernel calls retain both the Worker's internal version-specific workload ID
-  and the public service ID; they are never substituted for one another during
-  runtime identity validation.
+- Application code sends only the kernel operation and arguments. RuntimeWorker
+  attaches immutable Worker execution identity and the current request ID;
+  sandbox and workload identity come from the authenticated supervisor envelope
+  rather than duplicated application fields.
 - The kernel bridge uses `AsyncLocalStorage` to retain an exact request/job
-  context for every asynchronous continuation. A persistent execution reuses
-  that context and updates it to its current transport request on reconnect. The
-  exact-control path may borrow but never overwrite that current request. The
-  bridge relays only declared generic kernel operations. The non-secret database
+  context for every asynchronous continuation. Each transport request uses a
+  separate frozen context even when it belongs to the same persistent execution;
+  cancellation and transaction scope therefore cannot cross requests. The bridge
+  relays only declared generic kernel operations. The non-secret database
   backend is installed from trusted Worker metadata before module import;
   read-only database status is also available before execution, while all
   contextual kernel calls require an active request or job.
@@ -51,6 +52,8 @@
   shutdown also requests prefix cleanup as a leak-safe fallback. A Worker with
   database access set to `none` never opens or closes a database scope, keeping
   schema evaluation independent of the database being initialized.
+- Jobs and service requests share this execution-scoped database path; every job
+  invocation has a distinct request ID and closes only its own scope.
 - Structured command errors raised by the kernel SDK retain their code, message,
   and details across the Worker boundary; ordinary application failures remain
   bounded messages.
@@ -68,9 +71,9 @@
 
 # Concurrency
 
-- A job runs one invocation unless compatible reuse is explicit. A service
-  honors supervisor-enforced stateless or persistent slot limits; exact control
-  calls are correlated and bounded.
+- A job runs one invocation unless compatible reuse is explicit. A service uses
+  strict single-concurrency or the supervisor's bounded balancing allowance;
+  exact control calls are correlated and bounded.
 
 # Public API
 
@@ -91,7 +94,8 @@
 
 - Worker tests cover default-export-only spread job invocation, secure-input
   isolation/cleanup, service/job network access, permission denial, nested
-  Workers, fetch/streaming/WebSocket relay, registered controls, cancellation,
-  crash reporting, compatible reuse, and inspector names.
+  Workers, denial of direct internal-token/socket access,
+  fetch/streaming/WebSocket relay, registered controls, kernel-call
+  cancellation, crash reporting, compatible reuse, and inspector names.
 
 # Child DOX Index

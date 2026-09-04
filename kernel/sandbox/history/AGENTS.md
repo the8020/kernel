@@ -10,6 +10,8 @@
 # Local Contracts
 
 - History lives under its own private runtime root and is never scanned by live sandbox operations.
+- Retained sandbox-ID markers are indexed once at startup and maintained with
+  archive/cleanup, so collision checks do not stat files during admission.
 - Recent listing reads bounded index tails; direct inspection derives one sharded record path from the history ID.
 - Cleanup removes expired hour buckets and their retained-ID markers without walking live state or individual archive directories.
 - Inspection returns at most 256 KiB of log tails per record.

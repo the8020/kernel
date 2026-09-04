@@ -68,6 +68,16 @@ func TestArchiveListInspectAndCleanup(t *testing.T) {
 	if retained, err := store.ContainsSandboxID(first.SandboxID); err != nil || !retained {
 		t.Fatalf("retained=%t err=%v", retained, err)
 	}
+	reloaded, err := New(Config{Root: filepath.Join(root, "history")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(reloaded.markerPath(first.SandboxID)); err != nil {
+		t.Fatal(err)
+	}
+	if retained, err := reloaded.ContainsSandboxID(first.SandboxID); err != nil || !retained {
+		t.Fatalf("preloaded retained index performed a live stat: retained=%t err=%v", retained, err)
+	}
 
 	now = now.Add(DefaultRetention + 2*time.Hour)
 	removed, err := store.Cleanup(DefaultRetention)

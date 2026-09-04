@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -27,6 +29,31 @@ type fakeBackend struct {
 	deleteError                       error
 	consoleID                         string
 	consoleOptions                    backend.ConsoleOptions
+	observeCalls                      atomic.Int64
+	listCalls                         atomic.Int64
+}
+
+type blockingCreateBackend struct {
+	*fakeBackend
+	entered chan string
+	release chan struct{}
+	mu      sync.Mutex
+}
+
+func (b *blockingCreateBackend) Create(ctx context.Context, spec model.SandboxSpec) (backend.Observation, error) {
+	select {
+	case b.entered <- spec.RuntimeGroupID:
+	case <-ctx.Done():
+		return backend.Observation{}, ctx.Err()
+	}
+	select {
+	case <-b.release:
+	case <-ctx.Done():
+		return backend.Observation{}, ctx.Err()
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.fakeBackend.Create(ctx, spec)
 }
 
 type fakeConsole struct {
@@ -68,6 +95,7 @@ func (f *fakeBackend) UpdateLabels(_ context.Context, id string, labels map[stri
 	return nil
 }
 func (f *fakeBackend) Observe(_ context.Context, id string) (backend.Observation, error) {
+	f.observeCalls.Add(1)
 	observation, ok := f.observations[id]
 	if !ok {
 		return observation, os.ErrNotExist
@@ -75,6 +103,7 @@ func (f *fakeBackend) Observe(_ context.Context, id string) (backend.Observation
 	return observation, nil
 }
 func (f *fakeBackend) List(context.Context) ([]backend.Observation, error) {
+	f.listCalls.Add(1)
 	result := make([]backend.Observation, 0, len(f.observations))
 	for _, observation := range f.observations {
 		result = append(result, observation)
@@ -111,6 +140,17 @@ type fakeNetwork struct {
 	allocationError              error
 }
 
+type serializedNetwork struct {
+	*fakeNetwork
+	mu sync.Mutex
+}
+
+func (n *serializedNetwork) Allocate(ctx context.Context, group, container string, configuration model.NetworkConfiguration) (sandboxnetwork.Allocation, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.fakeNetwork.Allocate(ctx, group, container, configuration)
+}
+
 func (f *fakeNetwork) Allocate(_ context.Context, group, container string, _ model.NetworkConfiguration) (sandboxnetwork.Allocation, error) {
 	f.allocated = append(f.allocated, group)
 	if f.allocationError != nil {
@@ -140,12 +180,35 @@ func (f *fakeSupervisor) Status(_ context.Context, spec model.SandboxSpec) (supe
 		return supervisor.Status{}, f.statusError
 	}
 	status := f.status
+	if status.Revision == 0 {
+		status.Revision = 1
+	}
 	status.ProtocolVersion, status.RuntimeGroupID, status.SandboxID, status.WorkloadType = 1, spec.RuntimeGroupID, spec.SandboxID, spec.WorkloadType
 	return status, nil
 }
 func (f *fakeSupervisor) Workers(context.Context, model.SandboxSpec) ([]supervisor.WorkerStatus, error) {
 	f.workerCalls++
 	return append([]supervisor.WorkerStatus(nil), f.workers...), nil
+}
+func (f *fakeSupervisor) Snapshot(ctx context.Context, spec model.SandboxSpec) (model.RuntimeSnapshot, error) {
+	status, err := f.Status(ctx, spec)
+	if err != nil {
+		return model.RuntimeSnapshot{}, err
+	}
+	workers, err := f.Workers(ctx, spec)
+	if err != nil {
+		return model.RuntimeSnapshot{}, err
+	}
+	snapshot := model.RuntimeSnapshot{
+		Revision: status.Revision, ProtocolVersion: status.ProtocolVersion,
+		SupervisorVersion: status.SupervisorVersion, DenoVersion: status.DenoVersion,
+		RuntimeGroupID: status.RuntimeGroupID, SandboxID: status.SandboxID,
+		WorkloadType: status.WorkloadType, WorkerCount: len(workers),
+	}
+	for _, worker := range workers {
+		snapshot.Workers = append(snapshot.Workers, model.RuntimeWorkerStatus{WorkerID: worker.WorkerID, ExecutionID: worker.ExecutionID, WorkloadID: worker.WorkloadID, State: worker.State})
+	}
+	return snapshot, nil
 }
 func (f *fakeSupervisor) Drain(context.Context, model.SandboxSpec) error { f.drains++; return nil }
 
@@ -179,6 +242,10 @@ func TestCreateInspectStopDeleteLifecycle(t *testing.T) {
 	}
 	runtimeSupervisor.workers = []supervisor.WorkerStatus{{WorkerID: "worker-one", State: "ready"}}
 	inspected, err := manager.Inspect(context.Background(), "sandbox-one")
+	if err != nil || len(inspected.Workers) != 0 || runtimeSupervisor.workerCalls != workerCalls {
+		t.Fatalf("cached inspect=%#v calls=%d err=%v", inspected, runtimeSupervisor.workerCalls, err)
+	}
+	inspected, err = manager.Refresh(context.Background(), "sandbox-one")
 	if err != nil || len(inspected.Workers) != 1 || inspected.Status.WorkerCount != 1 {
 		t.Fatalf("inspect=%#v err=%v", inspected, err)
 	}
@@ -370,6 +437,42 @@ func TestSandboxAdmissionEnforcesCountAndTemporaryStorageBudgets(t *testing.T) {
 	}
 }
 
+func TestUnrelatedSandboxCreationsDoNotSerializeSlowBackendIO(t *testing.T) {
+	manager, _, runtimeBackend, runtimeNetwork, _ := testManager(t)
+	entered := make(chan string, 2)
+	release := make(chan struct{})
+	manager.backend = &blockingCreateBackend{fakeBackend: runtimeBackend, entered: entered, release: release}
+	manager.network = &serializedNetwork{fakeNetwork: runtimeNetwork}
+
+	results := make(chan error, 2)
+	for _, identity := range [][2]string{{"group-parallel-a", "sandbox-parallel-a"}, {"group-parallel-b", "sandbox-parallel-b"}} {
+		spec := testSandboxSpec(t, identity[0], identity[1])
+		go func() {
+			_, err := manager.Create(context.Background(), spec)
+			results <- err
+		}()
+	}
+	seen := map[string]bool{}
+	for range 2 {
+		select {
+		case group := <-entered:
+			seen[group] = true
+		case <-time.After(time.Second):
+			close(release)
+			t.Fatal("unrelated sandbox creation was serialized behind backend I/O")
+		}
+	}
+	close(release)
+	for range 2 {
+		if err := <-results; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(seen) != 2 {
+		t.Fatalf("entered runtime groups=%#v", seen)
+	}
+}
+
 func TestMetricsReadsSandboxCgroupAndPersistsSnapshot(t *testing.T) {
 	manager, store, _, _, _ := testManager(t)
 	now := time.Unix(1_700_000_000, 0).UTC()
@@ -428,6 +531,7 @@ func TestHealthCheckDetectsOOMPreservesMetricsAndTerminatesGroup(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	manager.now = func() time.Time { return time.Unix(1_700_000_120, 0).UTC() }
 	report, err := manager.CheckHealth(context.Background(), time.Minute)
 	if err != nil || report.Checked != 1 || len(report.Failures) != 1 || !report.Failures[0].OOM || !strings.Contains(report.Failures[0].Reason, "OOM") {
 		t.Fatalf("report=%#v err=%v", report, err)
@@ -438,6 +542,23 @@ func TestHealthCheckDetectsOOMPreservesMetricsAndTerminatesGroup(t *testing.T) {
 	archived := historyForSandbox(t, manager, spec.SandboxID)
 	if archived.Record.Status.ObservedState != model.StateFailed || archived.Record.Status.Metrics.MemoryPeak != 256 || len(runtimeBackend.killed) != 1 || !contains(runtimeBackend.deleted, spec.SandboxID) || !contains(runtimeNetwork.released, spec.RuntimeGroupID) || !contains(runtimePorts.closed, spec.SandboxID) {
 		t.Fatalf("history=%#v killed=%#v deleted=%#v network=%#v ports=%#v", archived, runtimeBackend.killed, runtimeBackend.deleted, runtimeNetwork.released, runtimePorts.closed)
+	}
+}
+
+func TestHealthyHeartbeatCheckUsesOnlyCachedState(t *testing.T) {
+	manager, _, runtimeBackend, _, _ := testManager(t)
+	spec := testSandboxSpec(t, "group-healthy-cache", "sandbox-healthy-cache")
+	if _, err := manager.Create(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	runtimeBackend.observeCalls.Store(0)
+	runtimeBackend.listCalls.Store(0)
+	report, err := manager.CheckHealth(context.Background(), time.Minute)
+	if err != nil || report.Checked != 0 || len(report.Failures) != 0 {
+		t.Fatalf("report=%#v err=%v", report, err)
+	}
+	if runtimeBackend.observeCalls.Load() != 0 || runtimeBackend.listCalls.Load() != 0 {
+		t.Fatalf("healthy cache check performed backend I/O: observe=%d list=%d", runtimeBackend.observeCalls.Load(), runtimeBackend.listCalls.Load())
 	}
 }
 

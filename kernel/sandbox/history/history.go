@@ -31,10 +31,12 @@ const (
 
 type Store struct {
 	mu             sync.Mutex
+	idsMu          sync.RWMutex
 	root           string
 	logPath        func(string) string
 	now            func() time.Time
 	lastArchivedAt time.Time
+	retainedIDs    map[string]bool
 }
 
 type Config struct {
@@ -99,22 +101,38 @@ func New(config Config) (*Store, error) {
 			return nil, fmt.Errorf("restrict sandbox history: %w", err)
 		}
 	}
-	return &Store{root: config.Root, logPath: config.LogPath, now: config.Now}, nil
+	store := &Store{root: config.Root, logPath: config.LogPath, now: config.Now, retainedIDs: map[string]bool{}}
+	shards, err := os.ReadDir(filepath.Join(config.Root, "ids"))
+	if err != nil {
+		return nil, err
+	}
+	for _, shard := range shards {
+		if !shard.IsDir() {
+			continue
+		}
+		entries, err := os.ReadDir(filepath.Join(config.Root, "ids", shard.Name()))
+		if err != nil {
+			return nil, err
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				store.retainedIDs[entry.Name()] = true
+			}
+		}
+	}
+	return store, nil
 }
 
-// ContainsSandboxID uses a direct marker lookup; it never scans archived records.
+// ContainsSandboxID uses the marker index loaded at startup and maintained by
+// archive/cleanup. Admission paths never touch the filesystem.
 func (s *Store) ContainsSandboxID(sandboxID string) (bool, error) {
 	if err := validComponent(sandboxID); err != nil {
 		return false, err
 	}
-	_, err := os.Stat(s.markerPath(sandboxID))
-	if err == nil {
-		return true, nil
-	}
-	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
-	}
-	return false, err
+	s.idsMu.RLock()
+	retained := s.retainedIDs[sandboxID]
+	s.idsMu.RUnlock()
+	return retained, nil
 }
 
 // Archive writes immutable terminal metadata, moves logs, appends one bucket
@@ -129,6 +147,7 @@ func (s *Store) Archive(spec model.SandboxSpec, status model.SandboxStatus, reas
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if marker, err := os.ReadFile(s.markerPath(spec.SandboxID)); err == nil {
+		s.setRetained(spec.SandboxID, true)
 		existingID := strings.TrimSpace(string(marker))
 		directory, pathErr := s.recordDirectory(existingID)
 		if pathErr != nil {
@@ -171,6 +190,7 @@ func (s *Store) Archive(spec model.SandboxSpec, status model.SandboxStatus, reas
 	if err := writeFileAtomic(s.markerPath(spec.SandboxID), []byte(historyID+"\n")); err != nil {
 		return Record{}, err
 	}
+	s.setRetained(spec.SandboxID, true)
 	return record, nil
 }
 
@@ -243,6 +263,8 @@ func (s *Store) Cleanup(retention time.Duration) (int, error) {
 	if retention <= 0 {
 		return 0, errors.New("positive sandbox history retention is required")
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	buckets, err := s.bucketNames()
 	if err != nil {
 		return 0, err
@@ -264,6 +286,8 @@ func (s *Store) Cleanup(retention time.Duration) (int, error) {
 				if json.Unmarshal(scanner.Bytes(), &summary) == nil {
 					if removeErr := os.Remove(s.markerPath(summary.SandboxID)); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 						joined = errors.Join(joined, removeErr)
+					} else {
+						s.setRetained(summary.SandboxID, false)
 					}
 					removed++
 				}
@@ -275,6 +299,16 @@ func (s *Store) Cleanup(retention time.Duration) (int, error) {
 		joined = errors.Join(joined, os.RemoveAll(filepath.Join(s.root, "buckets", bucket)))
 	}
 	return removed, joined
+}
+
+func (s *Store) setRetained(sandboxID string, retained bool) {
+	s.idsMu.Lock()
+	if retained {
+		s.retainedIDs[sandboxID] = true
+	} else {
+		delete(s.retainedIDs, sandboxID)
+	}
+	s.idsMu.Unlock()
 }
 
 func (s *Store) archiveLogs(sandboxID, destination string) (int, int64, error) {

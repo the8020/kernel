@@ -130,6 +130,39 @@ Deno.test("database-free jobs do not open or close database scopes", async () =>
   }
 });
 
+Deno.test("jobs use one invocation-scoped database context", async () => {
+  const calls: KernelCallRequest[] = [];
+  const worker = new RuntimeWorker({
+    metadata: metadata("job", example("job_database"), "job-database"),
+    permissions: { read: [new URL("../examples", import.meta.url).pathname] },
+    kernelCall: (call) => {
+      calls.push(call);
+      if (call.operation === "database.scope.close") {
+        return Promise.resolve({ closed: true });
+      }
+      return Promise.resolve({ columns: ["value"], rows: [[11]] });
+    },
+  });
+  try {
+    assertEquals(await worker.runJob([11]), {
+      columns: ["value"],
+      rows: [[11]],
+    });
+    const statement = calls.find((call) =>
+      call.operation === "database.execute"
+    );
+    const cleanup = calls.find((call) =>
+      call.operation === "database.scope.close"
+    );
+    assertEquals(statement?.requestId, cleanup?.requestId);
+    assertEquals(statement?.executionId, worker.metadata.executionId);
+    assertEquals(statement?.workerId, worker.metadata.workerId);
+    assertEquals(statement?.serviceId, worker.metadata.workloadId);
+  } finally {
+    await worker.stop();
+  }
+});
+
 Deno.test("job secure inputs are isolated and cleared after failures", async () => {
   const first = new RuntimeWorker({
     metadata: metadata("job", example("job_secret"), "secret-first"),
@@ -379,7 +412,6 @@ Deno.test("service Worker bridges typed kernel authentication calls", async () =
       arguments: { username: "Admin", password: "private" },
       requestId: "request-auth-1",
       serviceId: "example/auth/login",
-      workloadId: "workload-kernel",
       executionId: "execution-kernel",
       workerId: "worker-kernel",
       persistentExecutionId: undefined,
@@ -471,7 +503,6 @@ Deno.test("service Worker reads database info during module initialization", asy
     assertEquals(calls[0]?.operation, "database.info");
     assertEquals(calls[0]?.requestId, undefined);
     assertEquals(calls[0]?.serviceId, "workload-db-info");
-    assertEquals(calls[0]?.workloadId, "workload-db-info");
     const response = await worker.dispatchService(
       new Request("http://service/database-info"),
     );
@@ -542,6 +573,61 @@ Deno.test("service request cancellation reaches the program Worker", async () =>
   }
 });
 
+Deno.test("service request cancellation reaches an in-flight kernel call", async () => {
+  let started!: () => void;
+  const entered = new Promise<void>((resolve) => started = resolve);
+  let kernelSignal: AbortSignal | undefined;
+  const worker = new RuntimeWorker({
+    metadata: metadata("service", example("service_kernel"), "db-cancel"),
+    permissions: { read: [new URL("../examples", import.meta.url).pathname] },
+    kernelCall: (call, signal) => {
+      if (call.operation === "database.scope.close") {
+        return Promise.resolve({ closed: true });
+      }
+      kernelSignal = signal;
+      started();
+      return new Promise((_resolve, reject) => {
+        signal?.addEventListener(
+          "abort",
+          () => reject(signal.reason),
+          { once: true },
+        );
+      });
+    },
+  });
+  try {
+    const controller = new AbortController();
+    const pending = worker.dispatchService(
+      new Request("http://service/database-query", {
+        signal: controller.signal,
+      }),
+      {
+        requestId: "request-database-cancel",
+        serviceId: "example/database/service",
+        serviceGeneration: 1,
+        canonicalBasePath: "/example/database/service",
+        originalUrl: "http://service/database-query",
+        client: { ipAddress: "127.0.0.1", networkScope: "loopback" },
+        execution: {
+          nodeId: worker.metadata.nodeId,
+          runtimeGroupId: worker.metadata.runtimeGroupId,
+          sandboxId: worker.metadata.sandboxId,
+          workerId: worker.metadata.workerId,
+          workerExecutionId: worker.metadata.executionId,
+        },
+        auth: { authenticated: false },
+      },
+    );
+    await entered;
+    controller.abort(new DOMException("client left", "AbortError"));
+    await assertRejects(() => pending, Error, "client left");
+    await waitFor(() => kernelSignal?.aborted === true);
+    assertEquals(kernelSignal?.aborted, true);
+  } finally {
+    worker.kill();
+  }
+});
+
 Deno.test("Worker permissions deny undeclared host reads", async () => {
   const worker = new RuntimeWorker({
     metadata: metadata("job", example("denied"), "denied"),
@@ -553,6 +639,24 @@ Deno.test("Worker permissions deny undeclared host reads", async () => {
       Error,
       "Requires read access",
     );
+  } finally {
+    worker.kill();
+  }
+});
+
+Deno.test("application Worker cannot read the internal token or Unix socket", async () => {
+  const worker = new RuntimeWorker({
+    metadata: metadata("job", example("job_internal_access"), "internal"),
+    permissions: {
+      read: [new URL("../examples", import.meta.url).pathname],
+      net: true,
+    },
+  });
+  try {
+    assertEquals(await worker.runJob([]), {
+      token: "NotCapable",
+      socket: "NotCapable",
+    });
   } finally {
     worker.kill();
   }

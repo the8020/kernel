@@ -185,7 +185,7 @@ func (m *Manager) Login(ctx context.Context, username, password string, secureTr
 	if err := ctx.Err(); err != nil {
 		return LoginResult{Error: "internal_error"}, err
 	}
-	user, err := m.users.Authenticate(username, password)
+	user, err := m.users.AuthenticateContext(ctx, username, password)
 	if errors.Is(err, ErrInvalidCredentials) {
 		return LoginResult{Error: "invalid_credentials"}, nil
 	}
@@ -195,7 +195,7 @@ func (m *Manager) Login(ctx context.Context, username, password string, secureTr
 	if err != nil {
 		return LoginResult{Error: "internal_error"}, err
 	}
-	session, token, err := m.sessions.Create(user.Username, user.AuthVersion, m.sessionDuration)
+	session, token, err := m.sessions.CreateContext(ctx, user.Username, user.AuthVersion, m.sessionDuration)
 	if err != nil {
 		return LoginResult{Error: "internal_error"}, err
 	}
@@ -246,11 +246,15 @@ func authContextForUser(user UserRecord) AuthContext {
 }
 
 func (m *Manager) ValidateCookie(cookieValue string) (AuthContext, error) {
-	session, err := m.sessions.ValidateToken(cookieValue)
+	return m.ValidateCookieContext(context.Background(), cookieValue)
+}
+
+func (m *Manager) ValidateCookieContext(ctx context.Context, cookieValue string) (AuthContext, error) {
+	session, err := m.sessions.ValidateTokenContext(ctx, cookieValue)
 	if err != nil {
 		return AuthContext{}, ErrUnauthenticated
 	}
-	user, exists, err := m.users.Get(session.Username)
+	user, exists, err := m.users.GetContext(ctx, session.Username)
 	if err != nil {
 		return AuthContext{}, err
 	}
@@ -260,9 +264,13 @@ func (m *Manager) ValidateCookie(cookieValue string) (AuthContext, error) {
 	return AuthContext{Authenticated: true, Realm: UserRealm, UserID: user.ID(), Username: user.Username, AuthVersion: user.AuthVersion, SessionID: session.SessionID}, nil
 }
 
-func (m *Manager) LogoutCurrent(context AuthContext, secureTransport bool) (LogoutResult, error) {
-	if context.SessionID != "" {
-		if err := m.sessions.Delete(context.SessionID); err != nil {
+func (m *Manager) LogoutCurrent(authContext AuthContext, secureTransport bool) (LogoutResult, error) {
+	return m.LogoutCurrentContext(context.Background(), authContext, secureTransport)
+}
+
+func (m *Manager) LogoutCurrentContext(ctx context.Context, authContext AuthContext, secureTransport bool) (LogoutResult, error) {
+	if authContext.SessionID != "" {
+		if err := m.sessions.DeleteContext(ctx, authContext.SessionID); err != nil {
 			return LogoutResult{}, err
 		}
 	}
@@ -277,7 +285,7 @@ func (m *Manager) RunCleanup(ctx context.Context, report func(error)) {
 		case <-ctx.Done():
 			return
 		case <-timer.C:
-			if _, err := m.sessions.CleanupExpired(m.now().UTC()); err != nil && report != nil {
+			if _, err := m.sessions.CleanupExpiredContext(ctx, m.now().UTC()); err != nil && report != nil {
 				report(err)
 			}
 			timer.Reset(m.cleanupInterval)

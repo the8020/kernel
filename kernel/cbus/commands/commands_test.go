@@ -35,6 +35,7 @@ import (
 	sandboxkill "the8020/kernel/cbus/commands/sandbox/kill"
 	sandboxlist "the8020/kernel/cbus/commands/sandbox/list"
 	sandboxmetrics "the8020/kernel/cbus/commands/sandbox/metrics"
+	sandboxrefresh "the8020/kernel/cbus/commands/sandbox/refresh"
 	sandboxstop "the8020/kernel/cbus/commands/sandbox/stop"
 	serviceinspect "the8020/kernel/cbus/commands/service/inspect"
 	servicelist "the8020/kernel/cbus/commands/service/list"
@@ -81,7 +82,7 @@ type fakeSandboxes struct{ *callRecorder }
 func (f fakeSandboxes) inspection() manager.Inspection {
 	return manager.Inspection{Spec: model.SandboxSpec{
 		SandboxID: "sandbox-1", RuntimeGroupID: "group-1", WorkloadType: model.WorkloadJob,
-		GroupKey: "job:test", Network: model.NetworkConfiguration{SandboxIP: "10.88.0.2"}, InternalPorts: []int{8000, 9229}, Lifecycle: model.LifecyclePolicy{Warm: true},
+		GroupKey: "job:test", ServiceIDs: []string{"the8020/demo/http"}, Network: model.NetworkConfiguration{SandboxIP: "10.88.0.2"}, InternalPorts: []int{8000, 9229}, Lifecycle: model.LifecyclePolicy{Warm: true},
 	}, Status: model.SandboxStatus{DesiredState: model.StateReady, ObservedState: model.StateReady, WorkerCount: 1}}
 }
 func (f fakeSandboxes) List() ([]manager.Inspection, error) {
@@ -98,6 +99,10 @@ func (f fakeSandboxes) InspectHistory(historyID string) (history.Inspection, err
 }
 func (f fakeSandboxes) Inspect(context.Context, string) (manager.Inspection, error) {
 	f.record("sandbox.inspect")
+	return f.inspection(), nil
+}
+func (f fakeSandboxes) Refresh(context.Context, string) (manager.Inspection, error) {
+	f.record("sandbox.refresh")
 	return f.inspection(), nil
 }
 func (f fakeSandboxes) Metrics(string) (model.ResourceMetrics, error) {
@@ -335,13 +340,13 @@ func TestEveryPhase1BHandlerSurvivesDegradedRuntime(t *testing.T) {
 		"pool.resize": poolresize.New(serviceSet), "pool.status": poolstatus.New(serviceSet),
 		"port.close": portclose.New(serviceSet), "port.expose": portexpose.New(serviceSet), "port.list": portlist.New(serviceSet),
 		"runtime.eval": runtimeeval.New(serviceSet), "runtime.run": runtimerun.New(serviceSet),
-		"sandbox.delete": sandboxdelete.New(serviceSet), "sandbox.inspect": sandboxinspect.New(serviceSet), "sandbox.kill": sandboxkill.New(serviceSet), "sandbox.list": sandboxlist.New(serviceSet), "sandbox.metrics": sandboxmetrics.New(serviceSet), "sandbox.stop": sandboxstop.New(serviceSet),
+		"sandbox.delete": sandboxdelete.New(serviceSet), "sandbox.inspect": sandboxinspect.New(serviceSet), "sandbox.refresh": sandboxrefresh.New(serviceSet), "sandbox.kill": sandboxkill.New(serviceSet), "sandbox.list": sandboxlist.New(serviceSet), "sandbox.metrics": sandboxmetrics.New(serviceSet), "sandbox.stop": sandboxstop.New(serviceSet),
 		"sandbox.history.list": sandboxhistorylist.New(serviceSet), "sandbox.history.inspect": sandboxhistoryinspect.New(serviceSet),
 		"service.inspect": serviceinspect.New(serviceSet), "service.list": servicelist.New(serviceSet), "service.openapi": serviceopenapi.New(serviceSet), "service.request": servicerequest.New(serviceSet), "service.restart": servicerestart.New(serviceSet), "service.scale": servicescale.New(serviceSet), "service.start": servicestart.New(serviceSet), "service.stop": servicestop.New(serviceSet), "service.validate": servicevalidate.New(serviceSet),
 		"worker.inspect": workerinspect.New(serviceSet), "worker.kill": workerkill.New(serviceSet), "worker.list": workerlist.New(serviceSet), "worker.stop": workerstop.New(serviceSet),
 	}
-	if len(handlers) != 35 {
-		t.Fatalf("degraded handler count = %d, want 35", len(handlers))
+	if len(handlers) != 36 {
+		t.Fatalf("degraded handler count = %d, want 36", len(handlers))
 	}
 	for id, handler := range handlers {
 		t.Run(id, func(t *testing.T) {
@@ -402,6 +407,7 @@ func TestEveryPhase1BHandlerSuccessfulPath(t *testing.T) {
 		"sandbox.history.list":    {handler: sandboxhistorylist.New(serviceSet), wantCall: "sandbox.history.list", arguments: map[string]any{"limit": int64(100)}},
 		"sandbox.history.inspect": {handler: sandboxhistoryinspect.New(serviceSet), wantCall: "sandbox.history.inspect", arguments: map[string]any{"history_id": "20260827T130405.123456789Z-sbx-ax9thsl3"}},
 		"sandbox.inspect":         {handler: sandboxinspect.New(serviceSet), wantCall: "sandbox.inspect", arguments: map[string]any{"sandbox_id": "sandbox-1"}},
+		"sandbox.refresh":         {handler: sandboxrefresh.New(serviceSet), wantCall: "sandbox.refresh", arguments: map[string]any{"sandbox_id": "sandbox-1"}},
 		"sandbox.metrics":         {handler: sandboxmetrics.New(serviceSet), wantCall: "sandbox.metrics", arguments: map[string]any{"sandbox_id": "sandbox-1"}},
 		"sandbox.stop":            {handler: sandboxstop.New(serviceSet), wantCall: "sandbox.stop", arguments: map[string]any{"sandbox_id": "sandbox-1"}},
 		"sandbox.kill":            {handler: sandboxkill.New(serviceSet), wantCall: "sandbox.kill", arguments: map[string]any{"sandbox_id": "sandbox-1"}},
@@ -441,8 +447,8 @@ func TestEveryPhase1BHandlerSuccessfulPath(t *testing.T) {
 		"pool.status":   {handler: poolstatus.New(serviceSet), wantCall: "pool.status"},
 		"pool.resize":   {handler: poolresize.New(serviceSet), wantCall: "pool.resize", arguments: map[string]any{"profile": "sha256:test", "count": int64(2)}},
 	}
-	if len(cases) != 40 {
-		t.Fatalf("successful Phase 1D handler count = %d, want 40", len(cases))
+	if len(cases) != 41 {
+		t.Fatalf("successful Phase 1D handler count = %d, want 41", len(cases))
 	}
 	for id, testCase := range cases {
 		t.Run(id, func(t *testing.T) {

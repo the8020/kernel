@@ -22,7 +22,7 @@ type testAuthentication struct{}
 
 func (testAuthentication) CookieName() string { return "the8020_auth" }
 
-func (testAuthentication) ValidateCookie(value string) (auth.AuthContext, error) {
+func (testAuthentication) ValidateCookieContext(_ context.Context, value string) (auth.AuthContext, error) {
 	if value != "valid" {
 		return auth.AuthContext{}, errors.New("invalid cookie")
 	}

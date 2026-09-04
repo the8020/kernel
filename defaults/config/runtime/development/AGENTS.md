@@ -23,7 +23,9 @@
   preinstalled; developers may add their own tools through APT.
 - Interactive login shells source the image-owned `/etc/profile` and expose a
   restrained colorized `user@host:working-directory` prompt, with a plain-text
-  fallback for terminals without common ANSI capabilities.
+  fallback for terminals without common ANSI capabilities. The console PATH
+  includes root's native user-binary directory so tools installed by mounted
+  helpers are immediately runnable by name.
 - APT and shell `dpkg` use Debian's native binaries directly, without an
   image-owned compatibility wrapper or metadata emulation. Durable system-root
   storage must support native Linux ownership and mode semantics.

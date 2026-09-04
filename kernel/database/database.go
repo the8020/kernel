@@ -101,6 +101,8 @@ type ExecuteResult struct {
 // retryable through Check, Query, and Execute.
 type Manager struct {
 	file             string
+	fileModeMu       sync.Mutex
+	fileModeReady    bool
 	db               *sql.DB
 	openErr          error
 	statusMu         sync.RWMutex
@@ -108,6 +110,7 @@ type Manager struct {
 	schemaMu         sync.Mutex
 	transactionsMu   sync.Mutex
 	transactions     map[string]*transaction
+	application      *applicationGate
 	evaluatorMu      sync.RWMutex
 	evaluator        DefinitionEvaluator
 	fullSynchronizer FullSynchronizer
@@ -125,6 +128,7 @@ func New(config Config) *Manager {
 	}
 	manager := &Manager{
 		transactions: map[string]*transaction{},
+		application:  newApplicationGate(applicationLimit(policy.maximumOpen)),
 		status: Status{
 			Backend:                config.Backend,
 			Location:               displayLocation(config.Backend, config.Location),
@@ -248,10 +252,71 @@ func (m *Manager) applyPool(policy poolPolicy) {
 		m.db.SetMaxOpenConns(policy.maximumOpen)
 		m.db.SetMaxIdleConns(policy.maximumIdle)
 	}
+	if m.application != nil {
+		m.application.setLimit(applicationLimit(policy.maximumOpen))
+	}
 	m.statusMu.Lock()
 	m.status.MaximumOpenConnections = policy.maximumOpen
 	m.status.MaximumIdleConnections = policy.maximumIdle
 	m.statusMu.Unlock()
+}
+
+func applicationLimit(maximumOpen int) int {
+	if maximumOpen >= 3 {
+		return maximumOpen - 2
+	}
+	return max(1, maximumOpen)
+}
+
+type applicationGate struct {
+	mu      sync.Mutex
+	limit   int
+	inUse   int
+	changed chan struct{}
+}
+
+func newApplicationGate(limit int) *applicationGate {
+	return &applicationGate{limit: limit, changed: make(chan struct{})}
+}
+
+func (g *applicationGate) acquire(ctx context.Context) (func(), error) {
+	for {
+		g.mu.Lock()
+		if g.inUse < g.limit {
+			g.inUse++
+			g.mu.Unlock()
+			var once sync.Once
+			return func() { once.Do(g.release) }, nil
+		}
+		changed := g.changed
+		g.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-changed:
+		}
+	}
+}
+
+func (g *applicationGate) release() {
+	g.mu.Lock()
+	if g.inUse > 0 {
+		g.inUse--
+	}
+	g.signalLocked()
+	g.mu.Unlock()
+}
+
+func (g *applicationGate) setLimit(limit int) {
+	g.mu.Lock()
+	g.limit = max(1, limit)
+	g.signalLocked()
+	g.mu.Unlock()
+}
+
+func (g *applicationGate) signalLocked() {
+	close(g.changed)
+	g.changed = make(chan struct{})
 }
 
 type preparedPool struct {
@@ -406,8 +471,13 @@ func (m *Manager) ping(ctx context.Context) error {
 		return err
 	}
 	if m.file != "" {
-		if err := os.Chmod(m.file, 0o600); err != nil {
-			return fmt.Errorf("restrict SQLite database file: %w", err)
+		m.fileModeMu.Lock()
+		defer m.fileModeMu.Unlock()
+		if !m.fileModeReady {
+			if err := os.Chmod(m.file, 0o600); err != nil {
+				return fmt.Errorf("restrict SQLite database file: %w", err)
+			}
+			m.fileModeReady = true
 		}
 	}
 	return nil

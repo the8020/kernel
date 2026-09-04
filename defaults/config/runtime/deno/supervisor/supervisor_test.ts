@@ -12,7 +12,6 @@ Deno.test("kernel callback payloads contain only operation-owned fields", () => 
     arguments: {},
     requestId: "request-test",
     serviceId: "example/persistent",
-    workloadId: "service-version-test",
     executionId: "execution-test",
     workerId: "wrk-source01",
     persistentExecutionId: "persistent-test",
@@ -28,7 +27,7 @@ Deno.test("kernel callback payloads contain only operation-owned fields", () => 
       function: "example.inspect",
       input: { value: 1 },
     },
-  }, "sbx-source01");
+  });
   assertEquals(invocation, {
     path: "/v1/runtime/worker/invoke",
     messageType: "worker_invoke",
@@ -42,24 +41,19 @@ Deno.test("kernel callback payloads contain only operation-owned fields", () => 
       input: { value: 1 },
       execution_id: "execution-test",
       worker_id: "wrk-source01",
-      workload_id: "service-version-test",
-      service_id: "example/persistent",
       request_id: "request-test",
-      sandbox_id: "sbx-source01",
     },
   });
   assertEquals(
     kernelCallbackRequest({
       ...base,
       operation: "execution.completePersistent",
-    }, "sbx-source01").payload,
+    }).payload,
     {
       execution_id: "execution-test",
       worker_id: "wrk-source01",
-      workload_id: "service-version-test",
-      service_id: "example/persistent",
       request_id: "request-test",
-      sandbox_id: "sbx-source01",
+      service_id: "example/persistent",
       persistent_execution_id: "persistent-test",
     },
   );
@@ -68,7 +62,7 @@ Deno.test("kernel callback payloads contain only operation-owned fields", () => 
       ...base,
       operation: "database.execute",
       arguments: { statement: "SELECT $1", parameters: [1], return_rows: true },
-    }, "sbx-source01"),
+    }),
     {
       path: "/v1/runtime/database/execute",
       messageType: "database_execute",
@@ -79,10 +73,7 @@ Deno.test("kernel callback payloads contain only operation-owned fields", () => 
         return_rows: true,
         execution_id: "execution-test",
         worker_id: "wrk-source01",
-        workload_id: "service-version-test",
-        service_id: "example/persistent",
         request_id: "request-test",
-        sandbox_id: "sbx-source01",
       },
     },
   );
@@ -276,6 +267,23 @@ Deno.test("supervisor tracks Workers, service pools, and drain", async () => {
     metadata: metadata("worker-a"),
     permissions: { read: [examples] },
   });
+  const readySnapshot = supervisor.snapshot() as {
+    revision: number;
+    supervisor_started_at_ms: number;
+    worker_count: number;
+    ready_worker_count: number;
+    workers: Array<{ worker_id: string; state: string }>;
+  };
+  assertEquals(readySnapshot.worker_count, 2);
+  assertEquals(readySnapshot.ready_worker_count, 2);
+  assertEquals(readySnapshot.workers.map((worker) => worker.worker_id), [
+    "worker-a",
+    "worker-b",
+  ]);
+  assertEquals(
+    Number.isSafeInteger(readySnapshot.supervisor_started_at_ms),
+    true,
+  );
   const retried = await supervisor.startWorker({
     metadata: metadata("worker-a"),
     permissions: { read: [examples] },
@@ -304,11 +312,23 @@ Deno.test("supervisor tracks Workers, service pools, and drain", async () => {
   );
   const request = first.dispatchService(new Request("http://service/slow"));
   await Promise.resolve();
+  const activeSnapshot = supervisor.snapshot() as {
+    revision: number;
+    active_requests: number;
+  };
+  assertEquals(activeSnapshot.active_requests, 1);
+  assertEquals(activeSnapshot.revision > readySnapshot.revision, true);
   assertEquals(
     supervisor.selectServiceWorker("service-a").metadata.workerId,
     "worker-a",
   );
   assertEquals(await (await request).text(), "GET:/slow:streamed:");
+  const idleSnapshot = supervisor.snapshot() as {
+    revision: number;
+    active_requests: number;
+  };
+  assertEquals(idleSnapshot.active_requests, 0);
+  assertEquals(idleSnapshot.revision > activeSnapshot.revision, true);
   const drainingResponse = await first.dispatchService(
     new Request("http://service/draining"),
   );
@@ -319,7 +339,7 @@ Deno.test("supervisor tracks Workers, service pools, and drain", async () => {
     supervisor.workers().find((item) =>
       item.worker_id === first.metadata.workerId
     )?.state,
-    "draining",
+    "stopping",
   );
   assertEquals(
     supervisor.selectServiceWorker("service-a").metadata.workerId,
@@ -351,6 +371,51 @@ Deno.test("supervisor tracks Workers, service pools, and drain", async () => {
   await supervisor.stopWorker("already-absent");
   assertEquals(supervisor.status().worker_count, 0);
   assertEquals(supervisor.status().draining, true);
+});
+
+Deno.test("higher concurrency has one bounded temporary slot per Worker", async () => {
+  const supervisor = new Supervisor({
+    runtimeGroupId: "group-soft-limit",
+    sandboxId: "sandbox-soft-limit",
+    workloadType: "service",
+    token,
+    supervisorVersion: "test",
+  });
+  const workerMetadata = metadata("worker-soft-limit");
+  const worker = await supervisor.startWorker({
+    metadata: workerMetadata,
+    permissions: { read: [examples] },
+  });
+  supervisor.configureService("service-a", [worker.metadata.workerId], 2, 1);
+  const dispatch = () =>
+    supervisor.handler(
+      new Request("http://runtime/v1/services/service-a/dispatch", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "x-80-20-method": "GET",
+          "x-80-20-url": "http://service/stream",
+        },
+      }),
+    );
+  const responses: Response[] = [];
+  try {
+    for (let index = 0; index < 3; index++) responses.push(await dispatch());
+    assertEquals(supervisor.workers()[0]?.in_flight, 3);
+    let fourthSettled = false;
+    const fourth = dispatch().then((response) => {
+      fourthSettled = true;
+      return response;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assertEquals(fourthSettled, false);
+    await responses.shift()!.body?.cancel();
+    responses.push(await fourth);
+    assertEquals(supervisor.workers()[0]?.in_flight, 3);
+  } finally {
+    await Promise.all(responses.map((response) => response.body?.cancel()));
+    await supervisor.stopWorker(worker.metadata.workerId, true);
+  }
 });
 
 Deno.test("concurrent Worker lifecycle retries remain idempotent", async () => {
@@ -507,6 +572,151 @@ Deno.test("persistent executions reserve hard slots and return to the same Worke
     for (const worker of workers) {
       await supervisor.stopWorker(worker.metadata.workerId, true);
     }
+  }
+});
+
+Deno.test("persistent follow-up requests obey strict single-request concurrency", async () => {
+  const supervisor = new Supervisor({
+    runtimeGroupId: "group-persistent-strict",
+    sandboxId: "sandbox-persistent-strict",
+    workloadType: "service",
+    token,
+    supervisorVersion: "test",
+  });
+  const workerMetadata = metadata("persistent-strict");
+  workerMetadata.workloadId = "service-version-a";
+  workerMetadata.service = {
+    serviceId: "service-a",
+    generation: 1,
+    canonicalBasePath: "/service-a",
+    executionMode: "persistent",
+  };
+  const worker = await supervisor.startWorker({
+    metadata: workerMetadata,
+    permissions: { read: [examples] },
+  });
+  supervisor.configureService(
+    "service-version-a",
+    [worker.metadata.workerId],
+    1,
+  );
+  const dispatch = () =>
+    supervisor.handler(
+      new Request("http://runtime/v1/services/service-version-a/dispatch", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "x-80-20-method": "GET",
+          "x-80-20-url": "http://service/stream",
+          "x-80-20-internal-persistent-execution-id": "session-one",
+          "x-80-20-internal-persistent-keep-alive-ms": "100",
+          "x-80-20-internal-target-worker-id": worker.metadata.workerId,
+        },
+      }),
+    );
+  let second: Response | undefined;
+  try {
+    const first = await dispatch();
+    const pending = dispatch().then((response) => second = response);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assertEquals(second, undefined);
+    await first.body?.cancel();
+    second = await pending;
+    assertEquals(second.status, 201);
+  } finally {
+    await second?.body?.cancel();
+    await supervisor.stopWorker(worker.metadata.workerId, true);
+  }
+});
+
+Deno.test("concurrent persistent database requests retain isolated request IDs", async () => {
+  const requestCount = 16;
+  let enteredCount = 0;
+  let allEnteredResolve!: () => void;
+  const allEntered = new Promise<void>((resolve) =>
+    allEnteredResolve = resolve
+  );
+  let releaseQueries!: () => void;
+  const queryGate = new Promise<void>((resolve) => releaseQueries = resolve);
+  const requestIds: string[] = [];
+  const supervisor = new Supervisor({
+    runtimeGroupId: "group-persistent-database",
+    sandboxId: "sandbox-persistent-database",
+    workloadType: "service",
+    token,
+    supervisorVersion: "test",
+    kernelCall: async (call) => {
+      if (call.operation === "database.scope.close") return { closed: true };
+      if (call.operation !== "database.execute") {
+        throw new Error(`unexpected kernel operation ${call.operation}`);
+      }
+      requestIds.push(call.requestId ?? "");
+      enteredCount++;
+      if (enteredCount === requestCount) allEnteredResolve();
+      await queryGate;
+      return { columns: ["value"], rows: [[7]] };
+    },
+  });
+  const workerMetadata = metadata("persistent-database");
+  workerMetadata.workloadId = "service-version-a";
+  workerMetadata.entrypoint = new URL(
+    "../examples/service_kernel.ts",
+    import.meta.url,
+  ).href;
+  workerMetadata.service = {
+    serviceId: "service-a",
+    generation: 1,
+    canonicalBasePath: "/service-a",
+    executionMode: "persistent",
+  };
+  const worker = await supervisor.startWorker({
+    metadata: workerMetadata,
+    permissions: { read: [examples] },
+  });
+  supervisor.configureService(
+    "service-version-a",
+    [worker.metadata.workerId],
+    requestCount,
+    requestCount,
+  );
+  const expectedIds = Array.from(
+    { length: requestCount },
+    (_, index) => `request-${index}`,
+  );
+  const requests = expectedIds.map((requestId) =>
+    supervisor.handler(
+      new Request("http://runtime/v1/services/service-version-a/dispatch", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "x-80-20-method": "GET",
+          "x-80-20-url": "http://service/database-query",
+          "x-80-20-internal-request-id": requestId,
+          "x-80-20-internal-persistent-execution-id": "session-one",
+          "x-80-20-internal-persistent-keep-alive-ms": "100",
+        },
+      }),
+    )
+  );
+  try {
+    await Promise.race([
+      allEntered,
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error("concurrent database requests did not enter")),
+          1_000,
+        )
+      ),
+    ]);
+    assertEquals([...new Set(requestIds)].sort(), expectedIds.sort());
+    releaseQueries();
+    const responses = await Promise.all(requests);
+    assertEquals(responses.every((response) => response.status === 200), true);
+    await Promise.all(responses.map((response) => response.body?.cancel()));
+  } finally {
+    releaseQueries();
+    await Promise.allSettled(requests);
+    await supervisor.stopWorker(worker.metadata.workerId, true);
   }
 });
 
@@ -691,7 +901,17 @@ Deno.test("one Worker startup crash does not terminate healthy siblings", async 
     Error,
     "startup crash",
   );
-  assertEquals(supervisor.status().worker_count, 1);
+  const status = supervisor.status() as {
+    worker_count: number;
+    recent_failures: Array<{ worker_id: string; reason: string }>;
+  };
+  assertEquals(status.worker_count, 1);
+  assertEquals(status.recent_failures.length, 1);
+  assertEquals(status.recent_failures[0]?.worker_id, "crashing");
+  assertEquals(
+    status.recent_failures[0]?.reason.includes("startup crash"),
+    true,
+  );
   assertEquals(
     await (await healthy.dispatchService(new Request("http://service/ok")))
       .text(),

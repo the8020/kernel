@@ -55,6 +55,38 @@ func TestEnabledRotationAndTotalCleanup(t *testing.T) {
 	}
 }
 
+func TestOrdinaryWritesDoNotRunRetentionCleanup(t *testing.T) {
+	directory := t.TempDir()
+	manager, err := New(directory, Policy{Enabled: true, SplitPeriod: "none", MaxFileSize: 100, MaxTotalSize: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	old := filepath.Join(directory, "kernel-retention-test.log")
+	if err := os.WriteFile(old, make([]byte, 100), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Unix(1, 0)
+	if err := os.Chtimes(old, past, past); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Write([]byte("a")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(old); err != nil {
+		t.Fatalf("ordinary write unexpectedly ran retention cleanup: %v", err)
+	}
+	manager.mu.Lock()
+	manager.state.size = manager.state.policy.MaxFileSize
+	manager.mu.Unlock()
+	if _, err := manager.Write([]byte("b")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Fatalf("rotation did not run retention cleanup: %v", err)
+	}
+}
+
 func loggingValues(enabled bool, file, total int64) settings.Values {
 	return settings.Values{"logging.enabled": enabled, "logging.split_period": "day", "logging.max_file_size": settings.ByteSize(file), "logging.max_total_size": settings.ByteSize(total)}
 }

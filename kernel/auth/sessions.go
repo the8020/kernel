@@ -64,6 +64,10 @@ func (s *SessionStore) Check() error {
 }
 
 func (s *SessionStore) Create(username string, authVersion uint64, duration time.Duration) (SessionRecord, string, error) {
+	return s.CreateContext(context.Background(), username, authVersion, duration)
+}
+
+func (s *SessionStore) CreateContext(ctx context.Context, username string, authVersion uint64, duration time.Duration) (SessionRecord, string, error) {
 	if err := ValidateUsername(username); err != nil {
 		return SessionRecord{}, "", err
 	}
@@ -81,7 +85,7 @@ func (s *SessionStore) Create(username string, authVersion uint64, duration time
 		}
 		now := s.now().UTC()
 		record := SessionRecord{SessionID: sessionID, Username: username, SecretHash: hashSessionSecret(secret), AuthVersion: authVersion, CreatedAt: now, ExpiresAt: now.Add(duration)}
-		result, err := s.database.ExecContext(context.Background(), `INSERT INTO `+sessionsTable+` ("sessionId", "username", "secretHash", "authVersion", "createdAt", "expiresAt") VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT ("sessionId") DO NOTHING`, record.SessionID, record.Username, record.SecretHash, int64(record.AuthVersion), database.EncodeTime(s.database, record.CreatedAt), database.EncodeTime(s.database, record.ExpiresAt))
+		result, err := s.database.ExecContext(ctx, `INSERT INTO `+sessionsTable+` ("sessionId", "username", "secretHash", "authVersion", "createdAt", "expiresAt") VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT ("sessionId") DO NOTHING`, record.SessionID, record.Username, record.SecretHash, int64(record.AuthVersion), database.EncodeTime(s.database, record.CreatedAt), database.EncodeTime(s.database, record.ExpiresAt))
 		if err != nil {
 			return SessionRecord{}, "", err
 		}
@@ -96,11 +100,15 @@ func (s *SessionStore) Create(username string, authVersion uint64, duration time
 }
 
 func (s *SessionStore) ValidateToken(token string) (SessionRecord, error) {
+	return s.ValidateTokenContext(context.Background(), token)
+}
+
+func (s *SessionStore) ValidateTokenContext(ctx context.Context, token string) (SessionRecord, error) {
 	sessionID, secret, err := parseSessionToken(token)
 	if err != nil {
 		return SessionRecord{}, ErrUnauthenticated
 	}
-	record, err := s.Read(sessionID)
+	record, err := s.ReadContext(ctx, sessionID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SessionRecord{}, ErrUnauthenticated
 	}
@@ -111,17 +119,21 @@ func (s *SessionStore) ValidateToken(token string) (SessionRecord, error) {
 		return SessionRecord{}, ErrUnauthenticated
 	}
 	if !s.now().UTC().Before(record.ExpiresAt) {
-		_ = s.Delete(sessionID)
+		_ = s.DeleteContext(ctx, sessionID)
 		return SessionRecord{}, ErrSessionExpired
 	}
 	return record, nil
 }
 
 func (s *SessionStore) Read(sessionID string) (SessionRecord, error) {
+	return s.ReadContext(context.Background(), sessionID)
+}
+
+func (s *SessionStore) ReadContext(ctx context.Context, sessionID string) (SessionRecord, error) {
 	if !validLowerHex(sessionID, 32) {
 		return SessionRecord{}, ErrInvalidSessionID
 	}
-	return scanSession(s.database.QueryRowContext(context.Background(), `SELECT "sessionId", "username", "secretHash", "authVersion", "createdAt", "expiresAt" FROM `+sessionsTable+` WHERE "sessionId" = $1`, sessionID))
+	return scanSession(s.database.QueryRowContext(ctx, `SELECT "sessionId", "username", "secretHash", "authVersion", "createdAt", "expiresAt" FROM `+sessionsTable+` WHERE "sessionId" = $1`, sessionID))
 }
 
 func scanSession(row rowScanner) (SessionRecord, error) {
@@ -149,15 +161,23 @@ func scanSession(row rowScanner) (SessionRecord, error) {
 }
 
 func (s *SessionStore) Delete(sessionID string) error {
+	return s.DeleteContext(context.Background(), sessionID)
+}
+
+func (s *SessionStore) DeleteContext(ctx context.Context, sessionID string) error {
 	if !validLowerHex(sessionID, 32) {
 		return ErrInvalidSessionID
 	}
-	_, err := s.database.ExecContext(context.Background(), `DELETE FROM `+sessionsTable+` WHERE "sessionId" = $1`, sessionID)
+	_, err := s.database.ExecContext(ctx, `DELETE FROM `+sessionsTable+` WHERE "sessionId" = $1`, sessionID)
 	return err
 }
 
 func (s *SessionStore) CleanupExpired(now time.Time) (int, error) {
-	result, err := s.database.ExecContext(context.Background(), `DELETE FROM `+sessionsTable+` WHERE "expiresAt" <= $1`, database.EncodeTime(s.database, now))
+	return s.CleanupExpiredContext(context.Background(), now)
+}
+
+func (s *SessionStore) CleanupExpiredContext(ctx context.Context, now time.Time) (int, error) {
+	result, err := s.database.ExecContext(ctx, `DELETE FROM `+sessionsTable+` WHERE "expiresAt" <= $1`, database.EncodeTime(s.database, now))
 	if err != nil {
 		return 0, err
 	}

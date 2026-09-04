@@ -10,7 +10,9 @@
   Deno supervisor/Worker source, generic SDKs, and service/development image
   construction.
 - `scripts/` owns platform-maintained helpers mounted read-only and executable
-  in development sandboxes.
+  in development sandboxes. Its opt-in installers install the latest native
+  Codex or Claude Code release into the persistent sandbox home and configure
+  only each tool's no-prompt, full-access mode.
 - Defaults contain no node identity, credentials, users, shared settings,
   operational state, package source, or materialized images.
 
@@ -37,6 +39,9 @@
 
 - Installation and instance tests verify fresh package staging, runtime/source
   refresh, fixed roots, and node-local artifact placement.
+- Development unit tests exercise agent installers with isolated homes and
+  upstream-installer doubles, including repeat runs and preservation of
+  unrelated user settings.
 
 # Child DOX Index
 

@@ -661,6 +661,15 @@ export const kernel = Object.freeze({
         "service",
       );
     },
+    refresh<Result = Record<string, unknown>>(
+      serviceId: string,
+    ): Promise<Result> {
+      return runtimeOperationField(
+        "service.refresh",
+        { service_id: serviceId },
+        "service",
+      );
+    },
     start(serviceId: string, detail = false): Promise<Record<string, unknown>> {
       return executeRuntimeOperation("service.start", {
         service_id: serviceId,

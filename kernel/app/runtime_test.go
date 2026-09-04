@@ -187,7 +187,8 @@ func TestRuntimeSharedStateAppliesOnlyRevisionTargetsAndAcknowledgesAfterSuccess
 	}}
 	reconciler := &targetedServiceReconcilerStub{}
 	topology := &sharedPackageStateStub{}
-	shared := &runtimeSharedState{packages: packages, serviceChanges: serviceChanges, services: reconciler, topology: topology}
+	now := time.Unix(1_700_000_000, 0)
+	shared := &runtimeSharedState{packages: packages, serviceChanges: serviceChanges, services: reconciler, topology: topology, now: func() time.Time { return now }}
 	if err := shared.Refresh(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -195,13 +196,14 @@ func TestRuntimeSharedStateAppliesOnlyRevisionTargetsAndAcknowledgesAfterSuccess
 	if !reflect.DeepEqual(reconciler.calls, wantCalls) || !reflect.DeepEqual(serviceChanges.acks, []uint64{7}) || topology.calls != 1 {
 		t.Fatalf("calls=%#v acks=%#v topology=%d", reconciler.calls, serviceChanges.acks, topology.calls)
 	}
-	if err := shared.Refresh(context.Background()); err != nil || len(reconciler.calls) != len(wantCalls) || topology.calls != 2 {
+	if err := shared.Refresh(context.Background()); err != nil || len(reconciler.calls) != len(wantCalls) || topology.calls != 1 {
 		t.Fatalf("unchanged refresh rescanned services: calls=%#v topology=%d err=%v", reconciler.calls, topology.calls, err)
 	}
 
+	now = now.Add(30 * time.Second)
 	serviceChanges.update = workspacepackages.ServiceSetUpdate{Revision: 8, ReconcileServices: []string{"acme/orders/failing"}}
 	reconciler.fail = "acme/orders/failing"
-	if err := shared.Refresh(context.Background()); err != nil || len(serviceChanges.acks) != 1 {
+	if err := shared.Refresh(context.Background()); err != nil || len(serviceChanges.acks) != 1 || topology.calls != 2 {
 		t.Fatalf("service-local failure escaped or revision was acknowledged: acks=%#v err=%v", serviceChanges.acks, err)
 	}
 	reconciler.fail = ""

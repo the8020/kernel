@@ -7,8 +7,8 @@
 
 - Own authenticated health/status/control endpoints, Worker registry, generic
   stateless/persistent service pools, job mappings, physical WebSocket relay,
-  exact registered Worker control invocation, heartbeats, bounded events, drain,
-  and shutdown.
+  exact registered Worker control invocation, authoritative runtime snapshots,
+  bounded events, drain, and shutdown.
 - Do not own application messages, function names, state, routes, protocols, or
   business logic.
 
@@ -23,8 +23,12 @@
 - Service validation invokes pinned in-sandbox Deno with the configured
   cached-only/online dependency mode before readiness. Jobs may supply a bounded
   list of additional modules to type-check through the same validation path.
-- Service pools are `stateless` or `persistent`, with hard bounded per-Worker
-  in-flight capacity and a bounded queue.
+- Service pools are `stateless` or `persistent`, with a bounded queue.
+  Concurrency one is strict; larger concurrency values are balancing targets
+  with exactly one temporary extra slot per Worker and never unbounded overload.
+  Main-isolate pending admissions close the handoff between Worker selection and
+  the Worker's synchronous in-flight increment, so concurrent dispatch cannot
+  claim the same strict slot.
 - Persistent initial requests reserve an exact Worker binding; follow-ups reuse
   it, disconnect preserves it only for keep-alive, and an explicit generic
   completion releases it immediately. Cleanup is idempotent after authoritative
@@ -38,15 +42,17 @@
   invocation occurs.
 - Physical WebSockets are relayed with bounded buffers. The supervisor never
   decodes the application's text or binary protocol.
-- Status exposes bounded ready/failed Worker identity, load, and logs. A Worker
-  crash remains isolated and unschedulable. Each Worker also reports its exact
-  idle-since timestamp so the kernel can apply Worker keepalive with a
-  deterministic clock.
-- Every kernel callback carries the Worker's exact internal workload identity
-  separately from any public service/request identity. The kernel-selected
-  database backend is available synchronously before entrypoint import, while
-  Worker policy either permits or denies database operations. Request completion
-  and Worker shutdown close corresponding kernel transaction scopes.
+- The main isolate synchronously records Worker starting/ready/stopping/stopped/
+  failed transitions, request activity, persistent reservations, idle time, and
+  recent failures. Status exposes bounded identity, load, and logs; callback
+  snapshots omit logs, are absolute and revisioned, and remain observed truth.
+  Dirty changes are coalesced with one submission in flight, while the periodic
+  heartbeat resends a complete snapshot to repair dropped updates.
+- The trusted supervisor stamps Worker execution and request identity on kernel
+  calls; application payloads do not supply sandbox or workload identity. The
+  kernel-selected database backend is available synchronously before entrypoint
+  import, while Worker policy either permits or denies database operations.
+  Request completion and Worker shutdown close corresponding transaction scopes.
 - Kernel calls use HTTP/JSON over `KERNEL_SOCKET_PATH`. Each call opens a fresh
   Unix-socket connection so a restarted kernel can replace the socket without
   restarting the sandbox. Response reads complete at the declared HTTP body
@@ -67,7 +73,8 @@
 - Main-isolate maps are authoritative; scheduling, binding, completion, queues,
   and control invocation are serialized there. Concurrent duplicate start/stop
   lifecycle requests share one pending operation; a same-ID start with a
-  different definition is rejected, and drain waits for pending starts.
+  different definition is rejected, and drain waits for pending starts. Snapshot
+  transmission never blocks those local state transitions.
 
 # Public API
 
@@ -80,10 +87,12 @@
 # Verification
 
 - Supervisor tests cover strict operation-specific kernel callback envelopes,
-  authentication, lifecycle, stateless/persistent scheduling, exact reuse and
-  completion, exact registered Worker invocation, streaming HTTP/WebSocket
-  relay, metadata, independent session expiry and Worker idle time, concurrent
-  idempotent lifecycle retries, logs, drain, bounds, cancellation, and crash
+  authentication, lifecycle, stateless/persistent scheduling, strict
+  bound-session follow-ups, exact reuse and completion, concurrent persistent
+  database contexts, exact registered Worker invocation, streaming
+  HTTP/WebSocket relay, metadata, independent session expiry and Worker idle
+  time, concurrent idempotent lifecycle retries, bounded soft concurrency, logs,
+  drain, bounds, cancellation, snapshot coalescing/recovery, and crash
   isolation.
 
 # Child DOX Index

@@ -9,11 +9,12 @@ import {
 } from "./mod.ts";
 
 export interface KernelExecutionContext {
-  requestId: string;
-  serviceId: string;
-  persistentExecutionId?: string;
-  auth?: ServiceRequestMetadata["auth"];
-  secrets?: Record<string, string>;
+  readonly requestId: string;
+  readonly serviceId: string;
+  readonly persistentExecutionId?: string;
+  readonly auth?: ServiceRequestMetadata["auth"];
+  readonly secrets?: Record<string, string>;
+  readonly signal?: AbortSignal;
 }
 
 interface BridgeMessage {
@@ -26,12 +27,14 @@ interface BridgeMessage {
 interface Pending {
   resolve(value: unknown): void;
   reject(reason: Error): void;
+  cleanup(): void;
 }
 
 export interface KernelBridge {
   withRequest<Result>(
     metadata: ServiceRequestMetadata,
     invoke: () => Result,
+    signal?: AbortSignal,
   ): Result;
   withExecution<Result>(
     metadata: KernelExecutionContext,
@@ -48,24 +51,7 @@ export function createKernelBridge(
 ): KernelBridge {
   let sequence = 0;
   const requestContext = new AsyncLocalStorage<KernelExecutionContext>();
-  const persistentContexts = new Map<string, KernelExecutionContext>();
   const pending = new Map<string, Pending>();
-  const requestExecutionContext = (
-    metadata: KernelExecutionContext,
-  ): KernelExecutionContext => {
-    const persistentId = metadata.persistentExecutionId;
-    if (persistentId === undefined) return metadata;
-    const existing = persistentContexts.get(persistentId);
-    if (existing === undefined) {
-      const context = { ...metadata };
-      persistentContexts.set(persistentId, context);
-      return context;
-    }
-    existing.requestId = metadata.requestId;
-    existing.serviceId = metadata.serviceId;
-    existing.auth = metadata.auth;
-    return existing;
-  };
   const invoke: KernelInvoke = (operation, input) => {
     const request = requestContext.getStore();
     if (request === undefined && operation !== "database.info") {
@@ -96,8 +82,25 @@ export function createKernelBridge(
     }
     const correlationId = `kernel-${++sequence}-${crypto.randomUUID()}`;
     const result = new Promise<unknown>((resolve, reject) => {
-      pending.set(correlationId, { resolve, reject });
+      const signal = operation === "database.scope.close"
+        ? undefined
+        : request?.signal;
+      const abort = (): void => {
+        const call = pending.get(correlationId);
+        if (call === undefined) return;
+        pending.delete(correlationId);
+        call.cleanup();
+        port.postMessage({ type: "kernel_cancel", correlationId });
+        reject(signal?.reason ?? new DOMException("Aborted", "AbortError"));
+      };
+      const cleanup = (): void => {
+        signal?.removeEventListener("abort", abort);
+      };
+      pending.set(correlationId, { resolve, reject, cleanup });
+      signal?.addEventListener("abort", abort, { once: true });
+      if (signal?.aborted) abort();
     });
+    if (!pending.has(correlationId)) return result;
     port.postMessage({
       type: "kernel_call",
       correlationId,
@@ -111,19 +114,6 @@ export function createKernelBridge(
         },
       },
     });
-    if (
-      operation === "execution.completePersistent" &&
-      request?.persistentExecutionId !== undefined
-    ) {
-      return result.then((value) => {
-        if (
-          persistentContexts.get(request.persistentExecutionId!) === request
-        ) {
-          persistentContexts.delete(request.persistentExecutionId!);
-        }
-        return value;
-      });
-    }
     return result;
   };
   (globalThis as unknown as Record<symbol, unknown>)[kernelInvokeSymbol] =
@@ -144,17 +134,24 @@ export function createKernelBridge(
     withRequest<Result>(
       metadata: ServiceRequestMetadata,
       callback: () => Result,
+      signal?: AbortSignal,
     ): Result {
-      return requestContext.run(requestExecutionContext(metadata), callback);
+      return requestContext.run(
+        Object.freeze({
+          requestId: metadata.requestId,
+          serviceId: metadata.serviceId,
+          persistentExecutionId: metadata.persistentExecutionId,
+          auth: metadata.auth,
+          signal,
+        }),
+        callback,
+      );
     },
     withExecution<Result>(
       metadata: KernelExecutionContext,
       callback: () => Result,
     ): Result {
-      const context = metadata.persistentExecutionId === undefined
-        ? metadata
-        : persistentContexts.get(metadata.persistentExecutionId) ?? metadata;
-      return requestContext.run(context, callback);
+      return requestContext.run(Object.freeze({ ...metadata }), callback);
     },
     handle(message: BridgeMessage): boolean {
       if (
@@ -165,6 +162,7 @@ export function createKernelBridge(
       const call = pending.get(message.correlationId);
       if (call === undefined) return true;
       pending.delete(message.correlationId);
+      call.cleanup();
       if (message.error !== undefined) call.reject(new Error(message.error));
       else call.resolve(message.payload);
       return true;
@@ -182,10 +180,10 @@ export function createKernelBridge(
         ];
       }
       for (const call of pending.values()) {
+        call.cleanup();
         call.reject(new Error("kernel API bridge closed"));
       }
       pending.clear();
-      persistentContexts.clear();
       requestContext.disable();
     },
   };

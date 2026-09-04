@@ -37,7 +37,11 @@
   Password changes, disable operations, and explicit invalidation increment
   `auth_version`, which authentication observes on its next read.
 - Ordinary validation is read-only except idempotent lazy deletion of expired
-  records; every node may run cleanup concurrently without a global lock.
+  sessions.
+- Login, validation, logout, and cleanup pass the caller context through every
+  database operation, so request cancellation and shutdown cannot leave pool
+  acquisition or SQL work detached. Request-facing interfaces require those
+  context-aware methods directly.
 - Cookie headers are created completely by the kernel and always use `HttpOnly`,
   `Path=/`, and configured `SameSite`/`Secure` attributes.
 - Active service dispatches register short-lived request identities and full

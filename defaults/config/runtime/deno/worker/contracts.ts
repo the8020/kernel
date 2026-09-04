@@ -85,13 +85,15 @@ export interface KernelCallRequest {
   arguments: Record<string, unknown>;
   requestId?: string;
   serviceId?: string;
-  workloadId: string;
   executionId: string;
   workerId: string;
   persistentExecutionId?: string;
 }
 
-export type KernelCall = (request: KernelCallRequest) => Promise<unknown>;
+export type KernelCall = (
+  request: KernelCallRequest,
+  signal?: AbortSignal,
+) => Promise<unknown>;
 
 export interface WorkerPermissionSet {
   read?: string[];

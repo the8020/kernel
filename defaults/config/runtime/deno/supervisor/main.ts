@@ -7,6 +7,7 @@ import {
 import type { KernelCall } from "../worker/contracts.ts";
 import { kernelCallbackRequest } from "./callback_request.ts";
 import { postUnixHTTP } from "./unix_http.ts";
+import { SnapshotPublisher } from "./snapshot_publisher.ts";
 
 const required = (name: string): string => {
   const value = Deno.env.get(name);
@@ -32,11 +33,21 @@ const workloadType = required("WORKLOAD_TYPE") as
 const token = required("INTERNAL_API_TOKEN");
 const kernelSocketPath = Deno.env.get("KERNEL_SOCKET_PATH");
 
-const postCallback = async (path: string, body: unknown): Promise<Response> => {
+const postCallback = async (
+  path: string,
+  body: unknown,
+  signal?: AbortSignal,
+): Promise<Response> => {
   if (kernelSocketPath === undefined || kernelSocketPath.length === 0) {
     throw new Error("kernel callback is unavailable");
   }
-  const response = await postUnixHTTP(kernelSocketPath, path, token, body);
+  const response = await postUnixHTTP(
+    kernelSocketPath,
+    path,
+    token,
+    body,
+    signal,
+  );
   if (!response.ok) {
     const detail = (await response.text()).trim();
     throw new Error(
@@ -49,8 +60,8 @@ const postCallback = async (path: string, body: unknown): Promise<Response> => {
 const kernelCall: KernelCall | undefined = kernelSocketPath === undefined ||
     kernelSocketPath.length === 0
   ? undefined
-  : async (call) => {
-    const callbackRequest = kernelCallbackRequest(call, sandboxId);
+  : async (call, signal) => {
+    const callbackRequest = kernelCallbackRequest(call);
     const correlationId = crypto.randomUUID();
     const envelope: Envelope<Record<string, unknown>> = {
       protocol_version: PROTOCOL_VERSION,
@@ -59,7 +70,7 @@ const kernelCall: KernelCall | undefined = kernelSocketPath === undefined ||
       correlation_id: correlationId,
       payload: callbackRequest.payload,
     };
-    const response = await postCallback(callbackRequest.path, envelope);
+    const response = await postCallback(callbackRequest.path, envelope, signal);
     const result: unknown = await response.json();
     assertEnvelope(result);
     if (
@@ -72,6 +83,22 @@ const kernelCall: KernelCall | undefined = kernelSocketPath === undefined ||
     return result.payload;
   };
 
+const snapshots = new SnapshotPublisher(
+  () => supervisor.heartbeat(),
+  async (snapshot) => {
+    const response = await postCallback("/v1/runtime/heartbeat", snapshot);
+    await response.body?.cancel();
+  },
+  (error) =>
+    console.error(
+      JSON.stringify({
+        level: "error",
+        event: "heartbeat_failed",
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    ),
+);
+
 const supervisor = new Supervisor({
   runtimeGroupId,
   sandboxId,
@@ -80,6 +107,7 @@ const supervisor = new Supervisor({
   token,
   supervisorVersion: "1.0.0",
   kernelCall,
+  onStateChange: () => snapshots.markDirty(),
   workerStopGraceMilliseconds: requiredMilliseconds(
     "WORKER_STOP_GRACE_MS",
     1_000,
@@ -102,21 +130,10 @@ if (kernelSocketPath !== undefined && kernelSocketPath.length > 0) {
     await response.body?.cancel();
   };
   await send("/v1/runtime/register", supervisor.registration());
-  const heartbeat = async (): Promise<void> => {
-    try {
-      await send("/v1/runtime/heartbeat", supervisor.heartbeat());
-    } catch (error) {
-      console.error(
-        JSON.stringify({
-          level: "error",
-          event: "heartbeat_failed",
-          error: error instanceof Error ? error.message : String(error),
-        }),
-      );
-    }
-  };
-  setInterval(heartbeat, heartbeatInterval);
-  await heartbeat();
+  snapshots.enable();
+  snapshots.markDirty();
+  setInterval(() => snapshots.markDirty(), heartbeatInterval);
+  await snapshots.flush();
 }
 
 await server.finished;

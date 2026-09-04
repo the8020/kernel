@@ -93,6 +93,7 @@ export async function postUnixHTTP(
   path: string,
   token: string,
   body: unknown,
+  signal?: AbortSignal,
 ): Promise<Response> {
   if (!socketPath.startsWith("/") || !path.startsWith("/")) {
     throw new TypeError(
@@ -106,11 +107,25 @@ export async function postUnixHTTP(
   const request = new Uint8Array(head.length + encodedBody.length);
   request.set(head);
   request.set(encodedBody, head.length);
+  if (signal?.aborted) {
+    throw signal.reason ?? new DOMException("Aborted", "AbortError");
+  }
   const connection = await Deno.connect({
     transport: "unix",
     path: socketPath,
   });
+  const abort = (): void => {
+    try {
+      connection.close();
+    } catch {
+      // Closing an already completed request is harmless.
+    }
+  };
+  signal?.addEventListener("abort", abort, { once: true });
   try {
+    if (signal?.aborted) {
+      throw signal.reason ?? new DOMException("Aborted", "AbortError");
+    }
     await writeAll(connection, request);
     const raw = await readHTTPResponse(connection);
     const boundary = headerBoundary(raw);
@@ -141,7 +156,13 @@ export async function postUnixHTTP(
       throw new Error("kernel returned an incomplete HTTP response");
     }
     return new Response(responseBody, { status: Number(match[1]), headers });
+  } catch (error) {
+    if (signal?.aborted) {
+      throw signal.reason ?? new DOMException("Aborted", "AbortError");
+    }
+    throw error;
   } finally {
-    connection.close();
+    signal?.removeEventListener("abort", abort);
+    abort();
   }
 }

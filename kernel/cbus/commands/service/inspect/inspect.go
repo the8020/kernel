@@ -4,12 +4,13 @@ package inspect
 import (
 	"context"
 	"the8020/kernel/cbus/commands/internal/commandutil"
+	serviceview "the8020/kernel/cbus/commands/service"
 	"the8020/kernel/cbus/core"
 	"the8020/kernel/services"
 )
 
 func New(serviceSet *services.Services) core.Handler {
-	return func(_ context.Context, request core.Request) (core.Result, error) {
+	return func(ctx context.Context, request core.Request) (core.Result, error) {
 		runtimeServices, err := commandutil.Runtime(serviceSet)
 		if err != nil {
 			return nil, err
@@ -21,6 +22,6 @@ func New(serviceSet *services.Services) core.Handler {
 		if err != nil {
 			return nil, commandutil.OperationError(err)
 		}
-		return core.Result{"service": item}, nil
+		return core.Result{"service": serviceview.Observed(ctx, item, runtimeServices.Sandboxes)}, nil
 	}
 }

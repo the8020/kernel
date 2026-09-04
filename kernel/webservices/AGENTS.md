@@ -43,13 +43,20 @@
 - Stateless requests choose least-loaded local sandboxes and Workers. Session
   follow-ups target the recorded Worker; initial session work reserves one
   logical execution slot through the generic supervisor contract.
-- Autoscaling computes desired Workers from kernel-reserved demand, concurrency,
-  and target utilization, then packs Workers into compatible existing sandboxes
-  before provisioning another. A narrow per-service capacity lock prevents
-  concurrent requests or reconciliation from exceeding a finite maximum.
-  Per-service Workers-per-sandbox and the kernel-wide per-sandbox Worker limit
-  are enforced; remote spillover follows local admission failure. Saturation
-  returns structured `503` capacity diagnostics.
+- Warm routing uses one immutable definition lookup, one cache-only supervisor
+  capacity read per candidate sandbox, a short reservation, and final dispatch.
+  It performs no manifest read, Worker scan, live supervisor inspection, metrics
+  probe, or capacity reconciliation. Reservations are separate from observed
+  state, expire after 30 seconds if cleanup is abandoned, and never appear in
+  administration; newer supervisor snapshots dominate them for routing truth.
+- Autoscaling computes desired Workers from reserved demand, concurrency, and
+  target utilization, then packs Workers into compatible existing sandboxes
+  before provisioning another. A narrow per-service capacity lock deduplicates
+  scale-up without serializing unrelated services. Maximum Workers and the
+  kernel-wide per-sandbox Worker count remain hard. Concurrency and
+  Workers-per-sandbox equal to one are strict; larger values are balancing/
+  packing targets with small bounded race overshoot. Remote spillover follows
+  local admission failure, and saturation returns structured `503` diagnostics.
 - Minimum-worker reconciliation uses the same one-Worker-at-a-time placement: it
   retains successful Workers, packs each eligible sandbox up to service and
   kernel Worker limits, and spills a typed Worker rejection into another
@@ -81,14 +88,20 @@
   rejection and attempts it once. Capacity and infrastructure failures remain
   retryable `PENDING_CAPACITY` behavior.
 - Startup performs one fixed-depth package/service discovery. Periodic
-  maintenance reads only services with live runtime sandboxes, draining pools,
-  or pending capacity; it never rediscovers the complete package catalog.
+  maintenance consumes at most 256 deduplicated queued services with live
+  runtime sandboxes, draining pools, or pending capacity; it never scans the
+  service/package catalogs or every runtime pool.
   Explicit service mutations, requests, and `ReconcileAll` reconcile
   immediately.
 - Active request routing uses the immutable definition snapshot belonging to the
   loaded Worker version; it never reparses manifests or scans shared state on
   the hot path. Cold starts and reconciliation read the authoritative activated
   definition before allocating capacity.
+- Background capacity reconciliation is single-flight per service, owned by the
+  manager lifecycle, cancelled during close, and joined before shutdown returns.
+- Service reconciliation uses the same per-service capacity lock and holds no
+  process-wide mutex across sandbox or supervisor I/O, so unrelated services
+  can start, stop, and recover concurrently.
 - Repeated identical maintenance failures neither increment failure counters nor
   emit duplicate logs until the failure changes or clears.
 - Replacement capacity is validated before a version switch. HTTP, WebSocket,
@@ -108,12 +121,18 @@
   versions, and includes each sandbox's version; routing still targets only the
   loaded version. Request metrics belong to the stable logical service so a
   request finishing on a draining version updates the same aggregate.
+- Administration replaces routing reservations with cached supervisor-observed
+  request/Worker totals and exposes snapshot revision/time. Explicit service
+  refresh inspects only that service's unique sandboxes with at most eight
+  concurrent probes; list and ordinary detail reads stay cache-only.
 - This package forwards no application settings and performs no application
   inventory or Worker scan. Package-owned administration may use the generic
   exact-Worker invocation capability through the kernel SDK.
 - Request and response bodies remain streaming. Canonical path validation
   rejects encoded separators, backslashes, nulls, traversal, invalid UTF-8, and
   client-supplied internal headers.
+- Cookie validation receives the public request context directly so a cancelled
+  request cannot leave database work detached.
 - Trusted request metadata includes the normalized IP address observed on the
   kernel socket and its loopback, private, link-local, public, or special
   network scope. Client-supplied internal address metadata is discarded; proxy
@@ -121,9 +140,9 @@
 
 # Work Guidance
 
-- Re-read exact manifests during reconciliation and cold start. Keep runtime
-  snapshots limited to the immutable definition of capacity that is actually
-  serving, route leases, and counters.
+- Re-read exact manifests during reconciliation and cold start, never warm
+  dispatch. Keep runtime snapshots limited to observed execution state and keep
+  reservations private to routing.
 
 # Verification
 
@@ -133,7 +152,9 @@
   assigned sandbox indexes, reserved-demand Worker scaling, finite maximums,
   fake-clock Worker keepalive, minimum Worker and sandbox floors, compatible
   sandbox packing and Worker-limit-triggered minimum spillover, per-service
-  capacity locking, failed cold-start rollback, idle sandbox scale-down, version
+  capacity locking, concurrent unrelated warm dispatch, strict/bounded-soft
+  dispatch, failed-dispatch reservation release, abandoned-reservation expiry,
+  cache-only warm routing, failed cold-start rollback, idle sandbox scale-down, version
   replacement, current-generation-only routing with prior-version draining,
   degraded cold-start routing, in-place missing-capacity recovery, capacity
   states, stale-pool cleanup, terminal pool-record removal, validation-pool

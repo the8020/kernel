@@ -262,7 +262,7 @@ func TestRepositoryCatalogContainsOnlyKernelAndDeferredCommands(t *testing.T) {
 		"kernel.reindex", "kernel.restart", "kernel.shutdown", "kernel.status",
 		"pool.resize", "pool.status", "port.close", "port.expose", "port.list",
 		"runtime.doctor", "runtime.eval", "runtime.image.status", "runtime.run", "runtime.status",
-		"sandbox.delete", "sandbox.history.inspect", "sandbox.history.list", "sandbox.inspect", "sandbox.kill", "sandbox.list", "sandbox.metrics", "sandbox.stop",
+		"sandbox.delete", "sandbox.history.inspect", "sandbox.history.list", "sandbox.inspect", "sandbox.kill", "sandbox.list", "sandbox.metrics", "sandbox.refresh", "sandbox.stop",
 		"worker.inspect", "worker.kill", "worker.list", "worker.stop",
 	}
 	if len(commands) != len(expected) {

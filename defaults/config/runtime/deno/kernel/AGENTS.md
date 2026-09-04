@@ -54,12 +54,14 @@
   exceptions.
 - The bridge uses `AsyncLocalStorage` to retain the exact trusted
   service-request or job-execution context across asynchronous continuations.
-  Concurrent calls in one Worker never guess between requests. A persistent
-  execution keeps one context object whose request identity is updated when its
-  current transport reconnects, so its suspended program continues through the
-  active registered request. Exact Worker control may borrow that context but
-  never replaces its current transport identity. Completion asks the kernel to
-  close the exact database scope, and Worker shutdown closes its scope prefix.
+  Every request or job gets a new frozen context containing its request ID,
+  cancellation signal, authentication metadata, and optional persistent
+  execution ID. Concurrent transports in one persistent execution never mutate
+  or reuse one context object. Completion closes the exact request database
+  scope, and Worker shutdown closes its execution-scope prefix.
+- Cancelling an execution removes only its pending calls, sends correlated
+  cancellation through the trusted supervisor, and reaches the Go callback
+  request context. Late results for cancelled calls are harmless.
 - The read-only `database.info` call may run from identified Worker module
   initialization; every SQL, transaction, authentication, administration, and
   typed operation call still requires an active execution context.
@@ -68,13 +70,14 @@
 # Work Guidance
 
 - Keep the public module independent of direct Deno filesystem/network
-  permissions and keep application data opaque.
+  permissions and keep application data opaque. Application Workers use their
+  private MessagePort and never receive the supervisor token or Unix socket.
 
 # Verification
 
 - `kernel_test.ts` covers authentication/admin/execution-secret/private
   operation/database calls, exact Worker invocation, persistent completion,
-  structured errors, interleaved asynchronous correlation, unavailable calls,
-  bounds, and bridge cleanup.
+  structured errors, interleaved and persistent request isolation, cancellation,
+  unavailable calls, bounds, and bridge cleanup.
 
 # Child DOX Index

@@ -56,6 +56,12 @@ func New(directory string, policy Policy) (*Manager, error) {
 		return nil, err
 	}
 	manager.state = prepared
+	if err := manager.cleanupLocked(); err != nil {
+		if prepared.file != nil {
+			_ = prepared.file.Close()
+		}
+		return nil, err
+	}
 	return manager, nil
 }
 
@@ -90,18 +96,20 @@ func (m *Manager) Write(record []byte) (int, error) {
 		return 0, fmt.Errorf("log record exceeds maximum file size")
 	}
 	now := m.now().UTC()
+	rotated := false
 	if (!m.state.periodEnd.IsZero() && !now.Before(m.state.periodEnd)) || (m.state.size > 0 && m.state.size+int64(len(record)) > m.state.policy.MaxFileSize) {
 		if err := m.rotateLocked(now); err != nil {
 			return 0, err
 		}
+		rotated = true
 	}
 	written, err := m.state.file.Write(record)
 	m.state.size += int64(written)
 	if err != nil {
 		return written, err
 	}
-	if err := m.cleanupLocked(); err != nil {
-		return written, err
+	if rotated {
+		return written, m.cleanupLocked()
 	}
 	return written, nil
 }

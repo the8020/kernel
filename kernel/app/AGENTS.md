@@ -173,6 +173,10 @@
   package-source convergence failures gate the public plane; a failure to start
   one affected service remains local, keeps its revision pending, and retries
   without taking unrelated services offline.
+- The runtime monitor uses cheap scalar package/service revisions on its normal
+  cadence. Shared node topology refresh is independently bounded and never
+  becomes a per-request or one-second full-table dependency; runtime callbacks
+  update sandbox observations directly between refreshes.
 - Extend composition only when a kernel-owned Phase requirement adds a real
   lifecycle service.
 

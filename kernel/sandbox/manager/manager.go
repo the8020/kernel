@@ -31,6 +31,7 @@ type Network interface {
 type Supervisor interface {
 	Status(context.Context, model.SandboxSpec) (supervisor.Status, error)
 	Workers(context.Context, model.SandboxSpec) ([]supervisor.WorkerStatus, error)
+	Snapshot(context.Context, model.SandboxSpec) (model.RuntimeSnapshot, error)
 	Drain(context.Context, model.SandboxSpec) error
 }
 
@@ -70,7 +71,9 @@ type NodeCapacity struct {
 }
 
 type Manager struct {
-	mu                 sync.Mutex
+	admissionMu        sync.Mutex
+	maintenanceMu      sync.Mutex
+	lifecycleLocks     [256]sync.Mutex
 	instanceUUID       string
 	cgroupRoot         string
 	startupTimeout     time.Duration
@@ -85,6 +88,7 @@ type Manager struct {
 	historyRetention   time.Duration
 	nodeLimits         NodeLimits
 	reservedSandboxIDs map[string]bool
+	pendingCreations   map[string]model.SandboxSpec
 	now                func() time.Time
 }
 
@@ -92,6 +96,7 @@ type Inspection struct {
 	Spec    model.SandboxSpec         `json:"spec"`
 	Status  model.SandboxStatus       `json:"status"`
 	Workers []supervisor.WorkerStatus `json:"workers"`
+	Runtime model.RuntimeSnapshot     `json:"runtime"`
 }
 
 type ReconcileReport struct {
@@ -128,6 +133,8 @@ const (
 	StartupDestroy   StartupPolicy = "destroy"
 )
 
+const maximumHealthChecksPerPass = 256
+
 func New(config Config) (*Manager, error) {
 	if config.InstanceUUID == "" || config.Store == nil || config.Backend == nil || config.Network == nil || config.Supervisor == nil || config.Ports == nil || config.History == nil {
 		return nil, errors.New("instance UUID, state, backend, network, supervisor, port leases, and history are required")
@@ -150,14 +157,14 @@ func New(config Config) (*Manager, error) {
 	if config.HistoryRetention <= 0 {
 		config.HistoryRetention = history.DefaultRetention
 	}
-	return &Manager{instanceUUID: config.InstanceUUID, cgroupRoot: config.CgroupRoot, startupTimeout: config.StartupTimeout, probeInterval: config.ProbeInterval, stopGrace: config.StopGrace, store: config.Store, backend: config.Backend, network: config.Network, supervisor: config.Supervisor, ports: config.Ports, history: config.History, historyRetention: config.HistoryRetention, nodeLimits: config.NodeLimits, reservedSandboxIDs: map[string]bool{}, now: config.Now}, nil
+	return &Manager{instanceUUID: config.InstanceUUID, cgroupRoot: config.CgroupRoot, startupTimeout: config.StartupTimeout, probeInterval: config.ProbeInterval, stopGrace: config.StopGrace, store: config.Store, backend: config.Backend, network: config.Network, supervisor: config.Supervisor, ports: config.Ports, history: config.History, historyRetention: config.HistoryRetention, nodeLimits: config.NodeLimits, reservedSandboxIDs: map[string]bool{}, pendingCreations: map[string]model.SandboxSpec{}, now: config.Now}, nil
 }
 
 // NewSandboxID reserves one short ID after checking both the live catalog and
 // the direct retained-history marker namespace.
 func (m *Manager) NewSandboxID() (string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.admissionMu.Lock()
+	defer m.admissionMu.Unlock()
 	for attempts := 0; attempts < 128; attempts++ {
 		candidate, err := model.NewSandboxID()
 		if err != nil {
@@ -166,10 +173,8 @@ func (m *Manager) NewSandboxID() (string, error) {
 		if m.reservedSandboxIDs[candidate] {
 			continue
 		}
-		if _, _, err := m.find(candidate); err == nil {
+		if m.store.Contains(candidate) {
 			continue
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return "", err
 		}
 		retained, err := m.history.ContainsSandboxID(candidate)
 		if err != nil {
@@ -187,8 +192,8 @@ func (m *Manager) NewSandboxID() (string, error) {
 // ReleaseSandboxID drops an unused allocation reservation. Create also releases
 // the reservation after accepting or rejecting the specification.
 func (m *Manager) ReleaseSandboxID(sandboxID string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.admissionMu.Lock()
+	defer m.admissionMu.Unlock()
 	delete(m.reservedSandboxIDs, sandboxID)
 }
 
@@ -205,35 +210,23 @@ func (m *Manager) CleanupHistory() (int, error) {
 }
 
 func (m *Manager) Create(ctx context.Context, spec model.SandboxSpec) (Inspection, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	defer delete(m.reservedSandboxIDs, spec.SandboxID)
 	if err := spec.Validate(); err != nil {
 		return Inspection{}, err
 	}
 	if len(spec.InternalToken) < 16 {
 		return Inspection{}, errors.New("high-entropy sandbox internal token is required")
 	}
-	if existing, _, err := m.find(spec.SandboxID); err == nil {
-		return Inspection{}, fmt.Errorf("sandbox ID %s already belongs to runtime group %s", spec.SandboxID, existing.RuntimeGroupID)
-	} else if !errors.Is(err, os.ErrNotExist) {
+	unlock := m.lockLifecycle(spec.RuntimeGroupID)
+	defer unlock()
+	if err := m.reserveCreation(spec); err != nil {
 		return Inspection{}, err
 	}
-	retained, err := m.history.ContainsSandboxID(spec.SandboxID)
-	if err != nil {
-		return Inspection{}, err
-	}
-	if retained {
-		return Inspection{}, fmt.Errorf("sandbox ID %s is retained in history", spec.SandboxID)
-	}
-	if _, _, err := m.store.Load(spec.RuntimeGroupID); err == nil {
-		return Inspection{}, fmt.Errorf("runtime group %s already exists", spec.RuntimeGroupID)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return Inspection{}, err
-	}
-	if err := m.admitSandboxLocked(spec); err != nil {
-		return Inspection{}, err
-	}
+	promoted := false
+	defer func() {
+		if !promoted {
+			m.releaseCreation(spec)
+		}
+	}()
 	status := model.SandboxStatus{DesiredState: model.StateReady, ObservedState: model.StateCreating, CurrentOwners: append([]string(nil), spec.OwnerIDs...)}
 	if err := m.store.SaveSpec(spec); err != nil {
 		return Inspection{}, err
@@ -241,6 +234,8 @@ func (m *Manager) Create(ctx context.Context, spec model.SandboxSpec) (Inspectio
 	if err := m.store.SaveStatus(spec.RuntimeGroupID, status); err != nil {
 		return Inspection{}, err
 	}
+	m.releaseCreation(spec)
+	promoted = true
 	allocation, err := m.network.Allocate(ctx, spec.RuntimeGroupID, spec.SandboxID, spec.Network)
 	if err != nil {
 		return Inspection{}, m.failCreate(spec, fmt.Errorf("allocate sandbox network: %w", err))
@@ -288,8 +283,8 @@ func (m *Manager) Create(ctx context.Context, spec model.SandboxSpec) (Inspectio
 }
 
 func (m *Manager) Capacity() (NodeCapacity, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.admissionMu.Lock()
+	defer m.admissionMu.Unlock()
 	return m.capacityLocked()
 }
 
@@ -299,15 +294,64 @@ func (m *Manager) capacityLocked() (NodeCapacity, error) {
 	if err != nil {
 		return result, err
 	}
+	counted := make(map[string]bool, len(ids))
 	for _, id := range ids {
-		spec, _, loadErr := m.store.Load(id)
-		if loadErr != nil {
-			return result, loadErr
+		spec, _, complete := m.store.Cached(id)
+		if !complete {
+			var pending bool
+			spec, pending = m.pendingCreations[id]
+			if !pending {
+				return result, fmt.Errorf("runtime group %s is not loaded into the state cache", id)
+			}
+		}
+		counted[id] = true
+		result.SandboxCount++
+		result.TemporaryStorageBytes += spec.ResourceLimits.TmpfsMaximum
+	}
+	for id, spec := range m.pendingCreations {
+		if counted[id] {
+			continue
 		}
 		result.SandboxCount++
 		result.TemporaryStorageBytes += spec.ResourceLimits.TmpfsMaximum
 	}
 	return result, nil
+}
+
+func (m *Manager) reserveCreation(spec model.SandboxSpec) error {
+	m.admissionMu.Lock()
+	defer m.admissionMu.Unlock()
+	defer delete(m.reservedSandboxIDs, spec.SandboxID)
+	if m.store.Contains(spec.SandboxID) {
+		return fmt.Errorf("sandbox ID %s already exists", spec.SandboxID)
+	}
+	for runtimeGroupID, pending := range m.pendingCreations {
+		if runtimeGroupID == spec.RuntimeGroupID || pending.SandboxID == spec.SandboxID {
+			return fmt.Errorf("sandbox or runtime group is already being created")
+		}
+	}
+	retained, err := m.history.ContainsSandboxID(spec.SandboxID)
+	if err != nil {
+		return err
+	}
+	if retained {
+		return fmt.Errorf("sandbox ID %s is retained in history", spec.SandboxID)
+	}
+	if m.store.Contains(spec.RuntimeGroupID) {
+		return fmt.Errorf("runtime group %s already exists", spec.RuntimeGroupID)
+	}
+	if err := m.admitSandboxLocked(spec); err != nil {
+		return err
+	}
+	m.pendingCreations[spec.RuntimeGroupID] = spec
+	return nil
+}
+
+func (m *Manager) releaseCreation(spec model.SandboxSpec) {
+	m.admissionMu.Lock()
+	delete(m.pendingCreations, spec.RuntimeGroupID)
+	delete(m.reservedSandboxIDs, spec.SandboxID)
+	m.admissionMu.Unlock()
 }
 
 func (m *Manager) admitSandboxLocked(spec model.SandboxSpec) error {
@@ -329,8 +373,8 @@ func (m *Manager) admitSandboxLocked(spec model.SandboxSpec) error {
 // AssignWarm converts one healthy, unused warm runtime group into an assigned
 // group. An assigned supervisor is never eligible to return to the warm pool.
 func (m *Manager) AssignWarm(ctx context.Context, runtimeGroupID, groupKey, ownerID string) (Inspection, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	unlock := m.lockLifecycle(runtimeGroupID)
+	defer unlock()
 	if runtimeGroupID == "" || groupKey == "" || ownerID == "" {
 		return Inspection{}, errors.New("runtime-group ID, group key, and owner ID are required")
 	}
@@ -388,8 +432,8 @@ func (m *Manager) AssignWarm(ctx context.Context, runtimeGroupID, groupKey, owne
 
 // AddOwner records another workload owner on an existing shared runtime group.
 func (m *Manager) AddOwner(ctx context.Context, runtimeGroupID, ownerID string, logicalServiceID ...string) (Inspection, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	unlock := m.lockLifecycle(runtimeGroupID)
+	defer unlock()
 	if runtimeGroupID == "" || strings.TrimSpace(ownerID) == "" {
 		return Inspection{}, errors.New("runtime-group ID and owner ID are required")
 	}
@@ -440,8 +484,8 @@ func (m *Manager) AddOwner(ctx context.Context, runtimeGroupID, ownerID string, 
 // is deleted when the final owner leaves; otherwise the remaining ownership
 // and service-placement indexes are updated atomically before returning.
 func (m *Manager) RemoveOwner(ctx context.Context, runtimeGroupID, ownerID, logicalServiceID string) (bool, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	unlock := m.lockLifecycle(runtimeGroupID)
+	defer unlock()
 	if runtimeGroupID == "" || strings.TrimSpace(ownerID) == "" {
 		return false, errors.New("runtime-group ID and owner ID are required")
 	}
@@ -503,8 +547,6 @@ func removeString(values []string, candidate string) []string {
 }
 
 func (m *Manager) List() ([]Inspection, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	ids, err := m.store.List()
 	if err != nil {
 		return nil, err
@@ -515,7 +557,7 @@ func (m *Manager) List() ([]Inspection, error) {
 		if loadErr != nil {
 			return nil, loadErr
 		}
-		result = append(result, Inspection{Spec: spec, Status: status})
+		result = append(result, m.cachedInspection(spec, status))
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Spec.SandboxID < result[j].Spec.SandboxID })
 	return result, nil
@@ -525,43 +567,72 @@ func (m *Manager) List() ([]Inspection, error) {
 // group without contacting the supervisor or backend. Callers that already own
 // a runtime-group identity can use it for precise routing.
 func (m *Manager) ResolveRuntimeGroup(runtimeGroupID string) (model.SandboxSpec, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	spec, _, err := m.store.Load(runtimeGroupID)
 	return spec, err
 }
 
 func (m *Manager) Inspect(ctx context.Context, sandboxID string) (Inspection, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	spec, status, err := m.find(sandboxID)
+	if err != nil {
+		return Inspection{}, err
+	}
+	return m.cachedInspection(spec, status), nil
+}
+
+// Refresh performs one targeted live observation. Ordinary routing and list
+// operations deliberately use Inspect, which is entirely cache backed.
+func (m *Manager) Refresh(ctx context.Context, sandboxID string) (Inspection, error) {
 	spec, status, err := m.find(sandboxID)
 	if err != nil {
 		return Inspection{}, err
 	}
 	if status.ObservedState != model.StateReady && status.ObservedState != model.StateActive && status.ObservedState != model.StateDraining {
-		return Inspection{Spec: spec, Status: status}, nil
+		return m.cachedInspection(spec, status), nil
 	}
-	workers, workerErr := m.supervisor.Workers(ctx, spec)
-	metrics, metricsErr := m.sampleMetrics(ctx, spec)
-	if workerErr == nil || metricsErr == nil {
-		if updated, updateErr := m.store.UpdateStatus(spec.RuntimeGroupID, func(value *model.SandboxStatus) error {
-			if workerErr == nil {
-				value.WorkerCount = len(workers)
-			}
-			if metricsErr == nil {
-				value.Metrics = metrics
-			}
-			return nil
-		}); updateErr == nil {
-			status = updated
+	var snapshot model.RuntimeSnapshot
+	var metrics model.ResourceMetrics
+	var snapshotErr, metricsErr error
+	var wait sync.WaitGroup
+	wait.Add(2)
+	go func() { defer wait.Done(); snapshot, snapshotErr = m.supervisor.Snapshot(ctx, spec) }()
+	go func() { defer wait.Done(); metrics, metricsErr = m.sampleMetrics(ctx, spec) }()
+	wait.Wait()
+	if snapshotErr != nil {
+		return Inspection{}, snapshotErr
+	}
+	snapshot.ObservedAt = m.now()
+	if _, err := m.store.Observe(spec.RuntimeGroupID, snapshot, snapshot.ObservedAt); err != nil {
+		return Inspection{}, err
+	}
+	if metricsErr == nil {
+		_ = m.store.ObserveMetrics(spec.RuntimeGroupID, metrics)
+	}
+	_, refreshed, err := m.store.Load(spec.RuntimeGroupID)
+	if err != nil {
+		return Inspection{}, err
+	}
+	return m.cachedInspection(spec, refreshed), nil
+}
+
+func (m *Manager) cachedInspection(spec model.SandboxSpec, status model.SandboxStatus) Inspection {
+	snapshot, _ := m.store.Snapshot(spec.RuntimeGroupID)
+	if status.ObservedState != model.StateReady && status.ObservedState != model.StateActive && status.ObservedState != model.StateDraining {
+		return Inspection{Spec: spec, Status: status}
+	}
+	workers := make([]supervisor.WorkerStatus, len(snapshot.Workers))
+	for index, worker := range snapshot.Workers {
+		workers[index] = supervisor.WorkerStatus{
+			WorkerID: worker.WorkerID, ExecutionID: worker.ExecutionID, WorkloadID: worker.WorkloadID,
+			OwnerID: worker.OwnerID, DebuggerName: worker.DebuggerName, Entrypoint: worker.Entrypoint,
+			ReleaseID: worker.ReleaseID, InFlight: worker.InFlight,
+			PersistentExecutions: worker.PersistentExecutions, IdleSinceMS: worker.IdleSinceMS,
+			State: worker.State, Failure: worker.Failure,
 		}
 	}
-	return Inspection{Spec: spec, Status: status, Workers: workers}, nil
+	return Inspection{Spec: spec, Status: status, Workers: workers, Runtime: snapshot}
 }
 
 func (m *Manager) Metrics(sandboxID string) (model.ResourceMetrics, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	spec, _, err := m.find(sandboxID)
 	if err != nil {
 		return model.ResourceMetrics{}, err
@@ -570,10 +641,7 @@ func (m *Manager) Metrics(sandboxID string) (model.ResourceMetrics, error) {
 	if err != nil {
 		return metrics, err
 	}
-	if _, err := m.store.UpdateStatus(spec.RuntimeGroupID, func(value *model.SandboxStatus) error {
-		value.Metrics = metrics
-		return nil
-	}); err != nil {
+	if err := m.store.ObserveMetrics(spec.RuntimeGroupID, metrics); err != nil {
 		return metrics, err
 	}
 	return metrics, nil
@@ -582,122 +650,122 @@ func (m *Manager) Metrics(sandboxID string) (model.ResourceMetrics, error) {
 // OpenConsole launches one new interactive process in a currently ready
 // sandbox through the selected backend.
 func (m *Manager) OpenConsole(ctx context.Context, sandboxID string, options backend.ConsoleOptions) (backend.Console, error) {
-	m.mu.Lock()
 	spec, status, err := m.find(sandboxID)
 	if err != nil {
-		m.mu.Unlock()
 		return nil, err
 	}
 	if status.ObservedState != model.StateReady {
-		m.mu.Unlock()
 		return nil, errors.New("sandbox is not ready")
 	}
 	consoleBackend, ok := m.backend.(backend.ConsoleBackend)
 	if !ok {
-		m.mu.Unlock()
 		return nil, errors.New("selected sandbox backend does not support interactive consoles")
 	}
-	m.mu.Unlock()
 	return consoleBackend.OpenConsole(ctx, spec.SandboxID, options)
 }
 
-// CheckHealth combines sandbox task state, supervisor heartbeat age, and
-// available OOM evidence. Terminal records and logs move to history after the
-// runtime side effects are cleaned.
+// CheckHealth normally reads only the in-memory heartbeat cache. A stale
+// sandbox is then inspected directly so backend and cgroup work scales with
+// suspected failures rather than with every healthy sandbox on every tick.
+// Terminal records and logs move to history after runtime cleanup.
 func (m *Manager) CheckHealth(ctx context.Context, heartbeatTimeout time.Duration) (HealthReport, error) {
 	if heartbeatTimeout <= 0 {
 		return HealthReport{}, errors.New("positive supervisor heartbeat timeout is required")
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	report := HealthReport{}
-	observations, err := m.backend.List(ctx)
-	if err != nil {
-		return report, err
-	}
-	observed := make(map[string]backend.Observation, len(observations))
-	for _, observation := range observations {
-		observed[observation.RuntimeGroupID] = observation
-	}
-	ids, err := m.store.List()
-	if err != nil {
-		return report, err
-	}
+	now := m.now()
+	ids := m.store.ClaimStaleHeartbeats(now.Add(-heartbeatTimeout), maximumHealthChecksPerPass)
 	for _, id := range ids {
-		spec, status, loadErr := m.store.Load(id)
-		if loadErr != nil {
-			return report, loadErr
-		}
-		if status.ObservedState == model.StateFailed || status.ObservedState == model.StateStopped || status.ObservedState == model.StateStopping || status.ObservedState == model.StateDeleting {
-			continue
-		}
 		report.Checked++
-		observation, exists := observed[id]
-		if !exists {
-			failure, failed := m.failHealth(ctx, spec, "sandbox runtime or task is missing", false, false, nil)
-			if failed {
-				report.Failures = append(report.Failures, failure)
-			}
-			continue
-		}
-		if observation.TaskStatus != "running" {
-			reason := fmt.Sprintf("sandbox task is not running: %s", observation.TaskStatus)
-			failure, failed := m.failHealth(ctx, spec, reason, false, false, nil)
-			if failed {
-				report.Failures = append(report.Failures, failure)
-			}
-			continue
-		}
-		metrics, metricsErr := m.sampleMetrics(ctx, spec)
-		status, err = m.store.UpdateStatus(id, func(current *model.SandboxStatus) error {
-			current.ContainerID, current.TaskPID = observation.ContainerID, observation.TaskPID
-			if metricsErr == nil {
-				current.Metrics = metrics
-			}
-			return nil
-		})
+		failure, failed, err := m.checkStaleHealth(ctx, id, now, heartbeatTimeout)
+		m.store.RescheduleHeartbeat(id)
 		if err != nil {
 			return report, err
 		}
-		if metricsErr == nil && (metrics.MemoryEvents["oom_kill"] > 0 || metrics.MemoryEvents["oom_group_kill"] > 0) {
-			reason := fmt.Sprintf("cgroup OOM kill detected (oom_kill=%d, oom_group_kill=%d)", metrics.MemoryEvents["oom_kill"], metrics.MemoryEvents["oom_group_kill"])
-			failure, failed := m.failHealth(ctx, spec, reason, true, true, nil)
-			if failed {
-				report.Failures = append(report.Failures, failure)
-			}
-			continue
-		}
-		if status.LastHeartbeat.IsZero() || m.now().Sub(status.LastHeartbeat) > heartbeatTimeout {
-			reason := fmt.Sprintf("supervisor heartbeat exceeded %s", heartbeatTimeout)
-			cutoff := m.now().Add(-heartbeatTimeout)
-			failure, failed := m.failHealth(ctx, spec, reason, false, true, func(current model.SandboxStatus) bool {
-				return current.LastHeartbeat.IsZero() || current.LastHeartbeat.Before(cutoff)
-			})
-			if failed {
-				report.Failures = append(report.Failures, failure)
-			}
-			continue
+		if failed {
+			report.Failures = append(report.Failures, failure)
 		}
 	}
 	sort.Slice(report.Failures, func(i, j int) bool { return report.Failures[i].RuntimeGroupID < report.Failures[j].RuntimeGroupID })
 	return report, nil
 }
 
+func (m *Manager) checkStaleHealth(ctx context.Context, runtimeGroupID string, now time.Time, heartbeatTimeout time.Duration) (HealthFailure, bool, error) {
+	unlock := m.lockLifecycle(runtimeGroupID)
+	defer unlock()
+	spec, status, err := m.store.Load(runtimeGroupID)
+	if errors.Is(err, os.ErrNotExist) {
+		return HealthFailure{}, false, nil
+	}
+	if err != nil {
+		return HealthFailure{}, false, err
+	}
+	if status.ObservedState != model.StateReady && status.ObservedState != model.StateActive && status.ObservedState != model.StateDraining {
+		return HealthFailure{}, false, nil
+	}
+	cutoff := now.Add(-heartbeatTimeout)
+	if status.LastHeartbeat.After(cutoff) {
+		return HealthFailure{}, false, nil
+	}
+	observation, err := m.backend.Observe(ctx, spec.SandboxID)
+	if err != nil {
+		if ctx.Err() != nil {
+			return HealthFailure{}, false, ctx.Err()
+		}
+		failure, failed := m.failHealth(ctx, spec, "sandbox runtime or task is missing", false, false, nil)
+		return failure, failed, nil
+	}
+	if observation.TaskStatus != "running" {
+		reason := fmt.Sprintf("sandbox task is not running: %s", observation.TaskStatus)
+		failure, failed := m.failHealth(ctx, spec, reason, false, false, nil)
+		return failure, failed, nil
+	}
+	metrics, metricsErr := m.sampleMetrics(ctx, spec)
+	if metricsErr == nil {
+		_ = m.store.ObserveMetrics(runtimeGroupID, metrics)
+	}
+	if metricsErr == nil && (metrics.MemoryEvents["oom_kill"] > 0 || metrics.MemoryEvents["oom_group_kill"] > 0) {
+		reason := fmt.Sprintf("cgroup OOM kill detected (oom_kill=%d, oom_group_kill=%d)", metrics.MemoryEvents["oom_kill"], metrics.MemoryEvents["oom_group_kill"])
+		failure, failed := m.failHealth(ctx, spec, reason, true, true, nil)
+		return failure, failed, nil
+	}
+	reason := fmt.Sprintf("supervisor heartbeat exceeded %s", heartbeatTimeout)
+	failure, failed := m.failHealth(ctx, spec, reason, false, true, func(current model.SandboxStatus) bool {
+		return !current.LastHeartbeat.After(cutoff)
+	})
+	return failure, failed, nil
+}
+
 func (m *Manager) Stop(ctx context.Context, sandboxID string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	spec, _, err := m.find(sandboxID)
+	if err != nil {
+		return err
+	}
+	unlock := m.lockLifecycle(spec.RuntimeGroupID)
+	defer unlock()
 	return m.stopLocked(ctx, sandboxID, false)
 }
 
 func (m *Manager) Kill(ctx context.Context, sandboxID string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	spec, _, err := m.find(sandboxID)
+	if err != nil {
+		return err
+	}
+	unlock := m.lockLifecycle(spec.RuntimeGroupID)
+	defer unlock()
 	return m.stopLocked(ctx, sandboxID, true)
 }
 
 func (m *Manager) Delete(ctx context.Context, sandboxID string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	spec, _, err := m.find(sandboxID)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	unlock := m.lockLifecycle(spec.RuntimeGroupID)
+	defer unlock()
 	return m.deleteLocked(ctx, sandboxID)
 }
 
@@ -744,8 +812,8 @@ func (m *Manager) deleteLocked(ctx context.Context, sandboxID string) error {
 }
 
 func (m *Manager) Reconcile(ctx context.Context) (ReconcileReport, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.maintenanceMu.Lock()
+	defer m.maintenanceMu.Unlock()
 	var report ReconcileReport
 	observations, err := m.backend.List(ctx)
 	if err != nil {
@@ -761,10 +829,12 @@ func (m *Manager) Reconcile(ctx context.Context) (ReconcileReport, error) {
 	}
 	known := map[string]bool{}
 	for _, id := range ids {
+		unlock := m.lockLifecycle(id)
 		known[id] = true
 		spec, status, loadErr := m.store.Load(id)
 		if loadErr != nil {
 			report.Failed = append(report.Failed, id)
+			unlock()
 			continue
 		}
 		observation, exists := observed[id]
@@ -773,6 +843,7 @@ func (m *Manager) Reconcile(ctx context.Context) (ReconcileReport, error) {
 			if failure, failed := m.failHealth(ctx, spec, "sandbox runtime or task is missing", false, false, nil); failed {
 				report.Terminated = append(report.Terminated, failure)
 			}
+			unlock()
 			continue
 		}
 		if observation.TaskStatus != "running" {
@@ -780,6 +851,7 @@ func (m *Manager) Reconcile(ctx context.Context) (ReconcileReport, error) {
 			if failure, failed := m.failHealth(ctx, spec, "sandbox task is not running", false, false, nil); failed {
 				report.Terminated = append(report.Terminated, failure)
 			}
+			unlock()
 			continue
 		}
 		if networkErr := m.network.Check(ctx, id); networkErr != nil {
@@ -787,6 +859,7 @@ func (m *Manager) Reconcile(ctx context.Context) (ReconcileReport, error) {
 			if failure, failed := m.failHealth(ctx, spec, "CNI check failed: "+networkErr.Error(), false, true, nil); failed {
 				report.Terminated = append(report.Terminated, failure)
 			}
+			unlock()
 			continue
 		}
 		supervisorStatus, supervisorErr := m.supervisor.Status(ctx, spec)
@@ -795,6 +868,7 @@ func (m *Manager) Reconcile(ctx context.Context) (ReconcileReport, error) {
 			if failure, failed := m.failHealth(ctx, spec, "supervisor check failed: "+supervisorErr.Error(), false, true, nil); failed {
 				report.Terminated = append(report.Terminated, failure)
 			}
+			unlock()
 			continue
 		}
 		status.ContainerID, status.TaskPID = observation.ContainerID, observation.TaskPID
@@ -809,9 +883,11 @@ func (m *Manager) Reconcile(ctx context.Context) (ReconcileReport, error) {
 			if failure, failed := m.failHealth(ctx, spec, "cannot reconcile lifecycle: "+err.Error(), false, true, nil); failed {
 				report.Terminated = append(report.Terminated, failure)
 			}
+			unlock()
 			continue
 		}
 		report.Restored++
+		unlock()
 	}
 	for _, observation := range observations {
 		if known[observation.RuntimeGroupID] {
@@ -852,8 +928,8 @@ func (m *Manager) Startup(ctx context.Context, policy StartupPolicy) (ReconcileR
 // the fast crash-restart path; normal reconciliation remains available through
 // the explicit reconcile startup policy.
 func (m *Manager) destroyInherited(ctx context.Context) (ReconcileReport, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.maintenanceMu.Lock()
+	defer m.maintenanceMu.Unlock()
 	var report ReconcileReport
 	owned, err := m.backend.ListOwned(ctx)
 	if err != nil {
@@ -1070,20 +1146,22 @@ func (m *Manager) stopSpecLocked(ctx context.Context, spec model.SandboxSpec, st
 }
 
 func (m *Manager) find(sandboxID string) (model.SandboxSpec, model.SandboxStatus, error) {
-	ids, err := m.store.List()
-	if err != nil {
-		return model.SandboxSpec{}, model.SandboxStatus{}, err
+	spec, status, err := m.store.Resolve(sandboxID)
+	if errors.Is(err, os.ErrNotExist) {
+		return model.SandboxSpec{}, model.SandboxStatus{}, fmt.Errorf("sandbox %q: %w", sandboxID, os.ErrNotExist)
 	}
-	for _, id := range ids {
-		spec, status, loadErr := m.store.Load(id)
-		if loadErr != nil {
-			return spec, status, loadErr
-		}
-		if spec.SandboxID == sandboxID || spec.RuntimeGroupID == sandboxID {
-			return spec, status, nil
-		}
+	return spec, status, err
+}
+
+func (m *Manager) lockLifecycle(identity string) func() {
+	var hash uint64 = 1469598103934665603
+	for index := 0; index < len(identity); index++ {
+		hash ^= uint64(identity[index])
+		hash *= 1099511628211
 	}
-	return model.SandboxSpec{}, model.SandboxStatus{}, fmt.Errorf("sandbox %q: %w", sandboxID, os.ErrNotExist)
+	lock := &m.lifecycleLocks[hash%uint64(len(m.lifecycleLocks))]
+	lock.Lock()
+	return lock.Unlock
 }
 
 func (m *Manager) failCreate(spec model.SandboxSpec, cause error) error {

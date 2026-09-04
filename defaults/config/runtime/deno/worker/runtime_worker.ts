@@ -92,11 +92,13 @@ export class RuntimeWorker {
   #closed = false;
   #draining = false;
   #failure?: string;
+  #starting = true;
   #inFlight = 0;
   #idleWaiters = new Set<() => void>();
   #idleSinceMilliseconds: number | undefined;
   #logs: RuntimeLogEvent[] = [];
   #kernelCall?: KernelCall;
+  #kernelCalls = new Map<string, AbortController>();
   #webSockets = new Map<string, ServiceWebSocketCallbacks>();
   #now: () => number;
   #onCapacityChange?: () => void;
@@ -130,6 +132,7 @@ export class RuntimeWorker {
     this.#port.onmessage = (event: MessageEvent<WorkerMessage>) => {
       const message = event.data;
       if (message.type === "ready") {
+        this.#starting = false;
         this.#idleSinceMilliseconds = this.#now();
         this.#onCapacityChange?.();
         readyResolve();
@@ -154,6 +157,14 @@ export class RuntimeWorker {
       }
       if (message.type === "kernel_call") {
         void this.#handleKernelCall(message);
+        return;
+      }
+      if (
+        message.type === "kernel_cancel" && message.correlationId !== undefined
+      ) {
+        this.#kernelCalls.get(message.correlationId)?.abort(
+          new DOMException("Kernel call cancelled", "AbortError"),
+        );
         return;
       }
       if (message.type === "service_websocket_send") {
@@ -228,6 +239,8 @@ export class RuntimeWorker {
       if (correlationId === undefined || this.#kernelCall === undefined) {
         throw new Error("kernel API is unavailable");
       }
+      const controller = new AbortController();
+      this.#kernelCalls.set(correlationId, controller);
       const payload = message.payload as Partial<KernelCallPayload> | undefined;
       if (
         payload === undefined ||
@@ -261,11 +274,10 @@ export class RuntimeWorker {
         arguments: payload.arguments as Record<string, unknown>,
         requestId: payload.request?.requestId,
         serviceId: payload.request?.serviceId ?? this.metadata.workloadId,
-        workloadId: this.metadata.workloadId,
         executionId: this.metadata.executionId,
         workerId: this.metadata.workerId,
         persistentExecutionId: payload.request?.persistentExecutionId,
-      });
+      }, controller.signal);
       this.#port.postMessage({
         type: "kernel_result",
         correlationId,
@@ -281,6 +293,8 @@ export class RuntimeWorker {
             : "kernel API call failed",
         });
       }
+    } finally {
+      if (correlationId !== undefined) this.#kernelCalls.delete(correlationId);
     }
   }
 
@@ -304,6 +318,10 @@ export class RuntimeWorker {
 
   get failure(): string | undefined {
     return this.#failure;
+  }
+
+  get starting(): boolean {
+    return this.#starting;
   }
 
   get logs(): RuntimeLogEvent[] {
@@ -502,6 +520,8 @@ export class RuntimeWorker {
     if (this.#closed) return;
     this.#closed = true;
     this.#worker.terminate();
+    for (const controller of this.#kernelCalls.values()) controller.abort();
+    this.#kernelCalls.clear();
     this.#port.close();
     this.#closedNotification();
     this.#closeWebSockets("Worker terminated");
@@ -515,13 +535,14 @@ export class RuntimeWorker {
     retainInFlight = false,
   ): Promise<unknown> {
     if (this.#closed) throw new Error(this.#failure ?? "Worker is closed");
-    await this.ready;
+    if (this.#starting) await this.ready;
     if (signal?.aborted) {
       throw signal.reason ?? new DOMException("Aborted", "AbortError");
     }
     const correlationId = `${this.metadata.workerId}-${++this.#sequence}`;
     this.#idleSinceMilliseconds = undefined;
     this.#inFlight++;
+    this.#onCapacityChange?.();
     let abort: (() => void) | undefined;
     const result = new Promise<unknown>((resolve, reject) => {
       const cleanup = (): void => {

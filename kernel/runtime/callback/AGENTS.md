@@ -5,7 +5,7 @@
 # Ownership
 
 - Own `/run/the8020/kernel.sock` host-side lifecycle, per-sandbox token
-  verification, protocol envelopes, heartbeat persistence, and
+  verification, protocol envelopes, in-memory runtime snapshots, and
   supervisor-mediated authentication, administration, typed runtime operations,
   database, exact-Worker invocation, and persistent completion calls.
 - Do not expose public APIs, control Workers, probe containerd, allocate
@@ -18,24 +18,28 @@
 - Only generated registration, heartbeat, authentication,
   administrative, database, Worker-invocation, and persistent-completion
   envelopes are accepted; envelope/payload versions and runtime-group identity
-  must agree, constant-time bearer validation uses persisted sandbox secrets,
-  and terminal groups cannot be revived by late callbacks.
-- Heartbeat fields are persisted through an atomic read-modify-write that
-  preserves concurrent monitor fields and rechecks terminal state before write.
+  must agree, constant-time bearer validation uses the state store's preloaded
+  token cache, unknown identities remain cache-only misses, and terminal groups
+  cannot be revived by late callbacks.
+- Registration and heartbeat carry one absolute revisioned supervisor snapshot.
+  Applying a snapshot and refreshing heartbeat freshness are memory-only; stale
+  revisions cannot replace newer state, and restart recovery obtains fresh
+  truth from the supervisor heartbeat.
 - Administration, typed operations, database access, and Worker invocation are
-  available to both job and service Workers after exact active runtime-group,
-  sandbox, Worker, execution, and workload validation. They do not require an
-  HTTP request or authenticated user.
-- After exact identity validation, administration and typed-operation calls
-  carry their runtime execution in Go context so synchronous child jobs cannot
-  queue behind the waiting parent that requested them.
-- Callback identity carries the internal version-specific workload ID
-  separately from the public service ID. Worker validation uses the workload
-  ID; request registration, database scoping, and persistent service routing
-  use the service ID.
+  available to both job and service Workers after cached runtime-group token
+  validation and required nonempty execution/request identity. They do not
+  reverse-query the supervisor or scan Workers per call.
+- Administration and typed-operation calls carry the trusted Worker execution
+  in Go context so synchronous child jobs cannot queue behind the waiting parent
+  that requested them.
+- Sandbox and workload identity derive from the authenticated runtime envelope.
+  Payloads carry only Worker execution and request identity plus fields owned by
+  the selected operation; service identity appears only where persistent routing
+  requires it.
 - Authentication login/logout alone remains service-request scoped because it
   consumes the public request's security and current-user context. Password
-  payloads are never logged.
+  payloads are never logged, and the callback request context reaches all
+  authentication database work without compatibility fallbacks.
 - Administrative calls dispatch the existing transport-independent registry;
   typed package operations use the separate private dispatcher and never
   recurse through public package commands.
@@ -44,18 +48,21 @@
 - Database transaction tokens are scoped by runtime group, sandbox, Worker,
   Worker execution, and request/job identity. Request completion closes that
   exact scope; Worker termination closes its scope prefix, rolling back leaked
-  transactions. Evaluator Workers have database calls disabled.
+  transactions. These checks are in memory and never validate Worker liveness.
+  Evaluator Workers have database calls disabled.
 - Worker invocation applies a five-second context and forwards one exact
   node/sandbox/Worker plus optional persistent-execution target while treating
   the registered function and JSON as opaque.
 - Persistent completion derives source placement and execution identity from the
   trusted Worker call and removes only an exactly matching generic route; it
   carries no application reason.
-- Production mounts the socket's containing node-private directory into every
-  workload sandbox. Supervisors open a new Unix connection per call so a socket
-  replaced after kernel restart reconnects without remounting an inode. JSON
-  responses declare their exact content length so completion does not depend on
-  Unix transport EOF propagation.
+- Production mounts the socket's containing node-private directory for the
+  trusted supervisor, while application Worker permissions deny both the socket
+  and token. Supervisors open a new Unix connection per call so a socket replaced
+  after kernel restart reconnects without remounting an inode. JSON responses
+  declare their exact content length so completion does not depend on Unix
+  transport EOF propagation. Closing a cancelled connection cancels the Go
+  request context.
 
 # Work Guidance
 
@@ -64,8 +71,8 @@
 # Verification
 
 - Unit tests cover Unix listener lifecycle/reconnect, token/protocol and
-  terminal-state rejection, job/service runtime identity, authentication,
-  administration and typed operations, database access, exact Worker invocation,
-  and persistent completion.
+  terminal-state rejection, memory-only revisioned snapshots, job/service
+  runtime identity, authentication, administration and typed operations,
+  concurrent database access, exact Worker invocation, and persistent completion.
 
 # Child DOX Index

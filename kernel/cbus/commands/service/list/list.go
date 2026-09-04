@@ -4,6 +4,7 @@ package list
 import (
 	"context"
 	"the8020/kernel/cbus/commands/internal/commandutil"
+	serviceview "the8020/kernel/cbus/commands/service"
 	"the8020/kernel/cbus/core"
 	"the8020/kernel/services"
 	"the8020/kernel/webservices"
@@ -24,7 +25,7 @@ type summary struct {
 }
 
 func New(serviceSet *services.Services) core.Handler {
-	return func(_ context.Context, _ core.Request) (core.Result, error) {
+	return func(ctx context.Context, _ core.Request) (core.Result, error) {
 		runtimeServices, err := commandutil.Runtime(serviceSet)
 		if err != nil {
 			return nil, err
@@ -38,6 +39,7 @@ func New(serviceSet *services.Services) core.Handler {
 		}
 		items := make([]summary, 0, len(statuses))
 		for _, status := range statuses {
+			status = serviceview.Observed(ctx, status, runtimeServices.Sandboxes)
 			items = append(items, summary{
 				ServiceID: status.ServiceID, CanonicalBasePath: status.CanonicalBasePath, Description: status.Description,
 				Enabled: status.Enabled, State: status.State, VersionCount: status.VersionCount, SandboxCount: status.SandboxCount,

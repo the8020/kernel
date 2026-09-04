@@ -173,7 +173,7 @@ func runDevelopmentE2E(t *testing.T, rootless bool) {
 		t.Fatalf("SSH package edit escaped the private overlay: %v", err)
 	}
 	shell(t, manager, sandbox.UserID, "test \"$(cat /proc/1/comm)\" = sleep && test \"$(id -u)\" = 0 && test \"$HOME:$USER:$LOGNAME\" = /root:root:root && ! getent passwd developer && test ! -e /home/developer && test ! -e /opt/development/snapshot && ! command -v codex && ! command -v node && ! command -v nodejs && ! command -v npm && ! command -v npx && deno --version && git --version")
-	shell(t, manager, sandbox.UserID, "test \"$(command -v activate)\" = /workspace/scripts/activate && test -x /workspace/scripts/activate && ! sh -c 'printf no > /workspace/scripts/not-writable'")
+	shell(t, manager, sandbox.UserID, "test \"$(command -v activate)\" = /workspace/scripts/activate && test -x /workspace/scripts/activate && test -x /workspace/scripts/install-codex.sh && test -x /workspace/scripts/install-claude.sh && printf '%s' \"$PATH\" | grep -Eq '(^|:)/root/.local/bin(:|$)' && ! sh -c 'printf no > /workspace/scripts/not-writable'")
 	shell(t, manager, sandbox.UserID, "test \"$(stat -c %a /run/lock)\" = 1777 && test \"$(readlink /var/lock)\" = /run/lock && printf lock-ok > /var/lock/the8020-proof && rm /var/lock/the8020-proof && printf transient > /run/the8020-transient")
 	shell(t, manager, sandbox.UserID, "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends aptitude && aptitude --version")
 	shell(t, manager, sandbox.UserID, "install -o 42 -g 4 -m 0640 /dev/null /var/tmp/the8020-idmap-proof && test \"$(stat -c %u:%g /var/tmp/the8020-idmap-proof)\" = 42:4 && rm /var/tmp/the8020-idmap-proof")

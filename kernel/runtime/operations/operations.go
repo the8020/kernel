@@ -57,6 +57,7 @@ import (
 	serviceinspect "the8020/kernel/cbus/commands/service/inspect"
 	servicelist "the8020/kernel/cbus/commands/service/list"
 	serviceopenapi "the8020/kernel/cbus/commands/service/openapi"
+	servicerefresh "the8020/kernel/cbus/commands/service/refresh"
 	servicerequest "the8020/kernel/cbus/commands/service/request"
 	servicerestart "the8020/kernel/cbus/commands/service/restart"
 	servicescale "the8020/kernel/cbus/commands/service/scale"
@@ -99,7 +100,7 @@ func New(serviceSet *services.Services, hasher *auth.PasswordHasher) (*Dispatche
 		"package.repository.remote": packagerepositoryremote.New(serviceSet), "package.repository.status": packagerepositorystatus.New(serviceSet),
 		"package.source.inspect": packagesourceinspect.New(serviceSet), "package.synchronize": packagesynchronize.New(serviceSet), "package.version.list": packageversionlist.New(serviceSet),
 		"secret.get": secretget.New(serviceSet), "secret.list": secretlist.New(serviceSet), "secret.set": secretset.New(serviceSet),
-		"service.inspect": serviceinspect.New(serviceSet), "service.list": servicelist.New(serviceSet), "service.openapi": serviceopenapi.New(serviceSet),
+		"service.inspect": serviceinspect.New(serviceSet), "service.list": servicelist.New(serviceSet), "service.openapi": serviceopenapi.New(serviceSet), "service.refresh": servicerefresh.New(serviceSet),
 		"service.request": servicerequest.New(serviceSet), "service.restart": servicerestart.New(serviceSet), "service.scale": servicescale.New(serviceSet),
 		"service.start": servicestart.New(serviceSet), "service.stop": servicestop.New(serviceSet), "service.validate": servicevalidate.New(serviceSet),
 	}}, nil

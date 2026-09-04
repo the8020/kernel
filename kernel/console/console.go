@@ -28,7 +28,7 @@ const (
 
 type Authentication interface {
 	CookieName() string
-	ValidateCookie(string) (auth.AuthContext, error)
+	ValidateCookieContext(context.Context, string) (auth.AuthContext, error)
 }
 
 type Provider interface {
@@ -140,7 +140,7 @@ func (m *Manager) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		http.Error(writer, "Authentication required", http.StatusUnauthorized)
 		return
 	}
-	identity, err := m.authentication.ValidateCookie(cookie.Value)
+	identity, err := m.authentication.ValidateCookieContext(request.Context(), cookie.Value)
 	if err != nil || !identity.Authenticated {
 		http.Error(writer, "Authentication required", http.StatusUnauthorized)
 		return

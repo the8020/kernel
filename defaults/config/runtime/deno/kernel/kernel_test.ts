@@ -447,7 +447,7 @@ Deno.test("interleaved asynchronous calls retain their exact request", async () 
   }
 });
 
-Deno.test("persistent continuations follow their current transport request", async () => {
+Deno.test("overlapping persistent requests retain isolated immutable contexts", async () => {
   const channel = new MessageChannel();
   const bridge = createKernelBridge(channel.port1);
   const calls = createCallQueue(channel.port2);
@@ -484,7 +484,7 @@ Deno.test("persistent continuations follow their current transport request", asy
     assertEquals(
       (controlCall.payload as { request: { requestId: string } }).request
         .requestId,
-      "request-websocket",
+      "request-control",
     );
     bridge.handle({
       type: "kernel_result",
@@ -500,7 +500,7 @@ Deno.test("persistent continuations follow their current transport request", asy
     const call = await calls.next();
     assertEquals(
       (call.payload as { request: { requestId: string } }).request.requestId,
-      "request-websocket",
+      "request-establish",
     );
     bridge.handle({
       type: "kernel_result",
@@ -512,6 +512,82 @@ Deno.test("persistent continuations follow their current transport request", asy
       },
     });
     assertEquals(await program, { services: [] });
+  } finally {
+    bridge.close();
+    channel.port1.close();
+    channel.port2.close();
+  }
+});
+
+Deno.test("overlapping persistent database calls keep exact request scopes", async () => {
+  const channel = new MessageChannel();
+  const bridge = createKernelBridge(channel.port1);
+  const calls = createCallQueue(channel.port2);
+  const base: ServiceRequestMetadata = {
+    ...persistentMetadata,
+    persistentExecutionId: "persistent-shared",
+  };
+  try {
+    const first = bridge.withRequest(
+      { ...base, requestId: "request-first" },
+      () => kernel.database.execute("SELECT 1", [], { returnRows: true }),
+    );
+    const second = bridge.withRequest(
+      { ...base, requestId: "request-second" },
+      () => kernel.database.execute("SELECT 2", [], { returnRows: true }),
+    );
+    const pending = [await calls.next(), await calls.next()];
+    assertEquals(
+      new Set(
+        pending.map((call) =>
+          (call.payload as { request: { requestId: string } }).request.requestId
+        ),
+      ),
+      new Set(["request-first", "request-second"]),
+    );
+    for (const call of pending.reverse()) {
+      bridge.handle({
+        type: "kernel_result",
+        correlationId: call.correlationId as string,
+        payload: { columns: ["value"], rows: [[1]] },
+      });
+    }
+    await Promise.all([first, second]);
+  } finally {
+    bridge.close();
+    channel.port1.close();
+    channel.port2.close();
+  }
+});
+
+Deno.test("request cancellation cancels its exact pending kernel call", async () => {
+  const channel = new MessageChannel();
+  const bridge = createKernelBridge(channel.port1);
+  const calls = createCallQueue(channel.port2);
+  const controller = new AbortController();
+  try {
+    const query = bridge.withRequest(
+      metadata,
+      () => kernel.database.execute("SELECT 1", [], { returnRows: true }),
+      controller.signal,
+    );
+    const call = await calls.next();
+    assertEquals(call.type, "kernel_call");
+    controller.abort(new DOMException("request ended", "AbortError"));
+    const cancellation = await calls.next();
+    assertEquals(cancellation, {
+      type: "kernel_cancel",
+      correlationId: call.correlationId,
+    });
+    await assertRejects(() => query, Error, "request ended");
+    assertEquals(
+      bridge.handle({
+        type: "kernel_result",
+        correlationId: call.correlationId as string,
+        payload: { columns: ["value"], rows: [[1]] },
+      }),
+      true,
+    );
   } finally {
     bridge.close();
     channel.port1.close();

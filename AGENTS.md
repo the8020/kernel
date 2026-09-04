@@ -7,9 +7,11 @@
   long-tail complexity only for concrete needs; this does not weaken
   correctness, security, or explicit contracts.
 - Keep 80|20 clean, lean, fast, and direct: prefer native ownership and deletion
-  over adapters, snapshots, reconciliation, polling, or compensating patches.
-  A hot or periodic path may not scan an unbounded collection, retain unbounded
-  output, or hold a broad lock across filesystem, process, or network I/O.
+  over adapters, duplicate state, polling, or compensating patches. Runtime
+  observations use owner-published absolute snapshots when that removes repeated
+  inspection from hot paths. A hot or periodic path may not scan an unbounded
+  collection, retain unbounded output, or hold a broad lock across filesystem,
+  process, or network I/O.
 - Treat the component where an error surfaces as evidence, not automatically as
   the fix scope. Establish ownership from the contract and full data flow before
   changing code.
@@ -187,6 +189,10 @@ relevant child AGENTS.md
   keepalive default to two and ten minutes respectively. Installed declarations
   and complete operator overrides are canonical database rows; old filesystem
   state has no compatibility path.
+- Concurrency per Worker equal to one is strict. Larger values are balancing and
+  autoscaling targets with at most one temporary extra request per Worker while
+  scale-up catches up; kernel reservations are short-lived routing hints and
+  supervisor snapshots remain observed truth.
 - HTTP, streaming, SSE, and WebSocket transports are available to both service
   types. Session routing remains a generic kernel/supervisor capability: an
   opaque `X-80-20-Route` maps to the exact node, sandbox, Worker, and logical
@@ -194,10 +200,12 @@ relevant child AGENTS.md
   protocol semantics. Browser WebSockets obtain the same token through an HTTP
   establishment response and reuse it as the `route` query parameter.
 - One sandbox has exactly one placement-group value and at most one allocation
-  of a logical service; compatible different services may share it. Scaling
-  packs Workers up to the service Workers-per-sandbox limit before adding a
-  sandbox, removes only excess idle Workers after Worker keepalive, retains
-  configured warm sandboxes independently, and destroys ownerless sandboxes.
+  of a logical service; compatible different services may share it. A
+  Workers-per-sandbox value of one is strict isolation; larger values are
+  packing targets and may have small race-bound overshoot without exceeding the
+  hard kernel-wide total-Worker limit. Scaling removes only excess idle Workers
+  after Worker keepalive, retains configured warm sandboxes independently, and
+  destroys ownerless sandboxes.
   Global allocation indexes are partitioned across enabled application-server
   nodes. Kernel packing policy has exactly one per-sandbox capacity dimension:
   total Workers, defaulting to 64. CPU and RAM have no settings, reservations,
@@ -218,10 +226,12 @@ relevant child AGENTS.md
 - Ordinary service and job sandboxes mount the complete activated package tree
   read-only at `/workspace/packages`. Application durable shared state uses the
   kernel-owned database API; no generic package-data filesystem is mounted.
-- Services and jobs have the same trusted `@the8020/kernel` API access over the
-  bind-mounted node-private `/run/the8020/kernel.sock`. Both may use unrestricted
-  outbound network and remote imports; only temporary and runtime-cache paths
-  are writable by default.
+- Services and jobs have the same `@the8020/kernel` API through their private
+  Worker MessagePort. The trusted supervisor stamps execution identity and alone
+  holds the per-sandbox token and node-private `/run/the8020/kernel.sock` access;
+  application Workers cannot read either. Both workload types may use
+  unrestricted outbound network and remote imports; only temporary and
+  runtime-cache paths are writable by default.
 - Active packages expose administrative commands through
   `cbus/commands/<path>/command.toml` and non-discoverable ordinary programs.
   The kernel assembles one process-local immutable catalog from those files,
@@ -460,7 +470,10 @@ relevant child AGENTS.md
   executable at `/workspace/scripts` in development sandboxes. Its `activate`
   helper calls the same typed activation path as UUI, requires a commit message
   for publication, and defaults Git author identity to the authenticated
-  username. Every commit ends with valid TOML activation metadata. The
+  username. Opt-in `install-codex.sh` and `install-claude.sh` helpers install
+  each vendor's latest native CLI into persistent root storage and configure
+  its unattended full-access mode without login or other preferences. Every
+  commit ends with valid TOML activation metadata. The
   development UUI previews changed packages plus file/add/remove counts and
   activates all ready changes together.
 - The sibling `uui` repository owns the default Home and Program terminated programs
@@ -486,7 +499,9 @@ relevant child AGENTS.md
   system database and is never sandbox-mounted. SQLite uses WAL so readers can
   run alongside its single writer; each kernel owns a dynamically opened
   `database/sql` pool with runtime-mutable node-local open/idle limits defaulting
-  to 32/8 and exposes pool pressure through `kernel.status`. `node/` owns every
+  to 32/8 and exposes pool pressure through `kernel.status`. Application SQL is
+  admitted up to two connections below the configured open maximum when the
+  pool is large enough, preserving kernel-owned database progress. `node/` owns every
   observed or ephemeral node-local artifact. Per-node settings stay in
   `kernel.toml`, and credentials or configuration are never mounted into
   sandboxes.

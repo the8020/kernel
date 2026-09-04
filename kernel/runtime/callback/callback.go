@@ -39,13 +39,12 @@ type Config struct {
 	AdminBus        AdminBus
 	WorkerInvoker   WorkerInvoker
 	Persistent      PersistentExecutionCompleter
-	Workers         RuntimeIdentityValidator
 	Operations      RuntimeOperations
 }
 
 type Authentication interface {
 	Login(context.Context, string, string, bool) (auth.LoginResult, error)
-	LogoutCurrent(auth.AuthContext, bool) (auth.LogoutResult, error)
+	LogoutCurrentContext(context.Context, auth.AuthContext, bool) (auth.LogoutResult, error)
 }
 
 type RuntimeRequests interface {
@@ -82,12 +81,6 @@ type PersistentExecutionTarget struct {
 	PersistentExecutionID string
 }
 
-// RuntimeIdentityValidator proves that a callback names a currently active
-// Worker execution in the sandbox authenticated by the envelope token.
-type RuntimeIdentityValidator interface {
-	ValidateRuntimeExecution(context.Context, string, string, string, string, string) error
-}
-
 // RuntimeOperations exposes typed kernel primitives to trusted package code.
 // It is deliberately separate from the public command registry.
 type RuntimeOperations interface {
@@ -105,32 +98,32 @@ type Server struct {
 	database        Database
 	workerInvoker   WorkerInvoker
 	persistent      PersistentExecutionCompleter
-	workers         RuntimeIdentityValidator
 	operations      RuntimeOperations
 	mu              sync.Mutex
 	listener        net.Listener
 	httpServer      *http.Server
 }
 
-var errTerminalRuntimeGroup = errors.New("runtime group is not accepting callbacks")
-
 type statusPayload struct {
-	ProtocolVersion      int             `json:"protocol_version"`
-	SupervisorVersion    string          `json:"supervisor_version"`
-	DenoVersion          string          `json:"deno_version"`
-	RuntimeGroupID       string          `json:"runtime_group_id"`
-	SandboxID            string          `json:"sandbox_id"`
-	WorkloadType         string          `json:"workload_type"`
-	WorkerCount          int             `json:"worker_count"`
-	ReadyWorkerCount     int             `json:"ready_worker_count"`
-	FailedWorkerCount    int             `json:"failed_worker_count"`
-	ActiveRequests       int             `json:"active_requests"`
-	ActiveExecutionCount int             `json:"active_execution_count"`
-	UptimeMS             int64           `json:"uptime_ms"`
-	Draining             bool            `json:"draining"`
-	EventLoopTime        int64           `json:"event_loop_timestamp,omitempty"`
-	MemoryUsage          json.RawMessage `json:"memory_usage,omitempty"`
-	RecentFailures       []workerFailure `json:"recent_failures,omitempty"`
+	Revision              uint64                      `json:"revision"`
+	SupervisorStartedAtMS int64                       `json:"supervisor_started_at_ms"`
+	ProtocolVersion       int                         `json:"protocol_version"`
+	SupervisorVersion     string                      `json:"supervisor_version"`
+	DenoVersion           string                      `json:"deno_version"`
+	RuntimeGroupID        string                      `json:"runtime_group_id"`
+	SandboxID             string                      `json:"sandbox_id"`
+	WorkloadType          string                      `json:"workload_type"`
+	WorkerCount           int                         `json:"worker_count"`
+	ReadyWorkerCount      int                         `json:"ready_worker_count"`
+	FailedWorkerCount     int                         `json:"failed_worker_count"`
+	ActiveRequests        int                         `json:"active_requests"`
+	ActiveExecutionCount  int                         `json:"active_execution_count"`
+	UptimeMS              int64                       `json:"uptime_ms"`
+	Draining              bool                        `json:"draining"`
+	EventLoopTime         int64                       `json:"event_loop_timestamp,omitempty"`
+	MemoryUsage           json.RawMessage             `json:"memory_usage,omitempty"`
+	RecentFailures        []workerFailure             `json:"recent_failures,omitempty"`
+	Workers               []model.RuntimeWorkerStatus `json:"workers"`
 }
 
 type workerFailure struct {
@@ -142,10 +135,7 @@ type workerFailure struct {
 type authCallPayload struct {
 	ExecutionID string `json:"execution_id"`
 	WorkerID    string `json:"worker_id"`
-	WorkloadID  string `json:"workload_id"`
-	ServiceID   string `json:"service_id"`
 	RequestID   string `json:"request_id"`
-	SandboxID   string `json:"sandbox_id"`
 	Username    string `json:"username,omitempty"`
 	Password    string `json:"password,omitempty"`
 }
@@ -153,10 +143,7 @@ type authCallPayload struct {
 type adminCallPayload struct {
 	ExecutionID string         `json:"execution_id"`
 	WorkerID    string         `json:"worker_id"`
-	WorkloadID  string         `json:"workload_id"`
-	ServiceID   string         `json:"service_id"`
 	RequestID   string         `json:"request_id"`
-	SandboxID   string         `json:"sandbox_id"`
 	CommandID   string         `json:"command_id"`
 	Arguments   map[string]any `json:"arguments"`
 }
@@ -164,10 +151,7 @@ type adminCallPayload struct {
 type databaseCallPayload struct {
 	ExecutionID    string          `json:"execution_id"`
 	WorkerID       string          `json:"worker_id"`
-	WorkloadID     string          `json:"workload_id"`
-	ServiceID      string          `json:"service_id"`
 	RequestID      string          `json:"request_id"`
-	SandboxID      string          `json:"sandbox_id"`
 	Statement      string          `json:"statement"`
 	Parameters     json.RawMessage `json:"parameters,omitempty"`
 	ReturnRows     bool            `json:"return_rows,omitempty"`
@@ -180,10 +164,7 @@ type databaseCallPayload struct {
 type workerCallPayload struct {
 	ExecutionID                 string `json:"execution_id"`
 	SourceWorkerID              string `json:"worker_id"`
-	WorkloadID                  string `json:"workload_id"`
-	ServiceID                   string `json:"service_id"`
 	RequestID                   string `json:"request_id"`
-	SourceSandboxID             string `json:"sandbox_id"`
 	TargetNodeID                string `json:"target_node_id"`
 	TargetSandboxID             string `json:"target_sandbox_id"`
 	TargetWorkerID              string `json:"target_worker_id"`
@@ -195,20 +176,15 @@ type workerCallPayload struct {
 type completionCallPayload struct {
 	ExecutionID           string `json:"execution_id"`
 	WorkerID              string `json:"worker_id"`
-	WorkloadID            string `json:"workload_id"`
 	ServiceID             string `json:"service_id"`
 	RequestID             string `json:"request_id"`
-	SandboxID             string `json:"sandbox_id"`
 	PersistentExecutionID string `json:"persistent_execution_id"`
 }
 
 type operationCallPayload struct {
 	ExecutionID string         `json:"execution_id"`
 	WorkerID    string         `json:"worker_id"`
-	WorkloadID  string         `json:"workload_id"`
-	ServiceID   string         `json:"service_id"`
 	RequestID   string         `json:"request_id"`
-	SandboxID   string         `json:"sandbox_id"`
 	Operation   string         `json:"operation"`
 	Input       map[string]any `json:"input"`
 }
@@ -226,18 +202,12 @@ func New(config Config) (*Server, error) {
 	if config.Now == nil {
 		config.Now = func() time.Time { return time.Now().UTC() }
 	}
-	return &Server{store: config.Store, protocolVersion: config.ProtocolVersion, socketPath: filepath.Clean(config.SocketPath), now: config.Now, authentication: config.Authentication, runtimeRequests: config.RuntimeRequests, database: config.Database, adminBus: config.AdminBus, workerInvoker: config.WorkerInvoker, persistent: config.Persistent, workers: config.Workers, operations: config.Operations}, nil
+	return &Server{store: config.Store, protocolVersion: config.ProtocolVersion, socketPath: filepath.Clean(config.SocketPath), now: config.Now, authentication: config.Authentication, runtimeRequests: config.RuntimeRequests, database: config.Database, adminBus: config.AdminBus, workerInvoker: config.WorkerInvoker, persistent: config.Persistent, operations: config.Operations}, nil
 }
 
 func (s *Server) SetWorkerInvoker(invoker WorkerInvoker) {
 	s.mu.Lock()
 	s.workerInvoker = invoker
-	s.mu.Unlock()
-}
-
-func (s *Server) SetRuntimeIdentityValidator(validator RuntimeIdentityValidator) {
-	s.mu.Lock()
-	s.workers = validator
 	s.mu.Unlock()
 }
 
@@ -350,8 +320,8 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 		http.Error(writer, "runtime protocol mismatch", http.StatusBadRequest)
 		return
 	}
-	spec, status, err := s.store.Load(message.RuntimeGroupID)
-	if err != nil {
+	spec, status, ok := s.store.Cached(message.RuntimeGroupID)
+	if !ok {
 		http.Error(writer, "unknown runtime group", http.StatusNotFound)
 		return
 	}
@@ -401,26 +371,29 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 		http.Error(writer, "runtime identity mismatch", http.StatusBadRequest)
 		return
 	}
-	_, err = s.store.UpdateStatus(spec.RuntimeGroupID, func(current *model.SandboxStatus) error {
-		if current.ObservedState == model.StateFailed || current.ObservedState == model.StateStopping || current.ObservedState == model.StateStopped || current.ObservedState == model.StateDeleting {
-			return errTerminalRuntimeGroup
-		}
-		current.SupervisorHealthy = true
-		current.SupervisorVersion = payload.SupervisorVersion
-		current.DenoVersion = payload.DenoVersion
-		current.WorkerCount = payload.WorkerCount
-		current.LastHeartbeat = s.now()
-		return nil
-	})
+	_, err := s.store.Observe(spec.RuntimeGroupID, model.RuntimeSnapshot{
+		Revision: payload.Revision, SupervisorStartedAtMS: payload.SupervisorStartedAtMS, ProtocolVersion: payload.ProtocolVersion,
+		SupervisorVersion: payload.SupervisorVersion, DenoVersion: payload.DenoVersion,
+		RuntimeGroupID: payload.RuntimeGroupID, SandboxID: payload.SandboxID,
+		WorkloadType: model.WorkloadType(payload.WorkloadType), WorkerCount: payload.WorkerCount,
+		ReadyWorkerCount: payload.ReadyWorkerCount, FailedWorkerCount: payload.FailedWorkerCount,
+		ActiveRequests: payload.ActiveRequests, ActiveExecutionCount: payload.ActiveExecutionCount,
+		UptimeMS: payload.UptimeMS, Draining: payload.Draining,
+		RecentFailures: runtimeFailures(payload.RecentFailures), Workers: payload.Workers,
+	}, s.now())
 	if err != nil {
-		if errors.Is(err, errTerminalRuntimeGroup) {
-			http.Error(writer, errTerminalRuntimeGroup.Error(), http.StatusConflict)
-			return
-		}
-		http.Error(writer, "persist runtime heartbeat", http.StatusInternalServerError)
+		http.Error(writer, "record runtime snapshot", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(writer, map[string]bool{"accepted": true})
+}
+
+func runtimeFailures(values []workerFailure) []model.RuntimeFailure {
+	result := make([]model.RuntimeFailure, len(values))
+	for index, value := range values {
+		result[index] = model.RuntimeFailure{WorkerID: value.WorkerID, ExecutionID: value.ExecutionID, Reason: value.Reason}
+	}
+	return result
 }
 
 func validCallbackPath(path string) bool {
@@ -463,12 +436,8 @@ func (s *Server) handleDatabase(writer http.ResponseWriter, request *http.Reques
 		return
 	}
 	var payload databaseCallPayload
-	if err := decodePayload(message.Payload, &payload); err != nil || payload.ExecutionID == "" || payload.WorkerID == "" || payload.WorkloadID == "" || payload.SandboxID != spec.SandboxID {
+	if err := decodePayload(message.Payload, &payload); err != nil || payload.ExecutionID == "" || payload.WorkerID == "" {
 		http.Error(writer, "invalid runtime database payload", http.StatusBadRequest)
-		return
-	}
-	if err := s.validateRuntimeIdentity(request.Context(), spec, payload.WorkerID, payload.ExecutionID, payload.WorkloadID); err != nil {
-		http.Error(writer, err.Error(), http.StatusConflict)
 		return
 	}
 	if request.URL.Path == "/v1/runtime/database/info" {
@@ -481,15 +450,11 @@ func (s *Server) handleDatabase(writer http.ResponseWriter, request *http.Reques
 		s.writeDatabaseResult(writer, message, spec, map[string]any{"closed": true})
 		return
 	}
-	if payload.ServiceID == "" {
+	if payload.RequestID == "" {
 		http.Error(writer, "runtime database execution context is required", http.StatusConflict)
 		return
 	}
-	requestScope := payload.RequestID
-	if requestScope == "" {
-		requestScope = payload.ExecutionID
-	}
-	scope := workerScope + "\x00" + payload.ServiceID + "\x00" + requestScope
+	scope := workerScope + "\x00" + payload.RequestID
 	if request.URL.Path == "/v1/runtime/database/scope" {
 		s.database.CloseScope(scope)
 		s.writeDatabaseResult(writer, message, spec, map[string]any{"closed": true})
@@ -566,12 +531,8 @@ func (s *Server) handleWorkerInvocation(writer http.ResponseWriter, request *htt
 		http.Error(writer, "invalid Worker invocation payload", http.StatusBadRequest)
 		return
 	}
-	if payload.ExecutionID == "" || payload.SourceWorkerID == "" || payload.WorkloadID == "" || payload.ServiceID == "" || payload.SourceSandboxID != spec.SandboxID {
+	if payload.ExecutionID == "" || payload.SourceWorkerID == "" || payload.RequestID == "" {
 		http.Error(writer, "runtime Worker control request is not active", http.StatusConflict)
-		return
-	}
-	if err := s.validateRuntimeIdentity(request.Context(), spec, payload.SourceWorkerID, payload.ExecutionID, payload.WorkloadID); err != nil {
-		http.Error(writer, err.Error(), http.StatusConflict)
 		return
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), 5*time.Second)
@@ -599,12 +560,8 @@ func (s *Server) handlePersistentExecutionCompletion(writer http.ResponseWriter,
 		return
 	}
 	var payload completionCallPayload
-	if err := decodePayload(message.Payload, &payload); err != nil || payload.ExecutionID == "" || payload.WorkerID == "" || payload.WorkloadID == "" || payload.ServiceID == "" || payload.SandboxID != spec.SandboxID || payload.PersistentExecutionID == "" {
+	if err := decodePayload(message.Payload, &payload); err != nil || payload.ExecutionID == "" || payload.WorkerID == "" || payload.ServiceID == "" || payload.RequestID == "" || payload.PersistentExecutionID == "" {
 		http.Error(writer, "invalid persistent execution completion", http.StatusBadRequest)
-		return
-	}
-	if err := s.validateRuntimeIdentity(request.Context(), spec, payload.WorkerID, payload.ExecutionID, payload.WorkloadID); err != nil {
-		http.Error(writer, err.Error(), http.StatusConflict)
 		return
 	}
 	err := completer.CompletePersistentExecution(request.Context(), PersistentExecutionTarget{
@@ -648,12 +605,8 @@ func (s *Server) handleAuthentication(writer http.ResponseWriter, request *http.
 		return
 	}
 	active, exists := s.runtimeRequests.RuntimeRequest(payload.RequestID)
-	if !exists || payload.ExecutionID == "" || payload.WorkerID == "" || payload.WorkloadID == "" || payload.ServiceID != active.ServiceID || payload.SandboxID != spec.SandboxID || active.RuntimeGroupID != spec.RuntimeGroupID || active.SandboxID != spec.SandboxID {
+	if !exists || payload.ExecutionID == "" || payload.WorkerID == "" || active.RuntimeGroupID != spec.RuntimeGroupID || active.SandboxID != spec.SandboxID {
 		http.Error(writer, "runtime authentication request is not active", http.StatusConflict)
-		return
-	}
-	if err := s.validateRuntimeIdentity(request.Context(), spec, payload.WorkerID, payload.ExecutionID, payload.WorkloadID); err != nil {
-		http.Error(writer, err.Error(), http.StatusConflict)
 		return
 	}
 	var result any
@@ -665,7 +618,7 @@ func (s *Server) handleAuthentication(writer http.ResponseWriter, request *http.
 			return
 		}
 	} else {
-		logout, err := s.authentication.LogoutCurrent(active.Auth, active.SecureTransport)
+		logout, err := s.authentication.LogoutCurrentContext(request.Context(), active.Auth, active.SecureTransport)
 		if err != nil {
 			http.Error(writer, "runtime authentication failed", http.StatusInternalServerError)
 			return
@@ -695,12 +648,8 @@ func (s *Server) handleAdministration(writer http.ResponseWriter, request *http.
 		http.Error(writer, "invalid runtime administration payload", http.StatusBadRequest)
 		return
 	}
-	if payload.ExecutionID == "" || payload.WorkerID == "" || payload.WorkloadID == "" || payload.ServiceID == "" || payload.SandboxID != spec.SandboxID {
+	if payload.ExecutionID == "" || payload.WorkerID == "" || payload.RequestID == "" {
 		http.Error(writer, "runtime administration request is not active", http.StatusConflict)
-		return
-	}
-	if err := s.validateRuntimeIdentity(request.Context(), spec, payload.WorkerID, payload.ExecutionID, payload.WorkloadID); err != nil {
-		http.Error(writer, err.Error(), http.StatusConflict)
 		return
 	}
 	callContext := execution.WithCaller(request.Context(), execution.Caller{ExecutionID: payload.ExecutionID, Workload: spec.WorkloadType})
@@ -732,12 +681,8 @@ func (s *Server) handleOperation(writer http.ResponseWriter, request *http.Reque
 		return
 	}
 	var payload operationCallPayload
-	if err := decodePayload(message.Payload, &payload); err != nil || payload.Operation == "" || payload.ExecutionID == "" || payload.WorkerID == "" || payload.WorkloadID == "" || payload.SandboxID != spec.SandboxID {
+	if err := decodePayload(message.Payload, &payload); err != nil || payload.Operation == "" || payload.ExecutionID == "" || payload.WorkerID == "" || payload.RequestID == "" {
 		http.Error(writer, "invalid runtime operation payload", http.StatusBadRequest)
-		return
-	}
-	if err := s.validateRuntimeIdentity(request.Context(), spec, payload.WorkerID, payload.ExecutionID, payload.WorkloadID); err != nil {
-		http.Error(writer, err.Error(), http.StatusConflict)
 		return
 	}
 	callContext := execution.WithCaller(request.Context(), execution.Caller{ExecutionID: payload.ExecutionID, Workload: spec.WorkloadType})
@@ -770,17 +715,4 @@ func writeJSON(writer http.ResponseWriter, value any) {
 	writer.Header().Set("Content-Type", "application/json")
 	writer.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	_, _ = writer.Write(data)
-}
-
-func (s *Server) validateRuntimeIdentity(ctx context.Context, spec model.SandboxSpec, workerID, executionID, workloadID string) error {
-	s.mu.Lock()
-	validator := s.workers
-	s.mu.Unlock()
-	if validator == nil {
-		return errors.New("runtime execution validation is unavailable")
-	}
-	if err := validator.ValidateRuntimeExecution(ctx, spec.RuntimeGroupID, spec.SandboxID, workerID, executionID, workloadID); err != nil {
-		return errors.New("runtime execution is not active")
-	}
-	return nil
 }

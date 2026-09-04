@@ -12,6 +12,8 @@
 - Public API: `ErrInitialization`, `Policy`, `Manager`, `New`, `PolicyFromValues`, `Logger`, `ActiveFile`, `Enabled`, `Write`, `Prepare`, and `Close`.
 - Files are `kernel-*.log` under `node/kernel/logs`; cleanup never deletes the
   active file and removes oldest closed owned files first.
+- Retention cleanup runs at manager startup and after rotation, never for every
+  ordinary record; the write hot path performs only boundary checks and append.
 - A replacement writer is opened before persistence, atomically swapped on commit, and removed on discard.
 - UTC boundaries support none, minute, hour, day, week, month, and year.
 - Extend only for a current kernel logging acceptance criterion.
@@ -23,5 +25,7 @@
 # Verification
 
 - `logging_test.go` covers all period boundaries, default-enabled file creation, size rotation, total cleanup, active preservation, disable/re-enable, policy replacement failure, and prepared-file discard.
+- Tests also preserve startup cleanup and prove ordinary non-rotating writes do
+  not trigger retention scans.
 
 # Child DOX Index

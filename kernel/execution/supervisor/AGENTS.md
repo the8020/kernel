@@ -5,7 +5,8 @@
 
 # Ownership
 
-- Query aggregate ready/failed/active status and Workers with explicit failure
+- Query an absolute revisioned runtime snapshot, aggregate
+  ready/failed/active status, and Workers with explicit failure
   state, last-idle time, and bounded identity-associated logs; start and stop
   Workers; send exact registered-function invocations, return job results with
   structured logs, configure service pools, stream service requests with trusted
@@ -37,6 +38,10 @@
   `ResponseError`, including a structured execution code/details when supplied;
   callers may classify a `4xx` response without parsing error text, while
   authentication tokens remain hidden.
+- `Snapshot` validates protocol version, sandbox/runtime-group/workload
+  identity, and a nonzero revision before returning the supervisor's absolute
+  observation. Routine routing reads the kernel snapshot cache; this live RPC
+  is reserved for targeted refresh and recovery.
 
 # Work Guidance
 
@@ -46,7 +51,8 @@
 
 # Verification
 
-- Unit tests cover authentication, generated control-envelope types/correlation,
+- Unit tests cover authentication, snapshot identity/revision validation,
+  generated control-envelope types/correlation,
   identity/version validation, Worker invocation, job/service routes, streaming
   bodies, unchanged redirects, WebSocket URL/authentication preservation,
   bounds, typed remote rejection errors, and cancellation.

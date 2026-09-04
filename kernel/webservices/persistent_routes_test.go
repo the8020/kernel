@@ -11,7 +11,7 @@ import (
 	"the8020/kernel/database"
 )
 
-func newTestRouteDatabase(t *testing.T, root string) *database.Manager {
+func newTestRouteDatabase(t testing.TB, root string) *database.Manager {
 	t.Helper()
 	db := database.New(database.Config{Backend: database.BackendSQLite, Location: filepath.Join(root, "system.db"), MaximumOpenConnections: 8, MaximumIdleConnections: 2})
 	if _, err := db.Check(context.Background()); err != nil {

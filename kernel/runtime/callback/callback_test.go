@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -48,24 +50,6 @@ type recordingPersistentCompleter struct {
 	err   error
 }
 
-type runtimeIdentityCall struct {
-	runtimeGroupID string
-	sandboxID      string
-	workerID       string
-	executionID    string
-	workloadID     string
-}
-
-type recordingRuntimeIdentity struct {
-	calls []runtimeIdentityCall
-	err   error
-}
-
-func (v *recordingRuntimeIdentity) ValidateRuntimeExecution(_ context.Context, runtimeGroupID, sandboxID, workerID, executionID, workloadID string) error {
-	v.calls = append(v.calls, runtimeIdentityCall{runtimeGroupID: runtimeGroupID, sandboxID: sandboxID, workerID: workerID, executionID: executionID, workloadID: workloadID})
-	return v.err
-}
-
 type recordingOperations struct {
 	operation string
 	input     map[string]any
@@ -80,12 +64,11 @@ func (o *recordingOperations) Execute(ctx context.Context, operation string, inp
 	return o.result, o.err
 }
 
-func newCallbackTestServer(t *testing.T, store *state.Store, configure func(*Config)) *Server {
+func newCallbackTestServer(t testing.TB, store *state.Store, configure func(*Config)) *Server {
 	t.Helper()
 	config := Config{
 		Store: store, ProtocolVersion: protocol.ProtocolVersion,
 		SocketPath: filepath.Join(t.TempDir(), "kernel.sock"),
-		Workers:    &recordingRuntimeIdentity{},
 	}
 	if configure != nil {
 		configure(&config)
@@ -98,12 +81,15 @@ func newCallbackTestServer(t *testing.T, store *state.Store, configure func(*Con
 }
 
 type recordingDatabase struct {
+	mu         sync.Mutex
 	queries    []string
 	executions []string
 	parameters []any
 	statements []database.StatementRequest
 	closed     []string
 	prefixes   []string
+	entered    chan struct{}
+	release    chan struct{}
 }
 
 func (d *recordingDatabase) Status() database.Status {
@@ -121,6 +107,14 @@ func (d *recordingDatabase) Execute(_ context.Context, statement string, paramet
 }
 
 func (d *recordingDatabase) RunStatement(_ context.Context, _ string, request database.StatementRequest) (database.StatementResult, error) {
+	if d.entered != nil {
+		d.entered <- struct{}{}
+	}
+	if d.release != nil {
+		<-d.release
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	d.statements = append(d.statements, request)
 	d.executions = append(d.executions, request.Statement)
 	return database.StatementResult{Columns: []string{}, Rows: [][]any{}, AffectedRows: map[string]any{"type": "bigint", "value": "1"}}, nil
@@ -143,8 +137,9 @@ func (c *recordingPersistentCompleter) CompletePersistentExecution(_ context.Con
 	return c.err
 }
 
-func TestAuthenticatedRegistrationAndHeartbeatPersistStatus(t *testing.T) {
-	store, _ := state.New(t.TempDir())
+func TestAuthenticatedRegistrationAndHeartbeatUpdateMemoryOnly(t *testing.T) {
+	root := t.TempDir()
+	store, _ := state.New(root)
 	spec, status := callbackFixture(t, store)
 	now := time.Date(2026, 8, 20, 1, 2, 3, 0, time.UTC)
 	server := newCallbackTestServer(t, store, func(config *Config) { config.Now = func() time.Time { return now } })
@@ -163,13 +158,25 @@ func TestAuthenticatedRegistrationAndHeartbeatPersistStatus(t *testing.T) {
 	if err != nil || !updated.SupervisorHealthy || updated.WorkerCount != 2 || !updated.LastHeartbeat.Equal(now) || updated.ObservedState != status.ObservedState {
 		t.Fatalf("updated=%#v err=%v", updated, err)
 	}
+	reloaded, err := state.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, durable, err := reloaded.Load(spec.RuntimeGroupID)
+	if err != nil || durable.WorkerCount != status.WorkerCount || durable.SupervisorHealthy != status.SupervisorHealthy {
+		t.Fatalf("runtime snapshot leaked into durable status: %#v err=%v", durable, err)
+	}
 }
 
 func TestCallbackRejectsTokenAndProtocolMismatch(t *testing.T) {
-	store, _ := state.New(t.TempDir())
+	root := t.TempDir()
+	store, _ := state.New(root)
 	spec, _ := callbackFixture(t, store)
 	server := newCallbackTestServer(t, store, nil)
-	validPayload := statusPayload{ProtocolVersion: 1, RuntimeGroupID: spec.RuntimeGroupID, SandboxID: spec.SandboxID, WorkloadType: string(spec.WorkloadType)}
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatal(err)
+	}
+	validPayload := statusPayload{Revision: 2, SupervisorStartedAtMS: 1, ProtocolVersion: 1, RuntimeGroupID: spec.RuntimeGroupID, SandboxID: spec.SandboxID, WorkloadType: string(spec.WorkloadType)}
 	for _, test := range []struct {
 		name, remote, token string
 		version             int
@@ -177,6 +184,7 @@ func TestCallbackRejectsTokenAndProtocolMismatch(t *testing.T) {
 	}{
 		{"token", "10.88.0.2:1", "wrong", 1, http.StatusUnauthorized},
 		{"protocol", "10.88.0.2:1", spec.InternalToken, 2, http.StatusBadRequest},
+		{"cached valid token", "10.88.0.2:1", spec.InternalToken, 1, http.StatusOK},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			payload, _ := json.Marshal(validPayload)
@@ -222,10 +230,8 @@ func TestSupervisorMediatedAuthenticationCallsRequireActiveRequestIdentity(t *te
 	store, _ := state.New(filepath.Join(root, "groups"))
 	spec, _ := callbackFixtureForWorkload(t, store, model.WorkloadService)
 	manager := newCallbackTestAuthentication(t, root)
-	runtimeIdentity := &recordingRuntimeIdentity{}
 	server := newCallbackTestServer(t, store, func(config *Config) {
 		config.Authentication, config.RuntimeRequests = manager, manager
-		config.Workers = runtimeIdentity
 	})
 	release, err := manager.BeginRuntimeRequest(platformauth.RuntimeRequest{RequestID: "request-1", ServiceID: "example/auth/login", RuntimeGroupID: spec.RuntimeGroupID, SandboxID: spec.SandboxID, SecureTransport: true})
 	if err != nil {
@@ -244,7 +250,7 @@ func TestSupervisorMediatedAuthenticationCallsRequireActiveRequestIdentity(t *te
 		return response
 	}
 
-	identity := authCallPayload{ExecutionID: "execution-1", WorkerID: "worker-1", WorkloadID: "service-version-login", ServiceID: "example/auth/login", RequestID: "request-1", SandboxID: spec.SandboxID}
+	identity := authCallPayload{ExecutionID: "execution-1", WorkerID: "worker-1", RequestID: "request-1"}
 	mismatched := identity
 	mismatched.RequestID = "request-other"
 	if response := call("/v1/runtime/auth/login", protocol.MessageAuthLogin, mismatched); response.Code != http.StatusConflict {
@@ -263,9 +269,6 @@ func TestSupervisorMediatedAuthenticationCallsRequireActiveRequestIdentity(t *te
 	if err := json.Unmarshal(envelope.Payload, &login); err != nil || !login.Authenticated || login.SetCookie == "" {
 		t.Fatalf("login=%#v error=%v", login, err)
 	}
-	if len(runtimeIdentity.calls) != 1 || runtimeIdentity.calls[0].workloadID != "service-version-login" {
-		t.Fatalf("runtime identity=%#v", runtimeIdentity.calls)
-	}
 	cookieResponse := &http.Response{Header: http.Header{"Set-Cookie": []string{login.SetCookie}}}
 	cookies := cookieResponse.Cookies()
 	if len(cookies) != 1 || !cookies[0].Secure {
@@ -281,7 +284,7 @@ func TestSupervisorMediatedAuthenticationCallsRequireActiveRequestIdentity(t *te
 		t.Fatal(err)
 	}
 	defer releaseLogout()
-	logoutIdentity := authCallPayload{ExecutionID: "execution-1", WorkerID: "worker-1", WorkloadID: "service-version-login", ServiceID: "example/auth/logout", RequestID: "request-2", SandboxID: spec.SandboxID}
+	logoutIdentity := authCallPayload{ExecutionID: "execution-1", WorkerID: "worker-1", RequestID: "request-2"}
 	logoutResponse := call("/v1/runtime/auth/logout-current", protocol.MessageAuthLogoutCurrent, logoutIdentity)
 	if logoutResponse.Code != http.StatusOK {
 		t.Fatalf("logout status=%d body=%q", logoutResponse.Code, logoutResponse.Body.String())
@@ -308,12 +311,11 @@ func TestJobsAndServicesCanExecuteAdminCommandsWithoutAUserOrHTTPRequest(t *test
 			if err != nil {
 				t.Fatal(err)
 			}
-			identity := &recordingRuntimeIdentity{}
 			server := newCallbackTestServer(t, store, func(config *Config) {
-				config.AdminBus, config.Workers = registry, identity
+				config.AdminBus = registry
 			})
 			payload := adminCallPayload{
-				ExecutionID: "execution-1", WorkerID: "worker-1", WorkloadID: "service-version-control", ServiceID: "example/control", SandboxID: spec.SandboxID,
+				ExecutionID: "execution-1", WorkerID: "worker-1", RequestID: "request-1",
 				CommandID: "kernel.test", Arguments: map[string]any{"value": "accepted"},
 			}
 			response := runtimeControlCall(t, server, spec, "/v1/runtime/admin/execute", protocol.MessageAdminCommand, payload)
@@ -329,8 +331,8 @@ func TestJobsAndServicesCanExecuteAdminCommandsWithoutAUserOrHTTPRequest(t *test
 				t.Fatalf("admin result=%#v mutated=%t error=%v", result, mutated, err)
 			}
 			values, ok := result.Result.(map[string]any)
-			if !ok || values["state"] != "done" || len(identity.calls) != 1 || identity.calls[0].workloadID != "service-version-control" {
-				t.Fatalf("result=%#v identity=%#v", result.Result, identity.calls)
+			if !ok || values["state"] != "done" {
+				t.Fatalf("result=%#v", result.Result)
 			}
 		})
 	}
@@ -344,8 +346,8 @@ func TestJobsAndServicesCanUseTypedRuntimeOperations(t *testing.T) {
 			operations := &recordingOperations{result: map[string]any{"value": string(make([]byte, 4*1024))}}
 			server := newCallbackTestServer(t, store, func(config *Config) { config.Operations = operations })
 			response := runtimeControlCall(t, server, spec, "/v1/runtime/operation/execute", protocol.MessageAdminCommand, operationCallPayload{
-				ExecutionID: "execution-1", WorkerID: "worker-1", WorkloadID: "the8020/example/workload",
-				ServiceID: "the8020/example/service", SandboxID: spec.SandboxID, Operation: "example.inspect", Input: map[string]any{"id": "one"},
+				ExecutionID: "execution-1", WorkerID: "worker-1", RequestID: "request-1",
+				Operation: "example.inspect", Input: map[string]any{"id": "one"},
 			})
 			if response.Code != http.StatusOK || operations.operation != "example.inspect" || operations.input["id"] != "one" {
 				t.Fatalf("status=%d body=%q operation=%#v", response.Code, response.Body.String(), operations)
@@ -401,37 +403,107 @@ func newCallbackTestAuthentication(t *testing.T, root string) *platformauth.Mana
 	return manager
 }
 
-func TestActiveServiceRequestCanUseKernelOwnedDatabase(t *testing.T) {
+func TestJobsAndServicesCanUseKernelOwnedDatabase(t *testing.T) {
+	for _, workload := range []model.WorkloadType{model.WorkloadJob, model.WorkloadService} {
+		t.Run(string(workload), func(t *testing.T) {
+			store, _ := state.New(t.TempDir())
+			spec, _ := callbackFixtureForWorkload(t, store, workload)
+			databaseService := &recordingDatabase{}
+			server := newCallbackTestServer(t, store, func(config *Config) { config.Database = databaseService })
+			payload := databaseCallPayload{
+				ExecutionID: "execution-1", WorkerID: "worker-1", RequestID: "request-database",
+				Statement: "SELECT $1", Parameters: json.RawMessage(`[3]`), ReturnRows: true, ReturnInsertID: true,
+			}
+			response := runtimeControlCall(t, server, spec, "/v1/runtime/database/execute", protocol.MessageDatabaseExecute, payload)
+			if response.Code != http.StatusOK || len(databaseService.statements) != 1 || !databaseService.statements[0].ReturnRows || !databaseService.statements[0].ReturnInsertID || string(databaseService.statements[0].Parameters) != `[3]` {
+				t.Fatalf("query status=%d body=%q database=%#v", response.Code, response.Body.String(), databaseService)
+			}
+			var envelope protocol.Envelope
+			if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil || envelope.MessageType != protocol.MessageDatabaseResult {
+				t.Fatalf("query envelope=%#v error=%v", envelope, err)
+			}
+			payload.Statement, payload.Parameters, payload.ReturnRows, payload.ReturnInsertID = "DELETE FROM example", nil, false, false
+			response = runtimeControlCall(t, server, spec, "/v1/runtime/database/execute", protocol.MessageDatabaseExecute, payload)
+			if response.Code != http.StatusOK || len(databaseService.statements) != 2 || databaseService.statements[1].ReturnRows {
+				t.Fatalf("execute status=%d body=%q database=%#v", response.Code, response.Body.String(), databaseService)
+			}
+			payload.RequestID = "next-execution-scope"
+			response = runtimeControlCall(t, server, spec, "/v1/runtime/database/execute", protocol.MessageDatabaseExecute, payload)
+			if response.Code != http.StatusOK || len(databaseService.statements) != 3 {
+				t.Fatalf("execution-scoped status=%d database=%#v", response.Code, databaseService)
+			}
+		})
+	}
+}
+
+func TestConcurrentRuntimeDatabaseCallsDoNotSerializeTheCallbackServer(t *testing.T) {
 	store, _ := state.New(t.TempDir())
 	spec, _ := callbackFixtureForWorkload(t, store, model.WorkloadService)
-	active := platformauth.RuntimeRequest{
-		RequestID: "request-database", ServiceID: "example/data/service",
-		RuntimeGroupID: spec.RuntimeGroupID, SandboxID: spec.SandboxID,
-	}
-	databaseService := &recordingDatabase{}
+	const calls = 16
+	databaseService := &recordingDatabase{entered: make(chan struct{}, calls), release: make(chan struct{})}
 	server := newCallbackTestServer(t, store, func(config *Config) { config.Database = databaseService })
-	payload := databaseCallPayload{
-		ExecutionID: "execution-1", WorkerID: "worker-1", WorkloadID: "service-version-data", ServiceID: active.ServiceID,
-		RequestID: active.RequestID, SandboxID: spec.SandboxID,
-		Statement: "SELECT $1", Parameters: json.RawMessage(`[3]`), ReturnRows: true, ReturnInsertID: true,
+	responses := make(chan *httptest.ResponseRecorder, calls)
+	for index := range calls {
+		go func() {
+			responses <- runtimeControlCall(t, server, spec, "/v1/runtime/database/execute", protocol.MessageDatabaseExecute, databaseCallPayload{
+				ExecutionID: "execution-1", WorkerID: "worker-1", RequestID: fmt.Sprintf("request-%d", index),
+				Statement: "SELECT 1", ReturnRows: true,
+			})
+		}()
 	}
-	response := runtimeControlCall(t, server, spec, "/v1/runtime/database/execute", protocol.MessageDatabaseExecute, payload)
-	if response.Code != http.StatusOK || len(databaseService.statements) != 1 || !databaseService.statements[0].ReturnRows || !databaseService.statements[0].ReturnInsertID || string(databaseService.statements[0].Parameters) != `[3]` {
-		t.Fatalf("query status=%d body=%q database=%#v", response.Code, response.Body.String(), databaseService)
+	for index := range calls {
+		select {
+		case <-databaseService.entered:
+		case <-time.After(time.Second):
+			close(databaseService.release)
+			t.Fatalf("only %d of %d calls entered the database concurrently", index, calls)
+		}
 	}
-	var envelope protocol.Envelope
-	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil || envelope.MessageType != protocol.MessageDatabaseResult {
-		t.Fatalf("query envelope=%#v error=%v", envelope, err)
+	close(databaseService.release)
+	for range calls {
+		if response := <-responses; response.Code != http.StatusOK {
+			t.Fatalf("concurrent callback returned %d: %s", response.Code, response.Body.String())
+		}
 	}
-	payload.Statement, payload.Parameters, payload.ReturnRows, payload.ReturnInsertID = "DELETE FROM example", nil, false, false
-	response = runtimeControlCall(t, server, spec, "/v1/runtime/database/execute", protocol.MessageDatabaseExecute, payload)
-	if response.Code != http.StatusOK || len(databaseService.statements) != 2 || databaseService.statements[1].ReturnRows {
-		t.Fatalf("execute status=%d body=%q database=%#v", response.Code, response.Body.String(), databaseService)
+}
+
+func TestConcurrentRuntimeDatabaseReadLoad(t *testing.T) {
+	root := t.TempDir()
+	store, _ := state.New(filepath.Join(root, "groups"))
+	spec, _ := callbackFixtureForWorkload(t, store, model.WorkloadService)
+	db := database.New(database.Config{
+		Backend: database.BackendSQLite, Location: filepath.Join(root, "system.db"),
+		MaximumOpenConnections: 8, MaximumIdleConnections: 4,
+	})
+	if _, err := db.Check(context.Background()); err != nil {
+		t.Fatal(err)
 	}
-	payload.RequestID = "job-or-request-scope"
-	response = runtimeControlCall(t, server, spec, "/v1/runtime/database/execute", protocol.MessageDatabaseExecute, payload)
-	if response.Code != http.StatusOK || len(databaseService.statements) != 3 {
-		t.Fatalf("execution-scoped status=%d database=%#v", response.Code, databaseService)
+	t.Cleanup(func() { _ = db.Close() })
+	server := newCallbackTestServer(t, store, func(config *Config) { config.Database = db })
+
+	const calls = 128
+	start := make(chan struct{})
+	errorsFound := make(chan error, calls)
+	var wait sync.WaitGroup
+	wait.Add(calls)
+	for index := range calls {
+		go func() {
+			defer wait.Done()
+			<-start
+			response := runtimeControlCall(t, server, spec, "/v1/runtime/database/execute", protocol.MessageDatabaseExecute, databaseCallPayload{
+				ExecutionID: "execution-1", WorkerID: "worker-1", RequestID: fmt.Sprintf("request-%d", index),
+				Statement: "SELECT 1", ReturnRows: true,
+			})
+			if response.Code != http.StatusOK {
+				errorsFound <- fmt.Errorf("call %d returned %d: %s", index, response.Code, response.Body.String())
+			}
+		}()
+	}
+	close(start)
+	wait.Wait()
+	close(errorsFound)
+	for err := range errorsFound {
+		t.Error(err)
 	}
 }
 
@@ -445,18 +517,17 @@ func TestDatabaseScopeCleanupUsesExactExecutionIdentity(t *testing.T) {
 	databaseService := &recordingDatabase{}
 	server := newCallbackTestServer(t, store, func(config *Config) { config.Database = databaseService })
 	payload := databaseCallPayload{
-		ExecutionID: "execution-1", WorkerID: "worker-1", WorkloadID: "service-version-data", ServiceID: active.ServiceID,
-		RequestID: active.RequestID, SandboxID: spec.SandboxID,
+		ExecutionID: "execution-1", WorkerID: "worker-1", RequestID: active.RequestID,
 	}
 	response := runtimeControlCall(t, server, spec, "/v1/runtime/database/scope", protocol.MessageDatabaseExecute, payload)
 	if response.Code != http.StatusOK || len(databaseService.closed) != 1 {
 		t.Fatalf("exact cleanup status=%d database=%#v", response.Code, databaseService)
 	}
 	wantedWorker := databaseScope(spec.RuntimeGroupID, spec.SandboxID, payload.WorkerID, payload.ExecutionID)
-	if databaseService.closed[0] != wantedWorker+"\x00"+active.ServiceID+"\x00"+active.RequestID {
+	if databaseService.closed[0] != wantedWorker+"\x00"+active.RequestID {
 		t.Fatalf("closed scope = %q", databaseService.closed[0])
 	}
-	payload.RequestID, payload.ServiceID = "", ""
+	payload.RequestID = ""
 	response = runtimeControlCall(t, server, spec, "/v1/runtime/database/scope", protocol.MessageDatabaseExecute, payload)
 	if response.Code != http.StatusOK || len(databaseService.prefixes) != 1 || databaseService.prefixes[0] != wantedWorker {
 		t.Fatalf("Worker cleanup status=%d database=%#v", response.Code, databaseService)
@@ -471,13 +542,11 @@ func TestActiveServiceCanInvokeOneExactWorker(t *testing.T) {
 		RuntimeGroupID: spec.RuntimeGroupID, SandboxID: spec.SandboxID,
 	}
 	invoker := &recordingWorkerInvoker{result: nodes.WorkerInvocationResult{OK: true, Output: map[string]any{"state": "live"}}}
-	identity := &recordingRuntimeIdentity{}
 	server := newCallbackTestServer(t, store, func(config *Config) {
-		config.WorkerInvoker, config.Workers = invoker, identity
+		config.WorkerInvoker = invoker
 	})
 	payload := workerCallPayload{
-		ExecutionID: "source-execution", SourceWorkerID: "source-worker", WorkloadID: "service-version-control", ServiceID: active.ServiceID,
-		RequestID: active.RequestID, SourceSandboxID: spec.SandboxID,
+		ExecutionID: "source-execution", SourceWorkerID: "source-worker", RequestID: active.RequestID,
 		TargetNodeID: "node-b", TargetSandboxID: "sandbox-b", TargetWorkerID: "worker-b",
 		TargetPersistentExecutionID: "persistent-target",
 		Function:                    "example.inspect", Input: map[string]any{"id": "opaque"},
@@ -498,11 +567,6 @@ func TestActiveServiceCanInvokeOneExactWorker(t *testing.T) {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
 
-	identity.err = errors.New("stale execution")
-	response = runtimeControlCall(t, server, spec, "/v1/runtime/worker/invoke", protocol.MessageWorkerInvoke, payload)
-	if response.Code != http.StatusConflict || len(invoker.calls) != 1 {
-		t.Fatalf("inactive execution status=%d calls=%#v", response.Code, invoker.calls)
-	}
 }
 
 func TestPersistentCompletionCarriesExactGenericExecutionIdentity(t *testing.T) {
@@ -511,8 +575,8 @@ func TestPersistentCompletionCarriesExactGenericExecutionIdentity(t *testing.T) 
 	completer := &recordingPersistentCompleter{}
 	server := newCallbackTestServer(t, store, func(config *Config) { config.Persistent = completer })
 	payload := completionCallPayload{
-		ExecutionID: "worker-execution", WorkerID: "worker-a", WorkloadID: "service-version-realtime", ServiceID: "example/realtime/channel",
-		RequestID: "request-old", SandboxID: spec.SandboxID, PersistentExecutionID: "persistent-a",
+		ExecutionID: "worker-execution", WorkerID: "worker-a", ServiceID: "example/realtime/channel",
+		RequestID: "request-old", PersistentExecutionID: "persistent-a",
 	}
 	response := runtimeControlCall(t, server, spec, "/v1/runtime/execution/complete", protocol.MessagePersistentExecutionComplete, payload)
 	if response.Code != http.StatusOK || len(completer.calls) != 1 {
@@ -523,12 +587,12 @@ func TestPersistentCompletionCarriesExactGenericExecutionIdentity(t *testing.T) 
 		t.Fatalf("completion target=%#v", target)
 	}
 
-	payload.SandboxID = "sandbox-other"
+	payload.RequestID = ""
 	response = runtimeControlCall(t, server, spec, "/v1/runtime/execution/complete", protocol.MessagePersistentExecutionComplete, payload)
 	if response.Code != http.StatusBadRequest || len(completer.calls) != 1 {
 		t.Fatalf("mismatch status=%d calls=%#v", response.Code, completer.calls)
 	}
-	payload.SandboxID = spec.SandboxID
+	payload.RequestID = "request-old"
 	completer.err = context.Canceled
 	response = runtimeControlCall(t, server, spec, "/v1/runtime/execution/complete", protocol.MessagePersistentExecutionComplete, payload)
 	if response.Code != http.StatusConflict || len(completer.calls) != 2 {
@@ -554,8 +618,11 @@ func runtimeControlCall(t *testing.T, server *Server, spec model.SandboxSpec, pa
 	return response
 }
 
-func callbackMessage(t *testing.T, messageType protocol.MessageType, spec model.SandboxSpec, payload statusPayload) []byte {
+func callbackMessage(t testing.TB, messageType protocol.MessageType, spec model.SandboxSpec, payload statusPayload) []byte {
 	t.Helper()
+	if payload.Revision == 0 {
+		payload.Revision = 1
+	}
 	payloadData, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatal(err)
@@ -570,7 +637,7 @@ func callbackMessage(t *testing.T, messageType protocol.MessageType, spec model.
 func TestCallbackListenerLifecycle(t *testing.T) {
 	store, _ := state.New(t.TempDir())
 	socketPath := filepath.Join(t.TempDir(), "kernel.sock")
-	server, err := New(Config{Store: store, ProtocolVersion: protocol.ProtocolVersion, SocketPath: socketPath, Workers: &recordingRuntimeIdentity{}})
+	server, err := New(Config{Store: store, ProtocolVersion: protocol.ProtocolVersion, SocketPath: socketPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -598,7 +665,7 @@ func TestCallbackClientReconnectsAfterSocketReplacement(t *testing.T) {
 	spec, status := callbackFixture(t, store)
 	socketPath := filepath.Join(root, "runtime", "kernel.sock")
 	newServer := func() *Server {
-		server, err := New(Config{Store: store, ProtocolVersion: protocol.ProtocolVersion, SocketPath: socketPath, Workers: &recordingRuntimeIdentity{}})
+		server, err := New(Config{Store: store, ProtocolVersion: protocol.ProtocolVersion, SocketPath: socketPath})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -609,8 +676,10 @@ func TestCallbackClientReconnectsAfterSocketReplacement(t *testing.T) {
 	}}
 	client := &http.Client{Transport: transport}
 	t.Cleanup(transport.CloseIdleConnections)
+	revision := uint64(1)
 	call := func() {
 		body := callbackMessage(t, protocol.MessageHeartbeat, spec, statusPayload{
+			Revision:        revision,
 			ProtocolVersion: protocol.ProtocolVersion, RuntimeGroupID: spec.RuntimeGroupID,
 			SandboxID: spec.SandboxID, WorkloadType: string(spec.WorkloadType),
 		})
@@ -627,6 +696,7 @@ func TestCallbackClientReconnectsAfterSocketReplacement(t *testing.T) {
 		if response.StatusCode != http.StatusOK {
 			t.Fatalf("status=%d", response.StatusCode)
 		}
+		revision++
 	}
 	first := newServer()
 	if err := first.Start(); err != nil {
@@ -652,11 +722,11 @@ func TestCallbackClientReconnectsAfterSocketReplacement(t *testing.T) {
 	}
 }
 
-func callbackFixture(t *testing.T, store *state.Store) (model.SandboxSpec, model.SandboxStatus) {
+func callbackFixture(t testing.TB, store *state.Store) (model.SandboxSpec, model.SandboxStatus) {
 	return callbackFixtureForWorkload(t, store, model.WorkloadJob)
 }
 
-func callbackFixtureForWorkload(t *testing.T, store *state.Store, workload model.WorkloadType) (model.SandboxSpec, model.SandboxStatus) {
+func callbackFixtureForWorkload(t testing.TB, store *state.Store, workload model.WorkloadType) (model.SandboxSpec, model.SandboxStatus) {
 	t.Helper()
 	digest := "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	profile := model.RuntimeProfile{WorkloadType: workload, ImageDigest: digest, DependencyMode: model.DependencyCachedOnly, NetworkMode: "netstack", ResourceClass: string(workload)}

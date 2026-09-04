@@ -10,15 +10,11 @@ export interface KernelCallbackRequest {
 
 export function kernelCallbackRequest(
   call: KernelCallRequest,
-  sandboxId: string,
 ): KernelCallbackRequest {
   const identity = {
     execution_id: call.executionId,
     worker_id: call.workerId,
-    workload_id: call.workloadId,
-    service_id: call.serviceId,
     request_id: call.requestId,
-    sandbox_id: sandboxId,
   };
   switch (call.operation) {
     case "database.info":
@@ -69,6 +65,7 @@ export function kernelCallbackRequest(
         responseMessageType: "persistent_execution_completed",
         payload: {
           ...identity,
+          service_id: call.serviceId,
           persistent_execution_id: call.persistentExecutionId,
         },
       };

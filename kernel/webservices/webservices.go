@@ -39,10 +39,17 @@ import (
 
 const internalHeaderPrefix = "X-80-20-Internal-"
 
+// A dispatch reservation only bridges the interval before an absolute
+// supervisor snapshot observes the request. It must not become durable truth
+// when a transport disappears without completing its cleanup path.
+const dispatchReservationLifetime = 30 * time.Second
+const maximumServiceMaintenancePerPass = 256
+
 type RuntimePools interface {
 	Start(context.Context, string, string, executionservices.Options) (executionservices.Record, error)
-	List() ([]executionservices.Record, error)
+	ListForService(string) ([]executionservices.Record, error)
 	Inspect(string) (executionservices.Record, error)
+	Capacity(context.Context, string) (executionservices.Record, error)
 	Scale(context.Context, string, int) (executionservices.Record, error)
 	EnsureCapacity(context.Context, string, int, int) (executionservices.Record, error)
 	ReconcileCapacity(context.Context, string, int) (executionservices.Record, error)
@@ -59,7 +66,7 @@ type BoundaryRouter interface {
 
 type Authentication interface {
 	CookieName() string
-	ValidateCookie(string) (auth.AuthContext, error)
+	ValidateCookieContext(context.Context, string) (auth.AuthContext, error)
 }
 
 type RuntimeRequestRegistrar interface {
@@ -106,14 +113,16 @@ const (
 )
 
 type ServiceSandboxStatus struct {
-	Index            int      `json:"index"`
-	Version          uint64   `json:"version"`
-	PoolID           string   `json:"pool_id"`
-	RuntimeGroupID   string   `json:"runtime_group_id"`
-	SandboxID        string   `json:"sandbox_id"`
-	WorkerIDs        []string `json:"worker_ids"`
-	ActiveRequests   int      `json:"active_requests"`
-	ActiveExecutions int      `json:"active_executions"`
+	Index              int       `json:"index"`
+	Version            uint64    `json:"version"`
+	PoolID             string    `json:"pool_id"`
+	RuntimeGroupID     string    `json:"runtime_group_id"`
+	SandboxID          string    `json:"sandbox_id"`
+	WorkerIDs          []string  `json:"worker_ids"`
+	ActiveRequests     int       `json:"active_requests"`
+	ActiveExecutions   int       `json:"active_executions"`
+	SnapshotRevision   uint64    `json:"snapshot_revision,omitempty"`
+	SnapshotObservedAt time.Time `json:"snapshot_observed_at,omitempty"`
 }
 
 type Metrics struct {
@@ -187,8 +196,8 @@ type RequestResult struct {
 }
 
 type runtimeSandbox struct {
-	status ServiceSandboxStatus
-	active int
+	status       ServiceSandboxStatus
+	reservations []time.Time
 }
 
 type runtimeService struct {
@@ -223,8 +232,13 @@ type Manager struct {
 	mu               sync.Mutex
 	services         map[string]*runtimeService
 	persistentRoutes *persistentRouteRegistry
-	reconcile        sync.Mutex
 	capacityLocks    sync.Map
+	maintenanceMu    sync.Mutex
+	maintenanceQueue []string
+	maintenanceHead  int
+	maintenanceSet   map[string]bool
+	background       context.Context
+	stopBackground   context.CancelFunc
 	cancel           context.CancelFunc
 	wait             sync.WaitGroup
 }
@@ -245,7 +259,8 @@ func New(config Config) (*Manager, error) {
 	if config.StartupTimeout <= 0 {
 		config.StartupTimeout = 30 * time.Second
 	}
-	manager := &Manager{definitions: config.Definitions, pools: config.Pools, observed: config.ObservedRoot, interval: config.ReconcileInterval, startup: config.StartupTimeout, logger: config.Logger, authentication: config.Authentication, runtimeRequests: config.RuntimeRequests, nodes: config.Nodes, services: map[string]*runtimeService{}, persistentRoutes: newPersistentRouteRegistry(config.NodeID, config.Database)}
+	background, stopBackground := context.WithCancel(context.Background())
+	manager := &Manager{definitions: config.Definitions, pools: config.Pools, observed: config.ObservedRoot, interval: config.ReconcileInterval, startup: config.StartupTimeout, logger: config.Logger, authentication: config.Authentication, runtimeRequests: config.RuntimeRequests, nodes: config.Nodes, services: map[string]*runtimeService{}, persistentRoutes: newPersistentRouteRegistry(config.NodeID, config.Database), background: background, stopBackground: stopBackground, maintenanceSet: map[string]bool{}}
 	if err := config.Router.RegisterServiceBoundary(manager); err != nil {
 		return nil, err
 	}
@@ -291,12 +306,17 @@ func (m *Manager) StartReconciler(parent context.Context) {
 func (m *Manager) Close() error {
 	m.mu.Lock()
 	cancel := m.cancel
+	stopBackground := m.stopBackground
 	m.cancel = nil
+	m.stopBackground = nil
 	m.mu.Unlock()
 	if cancel != nil {
 		cancel()
-		m.wait.Wait()
 	}
+	if stopBackground != nil {
+		stopBackground()
+	}
+	m.wait.Wait()
 	return nil
 }
 
@@ -305,8 +325,6 @@ func (m *Manager) ReconcileAll(ctx context.Context) error {
 }
 
 func (m *Manager) reconcileAll(ctx context.Context, provision bool) error {
-	m.reconcile.Lock()
-	defer m.reconcile.Unlock()
 	ids, err := m.definitions.ListStateServiceIDs()
 	if err != nil {
 		return err
@@ -316,7 +334,7 @@ func (m *Manager) reconcileAll(ctx context.Context, provision bool) error {
 		if ctx.Err() != nil {
 			return errors.Join(joined, ctx.Err())
 		}
-		if _, err := m.reconcileOneLocked(ctx, serviceID, provision); err != nil {
+		if _, err := m.reconcileService(ctx, serviceID, provision); err != nil {
 			joined = errors.Join(joined, fmt.Errorf("%s: %w", serviceID, err))
 		}
 	}
@@ -324,42 +342,62 @@ func (m *Manager) reconcileAll(ctx context.Context, provision bool) error {
 }
 
 func (m *Manager) reconcileMaintained(ctx context.Context) error {
-	m.reconcile.Lock()
-	defer m.reconcile.Unlock()
-	records, err := m.pools.List()
-	if err != nil {
-		return err
-	}
 	var joined error
-	for _, record := range records {
-		switch record.State {
-		case "DRAINING":
-			_, err := m.pools.Stop(ctx, record.ServiceID)
-			joined = errors.Join(joined, err)
-		case "STOPPED":
-			if err := m.pools.RemoveStopped(record.ServiceID); err != nil && !errors.Is(err, os.ErrNotExist) {
-				joined = errors.Join(joined, err)
-			}
-		}
-	}
-	m.mu.Lock()
-	ids := make([]string, 0, len(m.services))
-	for serviceID, runtime := range m.services {
-		if len(runtime.sandboxes) > 0 || len(runtime.retired) > 0 || runtime.status.State == StatePendingCapacity {
-			ids = append(ids, serviceID)
-		}
-	}
-	m.mu.Unlock()
-	sort.Strings(ids)
+	ids := m.takeMaintenance(maximumServiceMaintenancePerPass)
 	for _, serviceID := range ids {
 		if ctx.Err() != nil {
 			return errors.Join(joined, ctx.Err())
 		}
-		if _, err := m.reconcileOneLocked(ctx, serviceID, false); err != nil {
+		if _, err := m.reconcileService(ctx, serviceID, false); err != nil {
 			joined = errors.Join(joined, fmt.Errorf("%s: %w", serviceID, err))
 		}
 	}
 	return joined
+}
+
+func (m *Manager) scheduleMaintenance(serviceID string) {
+	if serviceID == "" {
+		return
+	}
+	m.maintenanceMu.Lock()
+	if !m.maintenanceSet[serviceID] {
+		m.maintenanceSet[serviceID] = true
+		m.maintenanceQueue = append(m.maintenanceQueue, serviceID)
+	}
+	m.maintenanceMu.Unlock()
+}
+
+func (m *Manager) scheduleMaintenanceIfNeeded(serviceID string) {
+	m.mu.Lock()
+	runtime := m.services[serviceID]
+	needed := runtime != nil && (len(runtime.sandboxes) > 0 || len(runtime.retired) > 0 || runtime.status.State == StatePendingCapacity || runtime.status.State == StateDraining)
+	m.mu.Unlock()
+	if needed {
+		m.scheduleMaintenance(serviceID)
+	}
+}
+
+func (m *Manager) takeMaintenance(limit int) []string {
+	if limit < 1 {
+		return nil
+	}
+	m.maintenanceMu.Lock()
+	available := len(m.maintenanceQueue) - m.maintenanceHead
+	count := min(limit, available)
+	result := append([]string(nil), m.maintenanceQueue[m.maintenanceHead:m.maintenanceHead+count]...)
+	m.maintenanceHead += count
+	for _, serviceID := range result {
+		delete(m.maintenanceSet, serviceID)
+	}
+	if m.maintenanceHead == len(m.maintenanceQueue) {
+		m.maintenanceQueue = nil
+		m.maintenanceHead = 0
+	} else if m.maintenanceHead >= 1024 && m.maintenanceHead*2 >= len(m.maintenanceQueue) {
+		m.maintenanceQueue = append([]string(nil), m.maintenanceQueue[m.maintenanceHead:]...)
+		m.maintenanceHead = 0
+	}
+	m.maintenanceMu.Unlock()
+	return result
 }
 
 func (m *Manager) Start(ctx context.Context, serviceID string) (Status, error) {
@@ -439,11 +477,9 @@ func (m *Manager) Retire(ctx context.Context, serviceID string) error {
 	if _, err := workspacepackages.ParseServiceID(serviceID); err != nil {
 		return err
 	}
-	m.reconcile.Lock()
-	defer m.reconcile.Unlock()
 	unlockCapacity := m.lockServiceCapacity(serviceID)
 	defer unlockCapacity()
-	records, err := m.pools.List()
+	records, err := m.pools.ListForService(serviceID)
 	if err != nil {
 		return err
 	}
@@ -542,9 +578,7 @@ func (m *Manager) logDesiredState(action, serviceID string, state workspacepacka
 func copyInt(value *int) *int { copied := *value; return &copied }
 
 func (m *Manager) reconcileOne(ctx context.Context, serviceID string) (Status, error) {
-	m.reconcile.Lock()
-	status, err := m.reconcileOneLocked(ctx, serviceID, true)
-	m.reconcile.Unlock()
+	status, err := m.reconcileService(ctx, serviceID, true)
 	m.mu.Lock()
 	if runtime := m.services[serviceID]; runtime != nil {
 		status = m.observedStatusLocked(cloneRuntimeStatus(runtime), observedSandboxesOf(runtime))
@@ -553,9 +587,10 @@ func (m *Manager) reconcileOne(ctx context.Context, serviceID string) (Status, e
 	return status, err
 }
 
-func (m *Manager) reconcileOneLocked(ctx context.Context, serviceID string, provision bool) (Status, error) {
+func (m *Manager) reconcileService(ctx context.Context, serviceID string, provision bool) (Status, error) {
 	unlockCapacity := m.lockServiceCapacity(serviceID)
 	defer unlockCapacity()
+	defer m.scheduleMaintenanceIfNeeded(serviceID)
 	definition, err := m.definitions.ReadService(serviceID)
 	if err != nil {
 		m.mu.Lock()
@@ -740,7 +775,7 @@ func (m *Manager) reconcileOneLocked(ctx context.Context, serviceID string, prov
 }
 
 func (m *Manager) cleanupStaleVersionPools(ctx context.Context, definition workspacepackages.Definition, active []*runtimeSandbox) error {
-	records, err := m.pools.List()
+	records, err := m.pools.ListForService(definition.Identity.ServiceID())
 	if err != nil {
 		return fmt.Errorf("list runtime pools for version cleanup: %w", err)
 	}
@@ -966,7 +1001,7 @@ func (m *Manager) scaleDownSandbox(ctx context.Context, definition workspacepack
 	for _, sandbox := range sandboxes {
 		record, exists := capacity[sandbox.status.PoolID]
 		m.mu.Lock()
-		active := sandbox.active
+		active := activeReservations(sandbox, time.Now())
 		m.mu.Unlock()
 		if active != 0 {
 			continue
@@ -992,7 +1027,7 @@ func (m *Manager) scaleDownSandbox(ctx context.Context, definition workspacepack
 	}
 	remaining := make([]*runtimeSandbox, 0, len(service.sandboxes)-len(candidates))
 	for _, sandbox := range service.sandboxes {
-		if !candidates[sandbox] || sandbox.active != 0 {
+		if !candidates[sandbox] || activeReservations(sandbox, time.Now()) != 0 {
 			remaining = append(remaining, sandbox)
 			delete(candidates, sandbox)
 		}
@@ -1608,6 +1643,7 @@ func (m *Manager) dispatch(writer http.ResponseWriter, request *http.Request, id
 	}
 	requestID, err := model.NewID("request")
 	if err != nil {
+		m.finishRequest(runtime, sandbox, 0, 0, 0, false)
 		http.Error(writer, "service unavailable", http.StatusServiceUnavailable)
 		return
 	}
@@ -1885,14 +1921,14 @@ func (m *Manager) authenticate(request *http.Request) (auth.AuthContext, bool) {
 	if err != nil || cookie.Value == "" {
 		return auth.AuthContext{}, false
 	}
-	context, err := m.authentication.ValidateCookie(cookie.Value)
+	contextValue, err := m.authentication.ValidateCookieContext(request.Context(), cookie.Value)
 	if err != nil {
 		if m.logger != nil && !errors.Is(err, auth.ErrUnauthenticated) && !errors.Is(err, auth.ErrSessionExpired) {
 			m.logger.Warn("authentication validation failed", "error", err)
 		}
 		return auth.AuthContext{}, false
 	}
-	return context, context.Authenticated
+	return contextValue, contextValue.Authenticated
 }
 
 func (m *Manager) respondUnauthenticated(writer http.ResponseWriter, policy workspacepackages.UnauthenticatedManifest) {
@@ -1928,19 +1964,115 @@ func (m *Manager) selectSandbox(runtime *runtimeService) *runtimeSandbox {
 		return nil
 	}
 	sandboxes := append([]*runtimeSandbox(nil), runtime.sandboxes...)
+	now := time.Now()
 	sort.Slice(sandboxes, func(i, j int) bool {
-		return sandboxes[i].active < sandboxes[j].active || (sandboxes[i].active == sandboxes[j].active && sandboxes[i].status.Index < sandboxes[j].status.Index)
+		left, right := activeReservations(sandboxes[i], now), activeReservations(sandboxes[j], now)
+		return left < right || (left == right && sandboxes[i].status.Index < sandboxes[j].status.Index)
 	})
 	selected := sandboxes[0]
-	selected.active++
-	selected.status.ActiveRequests = selected.active
+	reserveRequest(selected, now)
 	runtimeMetrics(runtime).ActiveRequests++
 	return selected
 }
 
 func (m *Manager) selectCapacitySandbox(ctx context.Context, runtime *runtimeService, definition workspacepackages.Definition) (*runtimeSandbox, error) {
+	if sandbox, shouldScale := m.reserveCachedCapacity(ctx, runtime, definition); sandbox != nil {
+		if shouldScale {
+			m.triggerCapacityReconcile(runtime, definition)
+		}
+		return sandbox, nil
+	}
+	return m.selectCapacitySandboxSlow(ctx, runtime, definition)
+}
+
+// reserveCachedCapacity is the normal warm path: one short in-memory routing
+// reservation and no Worker listing, reconciliation, or external I/O.
+func (m *Manager) reserveCachedCapacity(ctx context.Context, runtime *runtimeService, definition workspacepackages.Definition) (*runtimeSandbox, bool) {
+	type candidate struct {
+		sandbox *runtimeSandbox
+		active  int
+	}
+	m.mu.Lock()
+	if runtime == nil || m.services[definition.Identity.ServiceID()] != runtime {
+		m.mu.Unlock()
+		return nil, false
+	}
+	candidates := make([]candidate, 0, len(runtime.sandboxes))
+	now := time.Now()
+	for _, sandbox := range runtime.sandboxes {
+		if sandbox.status.Version == runtime.status.LoadedVersion {
+			candidates = append(candidates, candidate{sandbox: sandbox, active: activeReservations(sandbox, now)})
+		}
+	}
+	m.mu.Unlock()
+
+	concurrency := definition.Effective.Scaling.ConcurrencyPerWorker
+	target := definition.Effective.Scaling.TargetUtilization
+	var selected *runtimeSandbox
+	selectedLoad := 0.0
+	totalWorkers := 0
+	selectedObserved := 0
+	selectedWorkers := []string(nil)
+	for _, candidate := range candidates {
+		observed, err := m.pools.Capacity(ctx, candidate.sandbox.status.PoolID)
+		if err != nil {
+			continue
+		}
+		workers := len(observed.WorkerIDs)
+		totalWorkers += workers
+		if workers == 0 {
+			continue
+		}
+		occupied := max(candidate.active, observed.OccupiedSlots)
+		limit := workers * concurrency
+		if concurrency > 1 {
+			// Higher concurrency is a balancing target, with one bounded extra
+			// request per Worker while targeted scale-up catches up.
+			limit += workers
+		}
+		if occupied >= limit {
+			continue
+		}
+		load := float64(occupied) / float64(workers*concurrency)
+		if selected == nil || load < selectedLoad || (load == selectedLoad && candidate.sandbox.status.Index < selected.status.Index) {
+			selected, selectedLoad = candidate.sandbox, load
+			selectedObserved = observed.OccupiedSlots
+			selectedWorkers = observed.WorkerIDs
+		}
+	}
+	if selected == nil {
+		return nil, false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.services[definition.Identity.ServiceID()] != runtime || !slices.Contains(runtime.sandboxes, selected) || selected.status.Version != runtime.status.LoadedVersion {
+		return nil, false
+	}
+	workers := len(selectedWorkers)
+	occupied := max(activeReservations(selected, time.Now()), selectedObserved)
+	limit := workers * concurrency
+	if concurrency > 1 {
+		limit += workers
+	}
+	if workers == 0 || occupied >= limit {
+		return nil, false
+	}
+	selected.status.WorkerIDs = append([]string(nil), selectedWorkers...)
+	reserveRequest(selected, time.Now())
+	runtimeMetrics(runtime).ActiveRequests++
+	projected := float64(max(activeReservations(selected, time.Now()), selectedObserved+1)) / float64(workers*concurrency)
+	maximum := definition.Effective.Scaling.MaximumWorkers
+	shouldScale := projected >= target && (maximum == 0 || totalWorkers < maximum)
+	return selected, shouldScale
+}
+
+func (m *Manager) selectCapacitySandboxSlow(ctx context.Context, runtime *runtimeService, definition workspacepackages.Definition) (*runtimeSandbox, error) {
 	unlockCapacity := m.lockServiceCapacity(definition.Identity.ServiceID())
 	defer unlockCapacity()
+	return m.selectCapacitySandboxLocked(ctx, runtime, definition, true)
+}
+
+func (m *Manager) selectCapacitySandboxLocked(ctx context.Context, runtime *runtimeService, definition workspacepackages.Definition, reserve bool) (*runtimeSandbox, error) {
 	type candidate struct {
 		sandbox *runtimeSandbox
 		active  int
@@ -1948,6 +2080,7 @@ func (m *Manager) selectCapacitySandbox(ctx context.Context, runtime *runtimeSer
 	}
 	m.mu.Lock()
 	var sandboxes []*runtimeSandbox
+	now := time.Now()
 	for _, sandbox := range sandboxesOf(runtime) {
 		if sandbox.status.Version == runtime.status.LoadedVersion {
 			sandboxes = append(sandboxes, sandbox)
@@ -1956,7 +2089,7 @@ func (m *Manager) selectCapacitySandbox(ctx context.Context, runtime *runtimeSer
 	totalWorkers := workerCount(sandboxes)
 	candidates := make([]candidate, len(sandboxes))
 	for index, sandbox := range sandboxes {
-		candidates[index] = candidate{sandbox: sandbox, active: sandbox.active, workers: len(sandbox.status.WorkerIDs)}
+		candidates[index] = candidate{sandbox: sandbox, active: activeReservations(sandbox, now), workers: len(sandbox.status.WorkerIDs)}
 	}
 	m.mu.Unlock()
 	sort.SliceStable(candidates, func(i, j int) bool {
@@ -1972,15 +2105,22 @@ func (m *Manager) selectCapacitySandbox(ctx context.Context, runtime *runtimeSer
 		}
 		record, err := m.pools.EnsureCapacity(ctx, sandbox.status.PoolID, growthLimit, candidate.active)
 		if err == nil {
-			if activated := m.activateSandbox(runtime, sandbox, record.WorkerIDs); activated != nil {
-				return activated, nil
+			if reserve {
+				if activated := m.activateSandbox(runtime, sandbox, record.WorkerIDs); activated != nil {
+					return activated, nil
+				}
+				return nil, errors.New("service version changed while selecting capacity")
 			}
-			return nil, errors.New("service version changed while selecting capacity")
+			return m.updateSandboxWorkers(runtime, sandbox, record.WorkerIDs), nil
 		}
 		lastErr = err
 		var capacity *executionservices.SandboxCapacityError
 		if errors.As(err, &capacity) {
-			if capacity.Occupied < capacity.Slots && fallback == nil {
+			softAllowance := capacity.Slots
+			if !capacity.Strict && definition.Effective.Scaling.ConcurrencyPerWorker > 0 {
+				softAllowance += capacity.Slots / definition.Effective.Scaling.ConcurrencyPerWorker
+			}
+			if reserve && ((!capacity.Strict && capacity.Occupied < softAllowance) || (capacity.Strict && capacity.Occupied < capacity.Slots)) && fallback == nil {
 				fallback = sandbox
 			}
 			continue
@@ -1989,10 +2129,13 @@ func (m *Manager) selectCapacitySandbox(ctx context.Context, runtime *runtimeSer
 
 	sandbox, err := m.addCapacitySandboxLocked(ctx, runtime, definition)
 	if err == nil {
-		if activated := m.activateSandbox(runtime, sandbox, sandbox.status.WorkerIDs); activated != nil {
-			return activated, nil
+		if reserve {
+			if activated := m.activateSandbox(runtime, sandbox, sandbox.status.WorkerIDs); activated != nil {
+				return activated, nil
+			}
+			return nil, errors.New("service version changed while activating capacity")
 		}
-		return nil, errors.New("service version changed while activating capacity")
+		return sandbox, nil
 	}
 	lastErr = err
 	if fallback != nil {
@@ -2005,6 +2148,29 @@ func (m *Manager) selectCapacitySandbox(ctx context.Context, runtime *runtimeSer
 		lastErr = errors.New("all configured execution slots are occupied")
 	}
 	return nil, fmt.Errorf("%w: %v", executionservices.ErrSandboxCapacity, lastErr)
+}
+
+func (m *Manager) triggerCapacityReconcile(runtime *runtimeService, definition workspacepackages.Definition) {
+	lock := m.serviceCapacityLock(definition.Identity.ServiceID())
+	if !lock.TryLock() {
+		return
+	}
+	m.mu.Lock()
+	if m.stopBackground == nil {
+		m.mu.Unlock()
+		lock.Unlock()
+		return
+	}
+	background := m.background
+	m.wait.Add(1)
+	m.mu.Unlock()
+	go func() {
+		defer m.wait.Done()
+		defer lock.Unlock()
+		ctx, cancel := context.WithTimeout(background, m.startup)
+		defer cancel()
+		_, _ = m.selectCapacitySandboxLocked(ctx, runtime, definition, false)
+	}()
 }
 
 func (m *Manager) localWorkerMaximum(definition workspacepackages.Definition) int {
@@ -2080,15 +2246,20 @@ func (m *Manager) addCapacitySandboxLocked(ctx context.Context, runtime *runtime
 	current.status.WorkerCount = workerCount(current.sandboxes)
 	status := cloneRuntimeStatus(current)
 	m.mu.Unlock()
+	m.scheduleMaintenance(definition.Identity.ServiceID())
 	_ = m.writeObserved(status)
 	return sandbox, nil
 }
 
 func (m *Manager) lockServiceCapacity(serviceID string) func() {
-	value, _ := m.capacityLocks.LoadOrStore(serviceID, &sync.Mutex{})
-	lock := value.(*sync.Mutex)
+	lock := m.serviceCapacityLock(serviceID)
 	lock.Lock()
 	return lock.Unlock
+}
+
+func (m *Manager) serviceCapacityLock(serviceID string) *sync.Mutex {
+	value, _ := m.capacityLocks.LoadOrStore(serviceID, &sync.Mutex{})
+	return value.(*sync.Mutex)
 }
 
 func (m *Manager) nextOwnedSandboxIndex(used map[int]bool) int {
@@ -2116,12 +2287,24 @@ func (m *Manager) activateSandbox(runtime *runtimeService, sandbox *runtimeSandb
 		return nil
 	}
 	sandbox.status.WorkerIDs = append([]string(nil), workerIDs...)
-	sandbox.active++
-	sandbox.status.ActiveRequests = sandbox.active
+	reserveRequest(sandbox, time.Now())
 	runtimeMetrics(runtime).ActiveRequests++
 	if runtime.status.State == StateIdle {
 		runtime.status.State = StateReady
 	}
+	runtime.status.Sandboxes = statusesOf(runtime.sandboxes)
+	runtime.status.SandboxCount = len(runtime.sandboxes)
+	runtime.status.WorkerCount = workerCount(runtime.sandboxes)
+	return sandbox
+}
+
+func (m *Manager) updateSandboxWorkers(runtime *runtimeService, sandbox *runtimeSandbox, workerIDs []string) *runtimeSandbox {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if runtime == nil || sandbox == nil || sandbox.status.Version != runtime.status.LoadedVersion || m.services[runtime.status.ServiceID] != runtime || !slices.Contains(runtime.sandboxes, sandbox) {
+		return nil
+	}
+	sandbox.status.WorkerIDs = append([]string(nil), workerIDs...)
 	runtime.status.Sandboxes = statusesOf(runtime.sandboxes)
 	runtime.status.SandboxCount = len(runtime.sandboxes)
 	runtime.status.WorkerCount = workerCount(runtime.sandboxes)
@@ -2235,8 +2418,7 @@ func (m *Manager) selectPersistentSandbox(runtime *runtimeService, poolID, worke
 	if selected == nil || selected.status.Version != runtime.status.LoadedVersion || workerID != "" && !slices.Contains(selected.status.WorkerIDs, workerID) {
 		return nil
 	}
-	selected.active++
-	selected.status.ActiveRequests = selected.active
+	reserveRequest(selected, time.Now())
 	runtimeMetrics(runtime).ActiveRequests++
 	return selected
 }
@@ -2260,8 +2442,7 @@ func (m *Manager) finishRequest(runtime *runtimeService, sandbox *runtimeSandbox
 	if runtime == nil {
 		return
 	}
-	sandbox.active = max(sandbox.active-1, 0)
-	sandbox.status.ActiveRequests = sandbox.active
+	releaseRequest(sandbox, time.Now())
 	metrics := runtimeMetrics(runtime)
 	metrics.ActiveRequests = max(metrics.ActiveRequests-1, 0)
 	metrics.RequestCount++
@@ -2272,6 +2453,32 @@ func (m *Manager) finishRequest(runtime *runtimeService, sandbox *runtimeSandbox
 	}
 	if status != 0 {
 		metrics.ResponseStatus[strconv.Itoa(status)]++
+	}
+}
+
+func activeReservations(sandbox *runtimeSandbox, now time.Time) int {
+	if sandbox == nil {
+		return 0
+	}
+	kept := sandbox.reservations[:0]
+	for _, expiresAt := range sandbox.reservations {
+		if now.Before(expiresAt) {
+			kept = append(kept, expiresAt)
+		}
+	}
+	sandbox.reservations = kept
+	return len(kept)
+}
+
+func reserveRequest(sandbox *runtimeSandbox, now time.Time) {
+	activeReservations(sandbox, now)
+	sandbox.reservations = append(sandbox.reservations, now.Add(dispatchReservationLifetime))
+}
+
+func releaseRequest(sandbox *runtimeSandbox, now time.Time) {
+	activeReservations(sandbox, now)
+	if count := len(sandbox.reservations); count > 0 {
+		sandbox.reservations = sandbox.reservations[:count-1]
 	}
 }
 

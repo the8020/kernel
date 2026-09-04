@@ -32,6 +32,7 @@ export interface SupervisorOptions {
   nodeId?: string;
   entrypointValidator?: (entrypoints: string[]) => Promise<void>;
   moduleAnalyzer?: (entrypoints: string[]) => Promise<ModuleDependencies>;
+  onStateChange?: () => void;
 }
 
 export type ModuleDependencies = Record<string, string[]>;
@@ -51,7 +52,8 @@ export interface WorkerStatus {
   release_id: string;
   in_flight: number;
   idle_since_ms?: number;
-  state: "ready" | "draining" | "failed";
+  persistent_executions: number;
+  state: "starting" | "ready" | "stopping" | "stopped" | "failed";
   failure?: string;
   logs: RuntimeLogEvent[];
 }
@@ -67,6 +69,17 @@ interface ServiceWorkerLease {
   executionId?: string;
   keepAliveMilliseconds: number;
   created: boolean;
+  admitted: boolean;
+}
+
+interface ServicePool {
+  workers: Set<string>;
+  concurrencyPerWorker: number;
+  queueLimit: number;
+  queued: number;
+  executionMode: "stateless" | "persistent";
+  bindings: Map<string, PersistentBinding>;
+  admissions: Map<string, number>;
 }
 
 function canonicalJSON(value: unknown): string {
@@ -84,12 +97,20 @@ function canonicalJSON(value: unknown): string {
   return JSON.stringify(normalize(value));
 }
 
+function routingLimit(concurrencyPerWorker: number): number {
+  return concurrencyPerWorker === 1 ? 1 : concurrencyPerWorker + 1;
+}
+
 export class Supervisor {
   readonly options:
     & Required<
       Omit<
         SupervisorOptions,
-        "kernelCall" | "nodeId" | "entrypointValidator" | "moduleAnalyzer"
+        | "kernelCall"
+        | "nodeId"
+        | "entrypointValidator"
+        | "moduleAnalyzer"
+        | "onStateChange"
       >
     >
     & {
@@ -97,17 +118,7 @@ export class Supervisor {
       nodeId: string;
     };
   #workers = new Map<string, RuntimeWorker>();
-  #servicePools = new Map<
-    string,
-    {
-      workers: Set<string>;
-      concurrencyPerWorker: number;
-      queueLimit: number;
-      queued: number;
-      executionMode: "stateless" | "persistent";
-      bindings: Map<string, PersistentBinding>;
-    }
-  >();
+  #servicePools = new Map<string, ServicePool>();
   #draining = false;
   #workerStartFingerprints = new Map<string, string>();
   #workerStarts = new Map<
@@ -117,8 +128,15 @@ export class Supervisor {
   #workerStops = new Map<string, Promise<void>>();
   #lastReservationRelease = new Map<string, number>();
   #capacityWaiters = new Set<() => void>();
+  #recentFailures: Array<{
+    worker_id: string;
+    execution_id: string;
+    reason: string;
+  }> = [];
   #entrypointValidator: (entrypoints: string[]) => Promise<void>;
   #moduleAnalyzer: (entrypoints: string[]) => Promise<ModuleDependencies>;
+  #onStateChange?: () => void;
+  #revision = 1;
 
   constructor(options: SupervisorOptions) {
     if (
@@ -140,6 +158,7 @@ export class Supervisor {
     };
     this.#entrypointValidator = entrypointValidator ?? validateEntrypoints;
     this.#moduleAnalyzer = moduleAnalyzer ?? analyzeModules;
+    this.#onStateChange = options.onStateChange;
     if (
       !Number.isSafeInteger(this.options.workerStopGraceMilliseconds) ||
       this.options.workerStopGraceMilliseconds < 10
@@ -225,14 +244,13 @@ export class Supervisor {
         void this.options.kernelCall?.({
           operation: "database.scope.close",
           arguments: {},
-          workloadId: metadata.workloadId,
           executionId: metadata.executionId,
           workerId: metadata.workerId,
         }).catch(() => {});
       },
       kernelCall: this.options.kernelCall === undefined
         ? undefined
-        : async (call) => {
+        : async (call, signal) => {
           const databaseAccess = metadata.databaseAccess ?? "full";
           if (
             call.operation.startsWith("database.") &&
@@ -243,7 +261,7 @@ export class Supervisor {
               "database SQL is not available to this Worker",
             );
           }
-          const result = await this.options.kernelCall!(call);
+          const result = await this.options.kernelCall!(call, signal);
           if (
             call.operation === "execution.completePersistent" &&
             call.persistentExecutionId !== undefined
@@ -259,13 +277,16 @@ export class Supervisor {
     });
     this.#workers.set(options.metadata.workerId, worker);
     this.#workerStartFingerprints.set(options.metadata.workerId, fingerprint);
+    this.#stateChanged();
     try {
       await worker.ready;
       return worker;
     } catch (error) {
+      this.#recordFailure(worker, error);
       this.#workers.delete(options.metadata.workerId);
       this.#workerStartFingerprints.delete(options.metadata.workerId);
       worker.kill();
+      this.#stateChanged();
       throw error;
     }
   }
@@ -421,6 +442,7 @@ export class Supervisor {
       throw new TypeError("service pool Workers disagree on execution mode");
     }
     const bindings = previous?.bindings ?? new Map<string, PersistentBinding>();
+    const admissions = previous?.admissions ?? new Map<string, number>();
     const nextPool = {
       workers: pool,
       concurrencyPerWorker,
@@ -428,6 +450,7 @@ export class Supervisor {
       queued: this.#servicePools.get(serviceId)?.queued ?? 0,
       executionMode,
       bindings,
+      admissions,
     };
     this.#sweepPersistentBindings(nextPool);
     for (const binding of bindings.values()) {
@@ -446,10 +469,12 @@ export class Supervisor {
     const workers = [...pool.workers].map((id) => this.#workers.get(id)!)
       .filter((worker) =>
         !worker.closed && !worker.draining &&
-        worker.inFlight < pool.concurrencyPerWorker
+        this.#workerLoad(pool, worker) < routingLimit(pool.concurrencyPerWorker)
       )
       .sort((left, right) =>
-        left.inFlight - right.inFlight ||
+        Number(this.#workerLoad(pool, left) >= pool.concurrencyPerWorker) -
+          Number(this.#workerLoad(pool, right) >= pool.concurrencyPerWorker) ||
+        this.#workerLoad(pool, left) - this.#workerLoad(pool, right) ||
         left.metadata.workerId.localeCompare(right.metadata.workerId)
       );
     if (workers.length === 0) {
@@ -460,7 +485,7 @@ export class Supervisor {
     return workers[0]!;
   }
 
-  async acquireServiceWorker(
+  async #acquireServiceWorker(
     serviceId: string,
     signal: AbortSignal,
   ): Promise<RuntimeWorker> {
@@ -471,7 +496,7 @@ export class Supervisor {
       );
     }
     try {
-      return this.selectServiceWorker(serviceId);
+      return this.#admitSelectedWorker(serviceId, pool);
     } catch {
       if (pool.queued >= pool.queueLimit) {
         throw new ServiceUnavailableError(
@@ -483,7 +508,7 @@ export class Supervisor {
     try {
       while (!signal.aborted) {
         try {
-          return this.selectServiceWorker(serviceId);
+          return this.#admitSelectedWorker(serviceId, pool);
         } catch {
           await this.#waitForCapacity(pool, signal);
         }
@@ -543,7 +568,7 @@ export class Supervisor {
           for (const binding of pool.bindings.values()) {
             if (binding.workerId === targetWorkerID) reservations++;
           }
-          if (reservations >= pool.concurrencyPerWorker) {
+          if (reservations >= routingLimit(pool.concurrencyPerWorker)) {
             throw new ServiceUnavailableError(
               `target Worker ${targetWorkerID} has no persistent execution slot`,
             );
@@ -553,25 +578,30 @@ export class Supervisor {
             expiresAt: this.options.now() + keepAliveMilliseconds,
             connections: 0,
           });
+          this.#notifyCapacity();
         }
-        return {
+        return await this.#admitPersistentLease(serviceId, pool, {
           worker: target,
           executionId,
           keepAliveMilliseconds,
           created: existing === undefined,
-        };
+          admitted: false,
+        }, signal);
       }
+      await this.#waitForWorkerCapacity(serviceId, pool, target, signal);
       return {
         worker: target,
         keepAliveMilliseconds: 0,
         created: false,
+        admitted: true,
       };
     }
     if (pool.executionMode === "stateless") {
       return {
-        worker: await this.acquireServiceWorker(serviceId, signal),
+        worker: await this.#acquireServiceWorker(serviceId, signal),
         keepAliveMilliseconds: 0,
         created: false,
+        admitted: true,
       };
     }
     const executionId = headers.get(
@@ -599,6 +629,7 @@ export class Supervisor {
             executionId,
             keepAliveMilliseconds,
             created: false,
+            admitted: false,
           };
         }
         pool.bindings.delete(executionId);
@@ -614,8 +645,16 @@ export class Supervisor {
         .filter((worker) =>
           !worker.closed && !worker.draining &&
           (reserved.get(worker.metadata.workerId) ?? 0) <
-            pool.concurrencyPerWorker
+            routingLimit(pool.concurrencyPerWorker)
         ).sort((left, right) =>
+          Number(
+              (reserved.get(left.metadata.workerId) ?? 0) >=
+                pool.concurrencyPerWorker,
+            ) - Number(
+              (reserved.get(right.metadata.workerId) ?? 0) >=
+                pool.concurrencyPerWorker,
+            ) ||
+          this.#workerLoad(pool, left) - this.#workerLoad(pool, right) ||
           (reserved.get(left.metadata.workerId) ?? 0) -
             (reserved.get(right.metadata.workerId) ?? 0) ||
           left.metadata.workerId.localeCompare(right.metadata.workerId)
@@ -627,11 +666,25 @@ export class Supervisor {
         expiresAt: this.options.now() + keepAliveMilliseconds,
         connections: 0,
       });
-      return { worker, executionId, keepAliveMilliseconds, created: true };
+      this.#notifyCapacity();
+      return {
+        worker,
+        executionId,
+        keepAliveMilliseconds,
+        created: true,
+        admitted: false,
+      };
     };
 
     let lease = acquire();
-    if (lease !== undefined) return lease;
+    if (lease !== undefined) {
+      return await this.#admitPersistentLease(
+        serviceId,
+        pool,
+        lease,
+        signal,
+      );
+    }
     if (pool.queued >= pool.queueLimit) {
       throw new ServiceUnavailableError(
         `service ${serviceId} has no persistent execution slot`,
@@ -641,7 +694,15 @@ export class Supervisor {
     try {
       while (!signal.aborted) {
         lease = acquire();
-        if (lease !== undefined) return lease;
+        if (lease !== undefined) {
+          return await this.#admitPersistentLease(
+            serviceId,
+            pool,
+            lease,
+            signal,
+            true,
+          );
+        }
         await this.#waitForCapacity(pool, signal);
       }
       throw signal.reason ??
@@ -651,11 +712,84 @@ export class Supervisor {
     }
   }
 
+  async #admitPersistentLease(
+    serviceId: string,
+    pool: ServicePool,
+    lease: ServiceWorkerLease,
+    signal: AbortSignal,
+    alreadyQueued = false,
+  ): Promise<ServiceWorkerLease> {
+    try {
+      await this.#waitForWorkerCapacity(
+        serviceId,
+        pool,
+        lease.worker,
+        signal,
+        alreadyQueued,
+      );
+      lease.admitted = true;
+      return lease;
+    } catch (error) {
+      if (lease.created) {
+        pool.bindings.delete(lease.executionId!);
+        this.#notifyCapacity();
+      }
+      throw error;
+    }
+  }
+
+  async #waitForWorkerCapacity(
+    serviceId: string,
+    pool: ServicePool,
+    worker: RuntimeWorker,
+    signal: AbortSignal,
+    alreadyQueued = false,
+  ): Promise<void> {
+    const available = (): boolean => {
+      if (
+        worker.closed || worker.draining ||
+        !pool.workers.has(worker.metadata.workerId)
+      ) {
+        throw new ServiceUnavailableError(
+          `target Worker ${worker.metadata.workerId} is unavailable`,
+        );
+      }
+      return this.#workerLoad(pool, worker) <
+        routingLimit(pool.concurrencyPerWorker);
+    };
+    if (available()) {
+      this.#admitWorker(pool, worker);
+      return;
+    }
+    if (!alreadyQueued) {
+      if (pool.queued >= pool.queueLimit) {
+        throw new ServiceUnavailableError(
+          `service ${serviceId} request queue is full`,
+        );
+      }
+      pool.queued++;
+    }
+    try {
+      while (!signal.aborted) {
+        if (available()) {
+          this.#admitWorker(pool, worker);
+          return;
+        }
+        await this.#waitForCapacity(pool, signal);
+      }
+      throw signal.reason ??
+        new DOMException("Request cancelled", "AbortError");
+    } finally {
+      if (!alreadyQueued) pool.queued = Math.max(0, pool.queued - 1);
+    }
+  }
+
   #finishServiceWorkerLease(
     serviceId: string,
     lease: ServiceWorkerLease,
     successful: boolean,
   ): void {
+    this.#releaseWorkerAdmission(serviceId, lease);
     if (lease.executionId === undefined) return;
     const pool = this.#servicePools.get(serviceId);
     const binding = pool?.bindings.get(lease.executionId);
@@ -670,6 +804,40 @@ export class Supervisor {
       );
       this.#notifyCapacity();
     }
+  }
+
+  #admitSelectedWorker(
+    serviceId: string,
+    pool: ServicePool,
+  ): RuntimeWorker {
+    const worker = this.selectServiceWorker(serviceId);
+    this.#admitWorker(pool, worker);
+    return worker;
+  }
+
+  #admitWorker(pool: ServicePool, worker: RuntimeWorker): void {
+    const workerId = worker.metadata.workerId;
+    pool.admissions.set(workerId, (pool.admissions.get(workerId) ?? 0) + 1);
+  }
+
+  #releaseWorkerAdmission(
+    serviceId: string,
+    lease: ServiceWorkerLease,
+  ): void {
+    if (!lease.admitted) return;
+    lease.admitted = false;
+    const pool = this.#servicePools.get(serviceId);
+    if (pool === undefined) return;
+    const workerId = lease.worker.metadata.workerId;
+    const remaining = (pool.admissions.get(workerId) ?? 1) - 1;
+    if (remaining > 0) pool.admissions.set(workerId, remaining);
+    else pool.admissions.delete(workerId);
+    this.#wakeCapacityWaiters();
+  }
+
+  #workerLoad(pool: ServicePool, worker: RuntimeWorker): number {
+    return worker.inFlight +
+      (pool.admissions.get(worker.metadata.workerId) ?? 0);
   }
 
   #connectServiceWorkerLease(
@@ -704,18 +872,22 @@ export class Supervisor {
       bindings: Map<string, PersistentBinding>;
     },
     now = this.options.now(),
-  ): void {
+    notify = true,
+  ): boolean {
+    let changed = false;
     for (const [executionId, binding] of pool.bindings) {
       if (binding.connections === 0 && binding.expiresAt <= now) {
         pool.bindings.delete(executionId);
         this.#lastReservationRelease.set(binding.workerId, now);
-        this.#notifyCapacity();
+        changed = true;
       }
     }
+    if (changed && notify) this.#notifyCapacity();
+    return changed;
   }
 
   async #waitForCapacity(
-    pool: { bindings: Map<string, PersistentBinding> },
+    pool: Pick<ServicePool, "bindings">,
     signal: AbortSignal,
   ): Promise<void> {
     if (signal.aborted) return;
@@ -741,24 +913,33 @@ export class Supervisor {
   }
 
   #notifyCapacity(): void {
+    this.#wakeCapacityWaiters();
+    this.#stateChanged();
+  }
+
+  #wakeCapacityWaiters(): void {
     const waiters = [...this.#capacityWaiters];
     this.#capacityWaiters.clear();
     for (const wake of waiters) wake();
   }
 
-  #persistentReservations(workerId: string): number {
-    let total = 0;
+  #persistentReservationCounts(): Map<string, number> {
+    const counts = new Map<string, number>();
+    const now = this.options.now();
+    let changed = false;
     for (const pool of this.#servicePools.values()) {
-      this.#sweepPersistentBindings(pool);
+      changed = this.#sweepPersistentBindings(pool, now, false) || changed;
       for (const binding of pool.bindings.values()) {
-        if (binding.workerId === workerId) total++;
+        counts.set(binding.workerId, (counts.get(binding.workerId) ?? 0) + 1);
       }
     }
-    return total;
+    if (changed) this.#notifyCapacity();
+    return counts;
   }
 
   async drain(): Promise<void> {
     this.#draining = true;
+    this.#stateChanged();
     await Promise.allSettled(
       [...this.#workerStarts.values()].map((start) => start.promise),
     );
@@ -767,9 +948,11 @@ export class Supervisor {
     );
   }
 
-  status(): Record<string, unknown> {
+  status(
+    persistent = this.#persistentReservationCounts(),
+  ): Record<string, unknown> {
     const workers = [...this.#workers.values()];
-    const recentFailures = workers.filter((worker) =>
+    const liveFailures = workers.filter((worker) =>
       worker.failure !== undefined
     ).slice(-20).map((worker) => ({
       worker_id: worker.metadata.workerId,
@@ -777,6 +960,8 @@ export class Supervisor {
       reason: worker.failure,
     }));
     return {
+      revision: this.#revision,
+      supervisor_started_at_ms: this.options.startedAt,
       protocol_version: PROTOCOL_VERSION,
       supervisor_version: this.options.supervisorVersion,
       deno_version: this.options.denoVersion,
@@ -785,33 +970,34 @@ export class Supervisor {
       workload_type: this.options.workloadType,
       worker_count: workers.length,
       ready_worker_count:
-        workers.filter((worker) => !worker.closed && !worker.draining).length,
-      failed_worker_count: recentFailures.length,
+        workers.filter((worker) =>
+          !worker.starting && !worker.closed && !worker.draining
+        ).length,
+      failed_worker_count: liveFailures.length,
       active_requests: workers.reduce(
         (total, worker) => total + worker.inFlight,
         0,
       ),
       active_execution_count: workers.reduce(
         (total, worker) => {
-          const reserved = this.#persistentReservations(
-            worker.metadata.workerId,
-          );
-          return total + (reserved > 0 ? reserved : worker.inFlight);
+          const reserved = persistent.get(worker.metadata.workerId) ?? 0;
+          return total + Math.max(reserved, worker.inFlight);
         },
         0,
       ),
       uptime_ms: this.options.now() - this.options.startedAt,
       draining: this.#draining,
-      recent_failures: recentFailures,
+      recent_failures: [...this.#recentFailures, ...liveFailures].slice(-20),
     };
   }
 
-  workers(): WorkerStatus[] {
+  workers(
+    includeLogs = true,
+    persistent = this.#persistentReservationCounts(),
+  ): WorkerStatus[] {
     return [...this.#workers.values()].map<WorkerStatus>((worker) => {
-      const reservations = this.#persistentReservations(
-        worker.metadata.workerId,
-      );
-      const inFlight = reservations || worker.inFlight;
+      const reservations = persistent.get(worker.metadata.workerId) ?? 0;
+      const inFlight = Math.max(reservations, worker.inFlight);
       const workerIdleSince = worker.idleSinceMilliseconds;
       const idleSince = inFlight === 0 && workerIdleSince !== undefined
         ? Math.max(
@@ -828,14 +1014,19 @@ export class Supervisor {
         entrypoint: worker.metadata.entrypoint,
         release_id: worker.metadata.releaseId,
         in_flight: inFlight,
+        persistent_executions: reservations,
         idle_since_ms: idleSince,
         state: worker.failure !== undefined
           ? "failed"
+          : worker.closed
+          ? "stopped"
           : worker.draining
-          ? "draining"
+          ? "stopping"
+          : worker.starting
+          ? "starting"
           : "ready",
         failure: worker.failure,
-        logs: worker.logs,
+        logs: includeLogs ? worker.logs : [],
       };
     }).sort((left, right) => left.worker_id.localeCompare(right.worker_id));
   }
@@ -846,7 +1037,7 @@ export class Supervisor {
       message_type: "heartbeat",
       runtime_group_id: this.options.runtimeGroupId,
       payload: {
-        ...this.status(),
+        ...this.snapshot(),
         event_loop_timestamp: this.options.now(),
         memory_usage: Deno.memoryUsage(),
       },
@@ -855,6 +1046,14 @@ export class Supervisor {
 
   registration(): Envelope<Record<string, unknown>> {
     return { ...this.heartbeat(), message_type: "supervisor_registration" };
+  }
+
+  snapshot(): Record<string, unknown> {
+    const persistent = this.#persistentReservationCounts();
+    return {
+      ...this.status(persistent),
+      workers: this.workers(false, persistent),
+    };
   }
 
   handler = async (request: Request): Promise<Response> => {
@@ -870,6 +1069,9 @@ export class Supervisor {
     }
     if (request.method === "GET" && url.pathname === "/v1/status") {
       return Response.json(this.status());
+    }
+    if (request.method === "GET" && url.pathname === "/v1/snapshot") {
+      return Response.json(this.snapshot());
     }
     if (request.method === "GET" && url.pathname === "/v1/workers") {
       return Response.json({ workers: this.workers() });
@@ -1031,7 +1233,7 @@ export class Supervisor {
         );
         const worker = lease.worker;
         const method = request.headers.get("x-80-20-method") ?? "GET";
-        const response = await worker.dispatchService(
+        const responsePromise = worker.dispatchService(
           new Request(
             request.headers.get("x-80-20-url") ?? "http://service/",
             {
@@ -1045,6 +1247,8 @@ export class Supervisor {
           ),
           trustedServiceMetadata(request.headers, worker.metadata),
         );
+        this.#releaseWorkerAdmission(serviceId, lease);
+        const response = await responsePromise;
         const headers = new Headers(response.headers);
         headers.set("x-80-20-runtime-worker-id", worker.metadata.workerId);
         headers.set("x-80-20-service-response", "true");
@@ -1109,6 +1313,21 @@ export class Supervisor {
       `Bearer ${this.options.token}`;
   }
 
+  #stateChanged(): void {
+    this.#revision++;
+    this.#onStateChange?.();
+  }
+
+  #recordFailure(worker: RuntimeWorker, error: unknown): void {
+    const reason = error instanceof Error ? error.message : String(error);
+    this.#recentFailures.push({
+      worker_id: worker.metadata.workerId,
+      execution_id: worker.metadata.executionId,
+      reason,
+    });
+    if (this.#recentFailures.length > 20) this.#recentFailures.shift();
+  }
+
   async #upgradeRequestWebSocket(
     request: Request,
     serviceId: string,
@@ -1142,7 +1361,7 @@ export class Supervisor {
     let pendingClose: { code: number; reason: string } | undefined;
     let opened;
     try {
-      opened = await worker.openServiceWebSocket(
+      const openedPromise = worker.openServiceWebSocket(
         new Request(
           request.headers.get("x-80-20-url") ?? "http://service/",
           {
@@ -1177,6 +1396,8 @@ export class Supervisor {
           },
         },
       );
+      this.#releaseWorkerAdmission(serviceId, lease);
+      opened = await openedPromise;
     } catch (error) {
       this.#finishServiceWorkerLease(serviceId, lease, false);
       throw error;

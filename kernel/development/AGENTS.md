@@ -89,6 +89,10 @@
 - The platform-owned instance `scripts/` tree is mounted read-only and
   executable at `/workspace/scripts`; `/workspace/scripts/activate` is the
   canonical terminal helper and remains outside the mutable image system root.
+  `install-codex.sh` and `install-claude.sh` opt in to the vendors' latest
+  native releases, persist them in root's home, and set only unattended
+  full-access permissions. Root's native user-binary directory is on every
+  development command PATH.
 - Exec and subprocess diagnostics are bounded to one MiB. Development consoles
   retain the bounded capabilities required for APT/dpkg, use the standard
   administrative `PATH`, keep `no_new_privileges`, and remain inside gVisor.

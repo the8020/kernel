@@ -14,6 +14,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -43,9 +44,12 @@ type TransactionSettings struct {
 }
 
 type transaction struct {
-	tx    *sql.Tx
-	scope string
-	timer *time.Timer
+	tx      *sql.Tx
+	conn    *sql.Conn
+	scope   string
+	cancel  context.CancelFunc
+	release func()
+	once    sync.Once
 }
 
 type sqlRunner interface {
@@ -68,33 +72,64 @@ func (m *Manager) BeginTransaction(ctx context.Context, scope string, settings T
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	// The callback that begins a transaction is short-lived. Ownership is tied
-	// to the execution scope below, not to that one HTTP callback context.
-	tx, err := m.db.BeginTx(context.WithoutCancel(ctx), &sql.TxOptions{Isolation: isolation, ReadOnly: settings.ReadOnly})
+	release, err := m.application.acquire(ctx)
 	if err != nil {
+		return "", err
+	}
+	conn, err := m.db.Conn(ctx)
+	if err != nil {
+		release()
+		return "", err
+	}
+	lifetime, cancel := context.WithTimeout(context.Background(), transactionMaximumDuration)
+	tx, err := conn.BeginTx(lifetime, &sql.TxOptions{Isolation: isolation, ReadOnly: settings.ReadOnly})
+	if err != nil {
+		cancel()
+		_ = conn.Close()
+		release()
 		return "", err
 	}
 	var random [16]byte
 	if _, err := rand.Read(random[:]); err != nil {
 		_ = tx.Rollback()
+		cancel()
+		_ = conn.Close()
+		release()
 		return "", fmt.Errorf("create database transaction token: %w", err)
 	}
 	token := hex.EncodeToString(random[:])
-	entry := &transaction{tx: tx, scope: scope}
+	entry := &transaction{tx: tx, conn: conn, scope: scope, cancel: cancel, release: release}
 	m.transactionsMu.Lock()
 	m.transactions[token] = entry
-	entry.timer = time.AfterFunc(transactionMaximumDuration, func() {
+	m.transactionsMu.Unlock()
+	go func() {
+		<-lifetime.Done()
 		m.transactionsMu.Lock()
 		if m.transactions[token] == entry {
 			delete(m.transactions, token)
-			m.transactionsMu.Unlock()
-			_ = entry.tx.Rollback()
-			return
 		}
 		m.transactionsMu.Unlock()
-	})
-	m.transactionsMu.Unlock()
+		_ = entry.finish(false)
+	}()
 	return token, nil
+}
+
+func (t *transaction) finish(commit bool) error {
+	var result error
+	t.once.Do(func() {
+		if commit {
+			result = t.tx.Commit()
+		} else {
+			result = t.tx.Rollback()
+			if errors.Is(result, sql.ErrTxDone) {
+				result = nil
+			}
+		}
+		t.cancel()
+		result = errors.Join(result, t.conn.Close())
+		t.release()
+	})
+	return result
 }
 
 func isolationLevel(value string) (sql.IsolationLevel, error) {
@@ -136,16 +171,12 @@ func (m *Manager) FinishTransaction(ctx context.Context, scope, token string, co
 		return errors.New("database transaction is unavailable in this execution")
 	}
 	delete(m.transactions, token)
-	entry.timer.Stop()
 	m.transactionsMu.Unlock()
 	if err := ctx.Err(); err != nil {
-		_ = entry.tx.Rollback()
+		_ = entry.finish(false)
 		return err
 	}
-	if commit {
-		return entry.tx.Commit()
-	}
-	return entry.tx.Rollback()
+	return entry.finish(commit)
 }
 
 // CloseScope rolls back transactions left behind by a completed execution.
@@ -160,8 +191,7 @@ func (m *Manager) CloseScope(scope string) {
 	}
 	m.transactionsMu.Unlock()
 	for _, entry := range entries {
-		entry.timer.Stop()
-		_ = entry.tx.Rollback()
+		_ = entry.finish(false)
 	}
 }
 
@@ -181,8 +211,7 @@ func (m *Manager) CloseScopePrefix(prefix string) {
 	}
 	m.transactionsMu.Unlock()
 	for _, entry := range entries {
-		entry.timer.Stop()
-		_ = entry.tx.Rollback()
+		_ = entry.finish(false)
 	}
 }
 
@@ -195,8 +224,7 @@ func (m *Manager) rollbackTransactions() {
 	}
 	m.transactionsMu.Unlock()
 	for _, entry := range entries {
-		entry.timer.Stop()
-		_ = entry.tx.Rollback()
+		_ = entry.finish(false)
 	}
 }
 
@@ -215,6 +243,12 @@ func (m *Manager) RunStatement(ctx context.Context, scope string, request Statem
 		if err != nil {
 			return StatementResult{}, err
 		}
+	} else {
+		release, acquireErr := m.application.acquire(ctx)
+		if acquireErr != nil {
+			return StatementResult{}, acquireErr
+		}
+		defer release()
 	}
 	if request.ReturnRows {
 		return m.runQuery(ctx, runner, request.Statement, parameters)

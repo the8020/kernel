@@ -5,9 +5,9 @@ import (
 	"errors"
 	"net/http"
 	"os"
-	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"the8020/kernel/execution/supervisor"
 	"the8020/kernel/nodes"
@@ -53,33 +53,6 @@ func (f *fakeSandboxes) Inspect(_ context.Context, id string) (manager.Inspectio
 		}
 	}
 	return manager.Inspection{}, context.Canceled
-}
-
-func TestRuntimeExecutionValidationInspectsOnlyTheNamedGroup(t *testing.T) {
-	target := manager.Inspection{
-		Spec: model.SandboxSpec{SandboxID: "sandbox", RuntimeGroupID: "group", WorkloadType: model.WorkloadJob},
-		Workers: []supervisor.WorkerStatus{{
-			WorkerID: "worker", ExecutionID: "execution", WorkloadID: "job", State: "ready",
-		}},
-	}
-	unrelated := manager.Inspection{
-		Spec: model.SandboxSpec{SandboxID: "other-sandbox", RuntimeGroupID: "other-group", WorkloadType: model.WorkloadJob},
-	}
-	sandboxes := &fakeSandboxes{items: []manager.Inspection{unrelated, target}}
-	control := &fakeControl{workers: map[string][]supervisor.WorkerStatus{"group": target.Workers}}
-	manager, err := New(sandboxes, control, 0, 64, "sqlite")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := manager.ValidateRuntimeExecution(context.Background(), "group", "sandbox", "worker", "execution", "job"); err != nil {
-		t.Fatal(err)
-	}
-	if sandboxes.listCalls != 0 || len(sandboxes.inspectIDs) != 0 || !reflect.DeepEqual(sandboxes.resolveIDs, []string{"group"}) || control.lists != 1 {
-		t.Fatalf("list calls=%d inspect IDs=%#v resolve IDs=%#v supervisor lists=%d", sandboxes.listCalls, sandboxes.inspectIDs, sandboxes.resolveIDs, control.lists)
-	}
-	if err := manager.ValidateRuntimeExecution(context.Background(), "group", "sandbox", "worker", "wrong", "job"); err == nil {
-		t.Fatal("mismatched execution was accepted")
-	}
 }
 
 type fakeControl struct {
@@ -137,7 +110,7 @@ func (f *fakeControl) ProxyServiceWebSocket(context.Context, model.SandboxSpec, 
 }
 func TestWorkerValidationLookupAndTermination(t *testing.T) {
 	spec := model.SandboxSpec{SandboxID: "sandbox", RuntimeGroupID: "group", WorkloadType: model.WorkloadJob, DependencyMode: model.DependencyCachedOnly, Permissions: model.Permissions{ReadPaths: []string{"/programs"}, WritePaths: []string{"/data"}, SystemInfo: true}}
-	sandboxes := &fakeSandboxes{items: []manager.Inspection{{Spec: spec}}}
+	sandboxes := &fakeSandboxes{items: []manager.Inspection{{Spec: spec, Workers: []supervisor.WorkerStatus{{WorkerID: "worker", ExecutionID: "execution"}}}}}
 	control := &fakeControl{workers: map[string][]supervisor.WorkerStatus{"group": {{WorkerID: "worker", ExecutionID: "execution"}}}}
 	manager, err := New(sandboxes, control, 0, 64, "sqlite")
 	if err != nil {
@@ -152,7 +125,7 @@ func TestWorkerValidationLookupAndTermination(t *testing.T) {
 		t.Fatalf("started=%#v request=%#v", started, control.started)
 	}
 	items, err := manager.List(context.Background(), "sandbox")
-	if err != nil || len(items) != 1 {
+	if err != nil || len(items) != 2 {
 		t.Fatalf("list=%#v err=%v", items, err)
 	}
 	if err := manager.Stop(context.Background(), "worker", true); err != nil || !control.immediate {
@@ -175,28 +148,29 @@ func TestWorkerValidationLookupAndTermination(t *testing.T) {
 
 func TestFilteredWorkerListResolvesOnlyTheExactRuntimeGroup(t *testing.T) {
 	spec := model.SandboxSpec{SandboxID: "sandbox", RuntimeGroupID: "group", WorkloadType: model.WorkloadService}
-	sandboxes := &fakeSandboxes{items: []manager.Inspection{{Spec: spec}}}
+	sandboxes := &fakeSandboxes{items: []manager.Inspection{{Spec: spec, Workers: []supervisor.WorkerStatus{{WorkerID: "worker"}}}}}
 	control := &fakeControl{workers: map[string][]supervisor.WorkerStatus{"group": {{WorkerID: "worker"}}}}
 	manager, err := New(sandboxes, control, 0, 64, "sqlite")
 	if err != nil {
 		t.Fatal(err)
 	}
 	items, err := manager.List(context.Background(), "group")
-	if err != nil || len(items) != 1 || items[0].Worker.WorkerID != "worker" || control.lists != 1 {
+	if err != nil || len(items) != 1 || items[0].Worker.WorkerID != "worker" || control.lists != 0 {
 		t.Fatalf("items=%#v lists=%d err=%v", items, control.lists, err)
 	}
 	if _, err := manager.List(context.Background(), "missing"); err == nil || (!errors.Is(err, context.Canceled) && !errors.Is(err, os.ErrNotExist)) {
 		t.Fatalf("missing exact group error=%v", err)
 	}
-	if control.lists != 1 {
+	if control.lists != 0 {
 		t.Fatalf("missing exact group scanned supervisor Workers: %d", control.lists)
 	}
 }
 
 func TestWorkerListingSkipsTerminalGroupsAndClassifiesExactUnavailability(t *testing.T) {
 	ready := manager.Inspection{
-		Spec:   model.SandboxSpec{SandboxID: "ready-sandbox", RuntimeGroupID: "ready-group", WorkloadType: model.WorkloadService},
-		Status: model.SandboxStatus{ObservedState: model.StateReady},
+		Spec:    model.SandboxSpec{SandboxID: "ready-sandbox", RuntimeGroupID: "ready-group", WorkloadType: model.WorkloadService},
+		Status:  model.SandboxStatus{ObservedState: model.StateReady},
+		Workers: []supervisor.WorkerStatus{{WorkerID: "ready-worker"}},
 	}
 	stopped := manager.Inspection{
 		Spec:   model.SandboxSpec{SandboxID: "stopped-sandbox", RuntimeGroupID: "stopped-group", WorkloadType: model.WorkloadService},
@@ -211,20 +185,20 @@ func TestWorkerListingSkipsTerminalGroupsAndClassifiesExactUnavailability(t *tes
 		t.Fatal(err)
 	}
 	listed, err := workerManager.List(context.Background(), "")
-	if err != nil || len(listed) != 1 || listed[0].Worker.WorkerID != "ready-worker" || control.lists != 1 {
+	if err != nil || len(listed) != 1 || listed[0].Worker.WorkerID != "ready-worker" || control.lists != 0 {
 		t.Fatalf("listed=%#v supervisor lists=%d err=%v", listed, control.lists, err)
 	}
 	if _, err := workerManager.List(context.Background(), "stopped-group"); !errors.Is(err, ErrRuntimeUnavailable) {
 		t.Fatalf("terminal exact-list error=%v", err)
 	}
-	if control.lists != 1 {
+	if control.lists != 0 {
 		t.Fatalf("terminal group contacted its supervisor: %d", control.lists)
 	}
 }
 
 func TestWorkerStartEnforcesNodeMaximum(t *testing.T) {
 	spec := model.SandboxSpec{SandboxID: "sandbox", RuntimeGroupID: "group", WorkloadType: model.WorkloadJob, DependencyMode: model.DependencyCachedOnly, Permissions: model.Permissions{ReadPaths: []string{"/programs"}}}
-	sandboxes := &fakeSandboxes{items: []manager.Inspection{{Spec: spec}}}
+	sandboxes := &fakeSandboxes{items: []manager.Inspection{{Spec: spec, Workers: []supervisor.WorkerStatus{{WorkerID: "existing"}}}}}
 	control := &fakeControl{workers: map[string][]supervisor.WorkerStatus{"group": {{WorkerID: "existing"}}}}
 	manager, err := New(sandboxes, control, 1, 64, "sqlite")
 	if err != nil {
@@ -241,7 +215,7 @@ func TestWorkerStartEnforcesNodeMaximum(t *testing.T) {
 func TestWorkerStartEnforcesSandboxWorkerMaximum(t *testing.T) {
 	request := supervisor.StartWorkerRequest{Metadata: supervisor.ExecutionMetadata{WorkerID: "next", ExecutionID: "execution", WorkloadType: model.WorkloadJob, OwnerID: "job", Entrypoint: "file:///programs/main.ts"}}
 	spec := model.SandboxSpec{SandboxID: "sandbox", RuntimeGroupID: "group", WorkloadType: model.WorkloadJob, DependencyMode: model.DependencyCachedOnly, Permissions: model.Permissions{ReadPaths: []string{"/programs"}}}
-	sandboxes := &fakeSandboxes{items: []manager.Inspection{{Spec: spec}}}
+	sandboxes := &fakeSandboxes{items: []manager.Inspection{{Spec: spec, Workers: []supervisor.WorkerStatus{{WorkerID: "first"}, {WorkerID: "second"}}}}}
 	control := &fakeControl{workers: map[string][]supervisor.WorkerStatus{"group": {{WorkerID: "first"}, {WorkerID: "second"}}}}
 	manager, err := New(sandboxes, control, 0, 2, "sqlite")
 	if err != nil {
@@ -254,9 +228,35 @@ func TestWorkerStartEnforcesSandboxWorkerMaximum(t *testing.T) {
 	}
 }
 
+func TestSuccessfulWorkerReservationPersistsUntilANewerSnapshotObservesIt(t *testing.T) {
+	spec := model.SandboxSpec{SandboxID: "sandbox", RuntimeGroupID: "group", WorkloadType: model.WorkloadJob, DependencyMode: model.DependencyCachedOnly, Permissions: model.Permissions{ReadPaths: []string{"/programs"}}}
+	sandboxes := &fakeSandboxes{items: []manager.Inspection{{Spec: spec}}}
+	control := &fakeControl{}
+	workerManager, err := New(sandboxes, control, 1, 64, "sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := supervisor.StartWorkerRequest{Metadata: supervisor.ExecutionMetadata{WorkerID: "first", ExecutionID: "execution-first", WorkloadType: model.WorkloadJob, OwnerID: "job", Entrypoint: "file:///programs/main.ts"}}
+	if _, err := workerManager.Start(context.Background(), spec.RuntimeGroupID, request); err != nil {
+		t.Fatal(err)
+	}
+	workerManager.capacityMu.Lock()
+	workerManager.provisional["first"] = provisionalWorker{runtimeGroupID: spec.RuntimeGroupID, startedAt: time.Now().Add(-time.Hour), worker: supervisor.WorkerStatus{WorkerID: "first"}}
+	workerManager.capacityMu.Unlock()
+	request.Metadata.WorkerID = "second"
+	request.Metadata.ExecutionID = "execution-second"
+	if _, err := workerManager.Start(context.Background(), spec.RuntimeGroupID, request); !errors.Is(err, ErrNodeCapacity) {
+		t.Fatalf("aged but unobserved Worker reservation did not enforce the hard limit: %v", err)
+	}
+	sandboxes.items[0].Runtime.ObservedAt = time.Now().Add(time.Second)
+	if _, err := workerManager.Start(context.Background(), spec.RuntimeGroupID, request); err != nil {
+		t.Fatalf("newer absolute snapshot did not clear the absent provisional Worker: %v", err)
+	}
+}
+
 func TestResourceObservationsDoNotRejectWorkerAdmission(t *testing.T) {
 	spec := model.SandboxSpec{SandboxID: "sandbox", RuntimeGroupID: "group", WorkloadType: model.WorkloadJob, DependencyMode: model.DependencyCachedOnly, Permissions: model.Permissions{ReadPaths: []string{"/programs"}}}
-	sandboxes := &fakeSandboxes{items: []manager.Inspection{{Spec: spec, Status: model.SandboxStatus{Metrics: model.ResourceMetrics{CPUUsageMicros: 1 << 60, MemoryCurrent: 1 << 60}}}}}
+	sandboxes := &fakeSandboxes{items: []manager.Inspection{{Spec: spec, Status: model.SandboxStatus{Metrics: model.ResourceMetrics{CPUUsageMicros: 1 << 60, MemoryCurrent: 1 << 60}}, Workers: []supervisor.WorkerStatus{{WorkerID: "existing"}}}}}
 	control := &fakeControl{workers: map[string][]supervisor.WorkerStatus{"group": {{WorkerID: "existing"}}}}
 	manager, err := New(sandboxes, control, 0, 2, "sqlite")
 	if err != nil {
@@ -271,7 +271,7 @@ func TestResourceObservationsDoNotRejectWorkerAdmission(t *testing.T) {
 func TestWorkerJobDelegationUsesTheExactWorker(t *testing.T) {
 	spec := model.SandboxSpec{SandboxID: "sandbox", RuntimeGroupID: "group", WorkloadType: model.WorkloadJob, Permissions: model.Permissions{ReadPaths: []string{"/workspace/packages"}}}
 	control := &fakeControl{workers: map[string][]supervisor.WorkerStatus{"group": {{WorkerID: "worker"}}}}
-	manager, _ := New(&fakeSandboxes{items: []manager.Inspection{{Spec: spec}}}, control, 0, 64, "sqlite")
+	manager, _ := New(&fakeSandboxes{items: []manager.Inspection{{Spec: spec, Workers: []supervisor.WorkerStatus{{WorkerID: "worker"}}}}}, control, 0, 64, "sqlite")
 	if output, err := manager.RunJob(context.Background(), "worker", nil, nil, []string{"/workspace/packages/example/table.ts"}); err != nil || output.Result != "job" {
 		t.Fatalf("job=%#v err=%v", output, err)
 	}

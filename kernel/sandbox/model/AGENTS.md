@@ -6,8 +6,8 @@
 # Ownership
 
 - Own workload/dependency/state enums, permissions, mounts, resources,
-  network/control-endpoint/profile/spec/status models, validation, compatibility
-  hashes, and transition rules.
+  network/control-endpoint/profile/spec/status models, absolute supervisor
+  runtime snapshots, validation, compatibility hashes, and transition rules.
 
 # Local Contracts
 
@@ -31,6 +31,10 @@
   one sandbox; an empty placement group remains a valid shared value.
 - Sandbox resource limits contain only PID and temporary-filesystem bounds; CPU
   and RAM fields are observations, not limits or placement inputs.
+- A `RuntimeSnapshot` is one complete supervisor observation, including its
+  restart epoch, monotonic revision, Worker states, active requests, persistent
+  executions, recent failures, and kernel receipt time. It contains no Worker
+  logs; an explicit targeted inspection owns that larger diagnostic payload.
 
 # Lifecycle
 

@@ -29,7 +29,9 @@
 - Authentication exposes only request identity and cookie operations;
   package-owned user/session administration does not enter this dependency set.
 - The sandbox handler contract exposes live lifecycle operations separately
-  from bounded history listing and direct history inspection.
+  from bounded history listing and direct history inspection. Cached inspection
+  and targeted live `Refresh` are separate operations so list/navigation paths
+  never imply a supervisor scan.
 
 # Work Guidance
 

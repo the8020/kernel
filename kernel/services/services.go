@@ -148,8 +148,8 @@ type SecretService interface {
 type AuthService interface {
 	CookieName() string
 	Login(context.Context, string, string, bool) (auth.LoginResult, error)
-	ValidateCookie(string) (auth.AuthContext, error)
-	LogoutCurrent(auth.AuthContext, bool) (auth.LogoutResult, error)
+	ValidateCookieContext(context.Context, string) (auth.AuthContext, error)
+	LogoutCurrentContext(context.Context, auth.AuthContext, bool) (auth.LogoutResult, error)
 }
 
 // SandboxService is the handler-facing sandbox lifecycle contract.
@@ -158,6 +158,7 @@ type SandboxService interface {
 	ListHistory(int, string) (history.Page, error)
 	InspectHistory(string) (history.Inspection, error)
 	Inspect(context.Context, string) (manager.Inspection, error)
+	Refresh(context.Context, string) (manager.Inspection, error)
 	Metrics(string) (model.ResourceMetrics, error)
 	Stop(context.Context, string) error
 	Kill(context.Context, string) error

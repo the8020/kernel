@@ -1,0 +1,21 @@
+version = 1
+id = "sandbox.refresh"
+path = ["sandbox", "refresh"]
+summary = "Refresh one sandbox"
+description = "Refreshes one sandbox's live supervisor snapshot and resource metrics."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/sandbox/refresh/refresh.go"
+symbol = "New"
+[[parameters]]
+name = "sandbox_id"
+type = "string"
+position = 0
+required = true
+description = "Sandbox or runtime-group ID."
+[[result]]
+name = "sandbox"
+type = "object"
+[[examples]]
+command = "sandbox refresh sbx-ax9thsl3"

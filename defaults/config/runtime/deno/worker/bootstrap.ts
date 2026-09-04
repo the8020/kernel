@@ -193,6 +193,7 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
   const responseBody = (
     body: ReadableStream<Uint8Array>,
     request: ServiceRequestMetadata,
+    signal: AbortSignal,
   ): ReadableStream<Uint8Array> => {
     const reader = body.getReader();
     let closed = false;
@@ -207,6 +208,7 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
           const next = await kernelBridge.withRequest(
             request,
             () => reader.read(),
+            signal,
           );
           if (next.done) {
             controller.close();
@@ -221,7 +223,11 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
       },
       async cancel(reason) {
         try {
-          await kernelBridge.withRequest(request, () => reader.cancel(reason));
+          await kernelBridge.withRequest(
+            request,
+            () => reader.cancel(reason),
+            signal,
+          );
         } finally {
           await close();
         }
@@ -304,6 +310,7 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
                 requestId: message.correlationId,
                 serviceId: metadata.workloadId,
                 secrets,
+                signal: controller.signal,
               },
               async () => {
                 try {
@@ -363,6 +370,7 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
                   requestId: message.correlationId,
                   serviceId: metadata.workloadId,
                   persistentExecutionId,
+                  signal: control.signal,
                 },
                 async () => {
                   try {
@@ -448,6 +456,7 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
                       meta: context.meta,
                       log,
                     }),
+                requestController.signal,
               );
             } catch (error) {
               await closeRequestDatabaseScope(context.meta);
@@ -460,9 +469,11 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
                 );
               }
             }
-            const body = response.body === null
-              ? null
-              : responseBody(response.body, context.meta);
+            const body = response.body === null ? null : responseBody(
+              response.body,
+              context.meta,
+              requestController.signal,
+            );
             if (body === null) await closeRequestDatabaseScope(context.meta);
             port.postMessage(
               {
@@ -538,6 +549,7 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
                     meta: input.meta!,
                     log,
                   }, socket),
+                socket.signal,
               );
             } catch (error) {
               await closeRequestDatabaseScope(input.meta);

@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -112,6 +113,73 @@ func TestWorkerScopeCleanupUsesSeparatorBoundary(t *testing.T) {
 	}
 	if err := manager.FinishTransaction(ctx, "group\x00sandbox\x00worker-extra\x00request-2", other, false); err != nil {
 		t.Fatalf("neighboring worker transaction was removed: %v", err)
+	}
+}
+
+func TestTransactionAdmissionIsBoundedByCallerAndReleased(t *testing.T) {
+	config := sqliteConfig(filepath.Join(t.TempDir(), "system.db"))
+	config.MaximumOpenConnections = 3
+	config.MaximumIdleConnections = 1
+	manager := New(config)
+	t.Cleanup(func() { _ = manager.Close() })
+	first, err := manager.BeginTransaction(context.Background(), "request-1", TransactionSettings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wait, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := manager.BeginTransaction(wait, "request-2", TransactionSettings{}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second transaction error = %v, want deadline exceeded", err)
+	}
+	if err := manager.FinishTransaction(context.Background(), "request-1", first, false); err != nil {
+		t.Fatal(err)
+	}
+	second, err := manager.BeginTransaction(context.Background(), "request-2", TransactionSettings{})
+	if err != nil {
+		t.Fatalf("released permit was not reusable: %v", err)
+	}
+	manager.CloseScope("request-2")
+	manager.CloseScope("request-2")
+	if err := manager.FinishTransaction(context.Background(), "request-2", second, false); err == nil {
+		t.Fatal("idempotent scope cleanup left the transaction registered")
+	}
+}
+
+func TestApplicationTransactionsLeaveConnectionsForKernelWork(t *testing.T) {
+	config := sqliteConfig(filepath.Join(t.TempDir(), "system.db"))
+	config.MaximumOpenConnections = 4
+	config.MaximumIdleConnections = 2
+	manager := New(config)
+	t.Cleanup(func() { _ = manager.Close() })
+	for _, scope := range []string{"request-1", "request-2"} {
+		if _, err := manager.BeginTransaction(context.Background(), scope, TransactionSettings{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	result, err := manager.Query(ctx, "SELECT 1", nil)
+	if err != nil || len(result.Rows) != 1 {
+		t.Fatalf("reserved kernel query = %#v, %v", result, err)
+	}
+	manager.CloseScope("request-1")
+	manager.CloseScope("request-2")
+}
+
+func TestCancelledRuntimeQueryReleasesApplicationAdmission(t *testing.T) {
+	config := sqliteConfig(filepath.Join(t.TempDir(), "system.db"))
+	config.MaximumOpenConnections = 3
+	config.MaximumIdleConnections = 1
+	manager := New(config)
+	t.Cleanup(func() { _ = manager.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := manager.RunStatement(ctx, "request-1", StatementRequest{Statement: "SELECT 1", ReturnRows: true}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled query error = %v", err)
+	}
+	result, err := manager.RunStatement(context.Background(), "request-2", StatementRequest{Statement: "SELECT 1", ReturnRows: true})
+	if err != nil || len(result.Rows) != 1 {
+		t.Fatalf("admission was not released after cancellation: %#v, %v", result, err)
 	}
 }
 

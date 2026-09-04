@@ -147,7 +147,7 @@ type fakeAuthentication struct {
 }
 
 func (a *fakeAuthentication) CookieName() string { return "the8020_auth" }
-func (a *fakeAuthentication) ValidateCookie(value string) (platformauth.AuthContext, error) {
+func (a *fakeAuthentication) ValidateCookieContext(_ context.Context, value string) (platformauth.AuthContext, error) {
 	a.calls++
 	if value != "valid-opaque-cookie" {
 		return platformauth.AuthContext{}, platformauth.ErrUnauthenticated
@@ -191,6 +191,8 @@ type fakePools struct {
 	capacityErrors  map[string]error
 	occupiedSlots   map[string]int
 	occupiedFloors  map[string][]int
+	capacityCalls   map[string]int
+	ensureCalls     map[string]int
 	websockets      []dispatchedRequest
 }
 
@@ -210,15 +212,19 @@ func newFakePools() *fakePools {
 		capacityErrors: map[string]error{},
 		occupiedSlots:  map[string]int{},
 		occupiedFloors: map[string][]int{},
+		capacityCalls:  map[string]int{},
+		ensureCalls:    map[string]int{},
 	}
 }
 
-func (p *fakePools) List() ([]executionservices.Record, error) {
+func (p *fakePools) ListForService(logicalServiceID string) ([]executionservices.Record, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	result := make([]executionservices.Record, 0, len(p.records))
+	result := make([]executionservices.Record, 0)
 	for _, record := range p.records {
-		result = append(result, record)
+		if record.LogicalServiceID == logicalServiceID {
+			result = append(result, record)
+		}
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].ServiceID < result[j].ServiceID })
 	return result, nil
@@ -275,6 +281,24 @@ func (p *fakePools) Inspect(serviceID string) (executionservices.Record, error) 
 	return record, nil
 }
 
+func (p *fakePools) Capacity(_ context.Context, serviceID string) (executionservices.Record, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	record, exists := p.records[serviceID]
+	if !exists {
+		return record, os.ErrNotExist
+	}
+	p.capacityCalls[serviceID]++
+	occupied := p.occupiedSlots[serviceID]
+	var capacity *executionservices.SandboxCapacityError
+	if errors.As(p.capacityErrors[serviceID], &capacity) {
+		occupied = max(occupied, capacity.Occupied)
+	}
+	record.OccupiedSlots = occupied
+	record.CapacitySlots = len(record.WorkerIDs) * record.ConcurrencyPerWorker
+	return record, nil
+}
+
 func (p *fakePools) Scale(_ context.Context, serviceID string, count int) (executionservices.Record, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -298,6 +322,7 @@ func (p *fakePools) EnsureCapacity(ctx context.Context, serviceID string, growth
 	record, err := p.Inspect(serviceID)
 	p.mu.Lock()
 	capacityErr := p.capacityErrors[serviceID]
+	p.ensureCalls[serviceID]++
 	p.occupiedFloors[serviceID] = append(p.occupiedFloors[serviceID], occupiedFloor)
 	p.mu.Unlock()
 	if err == nil && capacityErr == nil && len(record.WorkerIDs) == 0 && growthLimit > 0 {
@@ -519,6 +544,9 @@ func TestBackgroundReconciliationLeavesEnabledServiceIdleUntilFirstRequest(t *te
 		if strings.HasPrefix(event, "start:") {
 			t.Fatalf("background reconciliation provisioned a sandbox: %#v", eventsBeforeRequest)
 		}
+	}
+	if err := manager.Close(); err != nil {
+		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
 	manager.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/the8020/demo/variables/value/6", nil))
@@ -1719,7 +1747,7 @@ workers_per_sandbox = 4
 		}
 	}
 	status, err := manager.Inspect("the8020/demo/variables")
-	if err != nil || status.Metrics.ActiveRequests != 2 || status.Sandboxes[0].ActiveRequests != 1 || status.Sandboxes[1].ActiveRequests != 1 {
+	if err != nil || status.Metrics.ActiveRequests != 2 || status.Sandboxes[0].ActiveRequests != 0 || status.Sandboxes[1].ActiveRequests != 0 {
 		t.Fatalf("in-flight status=%#v err=%v", status, err)
 	}
 	close(pools.release)
@@ -1766,12 +1794,233 @@ func TestConcurrentRequestsFeedReservedDemandIntoWorkerScaling(t *testing.T) {
 	pools.mu.Lock()
 	floors := append([]int(nil), pools.occupiedFloors[poolID]...)
 	pools.mu.Unlock()
-	if len(floors) < 2 || floors[len(floors)-2] != 0 || floors[len(floors)-1] != 1 {
-		t.Fatalf("occupied-slot floors=%#v, want consecutive 0 then 1", floors)
+	if len(floors) == 0 || floors[len(floors)-1] < 1 {
+		t.Fatalf("occupied-slot floors=%#v, want a reservation-backed demand floor", floors)
 	}
 	close(pools.release)
 	<-done
 	<-done
+}
+
+func TestHealthyWarmRequestUsesCachedCapacityWithoutReconciliation(t *testing.T) {
+	root := t.TempDir()
+	store := writeCanonicalTestService(t, root, "the8020/demo/variables", 1, 1, 1, 1, workspacepackages.ServiceTypeStateless)
+	pools, router := newFakePools(), &fakeRouter{}
+	manager := newTestManager(t, store, pools, router, filepath.Join(root, "node", "kernel", "services"))
+	status, err := manager.Start(context.Background(), "the8020/demo/variables")
+	if err != nil || len(status.Sandboxes) != 1 {
+		t.Fatalf("start=%#v err=%v", status, err)
+	}
+	poolID := status.Sandboxes[0].PoolID
+	pools.mu.Lock()
+	pools.capacityCalls[poolID], pools.ensureCalls[poolID] = 0, 0
+	pools.events = nil
+	pools.mu.Unlock()
+
+	manifest := filepath.Join(root, "packages", "the8020", "demo", "services", "variables", "service.toml")
+	if err := os.Rename(manifest, manifest+".offline"); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	manager.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/the8020/demo/variables/warm", nil))
+	pools.mu.Lock()
+	capacityCalls, ensureCalls := pools.capacityCalls[poolID], pools.ensureCalls[poolID]
+	events := append([]string(nil), pools.events...)
+	pools.mu.Unlock()
+	if response.Code != http.StatusOK || capacityCalls != 1 || ensureCalls != 0 || len(events) != 0 {
+		t.Fatalf("warm response=%d capacity=%d ensure=%d lifecycle=%#v", response.Code, capacityCalls, ensureCalls, events)
+	}
+}
+
+func TestUnrelatedWarmServiceDispatchesDoNotSerialize(t *testing.T) {
+	root := t.TempDir()
+	writeTestService(t, root, "the8020/demo/variables", "")
+	store := writeTestService(t, root, "the8020/demo/variables-import", "")
+	pools, router := newFakePools(), &fakeRouter{}
+	manager := newTestManager(t, store, pools, router, filepath.Join(root, "node", "kernel", "services"))
+	for _, serviceID := range []string{"the8020/demo/variables", "the8020/demo/variables-import"} {
+		if _, err := manager.Start(context.Background(), serviceID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pools.mu.Lock()
+	pools.dispatchEntered = make(chan struct{}, 2)
+	pools.release = make(chan struct{})
+	entered, release := pools.dispatchEntered, pools.release
+	pools.mu.Unlock()
+
+	done := make(chan int, 2)
+	request := func(path string) {
+		response := httptest.NewRecorder()
+		manager.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		done <- response.Code
+	}
+	go request("/the8020/demo/variables/slow")
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("first service did not reach dispatch")
+	}
+	go request("/the8020/demo/variables-import/fast")
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		close(release)
+		t.Fatal("unrelated service serialized behind the first dispatch")
+	}
+	close(release)
+	for range 2 {
+		if status := <-done; status != http.StatusOK {
+			t.Fatalf("dispatch status = %d", status)
+		}
+	}
+}
+
+func TestUnrelatedServiceReconciliationDoesNotSerialize(t *testing.T) {
+	root := t.TempDir()
+	writeTestService(t, root, "the8020/demo/variables", "")
+	store := writeTestService(t, root, "the8020/demo/variables-import", "")
+	pools, router := newFakePools(), &fakeRouter{}
+	pools.startEntered = make(chan string, 2)
+	pools.startRelease = make(chan struct{})
+	manager := newTestManager(t, store, pools, router, filepath.Join(root, "node", "kernel", "services"))
+
+	type result struct {
+		serviceID string
+		err       error
+	}
+	results := make(chan result, 2)
+	start := func(serviceID string) {
+		_, err := manager.Start(context.Background(), serviceID)
+		results <- result{serviceID: serviceID, err: err}
+	}
+	go start("the8020/demo/variables")
+	first := <-pools.startEntered
+	go start("the8020/demo/variables-import")
+	select {
+	case second := <-pools.startEntered:
+		if first == second {
+			t.Fatalf("both startups entered the same service: %s", first)
+		}
+	case <-time.After(time.Second):
+		close(pools.startRelease)
+		t.Fatal("unrelated service reconciliation serialized behind startup I/O")
+	}
+	close(pools.startRelease)
+	for range 2 {
+		if result := <-results; result.err != nil {
+			t.Fatalf("start %s: %v", result.serviceID, result.err)
+		}
+	}
+}
+
+func TestServiceMaintenanceQueueIsDeduplicatedAndBounded(t *testing.T) {
+	manager := &Manager{maintenanceSet: map[string]bool{}}
+	total := maximumServiceMaintenancePerPass + 7
+	for index := 0; index < total; index++ {
+		serviceID := fmt.Sprintf("example/catalog/service-%d", index)
+		manager.scheduleMaintenance(serviceID)
+		manager.scheduleMaintenance(serviceID)
+	}
+	first := manager.takeMaintenance(maximumServiceMaintenancePerPass)
+	second := manager.takeMaintenance(maximumServiceMaintenancePerPass)
+	if len(first) != maximumServiceMaintenancePerPass || len(second) != total-maximumServiceMaintenancePerPass {
+		t.Fatalf("maintenance batches=%d,%d want=%d,%d", len(first), len(second), maximumServiceMaintenancePerPass, total-maximumServiceMaintenancePerPass)
+	}
+	if remaining := manager.takeMaintenance(maximumServiceMaintenancePerPass); len(remaining) != 0 {
+		t.Fatalf("maintenance queue retained duplicates: %#v", remaining)
+	}
+}
+
+func TestAbandonedDispatchReservationExpires(t *testing.T) {
+	root := t.TempDir()
+	store := writeCanonicalTestService(t, root, "the8020/demo/variables", 1, 1, 1, 1, workspacepackages.ServiceTypeStateless)
+	pools, router := newFakePools(), &fakeRouter{}
+	manager := newTestManager(t, store, pools, router, filepath.Join(root, "node", "kernel", "services"))
+	if _, err := manager.Start(context.Background(), "the8020/demo/variables"); err != nil {
+		t.Fatal(err)
+	}
+	definition, err := store.ReadService("the8020/demo/variables")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := manager.services["the8020/demo/variables"]
+	selected, _ := manager.reserveCachedCapacity(context.Background(), runtime, definition)
+	if selected == nil {
+		t.Fatal("first strict reservation was not admitted")
+	}
+	if second, _ := manager.reserveCachedCapacity(context.Background(), runtime, definition); second != nil {
+		t.Fatal("strict concurrency admitted a second live reservation")
+	}
+	manager.mu.Lock()
+	selected.reservations[0] = time.Now().Add(-time.Second)
+	manager.mu.Unlock()
+	if recovered, _ := manager.reserveCachedCapacity(context.Background(), runtime, definition); recovered != selected {
+		t.Fatal("expired reservation continued to block warm dispatch")
+	}
+	manager.finishRequest(runtime, selected, 0, 0, 0, false)
+	manager.finishRequest(runtime, selected, 0, 0, 0, false)
+}
+
+func TestDispatchFailureReleasesReservation(t *testing.T) {
+	root := t.TempDir()
+	store := writeCanonicalTestService(t, root, "the8020/demo/variables", 1, 1, 1, 1, workspacepackages.ServiceTypeStateless)
+	pools, router := newFakePools(), &fakeRouter{}
+	manager := newTestManager(t, store, pools, router, filepath.Join(root, "node", "kernel", "services"))
+	status, err := manager.Start(context.Background(), "the8020/demo/variables")
+	if err != nil {
+		t.Fatal(err)
+	}
+	poolID := status.Sandboxes[0].PoolID
+	pools.mu.Lock()
+	failed := pools.records[poolID]
+	failed.State = "FAILED"
+	pools.records[poolID] = failed
+	pools.mu.Unlock()
+
+	response := httptest.NewRecorder()
+	manager.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/the8020/demo/variables/fail", nil))
+	manager.mu.Lock()
+	reservations := activeReservations(manager.services["the8020/demo/variables"].sandboxes[0], time.Now())
+	active := manager.services["the8020/demo/variables"].status.Metrics.ActiveRequests
+	manager.mu.Unlock()
+	if response.Code != http.StatusBadGateway || reservations != 0 || active != 0 {
+		t.Fatalf("failed dispatch status=%d reservations=%d active=%d", response.Code, reservations, active)
+	}
+}
+
+func TestHigherConcurrencyAllowsOnlyOneTemporaryExtraPerWorker(t *testing.T) {
+	root := t.TempDir()
+	store := writeTestService(t, root, "the8020/demo/variables", `[scaling]
+minimum_workers = 1
+maximum_workers = 1
+concurrency_per_worker = 2
+target_utilization = 0.7
+[placement]
+minimum_sandboxes = 1
+workers_per_sandbox = 1
+`)
+	pools, router := newFakePools(), &fakeRouter{}
+	manager := newTestManager(t, store, pools, router, filepath.Join(root, "node", "kernel", "services"))
+	if _, err := manager.Start(context.Background(), "the8020/demo/variables"); err != nil {
+		t.Fatal(err)
+	}
+	definition, err := store.ReadService("the8020/demo/variables")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := manager.services["the8020/demo/variables"]
+	for request := 1; request <= 3; request++ {
+		if sandbox, _ := manager.reserveCachedCapacity(context.Background(), runtime, definition); sandbox == nil {
+			t.Fatalf("reservation %d was rejected before the bounded overload allowance", request)
+		}
+	}
+	if sandbox, _ := manager.reserveCachedCapacity(context.Background(), runtime, definition); sandbox != nil {
+		t.Fatal("routing exceeded the one-extra-request-per-Worker allowance")
+	}
+	for range 3 {
+		manager.finishRequest(runtime, runtime.sandboxes[0], 0, 0, 0, false)
+	}
 }
 
 func TestTargetCapacityAddsSandboxAfterWorkersReachPackingLimit(t *testing.T) {
@@ -1793,7 +2042,7 @@ workers_per_sandbox = 1
 		t.Fatal(err)
 	}
 	pools.mu.Lock()
-	pools.capacityErrors[started.Sandboxes[0].PoolID] = &executionservices.SandboxCapacityError{Occupied: 1, Slots: 1, Reason: "all Worker slots are occupied"}
+	pools.capacityErrors[started.Sandboxes[0].PoolID] = &executionservices.SandboxCapacityError{Occupied: 1, Slots: 1, Strict: true, Reason: "all Worker slots are occupied"}
 	pools.mu.Unlock()
 	response := httptest.NewRecorder()
 	manager.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/the8020/demo/variables/value", nil))
@@ -1820,7 +2069,7 @@ func TestFiniteMaximumWorkersPreventsAdditionalSandboxCapacity(t *testing.T) {
 		t.Fatalf("first request=%d status=%#v err=%v", first.Code, status, err)
 	}
 	pools.mu.Lock()
-	pools.capacityErrors[status.Sandboxes[0].PoolID] = &executionservices.SandboxCapacityError{Occupied: 1, Slots: 1, Reason: "occupied"}
+	pools.capacityErrors[status.Sandboxes[0].PoolID] = &executionservices.SandboxCapacityError{Occupied: 1, Slots: 1, Strict: true, Reason: "occupied"}
 	pools.mu.Unlock()
 
 	second := httptest.NewRecorder()
@@ -1835,7 +2084,7 @@ func TestFiniteMaximumWorkersPreventsAdditionalSandboxCapacity(t *testing.T) {
 			pools.mu.Unlock()
 			t.Fatalf("sandbox %s did not retain its dedicated group", sandbox.PoolID)
 		}
-		pools.capacityErrors[sandbox.PoolID] = &executionservices.SandboxCapacityError{Occupied: 1, Slots: 1, Reason: "occupied"}
+		pools.capacityErrors[sandbox.PoolID] = &executionservices.SandboxCapacityError{Occupied: 1, Slots: 1, Strict: true, Reason: "occupied"}
 	}
 	pools.mu.Unlock()
 
@@ -1865,7 +2114,7 @@ workers_per_sandbox = 1
 		t.Fatal(err)
 	}
 	pools.mu.Lock()
-	pools.capacityErrors[started.Sandboxes[0].PoolID] = &executionservices.SandboxCapacityError{Occupied: 1, Slots: 1, Reason: "all Worker slots are occupied"}
+	pools.capacityErrors[started.Sandboxes[0].PoolID] = &executionservices.SandboxCapacityError{Occupied: 1, Slots: 1, Strict: true, Reason: "all Worker slots are occupied"}
 	pools.mu.Unlock()
 	runtime := manager.services["the8020/demo/variables"]
 	definition, err := store.ReadService("the8020/demo/variables")
@@ -2103,7 +2352,7 @@ func waitForServiceStatus(t *testing.T, manager *Manager, ready func(Status) boo
 	}
 }
 
-func newTestManager(t *testing.T, store *workspacepackages.Store, pools *fakePools, router *fakeRouter, observed string) *Manager {
+func newTestManager(t testing.TB, store *workspacepackages.Store, pools *fakePools, router *fakeRouter, observed string) *Manager {
 	t.Helper()
 	manager, err := New(Config{Definitions: store, Pools: pools, Router: router, ObservedRoot: observed, ReconcileInterval: 10 * time.Millisecond, StartupTimeout: time.Second, Database: newTestRouteDatabase(t, t.TempDir())})
 	if err != nil {
@@ -2113,7 +2362,7 @@ func newTestManager(t *testing.T, store *workspacepackages.Store, pools *fakePoo
 	return manager
 }
 
-func writeTestService(t *testing.T, root, serviceID, defaults string) *workspacepackages.Store {
+func writeTestService(t testing.TB, root, serviceID, defaults string) *workspacepackages.Store {
 	t.Helper()
 	identity, err := workspacepackages.ParseServiceID(serviceID)
 	if err != nil {
@@ -2141,7 +2390,7 @@ func writeTestService(t *testing.T, root, serviceID, defaults string) *workspace
 	return store
 }
 
-func writeCanonicalTestService(t *testing.T, root, serviceID string, minimumWorkers, maximumWorkers, minimumSandboxes, workersPerSandbox int, serviceType string) *workspacepackages.Store {
+func writeCanonicalTestService(t testing.TB, root, serviceID string, minimumWorkers, maximumWorkers, minimumSandboxes, workersPerSandbox int, serviceType string) *workspacepackages.Store {
 	t.Helper()
 	identity, err := workspacepackages.ParseServiceID(serviceID)
 	if err != nil {
@@ -2179,7 +2428,7 @@ workers_per_sandbox = %d
 	return store
 }
 
-func newTestWorkspaceStore(t *testing.T, root string) *workspacepackages.Store {
+func newTestWorkspaceStore(t testing.TB, root string) *workspacepackages.Store {
 	t.Helper()
 	db := database.New(database.Config{
 		Backend: database.BackendSQLite, Location: filepath.Join(root, "database", "system.db"),
@@ -2231,7 +2480,7 @@ func newTestWorkspaceStore(t *testing.T, root string) *workspacepackages.Store {
 	return store
 }
 
-func writeTestFile(t *testing.T, path, contents string) {
+func writeTestFile(t testing.TB, path, contents string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)

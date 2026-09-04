@@ -64,7 +64,11 @@ func checkTable(store database.Store, table string) error {
 }
 
 func (s *UserStore) Get(username string) (UserRecord, bool, error) {
-	row := s.database.QueryRowContext(context.Background(), `SELECT "username", "passwordHash", "enabled", "authVersion" FROM `+usersTable+` WHERE "username" = $1`, username)
+	return s.GetContext(context.Background(), username)
+}
+
+func (s *UserStore) GetContext(ctx context.Context, username string) (UserRecord, bool, error) {
+	row := s.database.QueryRowContext(ctx, `SELECT "username", "passwordHash", "enabled", "authVersion" FROM `+usersTable+` WHERE "username" = $1`, username)
 	user, err := scanUser(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return UserRecord{}, false, nil
@@ -88,11 +92,19 @@ func scanUser(row rowScanner) (UserRecord, error) {
 }
 
 func (s *UserStore) Authenticate(username, password string) (UserRecord, error) {
-	return s.AuthenticateBytes(username, []byte(password))
+	return s.AuthenticateContext(context.Background(), username, password)
 }
 
 func (s *UserStore) AuthenticateBytes(username string, password []byte) (UserRecord, error) {
-	user, exists, err := s.Get(username)
+	return s.AuthenticateBytesContext(context.Background(), username, password)
+}
+
+func (s *UserStore) AuthenticateContext(ctx context.Context, username, password string) (UserRecord, error) {
+	return s.AuthenticateBytesContext(ctx, username, []byte(password))
+}
+
+func (s *UserStore) AuthenticateBytesContext(ctx context.Context, username string, password []byte) (UserRecord, error) {
+	user, exists, err := s.GetContext(ctx, username)
 	if err != nil {
 		return UserRecord{}, err
 	}

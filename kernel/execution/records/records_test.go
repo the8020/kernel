@@ -1,8 +1,10 @@
 package records
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -84,5 +86,57 @@ func TestQuarantineRetainsInvalidRecordOutsideLiveIDs(t *testing.T) {
 	info, err := os.Stat(filepath.Dir(quarantined))
 	if err != nil || info.Mode().Perm() != 0o700 {
 		t.Fatalf("quarantine mode=%v err=%v", info.Mode().Perm(), err)
+	}
+}
+
+func TestNewPreloadsRecordsForCacheOnlyReads(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "records")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "existing.json")
+	if err := os.WriteFile(path, []byte("{\"value\":\"cached\"}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	var value struct {
+		Value string `json:"value"`
+	}
+	if err := store.Load("existing", &value); err != nil || value.Value != "cached" {
+		t.Fatalf("cached value=%#v err=%v", value, err)
+	}
+	ids, err := store.IDs()
+	if err != nil || len(ids) != 1 || ids[0] != "existing" {
+		t.Fatalf("cached IDs=%#v err=%v", ids, err)
+	}
+}
+
+func TestIndependentRecordsAreConcurrencySafe(t *testing.T) {
+	store, err := New(filepath.Join(t.TempDir(), "records"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const count = 64
+	var wait sync.WaitGroup
+	wait.Add(count)
+	for index := range count {
+		go func() {
+			defer wait.Done()
+			id := fmt.Sprintf("record-%d", index)
+			if err := store.Save(id, map[string]int{"value": index}); err != nil {
+				t.Errorf("save %s: %v", id, err)
+			}
+		}()
+	}
+	wait.Wait()
+	ids, err := store.IDs()
+	if err != nil || len(ids) != count {
+		t.Fatalf("IDs=%d err=%v", len(ids), err)
 	}
 }

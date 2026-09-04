@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"the8020/kernel/execution/supervisor"
 	"the8020/kernel/nodes"
@@ -47,7 +48,15 @@ type Manager struct {
 		LocalNodeID() string
 		InvokeWorker(context.Context, nodes.WorkerInvocationRequest) nodes.WorkerInvocationResult
 	}
-	startMu sync.Mutex
+	capacityMu  sync.Mutex
+	starting    map[string]int
+	provisional map[string]provisionalWorker
+}
+
+type provisionalWorker struct {
+	runtimeGroupID string
+	startedAt      time.Time
+	worker         supervisor.WorkerStatus
 }
 
 func (m *Manager) SetNodeRouter(router interface {
@@ -83,34 +92,16 @@ func New(sandboxes Sandboxes, control Control, maximumWorkers, maximumWorkersPer
 	if databaseBackend != "sqlite" && databaseBackend != "postgresql" {
 		return nil, errors.New("supported database backend is required")
 	}
-	return &Manager{sandboxes: sandboxes, control: control, maximumWorkers: maximumWorkers, maximumWorkersPerSandbox: maximumWorkersPerSandbox, databaseBackend: databaseBackend}, nil
+	return &Manager{sandboxes: sandboxes, control: control, maximumWorkers: maximumWorkers, maximumWorkersPerSandbox: maximumWorkersPerSandbox, databaseBackend: databaseBackend, starting: map[string]int{}, provisional: map[string]provisionalWorker{}}, nil
 }
 
 func (m *Manager) Start(ctx context.Context, runtimeGroupID string, request supervisor.StartWorkerRequest) (Record, error) {
-	m.startMu.Lock()
-	defer m.startMu.Unlock()
-	if m.maximumWorkers > 0 {
-		live, err := m.List(ctx, "")
-		if err != nil {
-			return Record{}, err
-		}
-		if len(live) >= m.maximumWorkers {
-			return Record{}, fmt.Errorf("%w: %d of %d Workers are running", ErrNodeCapacity, len(live), m.maximumWorkers)
-		}
-	}
 	inspection, err := m.sandboxes.Inspect(ctx, runtimeGroupID)
 	if err != nil {
 		return Record{}, err
 	}
 	if err := requireWorkerRuntime(inspection); err != nil {
 		return Record{}, err
-	}
-	live, err := m.control.Workers(ctx, inspection.Spec)
-	if err != nil {
-		return Record{}, err
-	}
-	if len(live) >= m.maximumWorkersPerSandbox {
-		return Record{}, fmt.Errorf("%w: %d of %d Workers are running", ErrSandboxCapacity, len(live), m.maximumWorkersPerSandbox)
 	}
 	if request.Metadata.WorkloadType != inspection.Spec.WorkloadType {
 		return Record{}, errors.New("Worker workload type does not match runtime group")
@@ -125,11 +116,75 @@ func (m *Manager) Start(ctx context.Context, runtimeGroupID string, request supe
 	if err := validatePermissions(inspection.Spec.Permissions, request.Permissions); err != nil {
 		return Record{}, err
 	}
-	worker, err := m.control.StartWorker(ctx, inspection.Spec, request)
+	inspections, err := m.sandboxes.List()
 	if err != nil {
 		return Record{}, err
 	}
+	release, err := m.reserveStart(inspections, runtimeGroupID, request.Metadata.WorkerID)
+	if err != nil {
+		return Record{}, err
+	}
+	worker, err := m.control.StartWorker(ctx, inspection.Spec, request)
+	if err != nil {
+		release(nil)
+		return Record{}, err
+	}
+	release(&worker)
 	return Record{SandboxID: inspection.Spec.SandboxID, RuntimeGroupID: inspection.Spec.RuntimeGroupID, WorkloadType: inspection.Spec.WorkloadType, Worker: worker}, nil
+}
+
+func (m *Manager) reserveStart(inspections []manager.Inspection, runtimeGroupID, workerID string) (func(*supervisor.WorkerStatus), error) {
+	m.capacityMu.Lock()
+	defer m.capacityMu.Unlock()
+	observed := make(map[string]bool)
+	observedAt := make(map[string]time.Time, len(inspections))
+	activeGroups := make(map[string]bool, len(inspections))
+	total, inSandbox := 0, 0
+	for _, inspection := range inspections {
+		activeGroups[inspection.Spec.RuntimeGroupID] = true
+		observedAt[inspection.Spec.RuntimeGroupID] = inspection.Runtime.ObservedAt
+		for _, worker := range inspection.Workers {
+			observed[worker.WorkerID] = true
+			total++
+			if inspection.Spec.RuntimeGroupID == runtimeGroupID {
+				inSandbox++
+			}
+		}
+	}
+	for id, pending := range m.provisional {
+		if observed[id] || !activeGroups[pending.runtimeGroupID] || observedAt[pending.runtimeGroupID].After(pending.startedAt) {
+			delete(m.provisional, id)
+			continue
+		}
+		total++
+		if pending.runtimeGroupID == runtimeGroupID {
+			inSandbox++
+		}
+	}
+	for group, count := range m.starting {
+		total += count
+		if group == runtimeGroupID {
+			inSandbox += count
+		}
+	}
+	if m.maximumWorkers > 0 && total >= m.maximumWorkers {
+		return nil, fmt.Errorf("%w: %d of %d Workers are running or starting", ErrNodeCapacity, total, m.maximumWorkers)
+	}
+	if inSandbox >= m.maximumWorkersPerSandbox {
+		return nil, fmt.Errorf("%w: %d of %d Workers are running or starting", ErrSandboxCapacity, inSandbox, m.maximumWorkersPerSandbox)
+	}
+	m.starting[runtimeGroupID]++
+	return func(worker *supervisor.WorkerStatus) {
+		m.capacityMu.Lock()
+		m.starting[runtimeGroupID]--
+		if m.starting[runtimeGroupID] == 0 {
+			delete(m.starting, runtimeGroupID)
+		}
+		if worker != nil {
+			m.provisional[workerID] = provisionalWorker{runtimeGroupID: runtimeGroupID, startedAt: time.Now(), worker: *worker}
+		}
+		m.capacityMu.Unlock()
+	}, nil
 }
 
 func (m *Manager) List(ctx context.Context, sandboxID string) ([]Record, error) {
@@ -141,10 +196,7 @@ func (m *Manager) List(ctx context.Context, sandboxID string) ([]Record, error) 
 		if err := requireWorkerRuntime(item); err != nil {
 			return nil, err
 		}
-		live, err := m.control.Workers(ctx, item.Spec)
-		if err != nil {
-			return nil, err
-		}
+		live := m.withProvisional(item.Spec.RuntimeGroupID, item.Runtime.ObservedAt, item.Workers)
 		result := make([]Record, 0, len(live))
 		for _, worker := range live {
 			result = append(result, Record{SandboxID: item.Spec.SandboxID, RuntimeGroupID: item.Spec.RuntimeGroupID, WorkloadType: item.Spec.WorkloadType, Worker: worker})
@@ -161,16 +213,32 @@ func (m *Manager) List(ctx context.Context, sandboxID string) ([]Record, error) 
 		if requireWorkerRuntime(item) != nil {
 			continue
 		}
-		live, workerErr := m.control.Workers(ctx, item.Spec)
-		if workerErr != nil {
-			return nil, workerErr
-		}
-		for _, worker := range live {
+		for _, worker := range m.withProvisional(item.Spec.RuntimeGroupID, item.Runtime.ObservedAt, item.Workers) {
 			result = append(result, Record{SandboxID: item.Spec.SandboxID, RuntimeGroupID: item.Spec.RuntimeGroupID, WorkloadType: item.Spec.WorkloadType, Worker: worker})
 		}
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Worker.WorkerID < result[j].Worker.WorkerID })
 	return result, nil
+}
+
+func (m *Manager) withProvisional(runtimeGroupID string, observedAt time.Time, observed []supervisor.WorkerStatus) []supervisor.WorkerStatus {
+	result := append([]supervisor.WorkerStatus(nil), observed...)
+	present := make(map[string]bool, len(result))
+	for _, worker := range result {
+		present[worker.WorkerID] = true
+	}
+	m.capacityMu.Lock()
+	defer m.capacityMu.Unlock()
+	for id, pending := range m.provisional {
+		if present[id] || observedAt.After(pending.startedAt) {
+			delete(m.provisional, id)
+			continue
+		}
+		if pending.runtimeGroupID == runtimeGroupID {
+			result = append(result, pending.worker)
+		}
+	}
+	return result
 }
 
 func (m *Manager) Inspect(ctx context.Context, workerID string) (Record, error) {
@@ -184,41 +252,6 @@ func (m *Manager) Inspect(ctx context.Context, workerID string) (Record, error) 
 		}
 	}
 	return Record{}, fmt.Errorf("Worker %q not found", workerID)
-}
-
-// ValidateRuntimeExecution proves that identity supplied by the authenticated
-// sandbox callback still names the exact live Worker execution.
-func (m *Manager) ValidateRuntimeExecution(ctx context.Context, runtimeGroupID, sandboxID, workerID, executionID, workloadID string) error {
-	if runtimeGroupID == "" || sandboxID == "" || workerID == "" || executionID == "" {
-		return errors.New("runtime Worker execution identity is incomplete")
-	}
-	spec, err := m.sandboxes.ResolveRuntimeGroup(runtimeGroupID)
-	if err != nil {
-		return err
-	}
-	if spec.RuntimeGroupID != runtimeGroupID || spec.SandboxID != sandboxID {
-		return errors.New("runtime Worker execution identity does not match")
-	}
-	workers, err := m.control.Workers(ctx, spec)
-	if err != nil {
-		return err
-	}
-	for _, worker := range workers {
-		if worker.WorkerID != workerID {
-			continue
-		}
-		if worker.ExecutionID != executionID {
-			return errors.New("runtime Worker execution identity does not match")
-		}
-		if workloadID != "" && worker.WorkloadID != workloadID {
-			return errors.New("runtime Worker workload identity does not match")
-		}
-		if worker.State != "ready" && worker.State != "draining" {
-			return errors.New("runtime Worker is not active")
-		}
-		return nil
-	}
-	return fmt.Errorf("Worker %q not found in runtime group %q", workerID, runtimeGroupID)
 }
 
 func (m *Manager) Stop(ctx context.Context, workerID string, immediate bool) error {
@@ -240,7 +273,13 @@ func (m *Manager) StopInGroup(ctx context.Context, runtimeGroupID, workerID stri
 	if err != nil {
 		return err
 	}
-	return m.control.StopWorker(ctx, inspection.Spec, workerID, immediate)
+	if err := m.control.StopWorker(ctx, inspection.Spec, workerID, immediate); err != nil {
+		return err
+	}
+	m.capacityMu.Lock()
+	delete(m.provisional, workerID)
+	m.capacityMu.Unlock()
+	return nil
 }
 func (m *Manager) InvokeWorker(ctx context.Context, input nodes.WorkerInvocationRequest) nodes.WorkerInvocationResult {
 	if m.nodes == nil {

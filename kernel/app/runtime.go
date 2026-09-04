@@ -381,7 +381,6 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	}
 	runtimeServices.Workers = workerManager
 	callbackServer.SetWorkerInvoker(workerManager)
-	callbackServer.SetRuntimeIdentityValidator(workerManager)
 	imageDigest := selectedDigest
 	serviceResources := resourceLimits(settingManager, "service")
 	jobResources := resourceLimits(settingManager, "job")
@@ -755,7 +754,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	cleanup.webservices, runtimeServices.Services = webServiceManager, webServiceManager
 	callbackServer.SetPersistentExecutionCompleter(webServiceManager)
 	webServiceManager.StartReconciler(ctx)
-	startRuntimeMonitor(cleanup, sandboxManager, serviceManager, jobManager, systemDatabase, settingManager, &runtimeSharedState{packages: packageFollower, serviceChanges: serviceFollower, services: webServiceManager, commands: commandIndexer, topology: nodeManager}, publicNetwork, heartbeatInterval, heartbeatTimeout, logger)
+	startRuntimeMonitor(cleanup, sandboxManager, serviceManager, jobManager, systemDatabase, settingManager, &runtimeSharedState{packages: packageFollower, serviceChanges: serviceFollower, services: webServiceManager, commands: commandIndexer, topology: nodeManager, nextTopology: time.Now().Add(30 * time.Second)}, publicNetwork, heartbeatInterval, heartbeatTimeout, logger)
 	return runtimeServices, closeRuntime
 }
 
@@ -1037,12 +1036,21 @@ type runtimeSharedState struct {
 	services       targetedServiceReconciler
 	commands       commandReindexer
 	topology       interface{ Refresh(context.Context) error }
+	now            func() time.Time
+	nextTopology   time.Time
 }
 
 func (s *runtimeSharedState) Refresh(ctx context.Context) error {
 	if s.topology != nil {
-		if err := s.topology.Refresh(ctx); err != nil {
-			return err
+		now := time.Now()
+		if s.now != nil {
+			now = s.now()
+		}
+		if s.nextTopology.IsZero() || !now.Before(s.nextTopology) {
+			if err := s.topology.Refresh(ctx); err != nil {
+				return err
+			}
+			s.nextTopology = now.Add(30 * time.Second)
 		}
 	}
 	if err := s.refreshPackages(ctx); err != nil {

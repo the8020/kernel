@@ -55,6 +55,7 @@ func IsRequestRejected(err error) bool {
 }
 
 type Status struct {
+	Revision             uint64             `json:"revision"`
 	ProtocolVersion      int                `json:"protocol_version"`
 	SupervisorVersion    string             `json:"supervisor_version"`
 	DenoVersion          string             `json:"deno_version"`
@@ -78,18 +79,19 @@ type WorkerFailure struct {
 }
 
 type WorkerStatus struct {
-	WorkerID     string     `json:"worker_id"`
-	ExecutionID  string     `json:"execution_id"`
-	WorkloadID   string     `json:"workload_id"`
-	OwnerID      string     `json:"owner_id"`
-	DebuggerName string     `json:"debugger_name"`
-	Entrypoint   string     `json:"entrypoint"`
-	ReleaseID    string     `json:"release_id"`
-	InFlight     int        `json:"in_flight"`
-	IdleSinceMS  int64      `json:"idle_since_ms,omitempty"`
-	State        string     `json:"state"`
-	Failure      string     `json:"failure,omitempty"`
-	Logs         []LogEvent `json:"logs,omitempty"`
+	WorkerID             string     `json:"worker_id"`
+	ExecutionID          string     `json:"execution_id"`
+	WorkloadID           string     `json:"workload_id"`
+	OwnerID              string     `json:"owner_id"`
+	DebuggerName         string     `json:"debugger_name"`
+	Entrypoint           string     `json:"entrypoint"`
+	ReleaseID            string     `json:"release_id"`
+	InFlight             int        `json:"in_flight"`
+	PersistentExecutions int        `json:"persistent_executions,omitempty"`
+	IdleSinceMS          int64      `json:"idle_since_ms,omitempty"`
+	State                string     `json:"state"`
+	Failure              string     `json:"failure,omitempty"`
+	Logs                 []LogEvent `json:"logs,omitempty"`
 }
 
 type ExecutionMetadata struct {
@@ -214,6 +216,17 @@ func (c *Client) Workers(ctx context.Context, spec model.SandboxSpec) ([]WorkerS
 		return nil, err
 	}
 	return response.Workers, nil
+}
+
+func (c *Client) Snapshot(ctx context.Context, spec model.SandboxSpec) (model.RuntimeSnapshot, error) {
+	var snapshot model.RuntimeSnapshot
+	if err := c.query(ctx, spec, "/v1/snapshot", &snapshot); err != nil {
+		return snapshot, err
+	}
+	if snapshot.ProtocolVersion != c.protocolVersion || snapshot.RuntimeGroupID != spec.RuntimeGroupID || snapshot.SandboxID != spec.SandboxID || snapshot.WorkloadType != spec.WorkloadType || snapshot.Revision == 0 {
+		return model.RuntimeSnapshot{}, errors.New("supervisor snapshot does not match sandbox specification")
+	}
+	return snapshot, nil
 }
 
 func (c *Client) StartWorker(ctx context.Context, spec model.SandboxSpec, request StartWorkerRequest) (WorkerStatus, error) {

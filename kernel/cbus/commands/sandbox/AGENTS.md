@@ -5,7 +5,7 @@
 
 # Ownership
 
-- Own declarative sandbox list/inspect/metrics/stop/kill/delete and bounded
+- Own declarative sandbox list/inspect/refresh/metrics/stop/kill/delete and bounded
   history list/inspect handlers and delegate to the sandbox manager.
 
 # Local Contracts
@@ -15,6 +15,11 @@
   `sandbox inspect` owns the complete specification, status, Workers, resources,
   leases, and correlated services. Application-owned logical state
   is never discovered or duplicated in sandbox inspection.
+- Live list and ordinary inspect use the latest cached supervisor snapshot.
+  `sandbox refresh` alone performs one targeted supervisor/resource observation
+  and returns refreshed detail with snapshot revision and observation time.
+- Sandbox detail resolves only the logical service IDs already indexed on that
+  sandbox; it must never scan the complete service catalog.
 - Assigned service sandboxes use only their first sorted logical service ID as
   the concise reason, formatted as `service:<service-id>`; list and inspection
   must not expose every colocated service or an opaque placement-group key.

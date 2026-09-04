@@ -42,8 +42,11 @@
   active. The last failed deployment remains visible without degrading an
   otherwise ready database.
 - Runtime SQL has one unified row/non-row operation and opaque kernel-held
-  transactions bound to an exact execution scope. Scope cleanup rolls back all
-  remaining transactions. Mutations return an insert ID only when the caller
+  transactions bound to an exact Worker-execution plus request/invocation scope.
+  Acquisition obeys the caller deadline; the transaction then has its own
+  bounded lifetime. Request cleanup rolls back its exact scope and Worker exit
+  rolls back the scope prefix, with every connection/permit release idempotent.
+  Mutations return an insert ID only when the caller
   explicitly identifies an insert, preventing connection-local stale IDs from
   leaking into updates or deletes. Values use explicit lossless tags for bigint,
   decimal, datetime, bytes, and JSON.
@@ -57,7 +60,13 @@
   individual service, login flow, or repository compensate for them.
 - Query results fail, rather than truncate, above the runtime-mutable per-node
   row/byte limits. Defaults are 10,000 rows and 10 MiB. Pool defaults are 32
-  open and 8 idle connections; pools grow on demand.
+  open and 8 idle connections; pools grow on demand. Application statements and
+  transactions share a cancellable admission gate capped at open-minus-two when
+  possible, while kernel-owned repositories bypass it so readiness,
+  authentication, and administration retain pool access.
+- SQLite file permissions are established after the first successful open, not
+  re-applied by every readiness ping. Readiness uses lightweight connection and
+  catalog checks rather than repeated full definition scans.
 - Decimals are canonical strings in TypeScript and signed scaled 64-bit integers
   in both engines. Integers are physically signed 64-bit but limited to the
   JavaScript safe range. Datetimes are UTC milliseconds. Physical foreign keys,
@@ -69,8 +78,9 @@
 - Tests cover catalog readiness/idempotence/failure, SQLite WAL and schema
   synchronization, naming and descriptors, safe/unsafe changes, drift,
   retirement/trim, pending recovery, deployment outcome visibility, logical
-  references, exact values, transaction isolation/cleanup, pool pressure, and
-  configurable result bounds.
+  references, exact values, deadline-bound transaction acquisition and cleanup,
+  application/kernel pool isolation, concurrent runtime read load, pool
+  pressure, and configurable result bounds.
 
 # Child DOX Index
 

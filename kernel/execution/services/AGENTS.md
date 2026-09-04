@@ -20,17 +20,27 @@
   without leaking stopped sandboxes.
 
 - Public API includes lifecycle/query methods plus `EnsureCapacity`,
-  `ReconcileCapacity`, exact-Worker dispatch, HTTP dispatch, and WebSocket
-  proxy.
+  cache-only `Capacity`, targeted `ListForService`, `ReconcileCapacity`,
+  exact-Worker dispatch, HTTP dispatch, and WebSocket proxy.
+- A logical-service-to-pool index is rebuilt once from cached recovery records
+  and updated with each pool write/removal. Version cleanup never scans every
+  service pool.
 - Shared service groups retain separate pools keyed by service ID. Requests
   select least-in-flight eligible Workers and remain streaming across
   Go/supervisor/Worker boundaries.
 - Each sandbox-local pool records internal stateless/persistent execution mode,
-  hard concurrency per Worker, Worker minimum/maximum, target utilization, and
-  Worker keepalive. Request admission uses the greater of supervisor-observed
-  occupancy and kernel-reserved requests, grows Workers to preserve target
-  headroom, and reports typed sandbox-capacity failure when the high-level
-  scheduler must place capacity elsewhere.
+  concurrency per Worker, Worker minimum/maximum, target utilization, and Worker
+  keepalive. Concurrency one is strict; larger values are targets with one
+  bounded temporary extra request per Worker. Request admission uses the greater
+  of cached supervisor occupancy and kernel reservations, grows Workers to
+  preserve target headroom, and reports typed sandbox-capacity failure when the
+  high-level scheduler must place capacity elsewhere.
+- `Capacity` reads only the selected runtime group's cached snapshot. Lifecycle
+  and reconciliation mutations use a striped service lock; unrelated pools do
+  not serialize behind supervisor or sandbox I/O.
+- A supervisor call made outside that striped lock must re-read and match the
+  pool's runtime identity before persisting failure, so an old response cannot
+  overwrite a replacement pool.
 - Persistent follow-ups carrying trusted execution identity bypass new-slot
   admission and target the bound Worker. Supervisor-reported persistent
   reservations remain occupied while disconnected during keep-alive.
@@ -45,7 +55,7 @@
   dispatch, reap pool-owned orphans, and replace lost capacity to the requested
   count.
 - Target-utilization growth is best-effort when an existing Worker still has a
-  hard execution slot: a failed headroom start returns typed capacity evidence
+  permitted execution slot: a failed headroom start returns typed capacity evidence
   so the kernel may try another sandbox and then safely use that slot. True hard
   saturation never falls through to dispatch.
 - Scale-down uses supervisor-reported idle timestamps and an injected clock,
@@ -90,7 +100,8 @@
 # Verification
 
 - Unit tests cover start/minimum pool, shared pools, stateless/persistent mode,
-  hard capacity, reserved-demand/target scaling, fake-clock Worker keepalive,
+  strict and bounded-soft capacity, cached reserved-demand/target scaling,
+  fake-clock Worker keepalive,
   target-headroom scale-down and growth fallback, exclude-before-stop ordering,
   failed-Worker repair, streamed dispatch, exact-Worker routing, resumable stop,
   owner release, group failure, mixed valid/corrupt recovery, isolated

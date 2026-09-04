@@ -373,6 +373,54 @@ type SandboxStatus struct {
 	DebugLease        *DebugLeaseStatus `json:"debug_lease,omitempty"`
 }
 
+// RuntimeWorkerStatus is the supervisor's current observation of one Worker.
+// Logs are intentionally excluded: frequent snapshots stay small, while an
+// explicit live inspection may fetch diagnostic logs from the supervisor.
+type RuntimeWorkerStatus struct {
+	WorkerID             string `json:"worker_id"`
+	ExecutionID          string `json:"execution_id"`
+	WorkloadID           string `json:"workload_id"`
+	OwnerID              string `json:"owner_id"`
+	DebuggerName         string `json:"debugger_name"`
+	Entrypoint           string `json:"entrypoint"`
+	ReleaseID            string `json:"release_id"`
+	InFlight             int    `json:"in_flight"`
+	PersistentExecutions int    `json:"persistent_executions,omitempty"`
+	IdleSinceMS          int64  `json:"idle_since_ms,omitempty"`
+	State                string `json:"state"`
+	Failure              string `json:"failure,omitempty"`
+}
+
+type RuntimeFailure struct {
+	WorkerID    string `json:"worker_id"`
+	ExecutionID string `json:"execution_id"`
+	Reason      string `json:"reason"`
+}
+
+// RuntimeSnapshot is an absolute supervisor observation. Revision increases
+// whenever local runtime state changes, allowing the kernel to reject delayed
+// callbacks without having to reconstruct incremental events.
+type RuntimeSnapshot struct {
+	Revision              uint64                `json:"revision"`
+	SupervisorStartedAtMS int64                 `json:"supervisor_started_at_ms"`
+	ProtocolVersion       int                   `json:"protocol_version"`
+	SupervisorVersion     string                `json:"supervisor_version"`
+	DenoVersion           string                `json:"deno_version"`
+	RuntimeGroupID        string                `json:"runtime_group_id"`
+	SandboxID             string                `json:"sandbox_id"`
+	WorkloadType          WorkloadType          `json:"workload_type"`
+	WorkerCount           int                   `json:"worker_count"`
+	ReadyWorkerCount      int                   `json:"ready_worker_count"`
+	FailedWorkerCount     int                   `json:"failed_worker_count"`
+	ActiveRequests        int                   `json:"active_requests"`
+	ActiveExecutionCount  int                   `json:"active_execution_count"`
+	UptimeMS              int64                 `json:"uptime_ms"`
+	Draining              bool                  `json:"draining"`
+	RecentFailures        []RuntimeFailure      `json:"recent_failures,omitempty"`
+	Workers               []RuntimeWorkerStatus `json:"workers"`
+	ObservedAt            time.Time             `json:"observed_at,omitempty"`
+}
+
 func NewID(prefix string) (string, error) {
 	if prefix == "" {
 		return "", errors.New("ID prefix is required")

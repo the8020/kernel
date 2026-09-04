@@ -61,6 +61,18 @@ type fakeWorkers struct {
 	stopErrors     map[string]error
 }
 
+type blockingOpenAPIWorkers struct {
+	*fakeWorkers
+	started chan struct{}
+	release chan struct{}
+}
+
+func (f *blockingOpenAPIWorkers) ServiceOpenAPI(context.Context, string, string) (map[string]any, error) {
+	close(f.started)
+	<-f.release
+	return nil, workers.ErrRuntimeUnavailable
+}
+
 func testOptions(minimum, maximum, concurrency int) Options {
 	return Options{
 		MinimumWorkers: minimum, MaximumWorkers: maximum,
@@ -92,7 +104,11 @@ func TestServiceRestoreIsolatesCorruptRecords(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "c-corrupt.json"), []byte(`{"service_id":"c-corrupt","unknown":true}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	manager, err := New(&fakeCoordinator{}, &fakeWorkers{}, store, Policy{Strategy: model.GroupingOwner})
+	reloaded, err := records.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := New(&fakeCoordinator{}, &fakeWorkers{}, reloaded, Policy{Strategy: model.GroupingOwner})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,6 +124,42 @@ func TestServiceRestoreIsolatesCorruptRecords(t *testing.T) {
 	quarantined, err := filepath.Glob(filepath.Join(root, "quarantine", "c-corrupt-*.json"))
 	if err != nil || len(quarantined) != 1 {
 		t.Fatalf("quarantined=%#v err=%v", quarantined, err)
+	}
+}
+
+func TestLogicalServicePoolIndexTracksRecoveryWritesAndDeletion(t *testing.T) {
+	store, err := records.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered := testRecord("recovered")
+	recovered.LogicalServiceID = "example/catalog/api"
+	if err := store.Save(recovered.ServiceID, recovered); err != nil {
+		t.Fatal(err)
+	}
+	manager, err := New(&fakeCoordinator{}, &fakeWorkers{}, store, Policy{Strategy: model.GroupingOwner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, err := manager.ListForService("example/catalog/api")
+	if err != nil || len(listed) != 1 || listed[0].ServiceID != recovered.ServiceID {
+		t.Fatalf("recovered index=%#v err=%v", listed, err)
+	}
+	recovered.LogicalServiceID = "example/catalog/replacement"
+	if err := manager.save(recovered); err != nil {
+		t.Fatal(err)
+	}
+	if stale, err := manager.ListForService("example/catalog/api"); err != nil || len(stale) != 0 {
+		t.Fatalf("stale index=%#v err=%v", stale, err)
+	}
+	if current, err := manager.ListForService(recovered.LogicalServiceID); err != nil || len(current) != 1 {
+		t.Fatalf("current index=%#v err=%v", current, err)
+	}
+	if err := manager.delete(recovered.ServiceID); err != nil {
+		t.Fatal(err)
+	}
+	if deleted, err := manager.ListForService(recovered.LogicalServiceID); err != nil || len(deleted) != 0 {
+		t.Fatalf("deleted index=%#v err=%v", deleted, err)
 	}
 }
 
@@ -385,6 +437,44 @@ func (f *fakeWorkers) ConfigureService(_ context.Context, _ string, serviceID st
 func (f *fakeWorkers) ServiceOpenAPI(context.Context, string, string) (map[string]any, error) {
 	return map[string]any{"openapi": "3.1.0"}, nil
 }
+
+func TestOpenAPIFailureDoesNotOverwriteAReplacementPool(t *testing.T) {
+	store, _ := records.New(t.TempDir())
+	original := testRecord("api-pool")
+	original.State, original.RuntimeGroupID, original.ReleaseID, original.Generation = "READY", "old-group", "old-release", 1
+	original.WorkerIDs = []string{"old-worker"}
+	if err := store.Save(original.ServiceID, original); err != nil {
+		t.Fatal(err)
+	}
+	workersFake := &blockingOpenAPIWorkers{fakeWorkers: &fakeWorkers{}, started: make(chan struct{}), release: make(chan struct{})}
+	manager, err := New(&fakeCoordinator{}, workersFake, store, Policy{Strategy: model.GroupingOwner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, err := manager.OpenAPI(context.Background(), original.ServiceID)
+		result <- err
+	}()
+	<-workersFake.started
+	unlock := manager.lock(original.ServiceID)
+	replacement := original
+	replacement.RuntimeGroupID, replacement.ReleaseID, replacement.Generation = "new-group", "new-release", 2
+	replacement.WorkerIDs = []string{"new-worker"}
+	if err := manager.save(replacement); err != nil {
+		unlock()
+		t.Fatal(err)
+	}
+	unlock()
+	close(workersFake.release)
+	if err := <-result; !errors.Is(err, workers.ErrRuntimeUnavailable) {
+		t.Fatalf("OpenAPI error=%v", err)
+	}
+	current, err := manager.Inspect(original.ServiceID)
+	if err != nil || current.State != "READY" || current.RuntimeGroupID != "new-group" || current.Failure != "" {
+		t.Fatalf("replacement=%#v err=%v", current, err)
+	}
+}
 func (f *fakeWorkers) DispatchService(_ context.Context, _, _ string, request *http.Request) (*http.Response, error) {
 	body, _ := io.ReadAll(request.Body)
 	workerID := ""
@@ -626,6 +716,9 @@ func TestScaleToZeroServiceWakesAndReturnsToZero(t *testing.T) {
 	if len(record.WorkerIDs) != 0 {
 		t.Fatalf("ephemeral service started Workers: %#v", record)
 	}
+	if _, err := manager.EnsureCapacity(context.Background(), "preview", 2, 0); err != nil {
+		t.Fatal(err)
+	}
 	response, err := manager.Dispatch(context.Background(), "preview", httptest.NewRequest(http.MethodPost, "http://the8020/preview", strings.NewReader("body")))
 	if err != nil {
 		t.Fatal(err)
@@ -725,6 +818,9 @@ func TestServiceScalesBeforeDispatchWhenEveryWorkerIsSaturated(t *testing.T) {
 		t.Fatal(err)
 	}
 	workersFake.inFlight[record.WorkerIDs[0]] = 1
+	if _, err := manager.EnsureCapacity(context.Background(), "api", 2, 1); err != nil {
+		t.Fatal(err)
+	}
 	response, err := manager.Dispatch(context.Background(), "api", httptest.NewRequest(http.MethodGet, "http://the8020/api", nil))
 	if err != nil {
 		t.Fatal(err)
@@ -774,7 +870,7 @@ func TestTargetUtilizationIncludesKernelReservedRequests(t *testing.T) {
 	}
 }
 
-func TestTargetHeadroomFailurePreservesAvailableHardCapacity(t *testing.T) {
+func TestTargetHeadroomFailurePreservesAvailableCapacity(t *testing.T) {
 	store, _ := records.New(t.TempDir())
 	workersFake := &fakeWorkers{inFlight: map[string]int{}}
 	manager, _ := New(&fakeCoordinator{}, workersFake, store, Policy{Strategy: model.GroupingOwner})
@@ -784,9 +880,8 @@ func TestTargetHeadroomFailurePreservesAvailableHardCapacity(t *testing.T) {
 	}
 	workersFake.startErr = errors.New("sandbox Worker capacity is exhausted")
 	record, err = manager.EnsureCapacity(context.Background(), record.ServiceID, 2, 0)
-	var capacity *SandboxCapacityError
-	if !errors.As(err, &capacity) || capacity.Occupied != 0 || capacity.Slots != 1 || len(record.WorkerIDs) != 1 {
-		t.Fatalf("record=%#v capacity=%#v err=%v", record, capacity, err)
+	if err != nil || len(record.WorkerIDs) != 1 {
+		t.Fatalf("record=%#v err=%v", record, err)
 	}
 }
 
@@ -803,6 +898,9 @@ func TestServiceDispatchRepairsFailedWorkerBeforeForwardingRequest(t *testing.T)
 	}
 	failedWorkerID := record.WorkerIDs[0]
 	workersFake.states[failedWorkerID] = "failed"
+	if _, err := manager.EnsureCapacity(context.Background(), "api", 1, 0); err != nil {
+		t.Fatal(err)
+	}
 
 	response, err := manager.Dispatch(context.Background(), "api", httptest.NewRequest(http.MethodGet, "http://the8020/api", nil))
 	if err != nil {

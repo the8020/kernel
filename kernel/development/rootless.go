@@ -38,7 +38,7 @@ type RootlessConfig = RunscConfig
 type RunscDriver struct{ config RunscConfig }
 type RootlessDriver = RunscDriver
 
-const developmentPath = "/workspace/scripts:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+const developmentPath = "/workspace/scripts:/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 // A conventional OCI user namespace maps 65536 IDs. Mapping that complete
 // identity range lets native package managers preserve service-user ownership
