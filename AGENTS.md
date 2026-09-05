@@ -136,10 +136,20 @@ relevant child AGENTS.md
   and password `admin`; `THE8020_USERNAME` and `THE8020_PASSWORD` independently
   override those defaults. Enabled passwordless users do not suppress this
   bootstrap. Existing users are never changed. It prints `80|20 is ready` after
-  first-user handling. The kernel control plane remains independent of users,
-  while Docker readiness requires this initial user to exist. Bootstrap failure
-  prints the last users-command error and kernel status so the underlying
-  runtime failure is visible in container output.
+  first-user handling and an HTTP 200 response from the public login service.
+  The kernel control plane remains independent of users, while Docker readiness
+  requires this initial user to exist. Bootstrap failure prints the last
+  users-command error and kernel status so the underlying runtime failure is
+  visible in container output.
+- Container startup prints a message before starting the kernel, waiting for
+  package initialization and user commands, creating the initial user, and
+  waiting for the public login service. Report the stage before its potentially
+  slow operation; do not repeat unchanged messages on each readiness poll.
+- The Docker entrypoint probes `/the8020/uui/login/` over loopback at
+  `THE8020_NETWORK_MAIN_PORT` (default 80), bypasses outbound proxies, and
+  requires HTTP 200 before announcing readiness. It waits at most five minutes
+  with bounded requests while the kernel is alive; failure prints the last probe
+  result and kernel status. The deployment image supplies curl.
 
 - Interactive kernel shutdown must acknowledge `Ctrl-C` immediately and emit one
   ordinary line whenever the graceful-shutdown stage or completed-stage
@@ -480,7 +490,8 @@ below.
 
 - Root-owned paths include `.vscode/`, `go.mod`, `go.sum`, `.go-version`,
   `.gitignore`, `install.sh`, `run.sh`, `release-tag.sh`, release resolver
-  tests, and root-level project documentation.
+  tests, `docker-entrypoint.sh`, `docker-entrypoint_test.sh`, and root-level
+  project documentation.
 
 # 80|20
 
@@ -520,6 +531,9 @@ below.
   entrypoint's first-user path; a browser flow that creates its own test user
   does not verify that path. Report Docker build/run coverage separately from
   native runtime tests when Docker is unavailable.
+- `bash docker-entrypoint_test.sh` verifies startup progress, HTTP 200
+  readiness, failure diagnostics, and the curl dependency with isolated process
+  doubles.
 
 - `.vscode/` configures the Deno language server and linting for
   `defaults/config/runtime/deno/`, recommends the Go/Deno/TOML/shell development
