@@ -46,6 +46,26 @@ func TestJSONEncodingBelongsToTheDatabaseBackend(t *testing.T) {
 	}
 }
 
+// The encoder and the parameter guard sit several layers apart, so nothing
+// stopped them from disagreeing: EncodeJSON produced the value PostgreSQL
+// needs and Manager.ready rejected it, which failed bootstrap activation on
+// that backend while SQLite was unaffected. Driving the guard from the
+// encoder's own output keeps the two halves tied together. ready is
+// backend-agnostic, so SQLite proves the acceptance without a live server.
+func TestEncodedJSONParametersReachTheDatabase(t *testing.T) {
+	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "database.db")))
+	defer manager.Close()
+	for _, backend := range []string{BackendSQLite, BackendPostgreSQL} {
+		encoded, err := EncodeJSON(backend, map[string]any{"enabled": true})
+		if err != nil {
+			t.Fatalf("%s: %v", backend, err)
+		}
+		if _, err := manager.Query(context.Background(), "SELECT ? AS value", []any{encoded}); err != nil {
+			t.Fatalf("%s parameter %T rejected: %v", backend, encoded, err)
+		}
+	}
+}
+
 func TestSQLiteCreatesPrivateInstanceDatabaseAndExecutesSQL(t *testing.T) {
 	root := t.TempDir()
 	config := sqliteConfig(InstanceRootPlaceholder + "/database/system.db")

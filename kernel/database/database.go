@@ -564,6 +564,10 @@ func (m *Manager) ready(statement string, parameters []any) error {
 		return fmt.Errorf("SQL statement exceeds %d bytes", maxStatementBytes)
 	}
 	for _, parameter := range parameters {
+		// json.RawMessage is listed separately from []byte because a type
+		// switch compares exact types: EncodeJSON hands PostgreSQL that named
+		// type so pgx binds jsonb rather than bytea, and converting it here
+		// would throw away the distinction it was chosen for.
 		switch value := parameter.(type) {
 		case nil, bool, int64, float64, string, []byte, time.Time:
 		case json.RawMessage:

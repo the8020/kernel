@@ -154,7 +154,7 @@ func (f fakePackages) InspectPackage(string) (workspacepackages.Package, error) 
 type fakeWebServices struct{ *callRecorder }
 
 func (f fakeWebServices) status() webservices.Status {
-	return webservices.Status{ServiceID: "the8020/demo/http", Description: "Example service", CanonicalBasePath: "/the8020/demo/http", Enabled: true, DesiredVersion: 1, LoadedVersion: 1, VersionCount: 1, State: webservices.StateReady, SandboxCount: 1, WorkerCount: 1, Sandboxes: []webservices.ServiceSandboxStatus{{Version: 1, SandboxID: "sandbox-1", RuntimeGroupID: "group-1"}}}
+	return webservices.Status{ServiceID: "the8020/demo/http", PackageID: "the8020/demo", Entrypoint: "file:///workspace/packages/the8020/demo/services/http/service.ts", Description: "Example service", CanonicalBasePath: "/the8020/demo/http", Enabled: true, DesiredVersion: 1, LoadedVersion: 1, VersionCount: 1, State: webservices.StateReady, SandboxCount: 1, WorkerCount: 1, Sandboxes: []webservices.ServiceSandboxStatus{{Version: 1, SandboxID: "sandbox-1", RuntimeGroupID: "group-1"}}}
 }
 
 func (f fakeWebServices) Reconcile(context.Context, string) (webservices.Status, error) {
@@ -453,7 +453,7 @@ func TestResourceListHandlersExposeOnlyReadableSummaryFields(t *testing.T) {
 		{name: "workers", collection: "workers", handler: workerlist.New(serviceSet), fields: []string{"worker_id", "workload_type", "state", "workload_id", "owner_id", "sandbox_id", "in_flight"}},
 		{name: "jobs", collection: "executions", handler: joblist.New(serviceSet), fields: []string{"execution_id", "job_id", "state", "owner_id", "detached", "duration"}},
 		{name: "packages", collection: "packages", handler: packagelist.New(serviceSet), fields: []string{"package_id", "description", "valid"}},
-		{name: "services", collection: "services", handler: servicelist.New(serviceSet), fields: []string{"service_id", "description", "canonical_base_path", "state", "enabled", "version_count", "sandbox_count", "worker_count", "service_type", "access_mode"}},
+		{name: "services", collection: "services", handler: servicelist.New(serviceSet), fields: []string{"service_id", "package_id", "source_entrypoint", "description", "canonical_base_path", "state", "enabled", "version_count", "sandbox_count", "worker_count", "service_type", "access_mode"}},
 		{name: "ports", collection: "ports", handler: portlist.New(serviceSet), fields: []string{"lease_id", "protocol", "state", "bind_address", "host_port", "sandbox_id", "internal_port", "purpose"}},
 		{name: "debug targets", collection: "targets", handler: debugtargets.New(serviceSet), arguments: map[string]any{"sandbox_id": "sandbox-1"}, fields: []string{"id", "type", "title", "execution_id"}},
 		{name: "warm pools", collection: "profiles", handler: poolstatus.New(serviceSet), fields: []string{"profile_hash", "desired_warm_count", "ready_warm_count", "creating_count", "reserved_count", "assigned_count", "failed_count", "replenish_count"}},
@@ -479,6 +479,9 @@ func TestResourceListHandlersExposeOnlyReadableSummaryFields(t *testing.T) {
 				if _, exists := items[0][field]; !exists {
 					t.Fatalf("summary missing %q: %#v", field, items[0])
 				}
+			}
+			if test.name == "services" && (items[0]["package_id"] != "the8020/demo" || items[0]["source_entrypoint"] != "file:///workspace/packages/the8020/demo/services/http/service.ts") {
+				t.Fatalf("accepted service ownership or entrypoint was lost: %#v", items[0])
 			}
 		})
 	}
