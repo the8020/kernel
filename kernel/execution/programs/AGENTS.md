@@ -1,24 +1,37 @@
 # Purpose
 
-- Resolve and invoke ordinary programs from exact active package commits.
+- Resolve ready package programs and submit them through the ordinary job system.
 
 # Local Contracts
 
 - A program is a package artifact; a job is one invocation of that artifact.
-- Program invocations use one non-reusable ordinary job Worker.
-- Arguments are spread into the program's default export. Secure inputs travel
-  separately and are never included in job metadata.
-- Kernel SDK command errors retain their structured code, message, and details
-  through the ordinary job path; other program failures remain runtime errors.
-- Resolution verifies the exact active package commit, manifest, containment,
-  and real non-symlink entrypoint. Each invocation receives a short-lived exact
-  package-content snapshot, without source-control metadata, mounted read-only
-  at its canonical `/workspace/packages` path so package self-updates cannot
-  change the running program.
+- `Run` submits package CBus commands as `system`, retaining the caller context
+  for synchronous child-job admission. `RunWithOptions` forwards the runtime caller's
+  execution user, optional sandbox placement group, and timeout. Both use the
+  same job path and own no durable scheduling or history.
+- Use the ordinary job runtime profile, complete shared read-only packages
+  mount, permissions, grouping, capacity, and configured Worker reuse policy.
+  Commands may import and call other packages just like services and jobs.
+- Never copy or snapshot package sources, create invocation directories, add
+  command-specific mounts or sandboxes, or hold repository locks while running.
+  Package activation owns source publication; the runner does not preserve a
+  private release tree for self-updates or invent another isolation boundary.
+- Resolve the ready active record, manifest, containment, and real non-symlink
+  entrypoint. Reject a stale catalog commit before job submission. The commit
+  identifies the active release at resolution, not an immutable per-run mount.
+- Forward arguments and separate secure inputs to jobs. The shared job and
+  supervisor layers own defensive input copies, argument spreading, secret
+  cleanup/redaction, and Worker lifecycle. Do not duplicate those mechanisms.
+- Return job errors unchanged, including structured supervisor failures and Go
+  error causes. The Worker uses job mechanics with `program` origin and the
+  logical program ID.
 
 # Verification
 
-- Unit tests cover exact/stale resolution, argument and secure-input forwarding,
-  output/error redaction, exact mounts, cleanup, and disabled Worker reuse.
+- Tests cover system command identity, preserved caller context, default job
+  policy, runtime execution options, stale/resolution failures, and job error identity.
+- The rootless backend E2E test dispatches a CBus command through the real job
+  and Worker managers into Deno, verifies static/dynamic cross-package imports,
+  system identity, normal mounts, no package artifacts, and Worker cleanup.
 
 # Child DOX Index

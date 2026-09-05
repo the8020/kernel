@@ -1,5 +1,18 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { ServiceRequestMetadata } from "../worker/contracts.ts";
+// Preload the public module in the trusted bootstrap graph so applications can
+// import it without gaining read access to the runtime implementation.
+import "../context/mod.ts";
+import { installContextProvider } from "../context/runtime.ts";
+import type { ExecutionContext } from "../context/types.ts";
+import type {
+  ExecutionMetadata,
+  ExecutionUserMetadata,
+  ServiceRequestMetadata,
+} from "../worker/contracts.ts";
+import {
+  canonicalExecutionOrigin,
+  canonicalExecutionUser,
+} from "../worker/contracts.ts";
 import {
   type DatabaseBackend,
   kernelDatabaseBackendSymbol,
@@ -12,6 +25,7 @@ export interface KernelExecutionContext {
   readonly requestId: string;
   readonly serviceId: string;
   readonly persistentExecutionId?: string;
+  readonly user: ExecutionUserMetadata;
   readonly auth?: ServiceRequestMetadata["auth"];
   readonly secrets?: Record<string, string>;
   readonly signal?: AbortSignal;
@@ -47,29 +61,50 @@ export interface KernelBridge {
 
 export function createKernelBridge(
   port: MessagePort,
-  databaseBackend?: DatabaseBackend,
+  metadata: ExecutionMetadata,
 ): KernelBridge {
+  const worker = Object.freeze({
+    nodeId: metadata.nodeId,
+    runtimeGroupId: metadata.runtimeGroupId,
+    sandboxId: metadata.sandboxId,
+    workerId: metadata.workerId,
+    executionId: metadata.executionId,
+    workloadType: metadata.workloadType,
+    workloadId: metadata.workloadId,
+    serviceId: metadata.service?.serviceId,
+    databaseBackend: metadata.databaseBackend,
+    user: canonicalExecutionUser(metadata.user),
+    origin: canonicalExecutionOrigin(metadata.origin, metadata.workloadType),
+  });
+  const databaseBackend: DatabaseBackend = worker.databaseBackend;
   let sequence = 0;
   const requestContext = new AsyncLocalStorage<KernelExecutionContext>();
   const pending = new Map<string, Pending>();
+  const releaseContextProvider = installContextProvider(() => {
+    const active = requestContext.getStore();
+    if (active === undefined) return undefined;
+    const user = active.user;
+    const origin = worker.origin;
+    return Object.freeze({
+      type: origin.type,
+      id: origin.id,
+      userId: user.userId,
+      username: user.username,
+      authenticated: active.auth?.authenticated === true,
+      nodeId: worker.nodeId,
+      runtimeGroupId: worker.runtimeGroupId,
+      sandboxId: worker.sandboxId,
+      workerId: worker.workerId,
+      executionId: worker.executionId,
+      requestId: active.requestId,
+      persistentExecutionId: active.persistentExecutionId,
+    }) satisfies ExecutionContext;
+  });
   const invoke: KernelInvoke = (operation, input) => {
     const request = requestContext.getStore();
     if (request === undefined && operation !== "database.info") {
       return Promise.reject(
         new Error("kernel API call must begin inside an execution"),
-      );
-    }
-    if (operation === "auth.currentUser") {
-      const auth = request?.auth;
-      return Promise.resolve(
-        auth?.authenticated && auth.realm === "user" &&
-          auth.userId !== undefined && auth.username !== undefined
-          ? {
-            id: auth.userId,
-            username: auth.username,
-            realm: auth.realm,
-          }
-          : undefined,
       );
     }
     if (
@@ -111,6 +146,7 @@ export function createKernelBridge(
           requestId: request.requestId,
           serviceId: request.serviceId,
           persistentExecutionId: request.persistentExecutionId,
+          user: request.user,
         },
       },
     });
@@ -121,11 +157,9 @@ export function createKernelBridge(
   (globalThis as unknown as Record<symbol, unknown>)[kernelSecretSymbol] = (
     name: string,
   ): string | undefined => requestContext.getStore()?.secrets?.[name];
-  if (databaseBackend !== undefined) {
-    (globalThis as unknown as Record<symbol, unknown>)[
-      kernelDatabaseBackendSymbol
-    ] = databaseBackend;
-  }
+  (globalThis as unknown as Record<symbol, unknown>)[
+    kernelDatabaseBackendSymbol
+  ] = databaseBackend;
 
   return {
     async closeExecution(): Promise<void> {
@@ -141,7 +175,8 @@ export function createKernelBridge(
           requestId: metadata.requestId,
           serviceId: metadata.serviceId,
           persistentExecutionId: metadata.persistentExecutionId,
-          auth: metadata.auth,
+          user: canonicalExecutionUser(metadata.user),
+          auth: Object.freeze({ ...metadata.auth }),
           signal,
         }),
         callback,
@@ -151,7 +186,7 @@ export function createKernelBridge(
       metadata: KernelExecutionContext,
       callback: () => Result,
     ): Result {
-      return requestContext.run(Object.freeze({ ...metadata }), callback);
+      return requestContext.run(immutableKernelContext(metadata), callback);
     },
     handle(message: BridgeMessage): boolean {
       if (
@@ -174,17 +209,32 @@ export function createKernelBridge(
       delete (globalThis as unknown as Record<symbol, unknown>)[
         kernelSecretSymbol
       ];
-      if (databaseBackend !== undefined) {
-        delete (globalThis as unknown as Record<symbol, unknown>)[
-          kernelDatabaseBackendSymbol
-        ];
-      }
+      delete (globalThis as unknown as Record<symbol, unknown>)[
+        kernelDatabaseBackendSymbol
+      ];
       for (const call of pending.values()) {
         call.cleanup();
         call.reject(new Error("kernel API bridge closed"));
       }
       pending.clear();
       requestContext.disable();
+      releaseContextProvider();
     },
   };
+}
+
+function immutableKernelContext(
+  value: KernelExecutionContext,
+): KernelExecutionContext {
+  return Object.freeze({
+    requestId: value.requestId,
+    serviceId: value.serviceId,
+    persistentExecutionId: value.persistentExecutionId,
+    user: canonicalExecutionUser(value.user),
+    auth: value.auth === undefined
+      ? undefined
+      : Object.freeze({ ...value.auth }),
+    secrets: value.secrets,
+    signal: value.signal,
+  });
 }

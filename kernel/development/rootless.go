@@ -17,7 +17,7 @@ import (
 
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
-	"the8020/kernel/auth"
+	"the8020/kernel/execution"
 	"the8020/kernel/sandbox/backend"
 	"the8020/kernel/sandbox/backend/runscconsole"
 )
@@ -471,5 +471,5 @@ func safeRuntimeID(value string) bool {
 
 func validDevelopmentSandboxID(value string) bool {
 	username, found := strings.CutPrefix(value, "dev-")
-	return found && auth.ValidateUsername(username) == nil
+	return found && execution.ValidateUsername(username) == nil
 }

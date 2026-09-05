@@ -14,7 +14,6 @@ type summary struct {
 	PackageID       string `json:"package_id"`
 	Description     string `json:"description,omitempty"`
 	Valid           bool   `json:"valid"`
-	ServiceCount    int    `json:"service_count"`
 	ValidationError string `json:"validation_error,omitempty"`
 }
 
@@ -34,7 +33,6 @@ func New(serviceSet *services.Services) core.Handler {
 				PackageID:       item.ID,
 				Description:     item.Description,
 				Valid:           item.Valid,
-				ServiceCount:    item.ServiceCount,
 				ValidationError: strings.Join(item.ValidationErrors, "; "),
 			})
 		}

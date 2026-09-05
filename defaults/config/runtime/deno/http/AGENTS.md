@@ -25,7 +25,10 @@
   associated with request identity.
 - `service.websocket()` uses the same relative routes, middleware, parameters,
   query, and trusted request metadata as HTTP. It receives an abstract
-  text/binary connection while the supervisor retains the physical socket.
+  text/binary connection while the supervisor retains the physical socket. The
+  private acceptance marker is `the8020-internal-websocket-accepted`; it never
+  reaches public responses. Existing OpenAPI extension fields are not HTTP
+  headers and retain their own names.
 - Trusted metadata exposes authentication and generic current execution
   identity, including optional persistent execution identity, plus the
   kernel-observed client IP address and network scope; it carries no application
@@ -33,8 +36,8 @@
 - OpenAPI paths are relative, servers contain the canonical base path, and
   output order follows deterministic registration order.
 - The portable bundled module's self-types expose the Zod schema classes and
-  inference used by application packages; in-sandbox service validation must
-  match source-tree type checking.
+  inference used by application packages, including dates; in-sandbox service
+  validation must match source-tree type checking.
 - `bundle-runtime.sh` publishes exactly `the8020_http.js` and
   `the8020_http.d.ts` in the generated HTTP output root and removes obsolete
   sibling build outputs before that root is staged into runtime images.

@@ -39,12 +39,9 @@
 - String definitions may declare a compiled regular-expression `pattern`; the
   same constraint validates defaults, environment/startup inputs, and persisted
   mutations before they become configured state.
-- A nonzero service maximum Worker default is never below its minimum.
-- Canonical service defaults are zero minimum Workers, zero/unlimited maximum
-  Workers, concurrency 32, target utilization 70%, Worker keepalive two
-  minutes, zero minimum sandboxes, four Workers per sandbox, and session
-  keepalive ten minutes. Kernel sandbox capacity defaults to 64 Workers with no
-  CPU or RAM settings. Runtime supervisor heartbeat timeout exceeds its interval.
+- Service application defaults and their validation belong to Deno services.
+  Kernel sandbox capacity defaults to 64 Workers with no CPU or RAM settings.
+  Runtime supervisor heartbeat timeout exceeds its interval.
 - Byte-size definitions are positive by default; a definition with explicit
   `minimum = 0` may use `0B` as an owner-documented automatic-detection sentinel.
 - `github.com/pelletier/go-toml/v2` is used only for node-local TOML.

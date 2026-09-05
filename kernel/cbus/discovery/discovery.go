@@ -6,18 +6,19 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/pelletier/go-toml/v2"
 
 	"the8020/kernel/cbus/core"
 	"the8020/kernel/deployment"
 	programrunner "the8020/kernel/execution/programs"
+	"the8020/kernel/execution/supervisor"
 	workspacepackages "the8020/kernel/packages"
 )
 
@@ -27,6 +28,7 @@ var commandSegmentPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
 type PackageSource interface {
 	ListPackageIndexes() ([]workspacepackages.PackageIndex, error)
+	InspectPackageIndex(string) (workspacepackages.PackageIndex, error)
 	ActivatedPackageCommit(context.Context, string) (string, error)
 	PackagesRoot() string
 }
@@ -41,9 +43,12 @@ type Registry interface {
 }
 
 type Indexer struct {
-	packages PackageSource
-	programs ProgramRunner
-	registry Registry
+	packages    PackageSource
+	programs    ProgramRunner
+	registry    Registry
+	mu          sync.Mutex
+	fragments   map[string]fragment
+	diagnostics map[string]core.Diagnostic
 }
 
 type Report struct {
@@ -55,6 +60,7 @@ type Report struct {
 
 type commandManifest struct {
 	Version         int                `toml:"version"`
+	Command         string             `toml:"command"`
 	Program         string             `toml:"program"`
 	Summary         string             `toml:"summary"`
 	Description     string             `toml:"description,omitempty"`
@@ -81,49 +87,91 @@ func New(packages PackageSource, programs ProgramRunner, registry Registry) (*In
 	return &Indexer{packages: packages, programs: programs, registry: registry}, nil
 }
 
-// Reindex independently validates every ready package, then publishes one
-// complete immutable registry snapshot.
-func (i *Indexer) Reindex(ctx context.Context) (Report, error) {
-	entries, err := i.packages.ListPackageIndexes()
-	if err != nil {
-		return Report{}, fmt.Errorf("list active packages: %w", err)
+// Reindex replaces selected package fragments, or all fragments when omitted.
+// Filesystem discovery never reads unselected packages; collision validation
+// still covers the complete cached catalog.
+func (i *Indexer) Reindex(ctx context.Context, packageIDs ...string) (Report, error) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	for _, id := range packageIDs {
+		if _, err := workspacepackages.ParsePackageID(id); err != nil {
+			return Report{}, err
+		}
 	}
-	sort.Slice(entries, func(a, b int) bool { return entries[a].PackageID < entries[b].PackageID })
-	fragments := make([]fragment, 0, len(entries))
-	diagnostics := []core.Diagnostic{}
+	cached := map[string]fragment{}
+	invalid := map[string]core.Diagnostic{}
+	var entries []workspacepackages.PackageIndex
+	if len(packageIDs) == 0 {
+		var err error
+		entries, err = i.packages.ListPackageIndexes()
+		if err != nil {
+			return Report{}, fmt.Errorf("list active packages: %w", err)
+		}
+	} else {
+		for id, item := range i.fragments {
+			cached[id] = item
+		}
+		for id, item := range i.diagnostics {
+			invalid[id] = item
+		}
+		for _, id := range uniqueStrings(packageIDs) {
+			entry, err := i.packages.InspectPackageIndex(id)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				return Report{}, err
+			}
+			delete(cached, id)
+			delete(invalid, id)
+			if err == nil {
+				entries = append(entries, entry)
+			}
+		}
+	}
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return Report{}, err
+		}
 		if entry.State != "ready" || entry.ActiveCommit == "" {
 			continue
 		}
 		commit, err := i.packages.ActivatedPackageCommit(ctx, entry.PackageID)
 		if err != nil {
-			diagnostics = append(diagnostics, core.Diagnostic{PackageID: entry.PackageID, Message: err.Error()})
+			invalid[entry.PackageID] = core.Diagnostic{PackageID: entry.PackageID, Message: err.Error()}
 			continue
 		}
 		identity, err := workspacepackages.ParsePackageID(entry.PackageID)
 		if err != nil {
-			diagnostics = append(diagnostics, core.Diagnostic{PackageID: entry.PackageID, Message: err.Error()})
+			invalid[entry.PackageID] = core.Diagnostic{PackageID: entry.PackageID, Message: err.Error()}
 			continue
 		}
-		root := filepath.Join(i.packages.PackagesRoot(), identity.Namespace, identity.Repository)
-		item, err := i.discoverPackage(root, entry.PackageID, commit)
+		item, err := i.discoverPackage(filepath.Join(i.packages.PackagesRoot(), identity.Namespace, identity.Repository), entry.PackageID, commit)
 		if err != nil {
-			diagnostics = append(diagnostics, core.Diagnostic{PackageID: entry.PackageID, Message: err.Error()})
+			invalid[entry.PackageID] = core.Diagnostic{PackageID: entry.PackageID, Message: err.Error()}
 			continue
 		}
+		cached[entry.PackageID] = item
+	}
+	fragments := make([]fragment, 0, len(cached))
+	for _, item := range cached {
 		fragments = append(fragments, item)
 	}
-	registrations, validPackages, duplicateDiagnostics := i.withoutCollisions(fragments)
-	diagnostics = append(diagnostics, duplicateDiagnostics...)
+	sort.Slice(fragments, func(a, b int) bool { return fragments[a].packageID < fragments[b].packageID })
+	registrations, validPackages, diagnostics := i.withoutCollisions(fragments)
+	for _, diagnostic := range invalid {
+		diagnostics = append(diagnostics, diagnostic)
+	}
 	sort.Slice(diagnostics, func(a, b int) bool {
 		if diagnostics[a].PackageID != diagnostics[b].PackageID {
 			return diagnostics[a].PackageID < diagnostics[b].PackageID
 		}
 		return diagnostics[a].Message < diagnostics[b].Message
 	})
+	if err := ctx.Err(); err != nil {
+		return Report{}, err
+	}
 	if err := i.registry.ReplacePackages(registrations, diagnostics); err != nil {
 		return Report{}, err
 	}
+	i.fragments, i.diagnostics = cached, invalid
 	catalog := i.registry.Catalog()
 	return Report{Revision: catalog.Revision, Packages: validPackages, Commands: len(registrations), Diagnostics: diagnostics}, nil
 }
@@ -170,58 +218,27 @@ func (i *Indexer) ValidateCandidates(ctx context.Context, candidates []deploymen
 }
 
 func (i *Indexer) discoverPackage(root, packageID, commit string) (fragment, error) {
-	identity, err := workspacepackages.ParsePackageID(packageID)
-	if err != nil {
+	if _, err := workspacepackages.ParsePackageID(packageID); err != nil {
 		return fragment{}, err
 	}
-	commandRoot := filepath.Join(root, "cbus", "commands")
-	info, err := os.Lstat(commandRoot)
-	if errors.Is(err, os.ErrNotExist) {
-		return fragment{packageID: packageID}, nil
-	}
+	files, err := workspacepackages.DeclarationFiles(root, "cbus/commands")
 	if err != nil {
 		return fragment{}, err
-	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return fragment{}, errors.New("cbus/commands must be a real directory")
 	}
 	result := fragment{packageID: packageID}
-	err = filepath.WalkDir(commandRoot, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("command path %s is a symlink", path)
-		}
-		if entry.IsDir() || entry.Name() != "command.toml" {
-			return nil
-		}
-		relative, err := filepath.Rel(commandRoot, filepath.Dir(path))
-		if err != nil || relative == "." {
-			return errors.New("command.toml must be inside a command path directory")
-		}
-		segments := strings.Split(filepath.ToSlash(relative), "/")
-		for _, segment := range segments {
-			if !commandSegmentPattern.MatchString(segment) {
-				return fmt.Errorf("command path segment %q must be lowercase kebab-case", segment)
-			}
-		}
+	declared := map[string]string{}
+	for _, path := range files {
+		filename := filepath.Base(path)
 		manifest, err := readManifest(path)
 		if err != nil {
-			return fmt.Errorf("%s: %w", filepath.ToSlash(relative), err)
+			return fragment{}, fmt.Errorf("%s: %w", filename, err)
 		}
+		if previous, exists := declared[manifest.Command]; exists {
+			return fragment{}, fmt.Errorf("command %q is declared by both %s and %s", manifest.Command, previous, filename)
+		}
+		declared[manifest.Command] = filename
 		if _, err := workspacepackages.ValidateProgram(root, packageID, manifest.Program, commit); err != nil {
-			return fmt.Errorf("%s references invalid program %q: %w", filepath.ToSlash(relative), manifest.Program, err)
-		}
-		nameParts := append([]string(nil), segments...)
-		if identity.Namespace == "the8020" {
-			nameParts = append([]string{identity.Repository}, nameParts...)
-		} else {
-			nameParts = append([]string{identity.Namespace, identity.Repository}, nameParts...)
-		}
-		name := strings.Join(nameParts, ".")
-		if name == "kernel" || strings.HasPrefix(name, "kernel.") {
-			return fmt.Errorf("command name %q uses reserved kernel namespace", name)
+			return fragment{}, fmt.Errorf("%s references invalid program %q: %w", filename, manifest.Program, err)
 		}
 		examples := make([]string, len(manifest.Examples))
 		for index, example := range manifest.Examples {
@@ -229,8 +246,8 @@ func (i *Indexer) discoverPackage(root, packageID, commit string) (fragment, err
 		}
 		programID := packageID + "/" + manifest.Program
 		command := core.Command{
-			Version: manifest.Version, ID: opaqueID(packageID, commit, relative), Name: name,
-			Kind: core.CommandKindPackage, Path: []string{name}, Summary: manifest.Summary,
+			Version: manifest.Version, ID: opaqueID(packageID, commit, manifest.Command), Name: manifest.Command,
+			Kind: core.CommandKindPackage, Path: []string{manifest.Command}, Summary: manifest.Summary,
 			Description: manifest.Description, Usage: manifest.Usage,
 			Secrets:      append([]core.SecretInput(nil), manifest.Secrets...),
 			MutatesState: manifest.MutatesState, RestartBehavior: manifest.RestartBehavior,
@@ -248,8 +265,8 @@ func (i *Indexer) discoverPackage(root, packageID, commit string) (fragment, err
 					if errors.Is(err, programrunner.ErrActiveCommitChanged) {
 						return core.Execution{}, core.NewError(core.CodeStaleCatalog, err.Error())
 					}
-					var execution *programrunner.ExecutionError
-					if errors.As(err, &execution) {
+					var execution *supervisor.ResponseError
+					if errors.As(err, &execution) && execution.Code != "" {
 						return core.Execution{}, &core.Error{Code: execution.Code, Message: execution.Message, Details: execution.Details}
 					}
 					return core.Execution{}, core.NewError(core.CodeRuntimeOperation, err.Error())
@@ -261,10 +278,6 @@ func (i *Indexer) discoverPackage(root, packageID, commit string) (fragment, err
 				return core.Execution{Result: result.Value, Output: output}, nil
 			},
 		})
-		return nil
-	})
-	if err != nil {
-		return fragment{}, err
 	}
 	sort.Slice(result.registrations, func(a, b int) bool {
 		return result.registrations[a].Command.Name < result.registrations[b].Command.Name
@@ -278,6 +291,13 @@ func readManifest(path string) (commandManifest, error) {
 		return commandManifest{}, err
 	}
 	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return commandManifest{}, err
+	}
+	if info.Size() > commandManifestLimit {
+		return commandManifest{}, errors.New("command declaration exceeds manifest size limit")
+	}
 	var manifest commandManifest
 	decoder := toml.NewDecoder(io.LimitReader(file, commandManifestLimit+1))
 	decoder.DisallowUnknownFields()
@@ -286,6 +306,17 @@ func readManifest(path string) (commandManifest, error) {
 	}
 	if manifest.Version != 1 {
 		return commandManifest{}, errors.New("version must equal 1")
+	}
+	if manifest.Command == "" {
+		return commandManifest{}, errors.New("command is required")
+	}
+	for _, segment := range strings.Split(manifest.Command, ".") {
+		if !commandSegmentPattern.MatchString(segment) {
+			return commandManifest{}, errors.New("command must be a dot-separated name with lowercase kebab-case segments")
+		}
+	}
+	if manifest.Command == "kernel" || strings.HasPrefix(manifest.Command, "kernel.") {
+		return commandManifest{}, fmt.Errorf("command name %q uses reserved kernel namespace", manifest.Command)
 	}
 	if err := workspacepackages.ValidateName(manifest.Program); err != nil || strings.Contains(manifest.Program, ".") {
 		return commandManifest{}, errors.New("program must name one same-package program")
@@ -324,8 +355,8 @@ func readManifest(path string) (commandManifest, error) {
 	return manifest, nil
 }
 
-func opaqueID(packageID, commit, relative string) string {
-	return "package:" + packageID + "@" + commit + ":" + filepath.ToSlash(relative)
+func opaqueID(packageID, commit, command string) string {
+	return "package:" + packageID + "@" + commit + ":" + command
 }
 
 func (i *Indexer) withoutCollisions(fragments []fragment) ([]core.Registration, []string, []core.Diagnostic) {

@@ -21,7 +21,10 @@ import (
 	"time"
 
 	"the8020/kernel/database"
+	"the8020/kernel/execution"
 )
+
+type forwardingPathKey struct{}
 
 const capacityPath = "/__the8020/node/capacity"
 const workerInvokePath = "/__the8020/node/worker/invoke"
@@ -71,12 +74,13 @@ type CapacityProvider interface {
 }
 
 type WorkerInvocationRequest struct {
-	NodeID                string `json:"node_id"`
-	SandboxID             string `json:"sandbox_id"`
-	WorkerID              string `json:"worker_id"`
-	PersistentExecutionID string `json:"persistent_execution_id,omitempty"`
-	Function              string `json:"function"`
-	Input                 any    `json:"input"`
+	NodeID                string         `json:"node_id"`
+	SandboxID             string         `json:"sandbox_id"`
+	WorkerID              string         `json:"worker_id"`
+	PersistentExecutionID string         `json:"persistent_execution_id,omitempty"`
+	Function              string         `json:"function"`
+	Input                 any            `json:"input"`
+	User                  execution.User `json:"user"`
 }
 
 type WorkerInvocationError struct {
@@ -366,7 +370,8 @@ func (m *Manager) Proxy(nodeID string, writer http.ResponseWriter, request *http
 			forwarded.URL.Host = target.Host
 			forwarded.Host = target.Host
 			forwarded.Header.Set("Authorization", "Bearer "+m.secret)
-			forwarded.Header.Set("X-80-20-Internal-Forwarded-By", m.localID)
+			path, _ := request.Context().Value(forwardingPathKey{}).([]string)
+			forwarded.Header.Set("the8020-internal-forwarded-nodes", strings.Join(append(append([]string(nil), path...), m.localID), ","))
 		},
 		Transport: m.http.Transport,
 		ErrorHandler: func(response http.ResponseWriter, _ *http.Request, proxyErr error) {
@@ -381,22 +386,15 @@ func (m *Manager) Proxy(nodeID string, writer http.ResponseWriter, request *http
 // the forwarding path. It returns false when no remote candidate remains.
 func (m *Manager) ProxyAvailable(writer http.ResponseWriter, request *http.Request) (bool, error) {
 	visited := map[string]bool{m.localID: true}
-	for _, id := range strings.Split(request.Header.Get("X-80-20-Internal-Forwarded-Nodes"), ",") {
+	path, _ := request.Context().Value(forwardingPathKey{}).([]string)
+	for _, id := range path {
 		if id = strings.TrimSpace(id); id != "" {
 			visited[id] = true
 		}
 	}
 	candidates := m.availableNodes(request.Context(), visited)
 	for _, node := range candidates {
-		clone := request.Clone(request.Context())
-		clone.Header = request.Header.Clone()
-		path := make([]string, 0, len(visited))
-		for id := range visited {
-			path = append(path, id)
-		}
-		sort.Strings(path)
-		clone.Header.Set("X-80-20-Internal-Forwarded-Nodes", strings.Join(path, ","))
-		return true, m.Proxy(node.ID, writer, clone)
+		return true, m.Proxy(node.ID, writer, request)
 	}
 	return false, nil
 }
@@ -537,7 +535,7 @@ func workerInvocationFailure(code, message string) WorkerInvocationResult {
 }
 
 func encodeWorkerInvocation(input WorkerInvocationRequest) ([]byte, error) {
-	if input.NodeID == "" || input.SandboxID == "" || input.WorkerID == "" || input.Function == "" || len(input.Function) > 128 {
+	if input.NodeID == "" || input.SandboxID == "" || input.WorkerID == "" || input.Function == "" || len(input.Function) > 128 || !input.User.Valid() {
 		return nil, errors.New("exact Worker target and registered function are required")
 	}
 	data, err := json.Marshal(input)
@@ -608,7 +606,10 @@ func (m *Manager) authorize(next http.Handler) http.Handler {
 			return
 		}
 		request.Header.Del("Authorization")
-		next.ServeHTTP(writer, request)
+		// Only authenticated peers may supply forwarding history. Public
+		// request headers are never consulted for peer selection.
+		path := strings.Split(request.Header.Get("the8020-internal-forwarded-nodes"), ",")
+		next.ServeHTTP(writer, request.WithContext(context.WithValue(request.Context(), forwardingPathKey{}, path)))
 	})
 }
 

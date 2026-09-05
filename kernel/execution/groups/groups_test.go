@@ -63,6 +63,26 @@ func TestSelectRequiresTypeKeyAndProfileCompatibility(t *testing.T) {
 	}
 }
 
+func TestJobPlacementGroupsMatchByValueAndStaySeparateFromServices(t *testing.T) {
+	group := ""
+	request := Request{WorkloadType: model.WorkloadJob, OwnerID: "program", Strategy: model.GroupingOwner, Profile: profile(model.WorkloadJob, model.DependencyCachedOnly), PlacementGroup: &group}
+	selected, err := Select(request, nil)
+	if err != nil || selected.GroupKey != "job:placement:" {
+		t.Fatalf("empty placement=%#v %v", selected, err)
+	}
+	hash, _ := request.Profile.Hash()
+	candidates := []Group{{RuntimeGroupID: "job-group", WorkloadType: model.WorkloadJob, GroupKey: selected.GroupKey, ProfileHash: hash, State: model.StateReady, Healthy: true}, {RuntimeGroupID: "service-group", WorkloadType: model.WorkloadService, GroupKey: selected.GroupKey, ProfileHash: hash, State: model.StateReady, Healthy: true}}
+	selected, err = Select(request, candidates)
+	if err != nil || selected.RuntimeGroupID != "job-group" {
+		t.Fatalf("selected=%#v %v", selected, err)
+	}
+	group = "other"
+	selected, err = Select(request, candidates)
+	if err != nil || selected.Existing {
+		t.Fatalf("cross-group selection=%#v %v", selected, err)
+	}
+}
+
 func TestServicePlacementGroupSharesAcrossServicesButNotDuplicateAllocations(t *testing.T) {
 	placement := ""
 	request := Request{WorkloadType: model.WorkloadService, OwnerID: "allocation-a", PlacementGroup: &placement, LogicalServiceID: "example/orders/api", Strategy: model.GroupingOwner, Profile: profile(model.WorkloadService, model.DependencyCachedOnly)}

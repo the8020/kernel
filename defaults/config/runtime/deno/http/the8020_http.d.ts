@@ -51,6 +51,7 @@ declare namespace Zod {
   }
   export class ZodBigInt extends ZodType<bigint> {}
   export class ZodBoolean extends ZodType<boolean> {}
+  export class ZodDate extends ZodType<Date> {}
   export class ZodObject<Shape extends ZodRawShape> extends ZodType<
     ObjectOutput<Shape>
   > {
@@ -100,6 +101,7 @@ declare namespace Zod {
   export function number(): ZodNumber;
   export function bigint(): ZodBigInt;
   export function boolean(): ZodBoolean;
+  export function date(): ZodDate;
   export function literal<const Value extends string | number | boolean>(
     value: Value,
   ): ZodType<Value>;
@@ -138,8 +140,13 @@ export interface RequestMetadata {
   persistentExecutionId?: string;
   persistentKeepAliveMilliseconds?: number;
   execution: CurrentExecutionMetadata;
+  user: ExecutionUserMetadata;
   auth: AuthContext;
-  authenticatedUser?: string;
+}
+
+export interface ExecutionUserMetadata {
+  userId: string;
+  username: string;
 }
 
 export interface ClientConnectionMetadata {
@@ -161,7 +168,6 @@ export interface AuthContext {
   realm?: "user";
   userId?: string;
   username?: string;
-  authVersion?: number;
 }
 
 export interface RuntimeServiceContext {

@@ -24,6 +24,8 @@ function metadata(
     workloadType,
     ownerId: `owner-${suffix}`,
     workloadId: `workload-${suffix}`,
+    user: { userId: "user:system", username: "system" },
+    origin: { type: workloadType, id: `owner-${suffix}` },
     releaseId: "test",
     databaseBackend: "sqlite",
     entrypoint,
@@ -53,6 +55,100 @@ Deno.test("job Worker loads ES module and supports compatible reuse", async () =
   } finally {
     await worker.stop();
     await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+});
+
+Deno.test("job Worker exposes its immutable system execution context", async () => {
+  const worker = new RuntimeWorker({
+    metadata: metadata("job", example("job_context"), "context"),
+    permissions: { read: [new URL("../examples", import.meta.url).pathname] },
+  });
+  try {
+    const value = await worker.runJob([]) as Record<string, unknown>;
+    assertEquals(value.type, "job");
+    assertEquals(value.id, "owner-context");
+    assertEquals(value.userId, "user:system");
+    assertEquals(value.username, "system");
+    assertEquals(value.nodeId, "node-test");
+    assertEquals(value.runtimeGroupId, "rgp-test0001");
+    assertEquals(value.sandboxId, "sbx-test0001");
+    assertEquals(value.workerId, "worker-context");
+    assertEquals(value.executionId, "execution-context");
+    assertEquals(typeof value.requestId, "string");
+  } finally {
+    await worker.stop();
+  }
+});
+
+Deno.test("hook dispatcher runs an ordered shared-state chain in one ordinary reusable job Worker", async () => {
+  const worker = new RuntimeWorker({
+    metadata: metadata(
+      "job",
+      new URL("./hook_dispatch.ts", import.meta.url).href,
+      "hooks",
+    ),
+    permissions: { read: [new URL("..", import.meta.url).pathname] },
+  });
+  const handlers = ["build", "enhance", "filter"].map((name) => ({
+    id: `acme/${name}/hooks/index.toml`,
+    entrypoint: new URL(`./testdata/hook_${name}.ts`, import.meta.url).href,
+  }));
+  const run = (value: number, fail = false) =>
+    worker.runJob([
+      handlers,
+      { package_id: "acme/service" },
+      { trace: [], workers: [], value, fail },
+    ]) as Promise<Record<string, unknown>>;
+  try {
+    for (const initial of [2, 5]) {
+      const result = await run(initial);
+      assertEquals(result.trace, ["build", "enhance", "filter"]);
+      assertEquals(result.workers, [
+        "worker-hooks",
+        "worker-hooks",
+        "worker-hooks",
+      ]);
+      assertEquals(result.value, (initial + 1) * 3 - 1);
+      assertEquals(result.packageId, "acme/service");
+      assertEquals(result.scopeFrozen, true);
+      assertEquals(result.user, "user:system");
+    }
+    await assertRejects(
+      () => run(0, true),
+      Error,
+      "hook acme/enhance/hooks/index.toml failed: enhancement failed",
+    );
+    assertEquals(
+      worker.logs.some((log) => log.message === "filter ran"),
+      false,
+    );
+    assertEquals((await run(0)).value, 2);
+  } finally {
+    await worker.stop();
+  }
+});
+
+Deno.test("program job exposes the logical program origin", async () => {
+  const programMetadata = metadata(
+    "job",
+    example("job_context"),
+    "program-context",
+  );
+  programMetadata.origin = {
+    type: "program",
+    id: "the8020/example/program",
+  };
+  const worker = new RuntimeWorker({
+    metadata: programMetadata,
+    permissions: { read: [new URL("../examples", import.meta.url).pathname] },
+  });
+  try {
+    const value = await worker.runJob([]) as Record<string, unknown>;
+    assertEquals(value.type, "program");
+    assertEquals(value.id, "the8020/example/program");
+    assertEquals(value.username, "system");
+  } finally {
+    await worker.stop();
   }
 });
 
@@ -215,6 +311,55 @@ Deno.test("service Worker transfers request and response streams", async () => {
   }
 });
 
+Deno.test("service Worker exposes the exact request user", async () => {
+  const workerMetadata = metadata(
+    "service",
+    example("service_context"),
+    "service-context",
+  );
+  const worker = new RuntimeWorker({
+    metadata: workerMetadata,
+    permissions: { read: [new URL("../examples", import.meta.url).pathname] },
+  });
+  try {
+    const response = await worker.dispatchService(
+      new Request("http://service.test/context"),
+      {
+        requestId: "request-alice",
+        serviceId: "example/context/service",
+        serviceGeneration: 2,
+        canonicalBasePath: "/example/context/service",
+        originalUrl: "https://example.test/example/context/service",
+        client: { ipAddress: "203.0.113.4", networkScope: "public" },
+        execution: {
+          nodeId: workerMetadata.nodeId,
+          runtimeGroupId: workerMetadata.runtimeGroupId,
+          sandboxId: workerMetadata.sandboxId,
+          workerId: workerMetadata.workerId,
+          workerExecutionId: workerMetadata.executionId,
+        },
+        user: { userId: "user:alice", username: "alice" },
+        auth: {
+          authenticated: true,
+          realm: "user",
+          userId: "user:alice",
+          username: "alice",
+        },
+      },
+    );
+    const value = await response.json();
+    assertEquals(value.type, "service");
+    assertEquals(value.id, "owner-service-context");
+    assertEquals(value.userId, "user:alice");
+    assertEquals(value.username, "alice");
+    assertEquals(value.requestId, "request-alice");
+    assertEquals(value.sandboxId, "sbx-test0001");
+    assertEquals(value.workerId, "worker-service-context");
+  } finally {
+    await worker.stop();
+  }
+});
+
 Deno.test("jobs and services both have unrestricted outbound network access", async () => {
   const external = Deno.serve({
     hostname: "127.0.0.1",
@@ -288,12 +433,12 @@ Deno.test("stateless service Worker bridges WebSocket routes without buffering m
       workerId: workerMetadata.workerId,
       workerExecutionId: workerMetadata.executionId,
     },
+    user: { userId: "user:admin", username: "admin" },
     auth: {
       authenticated: true,
       realm: "user",
       userId: "user:Admin",
       username: "Admin",
-      authVersion: 1,
     },
   };
   try {
@@ -349,22 +494,19 @@ async function waitFor(predicate: () => boolean): Promise<void> {
   }
 }
 
-Deno.test("service Worker bridges typed kernel authentication calls", async () => {
+Deno.test("service Worker bridges signing, verification, admin, and database calls", async () => {
   const calls: KernelCallRequest[] = [];
   const worker = new RuntimeWorker({
     metadata: metadata("service", example("service_kernel"), "kernel"),
     permissions: { read: [new URL("../examples", import.meta.url).pathname] },
     kernelCall: (call) => {
       calls.push(call);
-      if (call.operation === "auth.login") {
+      if (call.operation === "runtime.operation") {
         return Promise.resolve({
-          authenticated: true,
-          user: {
-            id: "user:Admin",
-            username: "Admin",
-            realm: "user",
-          },
-          setCookie: "the8020_auth=opaque; HttpOnly; Path=/",
+          success: true,
+          result: call.arguments.operation === "crypto.token.sign"
+            ? { token: "signed-token" }
+            : null,
         });
       }
       if (call.operation === "admin.execute") {
@@ -396,33 +538,38 @@ Deno.test("service Worker bridges typed kernel authentication calls", async () =
       workerId: worker.metadata.workerId,
       workerExecutionId: worker.metadata.executionId,
     },
+    user: { userId: "user:system", username: "system" },
     auth: { authenticated: false },
   };
   try {
     const login = await worker.dispatchService(
-      new Request("http://service/login", {
+      new Request("http://service/sign", {
         method: "POST",
-        body: JSON.stringify({ username: "Admin", password: "private" }),
+        body: JSON.stringify({ sub: "user:alice" }),
       }),
       requestMetadata,
     );
-    assertEquals((await login.json()).authenticated, true);
+    assertEquals(await login.json(), "signed-token");
     assertEquals(calls[0], {
-      operation: "auth.login",
-      arguments: { username: "Admin", password: "private" },
+      operation: "runtime.operation",
+      arguments: {
+        operation: "crypto.token.sign",
+        input: { claims: { sub: "user:alice" } },
+      },
       requestId: "request-auth-1",
       serviceId: "example/auth/login",
       executionId: "execution-kernel",
       workerId: "worker-kernel",
       persistentExecutionId: undefined,
+      user: { userId: "user:system", username: "system" },
     });
     await worker.dispatchService(
-      new Request("http://service/logout"),
+      new Request("http://service/verify"),
       { ...requestMetadata, requestId: "request-auth-2" },
     );
     const applicationCalls = () =>
       calls.filter((call) => call.operation !== "database.scope.close");
-    assertEquals(applicationCalls()[1]?.operation, "auth.logoutCurrent");
+    assertEquals(applicationCalls()[1]?.operation, "runtime.operation");
     assertEquals(applicationCalls()[1]?.requestId, "request-auth-2");
     const admin = await worker.dispatchService(
       new Request("http://service/admin"),
@@ -509,6 +656,7 @@ Deno.test("persistent control calls use the canonical service identity", async (
         {},
         undefined,
         "persistent-control",
+        { userId: "user:system", username: "system" },
       ),
       { ok: true, output: { completed: true } },
     );
@@ -656,6 +804,7 @@ Deno.test("service request cancellation reaches an in-flight kernel call", async
           workerId: worker.metadata.workerId,
           workerExecutionId: worker.metadata.executionId,
         },
+        user: { userId: "user:system", username: "system" },
         auth: { authenticated: false },
       },
     );
@@ -712,5 +861,122 @@ Deno.test("nested Workers remain available within the parent envelope", async ()
     assertEquals(await worker.runJob([]), "nested-ok");
   } finally {
     worker.kill();
+  }
+});
+
+Deno.test("target Worker authenticates before HTTP and WebSocket handlers", async () => {
+  let allowed = false;
+  const calls: KernelCallRequest[] = [];
+  const worker = new RuntimeWorker({
+    metadata: {
+      ...metadata(
+        "service",
+        new URL("./testdata/authenticated_service.ts", import.meta.url).href,
+        "auth-policy",
+      ),
+      service: {
+        serviceId: "example/auth/service",
+        generation: 1,
+        canonicalBasePath: "/example/auth/service",
+        executionMode: "stateless",
+      },
+    },
+    permissions: {
+      read: [
+        new URL("./testdata", import.meta.url).pathname,
+        new URL("../http", import.meta.url).pathname,
+      ],
+      net: true,
+      import: true,
+    },
+    kernelCall: (call) => {
+      calls.push(call);
+      return Promise.resolve({ columns: ["allowed"], rows: [[allowed]] });
+    },
+  });
+  const meta: ServiceRequestMetadata = {
+    requestId: "policy-request",
+    serviceId: "example/auth/service",
+    serviceGeneration: 1,
+    canonicalBasePath: "/example/auth/service",
+    originalUrl: "https://example.test/",
+    client: { ipAddress: "127.0.0.1", networkScope: "loopback" },
+    execution: {
+      nodeId: worker.metadata.nodeId,
+      runtimeGroupId: worker.metadata.runtimeGroupId,
+      sandboxId: worker.metadata.sandboxId,
+      workerId: worker.metadata.workerId,
+      workerExecutionId: worker.metadata.executionId,
+    },
+    user: { userId: "user:alice", username: "alice" },
+    auth: { authenticated: false },
+    authentication: {
+      module: new URL("./testdata/authentication.ts", import.meta.url).href,
+      claims: { sub: "user:alice" },
+      unauthenticated: { action: "reject", status: 401 },
+    },
+  };
+  try {
+    for (const cookie of ["", "valid", "invalid", "expired"]) {
+      const response = await worker.dispatchService(
+        new Request("https://service/", {
+          headers: { cookie: `the8020_auth=${cookie}` },
+        }),
+        { ...meta, authentication: undefined, user: worker.metadata.user },
+      );
+      const result = await response.json();
+      assertEquals(result.username, "system");
+      assertEquals(result.authenticated, false);
+    }
+    assertEquals(
+      calls.filter((call) => call.operation === "database.execute").length,
+      0,
+    );
+    const rejected = await worker.dispatchService(
+      new Request("https://service/"),
+      meta,
+    );
+    assertEquals(rejected.status, 401);
+    assertEquals(await rejected.text(), "Denied");
+    const rejectedSocket = await worker.openServiceWebSocket(
+      new Request("https://service/"),
+      meta,
+      "test",
+      { send: () => {}, close: () => {} },
+    );
+    assertEquals(rejectedSocket.accepted, false);
+    allowed = true;
+    const accepted = await worker.dispatchService(
+      new Request("https://service/"),
+      meta,
+    );
+    const identity = await accepted.json();
+    assertEquals(identity.username, "alice");
+    assertEquals(identity.authenticated, true);
+    const sent: Array<string | Uint8Array> = [];
+    const opened = await worker.openServiceWebSocket(
+      new Request("https://service/"),
+      meta,
+      "test",
+      { send: (data) => sent.push(data), close: () => {} },
+    );
+    assertEquals(opened.accepted, true);
+    if (!opened.accepted) throw new Error("WebSocket rejected");
+    await waitFor(() => sent.length === 1);
+    assertEquals(JSON.parse(sent[0] as string).authenticated, true);
+    opened.connection.send("check context");
+    await waitFor(() => sent.length === 2);
+    assertEquals(JSON.parse(sent[1] as string).username, "alice");
+    assertEquals(JSON.parse(sent[1] as string).authenticated, true);
+    for (
+      const call of calls.filter((call) =>
+        call.operation === "database.execute"
+      )
+    ) {
+      assertEquals(call.user, { userId: "user:alice", username: "alice" });
+      assertEquals(call.requestId, "policy-request");
+    }
+  } finally {
+    await worker.stop();
   }
 });

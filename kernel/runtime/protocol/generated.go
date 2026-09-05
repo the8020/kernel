@@ -6,64 +6,54 @@ import (
 	"fmt"
 )
 
-const ProtocolVersion = 1
+const ProtocolVersion = 3
 
 type MessageType string
 
 const (
-	MessageSupervisorRegistration       MessageType = "supervisor_registration"
-	MessageHeartbeat                    MessageType = "heartbeat"
-	MessageStartWorker                  MessageType = "start_worker"
-	MessageStopWorker                   MessageType = "stop_worker"
-	MessageWorkerStateChange            MessageType = "worker_state_change"
-	MessageWorkerLogEvent               MessageType = "worker_log_event"
-	MessageWorkerInvoke                 MessageType = "worker_invoke"
-	MessageWorkerResult                 MessageType = "worker_result"
-	MessagePersistentExecutionComplete  MessageType = "persistent_execution_complete"
-	MessagePersistentExecutionCompleted MessageType = "persistent_execution_completed"
-	MessageJobStart                     MessageType = "job_start"
-	MessageJobResult                    MessageType = "job_result"
-	MessageServicePoolConfiguration     MessageType = "service_pool_configuration"
-	MessageServiceWorkerScaleRequest    MessageType = "service_worker_scale_request"
-	MessageServiceOpenapi               MessageType = "service_openapi"
-	MessageRuntimeDrain                 MessageType = "runtime_drain"
-	MessageRuntimeShutdown              MessageType = "runtime_shutdown"
-	MessageAuthLogin                    MessageType = "auth_login"
-	MessageAuthLogoutCurrent            MessageType = "auth_logout_current"
-	MessageAuthResult                   MessageType = "auth_result"
-	MessageAdminCommand                 MessageType = "admin_command"
-	MessageAdminResult                  MessageType = "admin_result"
-	MessageDatabaseExecute              MessageType = "database_execute"
-	MessageDatabaseResult               MessageType = "database_result"
-	MessageErrorResponse                MessageType = "error_response"
+	MessageSupervisorRegistration    MessageType = "supervisor_registration"
+	MessageHeartbeat                 MessageType = "heartbeat"
+	MessageStartWorker               MessageType = "start_worker"
+	MessageStopWorker                MessageType = "stop_worker"
+	MessageWorkerStateChange         MessageType = "worker_state_change"
+	MessageWorkerLogEvent            MessageType = "worker_log_event"
+	MessageWorkerInvoke              MessageType = "worker_invoke"
+	MessageWorkerResult              MessageType = "worker_result"
+	MessageJobStart                  MessageType = "job_start"
+	MessageJobResult                 MessageType = "job_result"
+	MessageServicePoolConfiguration  MessageType = "service_pool_configuration"
+	MessageServiceWorkerScaleRequest MessageType = "service_worker_scale_request"
+	MessageServiceOpenapi            MessageType = "service_openapi"
+	MessageRuntimeDrain              MessageType = "runtime_drain"
+	MessageRuntimeShutdown           MessageType = "runtime_shutdown"
+	MessageAdminCommand              MessageType = "admin_command"
+	MessageAdminResult               MessageType = "admin_result"
+	MessageDatabaseExecute           MessageType = "database_execute"
+	MessageDatabaseResult            MessageType = "database_result"
+	MessageErrorResponse             MessageType = "error_response"
 )
 
 var validMessageTypes = map[MessageType]bool{
-	MessageSupervisorRegistration:       true,
-	MessageHeartbeat:                    true,
-	MessageStartWorker:                  true,
-	MessageStopWorker:                   true,
-	MessageWorkerStateChange:            true,
-	MessageWorkerLogEvent:               true,
-	MessageWorkerInvoke:                 true,
-	MessageWorkerResult:                 true,
-	MessagePersistentExecutionComplete:  true,
-	MessagePersistentExecutionCompleted: true,
-	MessageJobStart:                     true,
-	MessageJobResult:                    true,
-	MessageServicePoolConfiguration:     true,
-	MessageServiceWorkerScaleRequest:    true,
-	MessageServiceOpenapi:               true,
-	MessageRuntimeDrain:                 true,
-	MessageRuntimeShutdown:              true,
-	MessageAuthLogin:                    true,
-	MessageAuthLogoutCurrent:            true,
-	MessageAuthResult:                   true,
-	MessageAdminCommand:                 true,
-	MessageAdminResult:                  true,
-	MessageDatabaseExecute:              true,
-	MessageDatabaseResult:               true,
-	MessageErrorResponse:                true,
+	MessageSupervisorRegistration:    true,
+	MessageHeartbeat:                 true,
+	MessageStartWorker:               true,
+	MessageStopWorker:                true,
+	MessageWorkerStateChange:         true,
+	MessageWorkerLogEvent:            true,
+	MessageWorkerInvoke:              true,
+	MessageWorkerResult:              true,
+	MessageJobStart:                  true,
+	MessageJobResult:                 true,
+	MessageServicePoolConfiguration:  true,
+	MessageServiceWorkerScaleRequest: true,
+	MessageServiceOpenapi:            true,
+	MessageRuntimeDrain:              true,
+	MessageRuntimeShutdown:           true,
+	MessageAdminCommand:              true,
+	MessageAdminResult:               true,
+	MessageDatabaseExecute:           true,
+	MessageDatabaseResult:            true,
+	MessageErrorResponse:             true,
 }
 
 type Envelope struct {

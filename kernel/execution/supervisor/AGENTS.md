@@ -29,11 +29,16 @@
   followed on the private supervisor hop.
 - Service WebSocket proxying preserves the original relative URL, subprotocols,
   and trusted metadata while authenticating the private supervisor upgrade with
-  the sandbox token.
+  the sandbox token. The caller may modify the upstream response before public
+  headers or upgrade bytes are sent, allowing exact-target route signing through
+  the same streaming proxy. The selected Worker uses
+  `the8020-internal-selected-worker-id` for both HTTP and WebSocket responses.
 - Exact Worker invocation targets one known Worker and carries a bounded
   application-defined function name, optional persistent-execution identity, and
-  JSON input/output without scanning, interpreting the name, or exposing the
-  private endpoint publicly.
+  validated effective user plus JSON input/output without scanning, interpreting
+  the name, or exposing the private endpoint publicly.
+- Worker startup requires a canonical user and a workload-compatible service,
+  job, or program origin; neither is optional runtime metadata.
 - Non-success control responses retain their bounded HTTP status in
   `ResponseError`, including a structured execution code/details when supplied;
   callers may classify a `4xx` response without parsing error text, while

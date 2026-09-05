@@ -21,6 +21,18 @@
 # Work Guidance
 
 - Use `log/slog` and this small writer; do not add a logging framework.
+- Keep logging policy generic: record transport, formatting, batching, writing,
+  and retention. Request measurement and decisions to emit failure, slow-request,
+  or statistical summaries belong to the emitting application or owning runtime
+  module, not HTTP-specific logging settings.
+- Compact human-readable prefixes show recognizable typed IDs without redundant
+  labels such as `sandbox=` or `worker=`; declared-object names remain distinct
+  from runtime-instance IDs.
+- When limiting a record, preserve its identifying metadata and the beginning
+  and end of oversized message or stack text. Omit the middle with an explicit
+  marker, preserve valid encoding, and bound memory during formatting.
+- Unified logging must use small byte-bounded transport and batch buffers;
+  supervisor memory must not retain per-Worker log histories.
 
 # Verification
 

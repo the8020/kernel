@@ -18,7 +18,7 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 
-	"the8020/kernel/auth"
+	"the8020/kernel/execution"
 	"the8020/kernel/sandbox/backend"
 	"the8020/kernel/sandbox/model"
 	"the8020/kernel/settings"
@@ -41,8 +41,8 @@ const (
 var ErrPortUnavailable = errors.New("SSH port is unavailable")
 
 type Authenticator interface {
-	AuthenticatePassword(string, []byte) (auth.AuthContext, error)
-	AuthenticateUser(string) (auth.AuthContext, error)
+	AuthenticatePassword(string, []byte) (execution.User, error)
+	AuthenticateUser(string) (execution.User, error)
 }
 
 type Development interface {
@@ -138,7 +138,7 @@ func New(config Config) (*Manager, error) {
 			return nil, errors.New("authentication is temporarily unavailable")
 		}
 		identity, authenticateErr := config.Authentication.AuthenticatePassword(metadata.User(), password)
-		if authenticateErr != nil || !identity.Authenticated || identity.Username == "" {
+		if authenticateErr != nil || !identity.Valid() {
 			return nil, errors.New("authentication failed")
 		}
 		return &gossh.Permissions{Extensions: map[string]string{"username": identity.Username}}, nil
@@ -151,7 +151,7 @@ func New(config Config) (*Manager, error) {
 			return nil, errors.New("authentication is temporarily unavailable")
 		}
 		identity, authenticateErr := config.Authentication.AuthenticateUser(metadata.User())
-		if authenticateErr != nil || !identity.Authenticated || identity.Username == "" {
+		if authenticateErr != nil || !identity.Valid() {
 			return nil, errors.New("authentication failed")
 		}
 		content, readErr := config.Development.AuthorizedKeys(identity.Username)
@@ -653,7 +653,7 @@ func validSelectorSandboxID(value string) bool {
 
 func validDevelopmentSandboxID(value string) bool {
 	username, found := strings.CutPrefix(value, "dev-")
-	return found && auth.ValidateUsername(username) == nil
+	return found && execution.ValidateUsername(username) == nil
 }
 
 func terminalFromRequest(request ptyRequest) (terminal, error) {

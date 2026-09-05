@@ -17,26 +17,25 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 
-	"the8020/kernel/auth"
-	"the8020/kernel/database"
+	"the8020/kernel/execution"
 	"the8020/kernel/sandbox/backend"
 	"the8020/kernel/settings"
 )
 
 type observingAuthentication struct {
-	manager  *auth.Manager
+	manager  Authenticator
 	mu       sync.Mutex
 	password []byte
 }
 
-func (a *observingAuthentication) AuthenticatePassword(username string, password []byte) (auth.AuthContext, error) {
+func (a *observingAuthentication) AuthenticatePassword(username string, password []byte) (execution.User, error) {
 	a.mu.Lock()
 	a.password = password
 	a.mu.Unlock()
 	return a.manager.AuthenticatePassword(username, password)
 }
 
-func (a *observingAuthentication) AuthenticateUser(username string) (auth.AuthContext, error) {
+func (a *observingAuthentication) AuthenticateUser(username string) (execution.User, error) {
 	return a.manager.AuthenticateUser(username)
 }
 
@@ -133,7 +132,7 @@ func (c *fakeConsole) emit(data []byte) error {
 func (c *fakeConsole) finish() { c.finishOnce.Do(func() { _ = c.writer.Close() }) }
 
 func TestSSHPasswordTTYAndRouting(t *testing.T) {
-	authentication, usersFile := testAuthentication(t)
+	authentication := testAuthentication()
 	observedAuthentication := &observingAuthentication{manager: authentication}
 	development := &fakeDevelopment{sandbox: "dev-alice"}
 	consoles := &fakeConsoles{opened: make(chan openedConsole, 8)}
@@ -156,10 +155,6 @@ func TestSSHPasswordTTYAndRouting(t *testing.T) {
 	t.Cleanup(func() { _ = client.Close() })
 	if !observedAuthentication.cleared() {
 		t.Fatal("SSH password buffer was not cleared after authentication")
-	}
-	data, err := os.ReadFile(usersFile)
-	if err != nil || bytes.Contains(data, []byte("correct horse")) {
-		t.Fatalf("authentication store exposed presented password: err=%v data=%q", err, data)
 	}
 
 	session, err := client.NewSession()
@@ -318,7 +313,7 @@ func TestSSHPasswordTTYAndRouting(t *testing.T) {
 }
 
 func TestSSHPublicKeyAuthenticationAndRejections(t *testing.T) {
-	authentication, _ := testAuthentication(t)
+	authentication := testAuthentication()
 	matching := testSigner(t)
 	nonmatching := testSigner(t)
 	authorized := append([]byte("restrict "), gossh.MarshalAuthorizedKey(matching.PublicKey())...)
@@ -476,7 +471,7 @@ func TestEnvironmentValidation(t *testing.T) {
 }
 
 func TestCloseStopsListener(t *testing.T) {
-	authentication, _ := testAuthentication(t)
+	authentication := testAuthentication()
 	manager, err := New(Config{
 		Port: 0, HostKeyPath: filepath.Join(t.TempDir(), "host_ed25519"), Authentication: authentication,
 		Development: &fakeDevelopment{sandbox: "sbx-abc12345"}, Consoles: &fakeConsoles{opened: make(chan openedConsole, 1)},
@@ -502,7 +497,7 @@ func TestCloseStopsListener(t *testing.T) {
 }
 
 func TestRuntimePortReplacementPreservesConnectionsAndRollsBack(t *testing.T) {
-	authentication, _ := testAuthentication(t)
+	authentication := testAuthentication()
 	manager, err := New(Config{
 		Port: 0, HostKeyPath: filepath.Join(t.TempDir(), "host_ed25519"), Authentication: authentication,
 		Development: &fakeDevelopment{sandbox: "dev-alice"}, Consoles: &fakeConsoles{opened: make(chan openedConsole, 1)},
@@ -574,54 +569,22 @@ func TestRuntimePortReplacementPreservesConnectionsAndRollsBack(t *testing.T) {
 	}
 }
 
-func testAuthentication(t *testing.T) (*auth.Manager, string) {
-	t.Helper()
-	root := t.TempDir()
-	databaseFile := filepath.Join(root, "system.db")
-	db := database.New(database.Config{
-		Backend: database.BackendSQLite, Location: databaseFile,
-		MaximumOpenConnections: 8, MaximumIdleConnections: 2,
-	})
-	if _, err := db.Check(context.Background()); err != nil {
-		t.Fatal(err)
+// Transport tests use a narrow eligibility stub; package tests own password,
+// disabled-account, and storage behavior.
+type fixedAuthentication struct{}
+
+func testAuthentication() Authenticator { return fixedAuthentication{} }
+func (fixedAuthentication) AuthenticatePassword(username string, password []byte) (execution.User, error) {
+	if string(password) != "correct horse" {
+		return execution.User{}, errors.New("denied")
 	}
-	for _, statement := range []string{
-		`CREATE TABLE "the8020__users__users" ("username" TEXT PRIMARY KEY, "passwordHash" TEXT NOT NULL, "enabled" INTEGER NOT NULL, "authVersion" INTEGER NOT NULL, "createdAt" TEXT NOT NULL, "updatedAt" TEXT NOT NULL) STRICT`,
-		`CREATE TABLE "the8020__users__sessions" ("sessionId" TEXT PRIMARY KEY, "username" TEXT NOT NULL, "secretHash" TEXT NOT NULL, "authVersion" INTEGER NOT NULL, "createdAt" TEXT NOT NULL, "expiresAt" TEXT NOT NULL) STRICT`,
-	} {
-		if _, err := db.ExecContext(context.Background(), statement); err != nil {
-			t.Fatal(err)
-		}
+	return fixedAuthentication{}.AuthenticateUser(username)
+}
+func (fixedAuthentication) AuthenticateUser(username string) (execution.User, error) {
+	if username != "alice" {
+		return execution.User{}, errors.New("denied")
 	}
-	t.Cleanup(func() { _ = db.Close() })
-	parameters := auth.Argon2Parameters{Memory: 8, Iterations: 1, Parallelism: 1, SaltLength: 8, OutputLength: 16}
-	hasher, err := auth.NewPasswordHasher(parameters, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	manager, err := auth.New(auth.Config{
-		Database: db,
-		Argon2:   parameters,
-		Hasher:   hasher,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := database.EncodeTime(db, time.Now())
-	for _, user := range []struct {
-		username string
-		password string
-		enabled  bool
-	}{{"alice", "correct horse", true}, {"disabled", "unused password", false}} {
-		passwordHash, err := hasher.Hash(user.password)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := db.ExecContext(context.Background(), `INSERT INTO "the8020__users__users" ("username", "passwordHash", "enabled", "authVersion", "createdAt", "updatedAt") VALUES ($1, $2, $3, 1, $4, $4)`, user.username, passwordHash, user.enabled, now); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return manager, databaseFile
+	return execution.UserForUsername(username)
 }
 
 func clientConfig(username, password string) *gossh.ClientConfig {

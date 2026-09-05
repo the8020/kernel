@@ -22,8 +22,8 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"the8020/kernel/auth"
 	"the8020/kernel/deployment"
+	"the8020/kernel/execution"
 	"the8020/kernel/sandbox/backend"
 )
 
@@ -220,7 +220,7 @@ func (m *Manager) Close(ctx context.Context) error {
 }
 
 func (m *Manager) Create(ctx context.Context, userID string) (Sandbox, error) {
-	if err := auth.ValidateUsername(userID); err != nil {
+	if err := execution.ValidateUsername(userID); err != nil {
 		return Sandbox{}, err
 	}
 	unlock := m.lockUser(userID)
@@ -236,7 +236,7 @@ func (m *Manager) Create(ctx context.Context, userID string) (Sandbox, error) {
 // EnsureSandbox returns the authenticated user's development sandbox, creating
 // or starting it only when necessary.
 func (m *Manager) EnsureSandbox(ctx context.Context, userID string) (string, error) {
-	if err := auth.ValidateUsername(userID); err != nil {
+	if err := execution.ValidateUsername(userID); err != nil {
 		return "", err
 	}
 	unlock := m.lockUser(userID)
@@ -258,7 +258,7 @@ func (m *Manager) EnsureSandbox(ctx context.Context, userID string) (string, err
 // sandbox. Every traversed component must remain beneath the recorded canonical
 // system root and must not be a symlink.
 func (m *Manager) AuthorizedKeys(userID string) ([]byte, error) {
-	if err := auth.ValidateUsername(userID); err != nil {
+	if err := execution.ValidateUsername(userID); err != nil {
 		return nil, err
 	}
 	var sandbox Sandbox
@@ -775,11 +775,11 @@ func canSafelyReset(sandbox *Sandbox) bool {
 }
 
 func safeUserID(value string) bool {
-	return auth.ValidateUsername(value) == nil
+	return execution.ValidateUsername(value) == nil
 }
 
 func sandboxIDForUser(userID string) (string, error) {
-	if err := auth.ValidateUsername(userID); err != nil {
+	if err := execution.ValidateUsername(userID); err != nil {
 		return "", err
 	}
 	return "dev-" + userID, nil

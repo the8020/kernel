@@ -52,10 +52,8 @@ type Repository struct {
 // RepositoryMutation includes private service sets so command composition can
 // refresh only workloads affected by a changed checkout.
 type RepositoryMutation struct {
-	Repository       Repository `json:"repository"`
-	Changed          bool       `json:"changed"`
-	PreviousServices []string   `json:"-"`
-	Services         []string   `json:"-"`
+	Repository Repository `json:"repository"`
+	Changed    bool       `json:"changed"`
 }
 
 func (s *Store) ListPackageRepositories(ctx context.Context) ([]Repository, error) {
@@ -382,10 +380,6 @@ func (s *Store) mutatePackageRepository(ctx context.Context, packageID string, m
 	if !repository.ActivationReady {
 		return RepositoryMutation{}, errors.New("package repository is not initialized")
 	}
-	previousServices, err := serviceIDsAt(repository.Path, packageID)
-	if err != nil {
-		return RepositoryMutation{}, err
-	}
 	previousHead := repository.Head
 	stageRoot, err := os.MkdirTemp(filepath.Dir(repository.Path), "."+filepath.Base(repository.Path)+"-mutation-")
 	if err != nil {
@@ -400,10 +394,6 @@ func (s *Store) mutatePackageRepository(ctx context.Context, packageID string, m
 		return RepositoryMutation{}, err
 	}
 	updated, err := s.inspectPackageRepositoryAt(ctx, packageID, stage)
-	if err != nil {
-		return RepositoryMutation{}, err
-	}
-	services, err := serviceIDsAt(updated.Path, packageID)
 	if err != nil {
 		return RepositoryMutation{}, err
 	}
@@ -438,7 +428,6 @@ func (s *Store) mutatePackageRepository(ctx context.Context, packageID string, m
 	}
 	return RepositoryMutation{
 		Repository: updated, Changed: changed,
-		PreviousServices: previousServices, Services: services,
 	}, nil
 }
 

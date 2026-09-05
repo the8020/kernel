@@ -21,6 +21,12 @@ position = 1
 required = true
 description = "Absolute file or allowed HTTPS module URL."
 [[parameters]]
+name = "user"
+type = "string"
+option = "user"
+required = false
+description = "Execution username; required when there is no calling execution to inherit. Must exist and be enabled, except built-in system may run without a user row."
+[[parameters]]
 name = "input"
 type = "string"
 option = "input"
@@ -114,6 +120,6 @@ description = "Allow bounded system information."
 name = "execution"
 type = "object"
 [[examples]]
-command = "job run nightly file:///artifacts/nightly.ts --input '{\"full\":true}'"
+command = "job run nightly file:///artifacts/nightly.ts --user system --input '{\"full\":true}'"
 [[examples]]
-command = "job run build file:///workspace/build.ts --workspace ./development-jobs --workspace-write"
+command = "job run build file:///workspace/build.ts --user system --workspace ./development-jobs --workspace-write"

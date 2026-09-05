@@ -48,6 +48,46 @@ func TestRuntimeStatementProtocolPreservesBytesAndTransactions(t *testing.T) {
 	}
 }
 
+func TestTransactionLifetimeInterruptsActiveStatement(t *testing.T) {
+	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
+	defer manager.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	token, err := manager.BeginTransaction(ctx, "bounded", TransactionSettings{TimeoutMS: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.FinishTransaction(context.Background(), "bounded", token, false)
+	start := time.Now()
+	_, err = manager.RunStatement(ctx, "bounded", StatementRequest{
+		Statement:  `WITH RECURSIVE count(n) AS (VALUES(0) UNION ALL SELECT n+1 FROM count WHERE n<100000000) SELECT sum(n) FROM count`,
+		ReturnRows: true, Transaction: token,
+	})
+	if err == nil || time.Since(start) > 500*time.Millisecond {
+		t.Fatalf("transaction lifetime did not interrupt active statement: %v %v", time.Since(start), err)
+	}
+}
+
+func TestRuntimePostgreSQLJSONPassesCommonParameterValidation(t *testing.T) {
+	config := sqliteConfig(filepath.Join(t.TempDir(), "unused.db"))
+	config.Backend, config.Location = BackendPostgreSQL, "postgresql://localhost/test"
+	manager := New(config)
+	defer manager.Close()
+	values, err := manager.decodeRuntimeParameters(json.RawMessage(`[{"type":"json","value":{"nested":[true,7,null]}}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := values[0].(json.RawMessage); !ok {
+		t.Fatalf("JSON driver parameter = %T", values[0])
+	}
+	if err := manager.ready("SELECT $1::jsonb", values); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ready("SELECT $1::jsonb", []any{json.RawMessage(`{invalid`)}); err == nil {
+		t.Fatal("accepted invalid raw JSON")
+	}
+}
+
 func TestTransactionTokensAreExecutionScopedAndCleanedUp(t *testing.T) {
 	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
 	t.Cleanup(func() { _ = manager.Close() })
@@ -223,5 +263,59 @@ func TestRuntimeDatetimeUsesCanonicalUTCMilliseconds(t *testing.T) {
 	value, err := runtimeValue(time.Date(2026, time.January, 2, 3, 4, 5, 123456789, time.FixedZone("test", 3600)), "TIMESTAMPTZ")
 	if err != nil || value.(map[string]any)["value"] != "2026-01-02T02:04:05.123Z" {
 		t.Fatalf("datetime = %#v, %v", value, err)
+	}
+}
+
+func TestTransactionLockTimeoutIsBoundedAndConnectionSettingRestored(t *testing.T) {
+	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
+	defer manager.Close()
+	ctx := context.Background()
+	if _, err := manager.Execute(ctx, `CREATE TABLE claims (id INTEGER PRIMARY KEY, node TEXT)`, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Execute(ctx, `INSERT INTO claims VALUES (1,'')`, nil); err != nil {
+		t.Fatal(err)
+	}
+	first, err := manager.BeginTransaction(ctx, "first", TransactionSettings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = manager.RunStatement(ctx, "first", StatementRequest{Statement: `UPDATE claims SET node='a' WHERE id=1`, Transaction: first})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wait := int64(25)
+	second, err := manager.BeginTransaction(ctx, "second", TransactionSettings{LockTimeoutMS: &wait, TimeoutMS: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.transactionsMu.Lock()
+	entry := manager.transactions[second]
+	manager.transactionsMu.Unlock()
+	start := time.Now()
+	_, err = manager.RunStatement(ctx, "second", StatementRequest{Statement: `UPDATE claims SET node='b' WHERE id=1`, Transaction: second})
+	if err == nil || time.Since(start) > 500*time.Millisecond {
+		t.Fatalf("contended write took %v: %v", time.Since(start), err)
+	}
+	if err = manager.FinishTransaction(ctx, "second", second, false); err != nil {
+		t.Fatal(err)
+	}
+	if err = manager.FinishTransaction(ctx, "first", first, false); err != nil {
+		t.Fatal(err)
+	}
+	if entry.restore == nil {
+		t.Fatal("missing pooled connection restoration")
+	}
+	for range 4 {
+		token, err := manager.BeginTransaction(ctx, "normal", TransactionSettings{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		tx, _ := manager.transaction(token, "normal")
+		var value int
+		if err = tx.tx.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&value); err != nil || value == 25 {
+			t.Fatalf("timeout leaked: %d %v", value, err)
+		}
+		_ = manager.FinishTransaction(ctx, "normal", token, false)
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"the8020/kernel/execution"
 	"the8020/kernel/execution/coordinator"
 	"the8020/kernel/execution/records"
 	"the8020/kernel/execution/supervisor"
@@ -75,6 +76,7 @@ func (f *blockingOpenAPIWorkers) ServiceOpenAPI(context.Context, string, string)
 
 func testOptions(minimum, maximum, concurrency int) Options {
 	return Options{
+		User:           execution.SystemUser(),
 		MinimumWorkers: minimum, MaximumWorkers: maximum,
 		ConcurrencyPerWorker: concurrency, WorkerKeepAlive: time.Minute,
 		ExecutionMode: "stateless", TargetUtilization: 0.7,
@@ -84,10 +86,35 @@ func testOptions(minimum, maximum, concurrency int) Options {
 
 func testRecord(serviceID string) Record {
 	return Record{
+		User:      execution.SystemUser(),
 		ServiceID: serviceID, LogicalServiceID: "example/api/" + serviceID,
 		Entrypoint: "file:///" + serviceID + ".ts", ReleaseID: "current", State: "IDLE",
 		MaximumWorkers: 2, ConcurrencyPerWorker: 1, WorkerKeepAlive: time.Minute,
 		ExecutionMode: "stateless", TargetUtilization: 0.7,
+	}
+}
+
+func TestServiceInheritsNormalRuntimeDependencyPolicy(t *testing.T) {
+	for _, mode := range []model.DependencyMode{model.DependencyOnline, model.DependencyCachedOnly} {
+		t.Run(string(mode), func(t *testing.T) {
+			store, err := records.New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			coordinator := &fakeCoordinator{}
+			profile := model.RuntimeProfile{WorkloadType: model.WorkloadService, DependencyMode: mode, EgressAllowed: mode == model.DependencyOnline}
+			manager, err := New(coordinator, &fakeWorkers{}, store, Policy{Strategy: model.GroupingOwner, Profile: profile})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := manager.Start(context.Background(), "api", "file:///service.ts", testOptions(1, 2, 1)); err != nil {
+				t.Fatal(err)
+			}
+			got := coordinator.requests[0].Profile
+			if got.DependencyMode != profile.DependencyMode || got.EgressAllowed != profile.EgressAllowed {
+				t.Fatalf("service changed normal runtime policy: %#v", got)
+			}
+		})
 	}
 }
 
@@ -481,9 +508,9 @@ func (f *fakeWorkers) DispatchService(_ context.Context, _, _ string, request *h
 	if len(f.starts) > 0 {
 		workerID = f.starts[len(f.starts)-1].Metadata.WorkerID
 	}
-	return &http.Response{StatusCode: http.StatusAccepted, Header: http.Header{"X-Service": []string{"test"}, "X-80-20-Runtime-Worker-Id": []string{workerID}}, Body: io.NopCloser(strings.NewReader("reply:" + string(body)))}, nil
+	return &http.Response{StatusCode: http.StatusAccepted, Header: http.Header{"X-Service": []string{"test"}, http.CanonicalHeaderKey("the8020-internal-selected-worker-id"): []string{workerID}}, Body: io.NopCloser(strings.NewReader("reply:" + string(body)))}, nil
 }
-func (f *fakeWorkers) ProxyServiceWebSocket(_ context.Context, group, serviceID string, _ http.ResponseWriter, _ *http.Request) error {
+func (f *fakeWorkers) ProxyServiceWebSocket(_ context.Context, group, serviceID string, _ http.ResponseWriter, _ *http.Request, _ func(*http.Response) error) error {
 	f.websocketCalls = append(f.websocketCalls, group+":"+serviceID)
 	return nil
 }
@@ -495,6 +522,7 @@ func TestPersistentModeUsesTheSamePrewarmedHTTPAndWebSocketWorkerPool(t *testing
 		t.Fatal(err)
 	}
 	record, err := manager.Start(context.Background(), "chat", "file:///programs/chat.ts", Options{
+		User:          execution.SystemUser(),
 		ExecutionMode: "persistent", LogicalServiceID: "example/chat/session", Generation: 3,
 		CanonicalBasePath: "/example/chat/session", MinimumWorkers: 2, MaximumWorkers: 8,
 		ConcurrencyPerWorker: 4, WorkerKeepAlive: time.Minute, TargetUtilization: 0.7, PlacementWorkers: 2,
@@ -504,6 +532,11 @@ func TestPersistentModeUsesTheSamePrewarmedHTTPAndWebSocketWorkerPool(t *testing
 	}
 	if record.ExecutionMode != "persistent" || record.MinimumWorkers != 2 || len(record.WorkerIDs) != 2 || len(workersFake.starts) != 2 {
 		t.Fatalf("persistent pool = %#v starts=%d", record, len(workersFake.starts))
+	}
+	for _, started := range workersFake.starts {
+		if started.Metadata.User != execution.SystemUser() || started.Metadata.Origin != (execution.Origin{Type: execution.OriginService, ID: "example/chat/session"}) {
+			t.Fatalf("service Worker execution identity = %#v", started.Metadata)
+		}
 	}
 	scaled, err := manager.Scale(context.Background(), record.ServiceID, 3)
 	if err != nil {
@@ -515,7 +548,7 @@ func TestPersistentModeUsesTheSamePrewarmedHTTPAndWebSocketWorkerPool(t *testing
 	if _, err := manager.Dispatch(context.Background(), record.ServiceID, httptest.NewRequest(http.MethodGet, "http://service/", nil)); err != nil {
 		t.Fatalf("persistent HTTP dispatch: %v", err)
 	}
-	if err := manager.ProxyWebSocket(context.Background(), record.ServiceID, httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://service/connect", nil)); err != nil {
+	if err := manager.ProxyWebSocket(context.Background(), record.ServiceID, httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://service/connect", nil), nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(workersFake.websocketCalls) != 1 || workersFake.websocketCalls[0] != "group:chat" {
@@ -568,7 +601,7 @@ func TestServicePoolScaleStreamingDispatchAndStop(t *testing.T) {
 	if readErr != nil || response.StatusCode != http.StatusAccepted || response.Header.Get("X-Service") != "test" || string(body) != "reply:body" {
 		t.Fatalf("response=%#v body=%q err=%v", response, body, readErr)
 	}
-	if err := manager.ProxyWebSocket(context.Background(), "api", httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://service/events", nil)); err != nil {
+	if err := manager.ProxyWebSocket(context.Background(), "api", httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://service/events", nil), nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(workersFake.websocketCalls) != 1 || workersFake.websocketCalls[0] != "group:api" {

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"the8020/kernel/cbus/core"
 	"the8020/kernel/database"
 	executionservices "the8020/kernel/execution/services"
 	workspacepackages "the8020/kernel/packages"
@@ -20,12 +21,14 @@ import (
 )
 
 type sharedStateDatabaseStub struct {
-	status database.Status
-	err    error
-	marked error
+	context context.Context
+	status  database.Status
+	err     error
+	marked  error
 }
 
-func (s *sharedStateDatabaseStub) Check(context.Context) (database.Status, error) {
+func (s *sharedStateDatabaseStub) Check(ctx context.Context) (database.Status, error) {
+	s.context = ctx
 	return s.status, s.err
 }
 func (s *sharedStateDatabaseStub) MarkUnavailable(err error) { s.marked = err }
@@ -41,11 +44,13 @@ func (s *sharedSettingsStub) RefreshGlobal(context.Context) (bool, error) {
 }
 
 type sharedPackageStateStub struct {
-	calls int
-	err   error
+	context context.Context
+	calls   int
+	err     error
 }
 
-func (s *sharedPackageStateStub) Refresh(context.Context) error {
+func (s *sharedPackageStateStub) Refresh(ctx context.Context) error {
+	s.context = ctx
 	s.calls++
 	return s.err
 }
@@ -66,20 +71,6 @@ func (s *packageRevisionFollowerStub) Poll(context.Context) (workspacepackages.P
 func (s *packageRevisionFollowerStub) Acknowledge(revision uint64) error {
 	s.acks = append(s.acks, revision)
 	s.update = workspacepackages.PackageSetUpdate{}
-	return nil
-}
-
-type serviceRevisionFollowerStub struct {
-	update workspacepackages.ServiceSetUpdate
-	acks   []uint64
-}
-
-func (s *serviceRevisionFollowerStub) Poll(context.Context) (workspacepackages.ServiceSetUpdate, error) {
-	return s.update, nil
-}
-func (s *serviceRevisionFollowerStub) Acknowledge(revision uint64) error {
-	s.acks = append(s.acks, revision)
-	s.update = workspacepackages.ServiceSetUpdate{}
 	return nil
 }
 
@@ -146,7 +137,7 @@ func TestRuntimeCleanupReportsOrderedStages(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"public HTTP", "authentication maintenance", "runtime controllers", "runtime ports", "runtime sandboxes", "runtime backends"}
+	want := []string{"public HTTP", "runtime controllers", "runtime ports", "runtime sandboxes", "runtime backends"}
 	if !reflect.DeepEqual(stages, want) {
 		t.Fatalf("stages=%#v want=%#v", stages, want)
 	}
@@ -180,55 +171,49 @@ func TestSharedStateReconciliationGatesFailuresAndRestoresReadyDatabase(t *testi
 	}
 }
 
-func TestRuntimeSharedStateAppliesOnlyRevisionTargetsAndAcknowledgesAfterSuccess(t *testing.T) {
-	packages := &packageRevisionFollowerStub{}
-	serviceChanges := &serviceRevisionFollowerStub{update: workspacepackages.ServiceSetUpdate{
-		Revision: 7, ReconcileServices: []string{"acme/orders/api"}, RetireServices: []string{"acme/orders/removed"},
-	}}
-	reconciler := &targetedServiceReconcilerStub{}
+func TestRuntimeSharedStateReindexesOnlyChangedPackages(t *testing.T) {
+	indexes := &packageRevisionFollowerStub{update: workspacepackages.PackageSetUpdate{Revision: 7, Packages: []string{"acme/orders"}}}
 	topology := &sharedPackageStateStub{}
 	now := time.Unix(1_700_000_000, 0)
-	shared := &runtimeSharedState{packages: packages, serviceChanges: serviceChanges, services: reconciler, topology: topology, now: func() time.Time { return now }}
+	var calls [][]string
+	shared := &runtimeSharedState{indexes: indexes, topology: topology, now: func() time.Time { return now }, reindex: func(_ context.Context, ids []string) (core.Result, error) {
+		calls = append(calls, ids)
+		return core.Result{}, nil
+	}}
 	if err := shared.Refresh(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	wantCalls := []string{"retire:acme/orders/removed", "reconcile:acme/orders/api"}
-	if !reflect.DeepEqual(reconciler.calls, wantCalls) || !reflect.DeepEqual(serviceChanges.acks, []uint64{7}) || topology.calls != 1 {
-		t.Fatalf("calls=%#v acks=%#v topology=%d", reconciler.calls, serviceChanges.acks, topology.calls)
+	if !reflect.DeepEqual(calls, [][]string{{"acme/orders"}}) || !reflect.DeepEqual(indexes.acks, []uint64{7}) || topology.calls != 1 {
+		t.Fatalf("calls=%#v acks=%#v topology=%d", calls, indexes.acks, topology.calls)
 	}
-	if err := shared.Refresh(context.Background()); err != nil || len(reconciler.calls) != len(wantCalls) || topology.calls != 1 {
-		t.Fatalf("unchanged refresh rescanned services: calls=%#v topology=%d err=%v", reconciler.calls, topology.calls, err)
+	if err := shared.Refresh(context.Background()); err != nil || len(calls) != 1 || topology.calls != 1 {
+		t.Fatalf("unchanged refresh rescanned: calls=%#v topology=%d error=%v", calls, topology.calls, err)
 	}
-
 	now = now.Add(30 * time.Second)
-	serviceChanges.update = workspacepackages.ServiceSetUpdate{Revision: 8, ReconcileServices: []string{"acme/orders/failing"}}
-	reconciler.fail = "acme/orders/failing"
-	if err := shared.Refresh(context.Background()); err != nil || len(serviceChanges.acks) != 1 || topology.calls != 2 {
-		t.Fatalf("service-local failure escaped or revision was acknowledged: acks=%#v err=%v", serviceChanges.acks, err)
-	}
-	reconciler.fail = ""
-	if err := shared.Refresh(context.Background()); err != nil || !reflect.DeepEqual(serviceChanges.acks, []uint64{7, 8}) {
-		t.Fatalf("failed revision did not retry: calls=%#v acks=%#v err=%v", reconciler.calls, serviceChanges.acks, err)
+	indexes.update = workspacepackages.PackageSetUpdate{Revision: 8, Packages: []string{"acme/other"}}
+	if err := shared.Refresh(context.Background()); err != nil || topology.calls != 2 || !reflect.DeepEqual(indexes.acks, []uint64{7, 8}) {
+		t.Fatalf("refresh=%v acks=%v", err, indexes.acks)
 	}
 }
 
-func TestTargetedServiceFailureDoesNotGateUnrelatedPublicServices(t *testing.T) {
+func TestTargetedIndexFailureDoesNotGateHealthyServicesOrRepeatDiscovery(t *testing.T) {
 	db := &sharedStateDatabaseStub{status: database.Status{State: database.StateReady}}
 	settings := &sharedSettingsStub{}
 	gate := &servicePlaneGateStub{}
-	packageChanges := &packageRevisionFollowerStub{}
-	serviceChanges := &serviceRevisionFollowerStub{update: workspacepackages.ServiceSetUpdate{
-		Revision: 9, ReconcileServices: []string{"acme/orders/failing"},
-	}}
-	reconciler := &targetedServiceReconcilerStub{fail: "acme/orders/failing"}
-	shared := &runtimeSharedState{packages: packageChanges, serviceChanges: serviceChanges, services: reconciler}
-
-	if err := reconcileSharedState(context.Background(), db, settings, gate, shared); err != nil || !gate.available || len(serviceChanges.acks) != 0 {
-		t.Fatalf("targeted failure gate=%#v acks=%#v err=%v", gate, serviceChanges.acks, err)
+	indexes := &packageRevisionFollowerStub{update: workspacepackages.PackageSetUpdate{Revision: 9, Packages: []string{"acme/orders"}}}
+	calls, retries := 0, 0
+	failure := &indexPublicationError{[]error{errors.New("invalid service specification")}}
+	shared := &runtimeSharedState{indexes: indexes, reindex: func(context.Context, []string) (core.Result, error) {
+		calls++
+		return nil, failure
+	}, retry: func(context.Context) error { retries++; return failure }}
+	for range 2 {
+		if err := reconcileSharedState(context.Background(), db, settings, gate, shared); err != nil || !gate.available {
+			t.Fatalf("gate=%#v error=%v", gate, err)
+		}
 	}
-	reconciler.fail = ""
-	if err := reconcileSharedState(context.Background(), db, settings, gate, shared); err != nil || !gate.available || !reflect.DeepEqual(serviceChanges.acks, []uint64{9}) {
-		t.Fatalf("targeted retry gate=%#v acks=%#v err=%v", gate, serviceChanges.acks, err)
+	if calls != 1 || retries != 2 || !reflect.DeepEqual(indexes.acks, []uint64{9}) {
+		t.Fatalf("calls=%d retries=%d acks=%v", calls, retries, indexes.acks)
 	}
 }
 
@@ -359,5 +344,20 @@ func TestFailUnavailableServicePoolsRetiresEveryMissingPoolWithoutSupervisorProb
 		if !strings.Contains(call.reason, "is not healthy") {
 			t.Fatalf("failure reason=%q", call.reason)
 		}
+	}
+}
+
+func TestSharedStateHealthDeadlineDoesNotBoundOrdinaryIndexJobs(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	db := &sharedStateDatabaseStub{status: database.Status{State: database.StateReady}}
+	packages := &sharedPackageStateStub{}
+	if err := reconcileSharedState(ctx, db, &sharedSettingsStub{}, &servicePlaneGateStub{}, packages); err != nil {
+		t.Fatal(err)
+	}
+	probeDeadline, _ := db.context.Deadline()
+	jobDeadline, _ := packages.context.Deadline()
+	if jobDeadline.Sub(probeDeadline) < time.Minute || packages.context.Err() != nil {
+		t.Fatal("index jobs inherited the short or canceled health probe context")
 	}
 }

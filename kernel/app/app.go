@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"the8020/kernel/auth"
 	"the8020/kernel/cbus/core"
 	"the8020/kernel/cbus/server"
 	"the8020/kernel/database"
@@ -42,7 +43,7 @@ type Config struct {
 	initialize  func(context.Context, *settings.Manager, *database.Manager, *services.Services) (*services.RuntimeServices, runtimeCleanupFunc)
 }
 
-const gracefulShutdownSteps = 9
+const gracefulShutdownSteps = 8
 
 // ErrRestartRequested tells the process entrypoint to replace the current
 // kernel executable after graceful cleanup.
@@ -217,6 +218,10 @@ func Run(parent context.Context, config Config) error {
 		return err
 	}
 	defer lock.Release()
+	signer, err := auth.OpenSigner(filepath.Join(paths.Kernel, "keys", "signing.key"), os.Getenv(auth.SigningKeyEnvironment))
+	if err != nil {
+		return fmt.Errorf("initialize signing key: %w", err)
+	}
 	startedAt := time.Now().UTC()
 	settingManager, err := settings.New(config.Definitions, settings.PersistencePaths{Node: paths.NodeSettingsFile}, config.Startup, nil)
 	if err != nil {
@@ -248,7 +253,7 @@ func Run(parent context.Context, config Config) error {
 	registry := core.NewRegistry(logger)
 	lifecycleManager := lifecycle.New()
 	lifecycleManager.ConfigureShutdown(gracefulShutdownSteps)
-	serviceSet := services.New(settingManager, nil, loggingManager, lifecycleManager, nil, nil, nil, uuid, paths, startedAt, config.BuildID, &services.RuntimeServices{Failure: "runtime initialization is in progress"})
+	serviceSet := services.New(settingManager, nil, loggingManager, lifecycleManager, signer, nil, nil, uuid, paths, startedAt, config.BuildID, &services.RuntimeServices{Failure: "runtime initialization is in progress"})
 	serviceSet.Database = databaseManager
 	if config.Register == nil {
 		return errors.New("missing generated command registry")
@@ -283,6 +288,9 @@ func Run(parent context.Context, config Config) error {
 		}
 		serviceSet.PublishRuntime(runtimeServices)
 		if runtimeServices.Failure == "" {
+			if runtimeServices.Events != nil {
+				runtimeServices.Events.Start()
+			}
 			logger.Info("kernel runtime ready", "mode", runtimeServices.Isolation.SelectedMode)
 		} else if runtimeContext.Err() == nil {
 			logger.Error("kernel runtime unavailable", "error", runtimeServices.Failure)

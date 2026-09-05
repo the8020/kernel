@@ -44,3 +44,5 @@
 - `callback/AGENTS.md`: authenticated job/service runtime API over the
   bind-mounted Unix socket.
 - `protocol/AGENTS.md`: generated Go runtime-protocol envelope and message types.
+
+- `operations/AGENTS.md`: private package-neutral capability dispatch for Deno.

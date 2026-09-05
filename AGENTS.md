@@ -156,13 +156,14 @@ relevant child AGENTS.md
   compatible minor and patch win. The exact selected package tag and active
   commit are retained in the database package index. Missing compatible tags
   fail installation. Docker runs require an unconfined outer seccomp profile
-  and complete the pinned runsc smoke before kernel startup. The entrypoint creates
-  the first user whenever the users table is empty, defaulting to username
+  and complete the pinned runsc smoke before kernel startup. The entrypoint
+  creates the first enabled login user when none exists, defaulting to username
   `admin` and password `admin`; `THE8020_USERNAME` and `THE8020_PASSWORD`
-  independently override those defaults. Existing users are never changed. It
-  prints `80|20 is ready` after first-user handling. The kernel control plane
-  remains independent of users, while Docker readiness requires this initial
-  user to exist.
+  independently override those defaults. Enabled passwordless users do not
+  suppress this bootstrap. Existing users are never changed. It prints
+  `80|20 is ready` after first-user handling. The kernel control plane remains
+  independent of users, while Docker readiness requires this initial user to
+  exist.
 
 - Interactive kernel shutdown must acknowledge `Ctrl-C` immediately and emit
   one ordinary line whenever the graceful-shutdown stage or completed-stage
@@ -191,19 +192,26 @@ relevant child AGENTS.md
   minimum warm sandboxes, and positive Workers per sandbox. Minimum and maximum
   Workers default to zero; zero minimum permits scale-to-zero and zero maximum
   is service-unlimited while kernel capacity still applies. Worker and session
-  keepalive default to two and ten minutes respectively. Installed declarations
-  and complete operator overrides are canonical database rows; old filesystem
-  state has no compatibility path.
+  keepalive default to two and ten minutes respectively. The Deno services package owns declarations, defaults, overrides, and
+  effective versions. Go consumes only validated package-scoped runtime
+  specifications in its derived memory index; it never parses service TOML or
+  queries application service tables.
 - Concurrency per Worker equal to one is strict. Larger values are balancing and
   autoscaling targets with at most one temporary extra request per Worker while
   scale-up catches up; kernel reservations are short-lived routing hints and
   supervisor snapshots remain observed truth.
 - HTTP, streaming, SSE, and WebSocket transports are available to both service
-  types. Session routing remains a generic kernel/supervisor capability: an
-  opaque `X-80-20-Route` maps to the exact node, sandbox, Worker, and logical
-  execution, survives disconnect for session keepalive, and never encodes UUI
-  protocol semantics. Browser WebSockets obtain the same token through an HTTP
-  establishment response and reuse it as the `route` query parameter.
+  types. `the8020-route` carries a deployment-signed `the8020-route+jwt` with
+  exact node, sandbox, Worker, and persistent execution IDs. Live service pools
+  and supervisor bindings enforce service/principal ownership and lifetime.
+  Missing, expired, or completed bindings return `409`; a token can never
+  recreate them. Temporary transport failures do not replay work or replace
+  state. Browsers establish over HTTP and reuse the token as `?route=` for
+  WebSockets. No route database, duplicate lease timer, or token refresh exists.
+- Platform headers use lowercase `the8020-authorization`, `the8020-route`, and
+  `the8020-internal-<purpose>`; cookies use `the8020_<purpose>`, including
+  `the8020_auth`. Header lookup/stripping remains case-insensitive. Internal
+  metadata must be stripped or regenerated at its trusted transport boundary.
 - One sandbox has exactly one placement-group value and at most one allocation
   of a logical service; compatible different services may share it. A
   Workers-per-sandbox value of one is strict isolation; larger values are
@@ -228,17 +236,48 @@ relevant child AGENTS.md
   terminated program are static package-owned constants until a package-owned
   configuration system is introduced; the kernel and generic runtime never
   validate, override, persist, or transport them.
+- Administrative package commands are ordinary jobs running as `system`, using
+  the existing service/job sandbox infrastructure and normal mounts, including
+  dependencies in other packages. Never copy or snapshot package trees per
+  command, add command-only mount overlays or isolation, or build a parallel
+  execution path. These patterns turn a command into package-size filesystem
+  work, defeat ordinary sandbox sharing, and duplicate capabilities the job
+  system already owns. Fix missing execution capabilities in that shared owner.
 - Ordinary service and job sandboxes mount the complete activated package tree
   read-only at `/workspace/packages`. Application durable shared state uses the
   kernel-owned database API; no generic package-data filesystem is mounted.
+- Public services completely ignore platform tokens and execute as their configured
+  user. They preserve raw cookies/headers for explicit package login/logout.
+  Authenticated services verify the platform JWT in Go before request-triggered
+  capacity or dispatch, then run users-package account/session policy inside the
+  existing target Worker before HTTP handling or WebSocket acceptance.
+- The kernel owns cryptographic integrity and private deployment key storage;
+  the users Deno package owns passwords, sessions, revocation, login/logout, and
+  application cookies. Context getters are synchronous and never authenticate.
+  Do not introduce another auth service, Worker, sandbox, package copy, or
+  parallel execution mechanism. Extend shared service/job capabilities at their
+  owning layer when a real capability is missing.
 - Services and jobs have the same `@the8020/kernel` API through their private
-  Worker MessagePort. The trusted supervisor stamps execution identity and alone
+  Worker MessagePort and the same immutable invocation-scoped
+  `@the8020/context` API. Every Worker starts with one validated user and outer
+  service/job/program origin; authenticated requests use their authenticated
+  user, while anonymous requests use the service's configured `anonymous_user`
+  (default `system`). Jobs require an explicit or inherited user. Kernel-owned
+  operations explicitly assign `system` when there is no caller. Every principal, including `system`, is a structural kernel identity
+  independent of account rows. Creating, disabling, deleting, or losing a users
+  table never changes execution eligibility. Deno users-package authentication
+  alone applies enabled/password/session rules to interactive login.
+  Package-local identities such as a UUI session remain
+  package-owned. The trusted supervisor stamps execution identity and alone
   holds the per-sandbox token and node-private `/run/the8020/kernel.sock` access;
   application Workers cannot read either. Both workload types may use
   unrestricted outbound network and remote imports; only temporary and
   runtime-cache paths are writable by default.
 - Active packages expose administrative commands through
-  `cbus/commands/<path>/command.toml` and non-discoverable ordinary programs.
+  flat `cbus/commands/*.toml` and non-discoverable ordinary programs. Required
+  `command` fields contain complete public names, independent of filenames or
+  package paths; `program` names a same-package program. Duplicate public names
+  fail validation, and nested command declaration folders are invalid.
   The kernel assembles one process-local immutable catalog from those files,
   refreshes it at startup and package lifecycle boundaries, and never persists
   the assembled catalog. Package command arguments remain raw strings.
@@ -246,8 +285,9 @@ relevant child AGENTS.md
   index. A fresh database stages the small source-owned bootstrap package list,
   evaluates and synchronizes every staged table in one job, runs package hooks,
   and publishes the package set before the service plane becomes ready. Normal
-  boots trust the initialized catalog and do not rescan table modules. Package
-  changes stage and validate only candidate packages, synchronize their schema,
+  boots validate the existing catalog without writes and do not rescan table
+  modules. Package changes stage and validate only candidate packages,
+  synchronize their schema,
   run pre/post activation hooks exactly once, atomically switch source, and
   refresh only affected services. Hook and deployment phases are durable and
   recoverable; PostgreSQL serializes deployment through an advisory lock.
@@ -262,11 +302,43 @@ relevant child AGENTS.md
   validates infrastructure identity, size, timeout, authentication, and
   forwarding, while function names and payloads remain opaque. A persistent
   handler may likewise report completion of its exact logical execution so the
-  supervisor releases the binding and the kernel invalidates its route.
+  supervisor releases the binding; later use of its signed route returns `409`.
 - Generic application execution has exactly service and job workloads. There
   is no separate user-session workload, session command family, session Worker
   adapter, or session restoration subsystem; authentication sessions, UUI
   application sessions, SSH connections, and the admin socket are distinct.
+- `the8020/jobs` owns schedules, durable run history, and the Jobs admin program.
+  Its prototype accepts positional JSON inputs, an execution user, sandbox
+  group, and Any (default), All, or an exact node. UTC calendars combine explicit
+  datetimes with a start date, selected months, month dates or weekdays, and
+  multiple times. Calendar calculation, per-node cursors, claims, and history
+  writes run in the package's Deno event listeners; jobs expose no scaling controls.
+- Each kernel emits a local `minute` event at seconds 00 using its host clock.
+  Generic events dispatch cached flat `events/*.toml` handler declarations
+  asynchronously in parallel and return before program admission or completion.
+  Each event declaration requires `event`, `description`, and a full
+  `namespace/package/program` identifier in `program`; filenames do not select
+  triggers. Deno emits through `kernel.events.emit`; the command bus exposes
+  `kernel.events.emit <event> --data <json>`. Activation hooks use flat
+  `hooks/*.toml` with required `hook`, `description`, and `program` fields;
+  optional integer `order` defaults to zero and ties use declaration identity.
+  Synchronous hooks support ordered chains, including `index-services`.
+  One chain runs as one ordinary system job whose Deno dispatcher imports and
+  awaits all handlers in the same Worker with shared mutable state. Normal
+  sandbox mounts, permissions, grouping, and release-aware reuse apply; never
+  copy packages or allocate separate execution machinery for each handler.
+  One `kernel.reindex` entry point indexes commands, events, hooks, and services at boot,
+  activation, and published source changes. Optional package IDs replace only
+  selected package declarations; omission rebuilds the complete index.
+  Executable source lives in ordinary programs. The complete `index-services`
+  chain runs for each selected owning package even when handlers reside
+  elsewhere. Scope is immutable; successful validated fragments publish
+  atomically and remove omitted services, while failures preserve the previous
+  fragment. Boot, activation, configuration edits, and cross-node invalidation
+  share this path. Application failure must not block local command/job startup.
+  `All` job schedules use independent node records; `Any` claims use short database
+  transactions assigning the winning node ID. Direct targets are ignored by
+  other nodes. Go owns events and sandbox execution, never job calendars.
 - Node-local service records are recoverable runtime artifacts, never a global
   startup gate. Only current record shapes are accepted; unreadable or obsolete
   records move out of the live registry for diagnosis, and one service's
@@ -280,8 +352,8 @@ relevant child AGENTS.md
   adapters, persisted-data migrations, deprecated aliases, or dual sources of
   truth for old kernels; discard and initialize a fresh instance when a schema,
   settings key, runtime record, or node layout changes.
-- Installed-service catalog discovery is fixed-depth and runs once at kernel
-  startup or on explicit full reconciliation. The maintenance timer touches
+- Service configuration discovery belongs to Deno indexing at boot, activation,
+  edits, or explicit reindex. Kernel reconciliation consumes the memory index. The maintenance timer touches
   only services with live runtime capacity or pending-capacity retries; service
   commands and cold requests reconcile their selected service directly.
 - The kernel HTTP root `/` redirects to the safe relative 80|20 application path selected
@@ -341,6 +413,13 @@ relevant child AGENTS.md
   the live catalog immediately; metadata and bounded logs move to separately
   indexed history with node-local retention defaulting to seven days, and UUI
   presents that history separately.
+- Keep opaque identities recognizable by a three-letter type prefix throughout
+  APIs and diagnostics. When standardizing execution-context and node identity,
+  use `ctx-` and `nod-`; reserve `job-` and `srv-` for actual job and service
+  runtime instances. Declared objects retain their canonical names, displayed
+  as `job:<name>`, `service:<name>`, or `program:<name>`. Identity changes belong
+  to the owning shared contract; never invent log-only aliases or additional
+  runtime objects merely to label logs.
 - Authenticated session-shell theme preferences must remain browser-only:
   `sessionStorage` owns the current session override and `localStorage` seeds
   future tabs. The shell HTML starts dark and a CSP-nonced head initializer
@@ -452,13 +531,15 @@ relevant child AGENTS.md
   `THE8020_SKIP_RUNTIME_HOST=true` forwards the rootless-only install
   mode.
 - The source workspace `/workspace/8020/` contains sibling package repositories
-  `admin-core`, `admin-db`, `db`, `demo`, `dev-core`, `packages`, `secrets`,
+  `admin-core`, `admin-db`, `db`, `demo`, `dev-core`, `jobs`, `packages`, `secrets`,
   `services`, `system`, `users`, and `uui`, alongside `kernel`; the kernel
   repository contains no source package copies. Each package owns its
   formatting, linting, type checking, tests, browser bundles, release, and
   activation readiness. Initialized instances clone indexed repositories into
   their mapped `packages/<namespace>/<repository>/` tree, which service
   sandboxes mount read-only.
+- The sibling `the8020/branding` repository owns the shared brand assets and
+  editable logo sources; branding assets live outside the kernel repository.
 - The sibling `admin-core` repository's `programs/packages` program lists canonical package IDs through the cheap
   package summary command. Its selected-package detail alone performs bounded
   service/program/file inspection and independent Git repository inspection;
@@ -486,9 +567,13 @@ relevant child AGENTS.md
 - The sibling `uui` repository owns the default Home and Program terminated programs
   selected by static `ui-config.json`; the UUI handler loads them through the
   ordinary validated program path without kernel configuration. Home derives
-  its launcher rows by rescanning discoverable program
-  manifests in the mounted package tree before each render and on its explicit
+  its launcher rows by rescanning program manifests declaring both
+  `uui = true` and `discoverable = true`
+  in the mounted package tree before each render and on its explicit
   Refresh action; program IDs are never hardcoded into Home.
+  The separate `the8020/admin-core/programs` catalog includes all ready programs
+  and opens the shared Jobs execution form for custom inputs. UUI returns do
+  not produce generic program-completion notifications.
 - The sibling `dev-core` repository's `programs/development-test` controls the authenticated
   user's development sandbox and selects it for the
   generic browser Bash console. Development sandboxes include APT/dpkg with
@@ -500,7 +585,7 @@ relevant child AGENTS.md
 - Each initialized instance has fixed top-level `packages/`, `users/`,
   `database/`, `scripts/`, and `node/` roots plus one `kernel.toml`. Shared
   settings, users, authentication sessions, package state, service policy and
-  versions, persistent routes, topology, and named secrets are ordinary package
+  versions, topology, and named secrets are ordinary package
   tables in the system database. `users/<username>/` owns that user's durable
   filesystem data; the private top-level `database/` owns the default single-node SQLite
   system database and is never sandbox-mounted. SQLite uses WAL so readers can
@@ -545,5 +630,4 @@ relevant child AGENTS.md
   versions under `defaults/config/runtime/`.
 - Root-owned paths include `.vscode/`, `go.mod`, `go.sum`, `.go-version`,
   `.gitignore`, `install.sh`, `run.sh`, `release-tag.sh`, release resolver tests,
-  repository media, and
-  root-level project documentation.
+  and root-level project documentation.

@@ -14,9 +14,7 @@ import (
 	"the8020/kernel/cbus/core"
 	"the8020/kernel/execution/adminrun"
 	"the8020/kernel/execution/supervisor"
-	workspacepackages "the8020/kernel/packages"
 	"the8020/kernel/services"
-	"the8020/kernel/webservices"
 )
 
 func Runtime(serviceSet *services.Services) (*services.RuntimeServices, error) {
@@ -130,8 +128,6 @@ func OperationError(err error) error {
 		return &core.Error{Code: executionError.Code, Message: executionError.Message, Details: executionError.Details}
 	}
 	switch {
-	case errors.Is(err, workspacepackages.ErrInvalidServicePolicy):
-		return core.NewError(core.CodeInvalidArguments, err.Error())
 	case errors.Is(err, os.ErrNotExist):
 		return core.NewError(core.CodeNotFound, err.Error())
 	case errors.Is(err, context.DeadlineExceeded):
@@ -159,22 +155,4 @@ func AdministrativeExecution(result adminrun.Result, detail bool) core.Result {
 		response["logs"] = execution.Logs
 	}
 	return response
-}
-
-// WebServiceStatus keeps lifecycle commands concise by default while making
-// the complete diagnostic status available through an explicit detail view.
-func WebServiceStatus(status webservices.Status, detail bool) core.Result {
-	if detail {
-		return core.Result{"service": status}
-	}
-	return core.Result{
-		"service_id":      status.ServiceID,
-		"state":           status.State,
-		"enabled":         status.Enabled,
-		"desired_version": status.DesiredVersion,
-		"loaded_version":  status.LoadedVersion,
-		"version_count":   status.VersionCount,
-		"sandbox_count":   status.SandboxCount,
-		"worker_count":    status.WorkerCount,
-	}
 }

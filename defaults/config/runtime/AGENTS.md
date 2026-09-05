@@ -6,9 +6,9 @@
 # Ownership
 
 - Own pinned runtime versions and checksums, generic protocol source, the Deno
-  supervisor and Worker bootstrap, generic HTTP/WebSocket and kernel-capability
-  SDKs, image definitions, portable/full materialization, and runtime-specific
-  tests.
+  supervisor and Worker bootstrap, generic HTTP/WebSocket, kernel-capability,
+  and immutable execution-context SDKs, image definitions, portable/full
+  materialization, and runtime-specific tests.
 - The Go kernel owns backend selection, sandbox/network/resource/mount policy,
   placement, opaque persistent routing, the system database connection, and
   node-local runtime state.
@@ -85,12 +85,12 @@
   lifecycle, service/job contracts, streaming, persistent binding/completion,
   exact registered Worker invocation, cancellation, permissions, and crashes.
 - Portable verification launches the staged rootfs as UID/GID 1993 through the
-  pinned rootless runsc and imports the generic HTTP and kernel modules before
-  publishing image and smoke records. An enclosing Docker build verifies the
-  same modules as UID/GID 1993 inside its build sandbox, records that narrower
-  provenance, and the container entrypoint replaces it with a real pinned-runsc
-  smoke record before kernel startup. Full verification imports and launches
-  the canonical image when host authority is available.
+  pinned rootless runsc and imports the generic HTTP, kernel, and context
+  modules before publishing image and smoke records. An enclosing Docker build
+  verifies the same modules as UID/GID 1993 inside its build sandbox, records
+  that narrower provenance, and the container entrypoint replaces it with a real
+  pinned-runsc smoke record before kernel startup. Full verification imports and
+  launches the canonical image when host authority is available.
 
 # Child DOX Index
 

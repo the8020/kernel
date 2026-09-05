@@ -519,11 +519,6 @@ func validateSnapshot(values Values) error {
 	if fileOK && totalOK && total < file {
 		return errors.New("logging.max_total_size must be greater than or equal to logging.max_file_size")
 	}
-	minimum, minimumOK := values["services.default_minimum_workers"].(int64)
-	maximum, maximumOK := values["services.default_maximum_workers"].(int64)
-	if minimumOK && maximumOK && maximum != 0 && minimum > maximum {
-		return errors.New("services.default_maximum_workers must be zero or greater than or equal to services.default_minimum_workers")
-	}
 	maximumOpenConnections, openOK := values["database.maximum_open_connections"].(int64)
 	maximumIdleConnections, idleOK := values["database.maximum_idle_connections"].(int64)
 	if openOK && idleOK && maximumIdleConnections > maximumOpenConnections {

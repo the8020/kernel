@@ -13,6 +13,11 @@
 - Input is one optional JSON-compatible argument. Detached jobs return their
   transient execution identity immediately even when bounded admission queues
   them.
+- `job run --user` assigns an execution user. Without it, only an existing
+  calling execution can supply the user; a local command with no assignment
+  fails. Shared admission validates only the canonical execution principal.
+  Creating, disabling, or deleting an account never changes any principal's job
+  eligibility, including `system`; application account rules belong to Deno.
 - `job run --workspace` requests one instance-root-bounded `/workspace` mount;
   `--workspace-write` is required for host writes.
 

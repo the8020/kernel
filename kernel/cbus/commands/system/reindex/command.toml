@@ -1,13 +1,19 @@
 version = 1
 id = "kernel.reindex"
 path = ["kernel.reindex"]
-summary = "Reindex package commands"
-description = "Rebuilds the process-local command catalog from active packages and reports invalid package fragments."
+summary = "Reindex package declarations"
+description = "Refreshes process-local command, event-handler, and hook-handler indexes. Omit --packages for a full rebuild, or select comma-separated namespace/package IDs. Removed declarations are removed from the index. Event and hook counts describe the complete handler index; diagnostics describe invalid command fragments."
 mutates_state = true
 restart_behavior = "none"
 [handler]
 file = "kernel/cbus/commands/system/reindex/reindex.go"
 symbol = "New"
+[[parameters]]
+name = "packages"
+type = "string"
+option = "packages"
+required = false
+description = "Comma-separated package IDs; omit for all active packages."
 [[result]]
 name = "revision"
 type = "string"
@@ -22,3 +28,11 @@ name = "diagnostics"
 type = "array"
 [[examples]]
 command = "kernel.reindex"
+[[result]]
+name = "events"
+type = "integer"
+[[result]]
+name = "hooks"
+type = "integer"
+[[examples]]
+command = "kernel.reindex --packages the8020/jobs,the8020/users"

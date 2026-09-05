@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strings"
 
-	"the8020/kernel/auth"
 	databasecheck "the8020/kernel/cbus/commands/database/check"
 	databasesql "the8020/kernel/cbus/commands/database/sql"
 	databasecompare "the8020/kernel/cbus/commands/database/table/compare"
@@ -59,10 +58,6 @@ import (
 	serviceopenapi "the8020/kernel/cbus/commands/service/openapi"
 	servicerefresh "the8020/kernel/cbus/commands/service/refresh"
 	servicerequest "the8020/kernel/cbus/commands/service/request"
-	servicerestart "the8020/kernel/cbus/commands/service/restart"
-	servicescale "the8020/kernel/cbus/commands/service/scale"
-	servicestart "the8020/kernel/cbus/commands/service/start"
-	servicestop "the8020/kernel/cbus/commands/service/stop"
 	servicevalidate "the8020/kernel/cbus/commands/service/validate"
 	commandcore "the8020/kernel/cbus/core"
 	"the8020/kernel/services"
@@ -71,15 +66,14 @@ import (
 
 type Dispatcher struct {
 	services *services.Services
-	hasher   *auth.PasswordHasher
 	handlers map[string]commandcore.Handler
 }
 
-func New(serviceSet *services.Services, hasher *auth.PasswordHasher) (*Dispatcher, error) {
-	if serviceSet == nil || hasher == nil {
-		return nil, errors.New("runtime operation services and password hasher are required")
+func New(serviceSet *services.Services) (*Dispatcher, error) {
+	if serviceSet == nil || serviceSet.Signing == nil {
+		return nil, errors.New("runtime operation services and signer are required")
 	}
-	return &Dispatcher{services: serviceSet, hasher: hasher, handlers: map[string]commandcore.Handler{
+	return &Dispatcher{services: serviceSet, handlers: map[string]commandcore.Handler{
 		"database.check": databasecheck.New(serviceSet), "database.sql": databasesql.New(serviceSet),
 		"database.table.compare": databasecompare.New(serviceSet), "database.table.definitions": databasedefinitions.New(serviceSet),
 		"database.table.inspect": databaseinspect.New(serviceSet), "database.table.list": databaselist.New(serviceSet),
@@ -101,8 +95,8 @@ func New(serviceSet *services.Services, hasher *auth.PasswordHasher) (*Dispatche
 		"package.source.inspect": packagesourceinspect.New(serviceSet), "package.synchronize": packagesynchronize.New(serviceSet), "package.version.list": packageversionlist.New(serviceSet),
 		"secret.get": secretget.New(serviceSet), "secret.list": secretlist.New(serviceSet), "secret.set": secretset.New(serviceSet),
 		"service.inspect": serviceinspect.New(serviceSet), "service.list": servicelist.New(serviceSet), "service.openapi": serviceopenapi.New(serviceSet), "service.refresh": servicerefresh.New(serviceSet),
-		"service.request": servicerequest.New(serviceSet), "service.restart": servicerestart.New(serviceSet), "service.scale": servicescale.New(serviceSet),
-		"service.start": servicestart.New(serviceSet), "service.stop": servicestop.New(serviceSet), "service.validate": servicevalidate.New(serviceSet),
+		"service.request":  servicerequest.New(serviceSet),
+		"service.validate": servicevalidate.New(serviceSet),
 	}}, nil
 }
 
@@ -113,22 +107,24 @@ func (d *Dispatcher) Execute(ctx context.Context, operation string, input map[st
 			err = commandcore.NewError(commandcore.CodeInvalidArguments, fmt.Sprintf("invalid %s operation input", operation))
 		}
 	}()
-	if operation == "crypto.password.hash" {
-		password, ok := input["password"].(string)
-		if !ok {
-			return nil, errors.New("password must be a string")
-		}
-		hash, err := d.hasher.Hash(password)
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{"hash": hash}, nil
+	if strings.HasPrefix(operation, "crypto.") {
+		return d.crypto(operation, input)
 	}
 	if strings.HasPrefix(operation, "settings.global.") {
 		return d.settings(ctx, settings.StorageGlobal, strings.TrimPrefix(operation, "settings.global."), input)
 	}
 	if strings.HasPrefix(operation, "settings.node.") {
 		return d.settings(ctx, settings.StorageNode, strings.TrimPrefix(operation, "settings.node."), input)
+	}
+	if operation == "event.emit" || operation == "program.run" {
+		return d.execution(ctx, operation, input)
+	}
+	if operation == "program.list" {
+		runtime := d.services.RuntimeSnapshot()
+		if runtime == nil || runtime.ListPrograms == nil {
+			return nil, errors.New("program catalog is unavailable")
+		}
+		return runtime.ListPrograms(ctx)
 	}
 	handler := d.handlers[operation]
 	if handler == nil {

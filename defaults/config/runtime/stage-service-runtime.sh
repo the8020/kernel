@@ -9,7 +9,7 @@ if [[ -z "$SOURCE_ROOT" || -z "$DESTINATION" || ! -d "$RUNTIME_SOURCE/deno" ]]; 
   exit 2
 fi
 
-for directory in supervisor worker kernel; do
+for directory in supervisor worker kernel context; do
   install -d -m 0755 "$DESTINATION/$directory"
   find "$RUNTIME_SOURCE/deno/$directory" -maxdepth 1 -type f \
     -name '*.ts' ! -name '*_test.ts' \

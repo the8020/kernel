@@ -64,23 +64,21 @@
   belong with that image's source.
 - Kernel command TOML is authoritative for built-in IDs, paths, help,
   arguments, results, mutation/restart metadata, handlers, and examples.
-  Active packages own dynamic command TOML and same-package TypeScript programs;
+  Active packages own flat `cbus/commands/*.toml` with an explicit full public
+  `command` name and same-package TypeScript programs referenced by `program`;
   the in-memory CBus catalog is rebuilt atomically from active package commits.
-- Package and service identities come only from
-  `packages/<namespace>/<repository>/services/<service>`. Desired/active package
-  records and installed service declarations/overrides live in database tables;
-  node-local observations live under `node/kernel/runtime/services/`. A fresh
-  database discovers the fixed-depth catalog once and package activation
-  refreshes only changed packages; periodic maintenance is restricted to live,
-  draining, or capacity-pending services. Direct desired-service changes publish
-  one transactional monotonic revision plus the affected service marker so
-  every node reconciles that ID without scanning the installed service catalog.
+- Native package identity and program/hook/event/command discovery remain in
+  the kernel. Deno services owns service declarations, defaults, overrides,
+  versions, storage, and administration. Go validates resolved runtime specs
+  and atomically publishes one fragment per owning package in memory; request
+  paths never read service TOML or application tables. `kernel.reindex` is the
+  common boot, activation, edit, and cross-node publication path.
 - Setting TOML is authoritative for keys, types, node/global storage, defaults,
   environment inputs, validation, and runtime/restart metadata.
 - One runtime group is one gVisor sandbox with exactly one workload type—service
   or job—and one infrastructure Deno supervisor; application code runs only in
   Workers. There is no generic user-session workload.
-- Services persist one canonical worker-based database schema: lifecycle type
+- Deno services resolves the runtime specification: lifecycle type
   is `stateless` or `session`; scaling owns minimum/maximum Workers, per-Worker
   concurrency and target utilization, and Worker keepalive; placement owns
   sandbox group, minimum warm sandboxes, and Workers per sandbox. The kernel
@@ -100,6 +98,12 @@
 - Ordinary service and job sandboxes receive the activated package source
   read-only at `/workspace/packages`. Shared application data uses the typed
   kernel database bridge rather than a generic writable state mount.
+- The generic event dispatcher emits local minute-boundary notifications and
+  asynchronously invokes programs referenced by cached package TOML handlers. It
+  owns no calendar, queue table, durable event delivery, or job history.
+  `the8020/jobs` owns Deno scheduling, per-node cursors, Any claims, independent
+  All executions, and result persistence. Ordinary low-level jobs remain
+  non-durable. Existing activation hooks retain synchronous semantics.
 - Package-index commands validate HTTPS Git sources, list bounded refs and
   commits, atomically synchronize clean mapped repositories to latest, tag, or
   commit selections, create unlinked local repositories, and reload only
@@ -112,7 +116,9 @@
   one exact node/sandbox/Worker through the generic kernel SDK. Go validates
   infrastructure identity, bounds, timeout, and forwarding while treating the
   function name and payload as opaque. Persistent handlers may report exact
-  execution completion so generic binding and route state are released.
+  execution completion so generic binding are released in the owning supervisor. Signed route descriptors contain
+  exact node/sandbox/Worker/execution IDs and can never recreate lost bindings.
+  There is no routing database or duplicate kernel lease bookkeeping.
 - The restart-required global `network.root_alias` setting selects the relative
   80|20 application path receiving temporary redirects from `/`; it defaults to
   `the8020/uui/shell/`, while `/health` remains an unaliased kernel
@@ -120,12 +126,29 @@
 - The main HTTP listener binds all IPv4 interfaces so container and host port
   publication can reach application traffic. Administrative command transport,
   runtime callbacks, and other explicitly internal listeners remain private.
+- Public services completely ignore platform tokens and execute as their configured
+  user. They preserve raw cookies/headers for explicit package login/logout.
+  Authenticated services verify the platform JWT in Go before request-triggered
+  capacity or dispatch, then run users-package account/session policy inside the
+  existing target Worker before HTTP handling or WebSocket acceptance.
+- The kernel owns cryptographic integrity and private deployment key storage;
+  the users Deno package owns passwords, sessions, revocation, login/logout, and
+  application cookies. Context getters are synchronous and never authenticate.
+  Do not introduce another auth service, Worker, sandbox, package copy, or
+  parallel execution mechanism. Extend shared service/job capabilities at their
+  owning layer when a real capability is missing.
 - Current 80|20 package code is trusted. Jobs and services receive the same
-  typed Deno-to-kernel API and unrestricted outbound network/import access;
-  there is no granular capability system yet. Runtime operations and
+  typed Deno-to-kernel API, immutable execution-context API, and unrestricted
+  outbound network/import access. Every Worker has a validated user and
+  service/job/program origin; authenticated requests replace the service's
+  configured anonymous user with their exact identity for that invocation.
+  Kernel principals are structural identities independent of users-package
+  tables for every username, including `system`. Runtime validation checks
+  canonical shape and assignment only; it never checks account existence or
+  enabled state.
+  There is no granular capability system yet. Runtime operations and
   `admin.execute` require an active supervised Worker execution, not a service
-  HTTP request or authenticated user. Authentication operations still require
-  their own service request context.
+  HTTP request or authenticated user. Signing and verification use this same bridge for both workloads.
 - The kernel owns one dynamically opened `database/sql` pool. Backend,
   location, and PostgreSQL credentials are restart-required node-local policy;
   maximum open and retained-idle connections are runtime-mutable node policy,
@@ -175,7 +198,13 @@
   CNI/firewall isolation are unavailable. Shared grouping is explicit and
   shares one failure, security, permission, and resource boundary.
 - System-shipped and user-developed programs use the same supervisor and Worker
-  path.
+  path. Package command dispatch submits an ordinary `system` job against the
+  shared package mount; it owns no source copies, mount overlays, or special
+  sandbox policy. Cross-package imports use the same access as other jobs.
+- A synchronous hook chain is one ordinary system job running the Deno hook
+  dispatcher. Indexed handlers share state in one Worker, ordered by numeric
+  declaration order and stable identity. Normal job mounts, permissions, and
+  release-aware reuse apply; no handler-specific execution backend is allowed.
 - Development sandboxes use the same selected rootful or rootless runsc mode as
   workload isolation but a distinct editable image and lifecycle. Their writable
   package view never grants direct publication into shared package repositories;
@@ -188,7 +217,7 @@
 - Prefer standard library behavior, deletion, explicit composition, compile-time
   registration, and shared parsing/validation.
 - External dependencies are limited to TOML decoding, official Go cryptography
-  and terminal packages, Linux syscalls, the official containerd Go client and
+  and terminal packages, golang-jwt/v5, Linux syscalls, the official containerd Go client and
   its OCI dependencies, the pgx PostgreSQL driver, the CGo-free modernc SQLite
   driver, and narrowly scoped runtime/network libraries required by current
   behavior.
@@ -229,13 +258,12 @@
   debug leases.
 - `runtime/AGENTS.md`: pinned manifest loading, full/rootless readiness
   diagnostics, and mode selection.
-- `packages/AGENTS.md`: package/service manifests, database-backed desired and
-  active package/service state, Git activation, identity, and validation.
+- `packages/AGENTS.md`: native package/program/handler discovery, desired and
+  active package state, Git activation, identity, and generic index revisions.
 - `secrets/AGENTS.md`: private global named-secret persistence and value access.
 - `webservices/AGENTS.md`: Phase 1C reconciliation, canonical service routing,
   lifecycle, administration, and node-local status.
-- `auth/AGENTS.md`: ordinary users, Argon2id passwords, opaque shared
-  authentication sessions, and kernel-generated cookies.
+- `auth/AGENTS.md`: private deployment signing key, JWT profile, and credential transport.
 - `development/AGENTS.md`: the per-user development sandbox, private package
   overlay checkpoints, package Git activation, and reset behavior.
 - `console/AGENTS.md`: transport-neutral sandbox PTY leases and the
@@ -244,3 +272,5 @@
   persistent host key, and sandbox PTY relay.
 - `nodes/AGENTS.md`: shared node topology, capacity advertisement,
   allocation-index partitioning, and authenticated HTTP/WebSocket forwarding.
+- `events/AGENTS.md`: asynchronous local package events, cached listeners,
+  bounded dispatch, and minute-aligned notification.

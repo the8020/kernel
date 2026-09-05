@@ -34,6 +34,20 @@
 
 # Verification
 
-- Unit tests cover OCI restrictions, path mapping, ownership, lifecycle commands, bounded subreaper-child discovery, state conversion, and metrics. The opt-in Linux E2E test starts the real supervisor through rootless gVisor and verifies its bind-mounted kernel Unix socket; installation also runs real rootless gVisor smoke and browser-console tests.
+- Unit tests cover OCI restrictions, path mapping, ownership, lifecycle commands,
+  bounded subreaper-child discovery, state conversion, and metrics.
+- The opt-in Linux E2E test starts the real supervisor through rootless gVisor,
+  verifies its bind-mounted kernel Unix socket, and dispatches a discovered
+  command declared in an arbitrarily named flat TOML file through the ordinary
+  job and Worker managers. It checks system user,
+  unchanged job profile, static/dynamic imports from another package, normal
+  temp/cache access, no invocation package artifacts, and Worker cleanup.
+  The same harness executes ordered hooks from separate packages in one
+  ordinary dispatcher job, checks shared object/Worker identity, reruns through
+  ordinary sandbox reuse, changes handler source/revision, and checks failure
+  identity and cleanup.
+  Run with `THE8020_RUNSC_E2E=1` and absolute `THE8020_RUNSC_PATH` and
+  `THE8020_RUNTIME_ROOTFS` paths to the pinned runtime and current prepared image.
+  Installation also runs real rootless gVisor smoke and browser-console tests.
 
 # Child DOX Index

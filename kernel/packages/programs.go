@@ -4,29 +4,76 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+
+	"the8020/kernel/deployment"
 )
 
 const packageSandboxRoot = "/workspace/packages"
 
-// ProgramDefinition is one validated ordinary program from an exact active
-// package checkout. HostPath is used only for validation; EntrypointURL is the
-// read-only path visible inside runtime sandboxes.
+// ListPrograms reads only ready package program manifests for an explicit
+// selector. It does not inspect services, Git status, or package file trees.
+func (s *Store) ListPrograms(ctx context.Context) ([]ProgramDefinition, error) {
+	entries, err := s.index.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := []ProgramDefinition{}
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if entry.State != "ready" || entry.ActiveCommit == "" {
+			continue
+		}
+		root, exists, err := s.packageDestination(entry.PackageID)
+		if err != nil {
+			return nil, err
+		}
+		if !exists {
+			continue
+		}
+		programs, err := os.ReadDir(filepath.Join(root, "programs"))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range programs {
+			if !item.IsDir() || strings.HasPrefix(item.Name(), ".") {
+				continue
+			}
+			program, err := ValidateProgram(root, entry.PackageID, item.Name(), entry.ActiveCommit)
+			if err != nil {
+				continue
+			}
+			result = append(result, program)
+			if len(result) > 2000 {
+				return nil, errors.New("program selector exceeds 2000 entries")
+			}
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+	return result, nil
+}
+
+// ProgramDefinition is one validated program from a ready package.
+// EntrypointURL uses the shared read-only packages mount in ordinary sandboxes.
 type ProgramDefinition struct {
 	ID            string `json:"program_id"`
 	PackageID     string `json:"package_id"`
 	Name          string `json:"name"`
 	Commit        string `json:"commit"`
-	PackageRoot   string `json:"-"`
-	HostPath      string `json:"-"`
 	Entrypoint    string `json:"entrypoint"`
 	EntrypointURL string `json:"entrypoint_url"`
 	Description   string `json:"description,omitempty"`
 	Discoverable  bool   `json:"discoverable"`
+	UUI           bool   `json:"uui"`
 }
 
 // ParseProgramID accepts only <namespace>/<repository>/<program> identities.
@@ -45,16 +92,27 @@ func ParseProgramID(value string) (Identity, string, error) {
 	return identity, parts[2], nil
 }
 
-// ResolveProgram proves that a program belongs to the exact ready package
-// commit before returning its sandbox-visible entrypoint.
+// ResolveProgram reads the active package record and validates the selected
+// program. Activation owns checkout publication; invocation does not inspect
+// Git, scan the package tree, or prepare a private copy of package sources.
 func (s *Store) ResolveProgram(ctx context.Context, programID string) (ProgramDefinition, error) {
+	return s.resolveProgram(ctx, programID, nil)
+}
+
+func (s *Store) resolveProgram(ctx context.Context, programID string, candidates map[string]deployment.Candidate) (ProgramDefinition, error) {
 	identity, name, err := ParseProgramID(programID)
 	if err != nil {
 		return ProgramDefinition{}, err
 	}
-	commit, err := s.ActivatedPackageCommit(ctx, identity.PackageID())
+	if candidate, exists := candidates[identity.PackageID()]; exists {
+		return ValidateProgram(candidate.Root, identity.PackageID(), name, candidate.Commit)
+	}
+	entry, found, err := s.index.Get(ctx, identity.PackageID())
 	if err != nil {
 		return ProgramDefinition{}, err
+	}
+	if !found || entry.State != "ready" || entry.ActiveCommit == "" {
+		return ProgramDefinition{}, fmt.Errorf("package %s has no ready active commit", identity.PackageID())
 	}
 	root, exists, err := s.packageDestination(identity.PackageID())
 	if err != nil {
@@ -63,87 +121,7 @@ func (s *Store) ResolveProgram(ctx context.Context, programID string) (ProgramDe
 	if !exists {
 		return ProgramDefinition{}, fmt.Errorf("package is not installed: %s", identity.PackageID())
 	}
-	return ValidateProgram(root, identity.PackageID(), name, commit)
-}
-
-// SnapshotProgram copies one exact active package tree into an invocation-owned
-// directory. The unique source path keeps runtime groups for different
-// invocations and package revisions separate. The caller must run cleanup after
-// the job has stopped.
-func (s *Store) SnapshotProgram(ctx context.Context, programID string) (ProgramDefinition, func() error, error) {
-	s.repositoryMu.RLock()
-	defer s.repositoryMu.RUnlock()
-	program, err := s.ResolveProgram(ctx, programID)
-	if err != nil {
-		return ProgramDefinition{}, nil, err
-	}
-	snapshotParent := filepath.Join(s.packagesRoot, ".cbus-programs")
-	if err := os.MkdirAll(snapshotParent, 0o700); err != nil {
-		return ProgramDefinition{}, nil, fmt.Errorf("create command program snapshot root: %w", err)
-	}
-	snapshotRoot, err := os.MkdirTemp(snapshotParent, "invocation-")
-	if err != nil {
-		return ProgramDefinition{}, nil, fmt.Errorf("create command program snapshot: %w", err)
-	}
-	cleanup := func() error { return os.RemoveAll(snapshotRoot) }
-	packageRoot := filepath.Join(snapshotRoot, "package")
-	if err := copyTree(program.PackageRoot, packageRoot); err != nil {
-		_ = cleanup()
-		return ProgramDefinition{}, nil, fmt.Errorf("snapshot command program: %w", err)
-	}
-	program, err = ValidateProgram(packageRoot, program.PackageID, program.Name, program.Commit)
-	if err != nil {
-		_ = cleanup()
-		return ProgramDefinition{}, nil, fmt.Errorf("validate command program snapshot: %w", err)
-	}
-	return program, cleanup, nil
-}
-
-func copyTree(source, destination string) error {
-	return filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.Name() == ".git" {
-			if entry.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		relative, err := filepath.Rel(source, path)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(destination, relative)
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		switch {
-		case entry.IsDir():
-			return os.MkdirAll(target, info.Mode().Perm())
-		case entry.Type()&os.ModeSymlink != 0:
-			link, err := os.Readlink(path)
-			if err != nil {
-				return err
-			}
-			return os.Symlink(link, target)
-		case entry.Type().IsRegular():
-			input, err := os.Open(path)
-			if err != nil {
-				return err
-			}
-			output, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, info.Mode().Perm())
-			if err != nil {
-				_ = input.Close()
-				return err
-			}
-			_, copyErr := io.Copy(output, input)
-			return errors.Join(copyErr, output.Close(), input.Close())
-		default:
-			return fmt.Errorf("unsupported package entry %s", relative)
-		}
-	})
+	return ValidateProgram(root, identity.PackageID(), name, entry.ActiveCommit)
 }
 
 // ValidateProgram validates one program in a package root. Activation and
@@ -200,9 +178,9 @@ func ValidateProgram(packageRoot, packageID, name, commit string) (ProgramDefini
 	sandboxPath := filepath.ToSlash(filepath.Join(packageSandboxRoot, identity.Namespace, identity.Repository, "programs", name, filepath.FromSlash(entrypoint)))
 	return ProgramDefinition{
 		ID: packageID + "/" + name, PackageID: packageID, Name: name,
-		Commit: commit, PackageRoot: absRoot, HostPath: entrypointPath, Entrypoint: entrypoint,
+		Commit: commit, Entrypoint: entrypoint,
 		EntrypointURL: (&url.URL{Scheme: "file", Path: sandboxPath}).String(),
-		Description:   manifest.Description, Discoverable: discoverable,
+		Description:   manifest.Description, Discoverable: discoverable, UUI: manifest.UUI,
 	}, nil
 }
 

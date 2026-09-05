@@ -1,5 +1,7 @@
+import { trackStream } from "./streams.ts";
 import type {
   ExecutionMetadata,
+  ExecutionUserMetadata,
   KernelCall,
   KernelOperation,
   RuntimeLogEvent,
@@ -54,6 +56,7 @@ interface KernelCallPayload {
     requestId: string;
     serviceId: string;
     persistentExecutionId?: string;
+    user?: ExecutionUserMetadata;
   };
 }
 
@@ -244,9 +247,7 @@ export class RuntimeWorker {
       const payload = message.payload as Partial<KernelCallPayload> | undefined;
       if (
         payload === undefined ||
-        (payload.operation !== "auth.login" &&
-          payload.operation !== "auth.logoutCurrent" &&
-          payload.operation !== "admin.execute" &&
+        (payload.operation !== "admin.execute" &&
           payload.operation !== "runtime.operation" &&
           payload.operation !== "database.info" &&
           payload.operation !== "database.execute" &&
@@ -277,6 +278,7 @@ export class RuntimeWorker {
         executionId: this.metadata.executionId,
         workerId: this.metadata.workerId,
         persistentExecutionId: payload.request?.persistentExecutionId,
+        user: payload.request?.user,
       }, controller.signal);
       this.#port.postMessage({
         type: "kernel_result",
@@ -346,13 +348,14 @@ export class RuntimeWorker {
   async invoke(
     functionName: string,
     input: unknown,
-    signal?: AbortSignal,
-    persistentExecutionId?: string,
+    signal: AbortSignal | undefined,
+    persistentExecutionId: string | undefined,
+    user: ExecutionUserMetadata,
   ): Promise<WorkerInvocationResult> {
     const response = await this.#request(
       {
         type: "worker_invoke",
-        payload: { function: functionName, input, persistentExecutionId },
+        payload: { function: functionName, input, persistentExecutionId, user },
       },
       [],
       signal,
@@ -385,6 +388,7 @@ export class RuntimeWorker {
         workerExecutionId: this.metadata.executionId,
       },
       auth: { authenticated: false },
+      user: this.metadata.user,
     };
     const headers = [...request.headers.entries()];
     const body = request.body;
@@ -401,7 +405,7 @@ export class RuntimeWorker {
     ) as WorkerMessage;
     const responseBody = response.body === undefined || response.body === null
       ? null
-      : this.#trackResponseBody(response.body);
+      : trackStream(response.body, () => this.#completeInFlight());
     if (responseBody === null) this.#completeInFlight();
     return new Response(responseBody, {
       status: response.status ?? 500,
@@ -607,41 +611,6 @@ export class RuntimeWorker {
     const waiters = [...this.#idleWaiters];
     this.#idleWaiters.clear();
     for (const finish of waiters) finish();
-  }
-
-  #trackResponseBody(
-    source: ReadableStream<Uint8Array>,
-  ): ReadableStream<Uint8Array> {
-    const reader = source.getReader();
-    let complete = false;
-    const finish = (): void => {
-      if (complete) return;
-      complete = true;
-      this.#completeInFlight();
-    };
-    return new ReadableStream<Uint8Array>({
-      async pull(controller) {
-        try {
-          const result = await reader.read();
-          if (result.done) {
-            finish();
-            controller.close();
-          } else {
-            controller.enqueue(result.value);
-          }
-        } catch (error) {
-          finish();
-          controller.error(error);
-        }
-      },
-      async cancel(reason) {
-        try {
-          await reader.cancel(reason);
-        } finally {
-          finish();
-        }
-      },
-    });
   }
 
   #fail(reason: string): void {

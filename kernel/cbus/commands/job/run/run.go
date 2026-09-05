@@ -5,6 +5,7 @@ import (
 	"context"
 	"the8020/kernel/cbus/commands/internal/commandutil"
 	"the8020/kernel/cbus/core"
+	"the8020/kernel/execution"
 	"the8020/kernel/execution/jobs"
 	"the8020/kernel/services"
 )
@@ -23,6 +24,13 @@ func New(serviceSet *services.Services) core.Handler {
 			return nil, err
 		}
 		var reuse *bool
+		var user execution.User
+		if commandutil.Has(request, "user") {
+			user, err = execution.UserForUsername(commandutil.String(request, "user"))
+			if err != nil {
+				return nil, core.NewError(core.CodeInvalidArguments, err.Error())
+			}
+		}
 		if commandutil.Has(request, "reuse") {
 			value := commandutil.Bool(request, "reuse")
 			reuse = &value
@@ -32,6 +40,7 @@ func New(serviceSet *services.Services) core.Handler {
 			arguments = []any{input}
 		}
 		record, err := runtimeServices.Jobs.Run(ctx, commandutil.String(request, "job_id"), commandutil.String(request, "entrypoint"), jobs.Options{
+			User:      user,
 			Arguments: arguments, Detached: commandutil.Bool(request, "detached"), GroupKey: commandutil.String(request, "group_key"),
 			Namespace: commandutil.String(request, "namespace"), Timeout: commandutil.Duration(request, "timeout"),
 			Parallelism: commandutil.Int(request, "parallelism"), Reuse: reuse, Permissions: commandutil.Permissions(request),

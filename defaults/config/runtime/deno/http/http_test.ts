@@ -43,6 +43,14 @@ Deno.test("portable self-types match source request metadata", () => {
   assertEquals(roundTrip.client.networkScope, "loopback");
 });
 
+Deno.test("portable self-types expose the source date schema class and output", () => {
+  const schema: import("./the8020_http.d.ts").z.ZodDate = z.date();
+  const factory: typeof import("./the8020_http.d.ts").z.date = z.date;
+  const date = new Date("2026-09-05T00:00:00Z");
+  assert(factory() instanceof z.ZodDate);
+  assertEquals(schema.parse(date), date);
+});
+
 function context(requestId = "request-1"): RuntimeServiceContext {
   return {
     signal: new AbortController().signal,
@@ -60,6 +68,7 @@ function context(requestId = "request-1"): RuntimeServiceContext {
         workerId: "wrk-test0001",
         workerExecutionId: "execution-test",
       },
+      user: { userId: "user:system", username: "system" },
       auth: { authenticated: false },
     },
   };
@@ -361,7 +370,10 @@ Deno.test("WebSocket routes preserve middleware, metadata, and bidirectional mes
     socket,
   );
   assertEquals(response.status, 204);
-  assertEquals(response.headers.get("x-80-20-websocket-accepted"), "true");
+  assertEquals(
+    response.headers.get("the8020-internal-websocket-accepted"),
+    "true",
+  );
   await closed;
   assertEquals(middlewareRequest, "request-websocket");
   assertEquals(handlerContext, {

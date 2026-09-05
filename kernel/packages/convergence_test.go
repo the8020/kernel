@@ -17,33 +17,6 @@ type countingPackageIndex struct {
 	lists int
 }
 
-type countingServiceRevisions struct {
-	revision uint64
-	changes  []ServiceChange
-	loads    int
-}
-
-func (s *countingServiceRevisions) ServiceRevision(context.Context) (uint64, error) {
-	return s.revision, nil
-}
-func (s *countingServiceRevisions) ServiceChanges(context.Context, uint64, uint64) ([]ServiceChange, error) {
-	s.loads++
-	return append([]ServiceChange(nil), s.changes...), nil
-}
-
-func TestServiceRevisionFollowerUsesScalarNoChangePath(t *testing.T) {
-	store := &countingServiceRevisions{revision: 12}
-	follower := &ServiceRevisionFollower{store: store, revision: 12}
-	if update, err := follower.Poll(context.Background()); err != nil || update.Revision != 0 || store.loads != 0 {
-		t.Fatalf("unchanged poll=%#v change_loads=%d err=%v", update, store.loads, err)
-	}
-	store.revision = 13
-	store.changes = []ServiceChange{{ServiceID: "acme/orders/api", Active: true}}
-	if update, err := follower.Poll(context.Background()); err != nil || update.Revision != 13 || store.loads != 1 || !slices.Equal(update.ReconcileServices, []string{"acme/orders/api"}) {
-		t.Fatalf("changed poll=%#v change_loads=%d err=%v", update, store.loads, err)
-	}
-}
-
 func (s *countingPackageIndex) List(ctx context.Context) ([]PackageIndex, error) {
 	s.lists++
 	return s.PackageIndexStore.List(ctx)
@@ -95,7 +68,6 @@ func TestPackageRevisionFollowerUsesCheapNoChangePathAndTargetsChangedPackage(t 
 	if _, err := db.ExecContext(context.Background(), `INSERT INTO "the8020__system__revisions" ("domain", "revision", "updatedAt") VALUES ('packages', 1, $1)`, databaseTime(db)); err != nil {
 		t.Fatal(err)
 	}
-	installConvergenceService(t, store, "acme/demo/old", firstCommit)
 
 	counter := &countingPackageIndex{PackageIndexStore: store.index}
 	store.index = counter
@@ -116,11 +88,6 @@ func TestPackageRevisionFollowerUsesCheapNoChangePathAndTargetsChangedPackage(t 
 	if err := store.index.SetActivation(context.Background(), entry.PackageID, "ready", secondCommit, nil); err != nil {
 		t.Fatal(err)
 	}
-	installConvergenceService(t, store, "acme/demo/new", secondCommit)
-	definitions := store.state.(ServiceDefinitionStore)
-	if err := definitions.RetirePackage(context.Background(), "acme/demo", []string{"acme/demo/new"}); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := db.ExecContext(context.Background(), `UPDATE "the8020__system__revisions" SET "revision" = 2`); err != nil {
 		t.Fatal(err)
 	}
@@ -129,9 +96,7 @@ func TestPackageRevisionFollowerUsesCheapNoChangePathAndTargetsChangedPackage(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if update.Revision != 2 || !slices.Equal(update.Packages, []string{"acme/demo"}) ||
-		!slices.Equal(update.ReconcileServices, []string{"acme/demo/new"}) ||
-		!slices.Equal(update.RetireServices, []string{"acme/demo/old"}) {
+	if update.Revision != 2 || !slices.Equal(update.Packages, []string{"acme/demo"}) {
 		t.Fatalf("targeted update=%#v", update)
 	}
 	if counter.lists != 1 {
@@ -149,28 +114,6 @@ func TestPackageRevisionFollowerUsesCheapNoChangePathAndTargetsChangedPackage(t 
 	}
 	if update, err := follower.Poll(context.Background()); err != nil || update.Revision != 0 {
 		t.Fatalf("acknowledged poll=%#v err=%v", update, err)
-	}
-}
-
-func installConvergenceService(t *testing.T, store *Store, serviceID, commit string) {
-	t.Helper()
-	identity, err := ParseServiceID(serviceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	definition := Definition{Identity: identity, Service: ServiceManifest{
-		Schema: packageManifestSchema + 1, Description: serviceID, Entrypoint: "service.ts",
-		Lifecycle: LifecycleManifest{DefaultEnabled: true, ServiceType: ServiceTypeStateless},
-		Access:    AccessManifest{Mode: AccessModePublic, Unauthenticated: UnauthenticatedManifest{Action: UnauthenticatedReject, Status: 401, Message: "Authentication is required."}},
-	}}
-	state := DesiredServiceState{Enabled: true}
-	effective := EffectiveConfiguration{
-		Lifecycle: LifecycleConfiguration{ServiceType: ServiceTypeStateless, SessionKeepAlive: 10 * time.Minute},
-		Scaling:   ScalingConfiguration{ConcurrencyPerWorker: 32, TargetUtilization: .7, WorkerKeepAlive: 2 * time.Minute},
-		Placement: PlacementConfiguration{WorkersPerSandbox: 4},
-	}
-	if err := store.state.(ServiceDefinitionStore).InstallDefinition(context.Background(), definition, state, effective, commit); err != nil {
-		t.Fatal(err)
 	}
 }
 

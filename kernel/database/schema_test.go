@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func evaluatedTable(t *testing.T, descriptor TableDescriptor) EvaluatedTable {
@@ -127,6 +128,32 @@ func TestDeploymentOutcomeRemainsVisibleAfterRollback(t *testing.T) {
 	status = manager.Status()
 	if status.LastDeploymentError != "" || status.PackageSetHash != PackageSetHash(map[string]string{"acme/orders": "two"}) {
 		t.Fatalf("successful deployment status = %#v", status)
+	}
+}
+
+func TestExistingCatalogInitializationDoesNotCompeteWithWriters(t *testing.T) {
+	config := sqliteConfig(filepath.Join(t.TempDir(), "system.db"))
+	manager := New(config)
+	t.Cleanup(func() { _ = manager.Close() })
+	ctx := context.Background()
+	if _, err := manager.InitializeCatalog(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := manager.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Rollback()
+	if _, err := writer.ExecContext(ctx, `UPDATE _8020_catalog SET updated_at = updated_at`); err != nil {
+		t.Fatal(err)
+	}
+	restarted := New(config)
+	t.Cleanup(func() { _ = restarted.Close() })
+	validation, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	status, err := restarted.InitializeCatalog(validation)
+	if err != nil || status.State != StateConnected {
+		t.Fatalf("validate existing catalog alongside a writer: status=%s, error=%v", status.State, err)
 	}
 }
 

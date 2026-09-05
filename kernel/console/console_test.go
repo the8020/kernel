@@ -14,19 +14,17 @@ import (
 
 	"golang.org/x/net/websocket"
 
-	"the8020/kernel/auth"
+	"the8020/kernel/execution"
 	"the8020/kernel/sandbox/backend"
 )
 
 type testAuthentication struct{}
 
-func (testAuthentication) CookieName() string { return "the8020_auth" }
-
-func (testAuthentication) ValidateCookieContext(_ context.Context, value string) (auth.AuthContext, error) {
+func (testAuthentication) AuthenticateToken(_ context.Context, value string) (execution.User, error) {
 	if value != "valid" {
-		return auth.AuthContext{}, errors.New("invalid cookie")
+		return execution.User{}, errors.New("invalid cookie")
 	}
-	return auth.AuthContext{Authenticated: true, UserID: "test-user"}, nil
+	return execution.User{ID: "user:alice", Username: "alice"}, nil
 }
 
 type testProvider struct {

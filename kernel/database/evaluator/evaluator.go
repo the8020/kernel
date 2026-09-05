@@ -15,6 +15,7 @@ import (
 
 	"the8020/kernel/database"
 	"the8020/kernel/deployment"
+	"the8020/kernel/execution"
 	"the8020/kernel/execution/jobs"
 	"the8020/kernel/execution/supervisor"
 	workspacepackages "the8020/kernel/packages"
@@ -284,6 +285,7 @@ func (e *Evaluator) evaluateBatch(ctx context.Context, batch []evaluationItem, f
 	}
 	reuse := true
 	record, err := e.jobs.Run(ctx, "database-table-evaluator", "file:///workspace/packages/the8020/db/internal/evaluator.ts", jobs.Options{
+		User:    execution.DefaultUser(ctx),
 		OwnerID: "the8020/db", Arguments: []any{evaluationRequest{PackageRoot: packageMountRoot, Tables: batch}},
 		GroupKey: "database-table-evaluator", Namespace: "the8020", Timeout: 2 * time.Minute,
 		Parallelism: 1, Reuse: &reuse, ReleaseID: fingerprint, DatabaseAccess: "none", CheckModules: modules, Mounts: mounts,

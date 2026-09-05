@@ -18,17 +18,33 @@
 - Jobs require a function default export and call it as
   `await module.default(...arguments)`. A named `run` export has no special
   meaning and no hidden context argument is appended.
+- `hook_dispatch.ts` is an ordinary job entrypoint receiving ordered handler
+  references, invocation scope, and mutable state. It freezes the scope and
+  imports/awaits each handler's default export as `(state, scope)` in the same
+  Worker, returning the final state. It creates no child jobs or Workers and
+  carries no application indexing policy. The kernel resolves entrypoints and
+  supplies the job release identity; a failure identifies its declaration and
+  stops the chain.
 - Service in-flight ownership lasts through complete response-stream consumption
-  or cancellation so graceful stop cannot truncate a dispatch.
+  or cancellation so graceful stop cannot truncate a dispatch. `streams.ts` owns
+  shared finish-once stream accounting for Worker and supervisor leases.
 - A service Worker becomes idle after readiness and again only after its final
   in-flight request completes; new activity clears that timestamp. The
   supervisor reports the timestamp but does not decide when kernel policy should
   remove the Worker.
 - Graceful shutdown waits on the same in-flight completion signal used by
   request accounting; do not add drain polling loops.
-- Request metadata carries trusted authentication and current generic execution
-  identity plus the kernel-observed client IP address and network scope, without
-  cookies, route tokens, or application settings.
+- `request_authentication.ts` invokes the composition-supplied package hook
+  inside the existing Worker and ordinary bridge request scope before HTTP
+  handlers or WebSocket acceptance. The generic runtime has no users-package
+  path or SQL. Public requests omit this metadata and bypass imports,
+  verification, and policy. Successful approval alone publishes
+  `auth.authenticated`; streaming bodies and WebSocket callbacks restore that
+  approved request context. Context getters do not perform I/O. Never introduce
+  a second auth Worker, service, or sandbox.
+- Request metadata carries the trusted effective user and current generic
+  execution identity plus the kernel-observed client IP address and network
+  scope, without cookies, route tokens, or application settings.
 - Application code sends only the kernel operation and arguments. RuntimeWorker
   attaches immutable Worker execution identity and the current request ID;
   sandbox and workload identity come from the authenticated supervisor envelope
@@ -41,6 +57,9 @@
   backend is installed from trusted Worker metadata before module import;
   read-only database status is also available before execution, while all
   contextual kernel calls require an active request or job.
+- `@the8020/context` reads that same frozen asynchronous context and exposes the
+  validated user, outer service/job/program identity, and infrastructure IDs. It
+  identifies the outer UUI service, not package-owned UUI session IDs.
 - An entrypoint may export a validated `workerFunctions` map. Only those named
   functions receive bounded JSON input and generic execution context. Exact
   control may carry its supervisor-validated persistent-execution identity so

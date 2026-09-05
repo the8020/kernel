@@ -16,6 +16,7 @@ import (
 	"golang.org/x/net/websocket"
 
 	"the8020/kernel/auth"
+	"the8020/kernel/execution"
 	"the8020/kernel/sandbox/backend"
 )
 
@@ -27,8 +28,7 @@ const (
 )
 
 type Authentication interface {
-	CookieName() string
-	ValidateCookieContext(context.Context, string) (auth.AuthContext, error)
+	AuthenticateToken(context.Context, string) (execution.User, error)
 }
 
 type Provider interface {
@@ -135,13 +135,12 @@ func (m *Manager) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		http.Error(writer, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	cookie, err := request.Cookie(m.authentication.CookieName())
-	if err != nil {
-		http.Error(writer, "Authentication required", http.StatusUnauthorized)
-		return
-	}
-	identity, err := m.authentication.ValidateCookieContext(request.Context(), cookie.Value)
-	if err != nil || !identity.Authenticated {
+	token, fromCookie := auth.RequestToken(request)
+	identity, err := m.authentication.AuthenticateToken(request.Context(), token)
+	if err != nil || !identity.Valid() {
+		if fromCookie {
+			auth.ClearTokenCookie(writer, auth.SecureTransport(request))
+		}
 		http.Error(writer, "Authentication required", http.StatusUnauthorized)
 		return
 	}

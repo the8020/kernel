@@ -9,16 +9,20 @@ import (
 	"the8020/kernel/services"
 )
 
-// New refreshes package-owned commands from the active package set.
+// New refreshes native declarations and Deno-provided service fragments.
 func New(serviceSet *services.Services) core.Handler {
-	return func(ctx context.Context, _ core.Request) (core.Result, error) {
+	return func(ctx context.Context, request core.Request) (core.Result, error) {
 		runtimeServices, err := commandutil.Runtime(serviceSet)
 		if err != nil {
 			return nil, err
 		}
-		if runtimeServices.ReindexCommands == nil {
-			return nil, core.NewError(core.CodeRuntimeUnavailable, "package command indexing is unavailable")
+		if runtimeServices.Reindex == nil {
+			return nil, core.NewError(core.CodeRuntimeUnavailable, "package indexing is unavailable")
 		}
-		return runtimeServices.ReindexCommands(ctx)
+		result, err := runtimeServices.Reindex(ctx, commandutil.CSV(request, "packages"))
+		if err != nil {
+			return nil, &core.Error{Code: core.CodeRuntimeOperation, Message: err.Error(), Details: result}
+		}
+		return result, nil
 	}
 }

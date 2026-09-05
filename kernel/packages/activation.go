@@ -10,14 +10,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
 	"the8020/kernel/database"
 	"the8020/kernel/deployment"
-	"the8020/kernel/execution/jobs"
-	"the8020/kernel/execution/supervisor"
 	"the8020/kernel/sandbox/model"
 )
 
@@ -26,10 +23,6 @@ const (
 	activationPackagesTable = `"the8020__packages__activation_packages"`
 	hookRunsTable           = `"the8020__packages__hook_runs"`
 )
-
-type ActivationJobRunner interface {
-	Run(context.Context, string, string, jobs.Options) (jobs.Record, error)
-}
 
 type activationDatabase interface {
 	database.Store
@@ -40,9 +33,9 @@ type ActivationCoordinatorConfig struct {
 	Database           activationDatabase
 	Schema             deployment.SchemaHook
 	Packages           *Store
-	Jobs               ActivationJobRunner
+	Jobs               JobRunner
 	ValidateCandidates func(context.Context, []deployment.Candidate) error
-	RefreshCommands    func(context.Context) error
+	Reindex            func(context.Context, []string) error
 	Now                func() time.Time
 }
 
@@ -53,9 +46,9 @@ type ActivationCoordinator struct {
 	database           activationDatabase
 	schema             deployment.SchemaHook
 	packages           *Store
-	jobs               ActivationJobRunner
+	jobs               JobRunner
 	validateCandidates func(context.Context, []deployment.Candidate) error
-	refreshCommands    func(context.Context) error
+	reindex            func(context.Context, []string) error
 	now                func() time.Time
 	mu                 sync.Mutex
 	current            *activationRun
@@ -66,6 +59,7 @@ type activationRun struct {
 	id         string
 	candidates []activationCandidate
 	failure    error
+	handlers   map[string]packageHandlers
 }
 
 type activationCandidate struct {
@@ -92,7 +86,7 @@ func NewActivationCoordinator(config ActivationCoordinatorConfig) (*ActivationCo
 	return &ActivationCoordinator{
 		database: config.Database, schema: config.Schema, packages: config.Packages,
 		jobs: config.Jobs, validateCandidates: config.ValidateCandidates,
-		refreshCommands: config.RefreshCommands, now: config.Now,
+		reindex: config.Reindex, now: config.Now,
 	}, nil
 }
 
@@ -102,10 +96,9 @@ func (c *ActivationCoordinator) Prepare(ctx context.Context, candidates []deploy
 	if c.current != nil {
 		return errors.New("package activation is already in progress")
 	}
-	if c.validateCandidates != nil {
-		if err := c.validateCandidates(ctx, candidates); err != nil {
-			return fmt.Errorf("validate package commands: %w", err)
-		}
+	handlers, err := c.validate(ctx, candidates)
+	if err != nil {
+		return err
 	}
 	lockedContext, release, err := c.database.AcquireDeploymentLock(ctx)
 	if err != nil {
@@ -121,6 +114,7 @@ func (c *ActivationCoordinator) Prepare(ctx context.Context, candidates []deploy
 	if err != nil {
 		return err
 	}
+	run.handlers = handlers
 	c.current = run
 	if err := c.schema.Prepare(lockedContext, candidates); err != nil {
 		_ = c.rollback(context.WithoutCancel(lockedContext), run, err)
@@ -190,12 +184,6 @@ func (c *ActivationCoordinator) Complete(ctx context.Context, activated bool) er
 	if err := c.setStage(ctx, run.id, "post_activated", nil); err != nil {
 		return err
 	}
-	for _, candidate := range run.candidates {
-		if _, err := c.packages.SynchronizePackageDefinitions(ctx, candidate.PackageID, candidate.Commit); err != nil {
-			c.incomplete(ctx, run, err)
-			return err
-		}
-	}
 	if err := c.schema.Complete(ctx, true); err != nil {
 		c.incomplete(ctx, run, err)
 		return err
@@ -204,9 +192,9 @@ func (c *ActivationCoordinator) Complete(ctx context.Context, activated bool) er
 		c.incomplete(ctx, run, err)
 		return err
 	}
-	if c.refreshCommands != nil {
-		if err := c.refreshCommands(ctx); err != nil {
-			return fmt.Errorf("refresh package commands: %w", err)
+	if c.reindex != nil {
+		if err := c.reindex(ctx, run.packageIDs()); err != nil {
+			return fmt.Errorf("reindex packages: %w", err)
 		}
 	}
 	return nil
@@ -235,15 +223,15 @@ func (c *ActivationCoordinator) Bootstrap(ctx context.Context, commits map[strin
 	for _, item := range items {
 		candidates = append(candidates, deployment.Candidate{PackageID: item.ID, Root: item.Path, Commit: commits[item.ID]})
 	}
-	if c.validateCandidates != nil {
-		if err := c.validateCandidates(ctx, candidates); err != nil {
-			return fmt.Errorf("validate package commands: %w", err)
-		}
+	handlers, err := c.validate(ctx, candidates)
+	if err != nil {
+		return err
 	}
 	run, err := c.begin(ctx, candidates)
 	if err != nil {
 		return err
 	}
+	run.handlers = handlers
 	c.current = run
 	defer func() { c.current = nil }()
 	if err := c.setStage(ctx, run.id, "schema_synchronized", nil); err != nil {
@@ -266,19 +254,13 @@ func (c *ActivationCoordinator) Bootstrap(ctx context.Context, commits map[strin
 	if err := c.setStage(ctx, run.id, "post_activated", nil); err != nil {
 		return err
 	}
-	for _, candidate := range run.candidates {
-		if _, err := c.packages.SynchronizePackageDefinitions(ctx, candidate.PackageID, candidate.Commit); err != nil {
-			c.incomplete(ctx, run, err)
-			return err
-		}
-	}
 	if err := c.publish(ctx, run); err != nil {
 		c.incomplete(ctx, run, err)
 		return err
 	}
-	if c.refreshCommands != nil {
-		if err := c.refreshCommands(ctx); err != nil {
-			return fmt.Errorf("refresh package commands: %w", err)
+	if c.reindex != nil {
+		if err := c.reindex(ctx, run.packageIDs()); err != nil {
+			return fmt.Errorf("reindex packages: %w", err)
 		}
 	}
 	return nil
@@ -299,15 +281,15 @@ func (c *ActivationCoordinator) Recover(ctx context.Context) error {
 	if err != nil || run == nil {
 		return err
 	}
-	if c.validateCandidates != nil {
-		candidates := make([]deployment.Candidate, len(run.candidates))
-		for index := range run.candidates {
-			candidates[index] = run.candidates[index].Candidate
-		}
-		if err := c.validateCandidates(ctx, candidates); err != nil {
-			return fmt.Errorf("validate package commands: %w", err)
-		}
+	candidates := make([]deployment.Candidate, len(run.candidates))
+	for i := range run.candidates {
+		candidates[i] = run.candidates[i].Candidate
 	}
+	handlers, err := c.validate(ctx, candidates)
+	if err != nil {
+		return err
+	}
+	run.handlers = handlers
 	c.current = run
 	defer func() { c.current = nil }()
 	var stage string
@@ -374,12 +356,6 @@ func (c *ActivationCoordinator) Recover(ctx context.Context) error {
 	if err := c.setStage(ctx, run.id, "post_activated", nil); err != nil {
 		return err
 	}
-	for _, candidate := range run.candidates {
-		if _, err := c.packages.SynchronizePackageDefinitions(ctx, candidate.PackageID, candidate.Commit); err != nil {
-			c.incomplete(ctx, run, err)
-			return err
-		}
-	}
 	if err := c.schema.Complete(ctx, true); err != nil {
 		c.incomplete(ctx, run, err)
 		return err
@@ -393,9 +369,9 @@ func (c *ActivationCoordinator) Recover(ctx context.Context) error {
 			return err
 		}
 	}
-	if c.refreshCommands != nil {
-		if err := c.refreshCommands(ctx); err != nil {
-			return fmt.Errorf("refresh package commands: %w", err)
+	if c.reindex != nil {
+		if err := c.reindex(ctx, run.packageIDs()); err != nil {
+			return fmt.Errorf("reindex packages: %w", err)
 		}
 	}
 	return nil
@@ -535,7 +511,53 @@ func (c *ActivationCoordinator) begin(ctx context.Context, raw []deployment.Cand
 	return &activationRun{id: id, candidates: candidates}, nil
 }
 
+func (run *activationRun) packageIDs() []string {
+	ids := make([]string, len(run.candidates))
+	for i, candidate := range run.candidates {
+		ids[i] = candidate.PackageID
+	}
+	return ids
+}
+
+func (c *ActivationCoordinator) validate(ctx context.Context, candidates []deployment.Candidate) (map[string]packageHandlers, error) {
+	handlers, err := c.packages.indexCandidateHandlers(ctx, candidates)
+	if err != nil {
+		return nil, fmt.Errorf("validate package handlers: %w", err)
+	}
+	if c.validateCandidates != nil {
+		if err := c.validateCandidates(ctx, candidates); err != nil {
+			return nil, fmt.Errorf("validate package commands: %w", err)
+		}
+	}
+	return handlers, nil
+}
+
 func (c *ActivationCoordinator) runHooks(ctx context.Context, run *activationRun, hook string, staged bool) error {
+	selected := make(map[string]deployment.Candidate, len(run.candidates))
+	var mounts []model.Mount
+	for _, candidate := range run.candidates {
+		item := candidate.Candidate
+		if staged {
+			mounts = append(mounts, model.Mount{
+				Source: item.Root, Target: packageSandboxRoot + "/" + item.PackageID, ReadOnly: true,
+				OwnerScope: item.PackageID, Purpose: "workspace", Persistence: "activation",
+			})
+		} else {
+			item.Root = c.packages.packagePath(item.PackageID)
+		}
+		selected[item.PackageID] = item
+	}
+	if run.handlers == nil {
+		candidates := make([]deployment.Candidate, 0, len(selected))
+		for _, candidate := range run.candidates {
+			candidates = append(candidates, selected[candidate.PackageID])
+		}
+		handlers, err := c.packages.indexCandidateHandlers(ctx, candidates)
+		if err != nil {
+			return err
+		}
+		run.handlers = handlers
+	}
 	for _, candidate := range run.candidates {
 		var state string
 		if err := c.database.QueryRowContext(ctx, `SELECT "state" FROM `+hookRunsTable+` WHERE "activationId" = $1 AND "packageId" = $2 AND "hook" = $3`, run.id, candidate.PackageID, hook).Scan(&state); err != nil {
@@ -544,56 +566,21 @@ func (c *ActivationCoordinator) runHooks(ctx context.Context, run *activationRun
 		if state == "succeeded" {
 			continue
 		}
-		root := c.packages.packagePath(candidate.PackageID)
-		mounts := []model.Mount(nil)
-		if staged {
-			root = candidate.Root
-			parts := strings.Split(candidate.PackageID, "/")
-			mounts = []model.Mount{{
-				Source: candidate.Root, Target: "/workspace/packages/" + parts[0] + "/" + parts[1], ReadOnly: true,
-				OwnerScope: candidate.PackageID, Purpose: "workspace", Persistence: "activation",
-			}}
-		}
-		path := filepath.Join(root, "hooks", hook+".ts")
-		info, err := os.Lstat(path)
-		if errors.Is(err, os.ErrNotExist) {
+		handlers := run.handlers[candidate.PackageID].hooks[hook]
+		if len(handlers) == 0 {
 			if err := c.finishHook(ctx, run.id, candidate.PackageID, hook, nil); err != nil {
 				return err
 			}
 			continue
 		}
-		if err != nil || !info.Mode().IsRegular() {
-			if err == nil {
-				err = errors.New("hook must be a regular TypeScript file")
-			}
-			_ = c.finishHook(ctx, run.id, candidate.PackageID, hook, err)
-			return fmt.Errorf("%s %s: %w", candidate.PackageID, hook, err)
-		}
-		canonical, err := canonicalWithin(path, root)
-		if err != nil || canonical != path {
-			if err == nil {
-				err = errors.New("hook resolves through a symbolic link")
-			}
-			_ = c.finishHook(ctx, run.id, candidate.PackageID, hook, err)
-			return fmt.Errorf("%s %s: %w", candidate.PackageID, hook, err)
-		}
 		if err := c.startHook(ctx, run.id, candidate.PackageID, hook); err != nil {
 			return err
 		}
-		parts := strings.Split(candidate.PackageID, "/")
-		entrypoint := "file:///workspace/packages/" + parts[0] + "/" + parts[1] + "/hooks/" + hook + ".ts"
-		reuse := false
 		hookInput := ActivationHookContext{
 			PackageID: candidate.PackageID, PreviousCommit: candidate.previous, CandidateCommit: candidate.Commit,
 			FirstActivation: candidate.first, ActivationID: run.id,
 		}
-		_, runErr := c.jobs.Run(ctx, "package-"+hook, entrypoint, jobs.Options{
-			OwnerID: candidate.PackageID, Arguments: []any{hookInput},
-			GroupKey: "package-activation", Namespace: parts[0], Timeout: 5 * time.Minute,
-			Parallelism: 1, Reuse: &reuse, ReleaseID: candidate.Commit, DatabaseAccess: "full",
-			CheckModules: []string{entrypoint}, Mounts: mounts,
-			Permissions: &supervisor.WorkerPermissions{Read: []string{"/opt/runtime", "/workspace/packages"}},
-		})
+		_, runErr := c.packages.RunHookChain(ctx, c.jobs, candidate.PackageID, hook, handlers, hookInput, map[string]any{}, mounts)
 		if err := c.finishHook(context.WithoutCancel(ctx), run.id, candidate.PackageID, hook, runErr); err != nil {
 			return errors.Join(runErr, err)
 		}
@@ -632,9 +619,6 @@ func (c *ActivationCoordinator) rollback(ctx context.Context, run *activationRun
 				joined = errors.Join(joined, err)
 			}
 			continue
-		}
-		if _, err := c.packages.SynchronizePackageDefinitions(ctx, candidate.PackageID, candidate.previous); err != nil {
-			joined = errors.Join(joined, err)
 		}
 		if err := c.packages.index.SetActivation(ctx, candidate.PackageID, "ready", candidate.previous, nil); err != nil {
 			joined = errors.Join(joined, err)

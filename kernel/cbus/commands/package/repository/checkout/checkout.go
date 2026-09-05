@@ -21,9 +21,6 @@ func New(serviceSet *services.Services) core.Handler {
 		if err != nil {
 			return nil, commandutil.OperationError(err)
 		}
-		if err := packagecommands.RefreshRepositoryMutation(ctx, serviceSet, mutation); err != nil {
-			return nil, err
-		}
 		return core.Result{"repository": mutation.Repository}, nil
 	}
 }

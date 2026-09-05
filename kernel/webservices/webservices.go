@@ -1,10 +1,11 @@
-// Package webservices owns filesystem web-service reconciliation and the
+// Package webservices owns indexed service reconciliation and the
 // canonical kernel HTTP service boundary.
 package webservices
 
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -15,7 +16,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
-	"net/textproto"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -28,16 +28,14 @@ import (
 	"unicode/utf8"
 
 	"the8020/kernel/auth"
-	"the8020/kernel/database"
+	"the8020/kernel/execution"
 	executionservices "the8020/kernel/execution/services"
-	"the8020/kernel/execution/supervisor"
 	executionworkers "the8020/kernel/execution/workers"
 	workspacepackages "the8020/kernel/packages"
-	"the8020/kernel/runtime/callback"
 	"the8020/kernel/sandbox/model"
 )
 
-const internalHeaderPrefix = "X-80-20-Internal-"
+const internalHeaderPrefix = "the8020-internal-"
 
 // A dispatch reservation only bridges the interval before an absolute
 // supervisor snapshot observes the request. It must not become durable truth
@@ -55,7 +53,7 @@ type RuntimePools interface {
 	ReconcileCapacity(context.Context, string, int) (executionservices.Record, error)
 	OpenAPI(context.Context, string) (map[string]any, error)
 	Dispatch(context.Context, string, *http.Request) (*http.Response, error)
-	ProxyWebSocket(context.Context, string, http.ResponseWriter, *http.Request) error
+	ProxyWebSocket(context.Context, string, http.ResponseWriter, *http.Request, func(*http.Response) error) error
 	Stop(context.Context, string) (bool, error)
 	RemoveStopped(string) error
 }
@@ -65,12 +63,15 @@ type BoundaryRouter interface {
 }
 
 type Authentication interface {
-	CookieName() string
-	ValidateCookieContext(context.Context, string) (auth.AuthContext, error)
+	VerifyToken(string) (auth.TokenClaims, error)
 }
 
-type RuntimeRequestRegistrar interface {
-	BeginRuntimeRequest(auth.RuntimeRequest) (func(), error)
+// authenticationSetup is trusted request metadata; generic runtime dispatch
+// invokes this package hook in the target Worker before the handler.
+type authenticationSetup struct {
+	Module          string                `json:"module"`
+	Claims          auth.TokenClaims      `json:"claims"`
+	Unauthenticated UnauthenticatedPolicy `json:"unauthenticated"`
 }
 
 type NodeRouter interface {
@@ -82,7 +83,7 @@ type NodeRouter interface {
 }
 
 type Config struct {
-	Definitions       *workspacepackages.Store
+	Index             *Index
 	Pools             RuntimePools
 	Router            BoundaryRouter
 	ObservedRoot      string
@@ -90,9 +91,9 @@ type Config struct {
 	StartupTimeout    time.Duration
 	Logger            *slog.Logger
 	Authentication    Authentication
-	RuntimeRequests   RuntimeRequestRegistrar
+	Authenticator     string
 	NodeID            string
-	Database          database.Store
+	Signing           *auth.Signer
 	Nodes             NodeRouter
 }
 
@@ -138,29 +139,29 @@ type Metrics struct {
 }
 
 type Status struct {
-	ServiceID         string                                   `json:"service_id"`
-	PackageID         string                                   `json:"package_id"`
-	CanonicalBasePath string                                   `json:"canonical_base_path"`
-	Description       string                                   `json:"description,omitempty"`
-	ServiceType       string                                   `json:"service_type,omitempty"`
-	AccessMode        string                                   `json:"access_mode,omitempty"`
-	Enabled           bool                                     `json:"enabled"`
-	DesiredVersion    uint64                                   `json:"desired_version"`
-	LoadedVersion     uint64                                   `json:"loaded_version"`
-	VersionCount      int                                      `json:"version_count"`
-	State             State                                    `json:"state"`
-	SandboxCount      int                                      `json:"sandbox_count"`
-	WorkerCount       int                                      `json:"worker_count"`
-	Sandboxes         []ServiceSandboxStatus                   `json:"sandboxes"`
-	Entrypoint        string                                   `json:"source_entrypoint,omitempty"`
-	Effective         workspacepackages.EffectiveConfiguration `json:"effective_configuration"`
-	ValidationError   string                                   `json:"validation_error,omitempty"`
-	LastStartupError  string                                   `json:"last_startup_error,omitempty"`
-	CapacityResource  string                                   `json:"capacity_resource,omitempty"`
-	CapacityReason    string                                   `json:"capacity_reason,omitempty"`
-	LastRestartTime   time.Time                                `json:"last_restart_time,omitempty"`
-	FailedVersion     uint64                                   `json:"failed_version,omitempty"`
-	Metrics           Metrics                                  `json:"metrics"`
+	ServiceID         string                 `json:"service_id"`
+	PackageID         string                 `json:"package_id"`
+	CanonicalBasePath string                 `json:"canonical_base_path"`
+	Description       string                 `json:"description,omitempty"`
+	ServiceType       string                 `json:"service_type,omitempty"`
+	AccessMode        string                 `json:"access_mode,omitempty"`
+	Enabled           bool                   `json:"enabled"`
+	DesiredVersion    uint64                 `json:"desired_version"`
+	LoadedVersion     uint64                 `json:"loaded_version"`
+	VersionCount      int                    `json:"version_count"`
+	State             State                  `json:"state"`
+	SandboxCount      int                    `json:"sandbox_count"`
+	WorkerCount       int                    `json:"worker_count"`
+	Sandboxes         []ServiceSandboxStatus `json:"sandboxes"`
+	Entrypoint        string                 `json:"source_entrypoint,omitempty"`
+	Effective         Configuration          `json:"effective_configuration"`
+	ValidationError   string                 `json:"validation_error,omitempty"`
+	LastStartupError  string                 `json:"last_startup_error,omitempty"`
+	CapacityResource  string                 `json:"capacity_resource,omitempty"`
+	CapacityReason    string                 `json:"capacity_reason,omitempty"`
+	LastRestartTime   time.Time              `json:"last_restart_time,omitempty"`
+	FailedVersion     uint64                 `json:"failed_version,omitempty"`
+	Metrics           Metrics                `json:"metrics"`
 }
 
 type ValidationResult struct {
@@ -168,19 +169,6 @@ type ValidationResult struct {
 	Valid     bool           `json:"valid"`
 	OpenAPI   map[string]any `json:"openapi,omitempty"`
 	Error     string         `json:"error,omitempty"`
-}
-
-type ScaleOptions struct {
-	MinimumWorkers       *int
-	MaximumWorkers       *int
-	ConcurrencyPerWorker *int
-	TargetUtilization    *float64
-	WorkerKeepAlive      *string
-	WorkersPerSandbox    *int
-	SandboxGroup         *string
-	MinimumSandboxes     *int
-	ServiceType          *string
-	SessionKeepAlive     *string
 }
 
 type RequestOptions struct {
@@ -205,33 +193,35 @@ type runtimeService struct {
 	sandboxes       []*runtimeSandbox
 	retired         []*runtimeSandbox
 	metrics         *Metrics
-	definition      workspacepackages.Definition
+	definition      Specification
 	rejected        bool
-	rejectedVersion uint64
+	rejectedRelease string
 }
 
 type persistentDispatch struct {
 	token      string
-	record     persistentRoute
+	record     auth.RouteTarget
+	keepAlive  time.Duration
 	sandbox    *runtimeSandbox
 	initial    bool
 	remoteNode string
 }
 
 type Manager struct {
-	definitions     *workspacepackages.Store
-	pools           RuntimePools
-	observed        string
-	interval        time.Duration
-	startup         time.Duration
-	logger          *slog.Logger
-	authentication  Authentication
-	runtimeRequests RuntimeRequestRegistrar
-	nodes           NodeRouter
+	index          *Index
+	pools          RuntimePools
+	observed       string
+	interval       time.Duration
+	startup        time.Duration
+	logger         *slog.Logger
+	authentication Authentication
+	authenticator  string
+	signing        *auth.Signer
+	nodeID         string
+	nodes          NodeRouter
 
 	mu               sync.Mutex
 	services         map[string]*runtimeService
-	persistentRoutes *persistentRouteRegistry
 	capacityLocks    sync.Map
 	maintenanceMu    sync.Mutex
 	maintenanceQueue []string
@@ -244,8 +234,8 @@ type Manager struct {
 }
 
 func New(config Config) (*Manager, error) {
-	if config.Definitions == nil || config.Pools == nil || config.Router == nil || config.Database == nil {
-		return nil, errors.New("definition store, runtime pools, service boundary router, and database are required")
+	if config.Index == nil || config.Pools == nil || config.Router == nil || config.Signing == nil {
+		return nil, errors.New("runtime index, runtime pools, service boundary router, and signing key are required")
 	}
 	if config.ObservedRoot == "" {
 		return nil, errors.New("node-local observed service root is required")
@@ -260,7 +250,10 @@ func New(config Config) (*Manager, error) {
 		config.StartupTimeout = 30 * time.Second
 	}
 	background, stopBackground := context.WithCancel(context.Background())
-	manager := &Manager{definitions: config.Definitions, pools: config.Pools, observed: config.ObservedRoot, interval: config.ReconcileInterval, startup: config.StartupTimeout, logger: config.Logger, authentication: config.Authentication, runtimeRequests: config.RuntimeRequests, nodes: config.Nodes, services: map[string]*runtimeService{}, persistentRoutes: newPersistentRouteRegistry(config.NodeID, config.Database), background: background, stopBackground: stopBackground, maintenanceSet: map[string]bool{}}
+	manager := &Manager{index: config.Index, pools: config.Pools, observed: config.ObservedRoot, interval: config.ReconcileInterval, startup: config.StartupTimeout, logger: config.Logger, authentication: config.Authentication, authenticator: config.Authenticator, nodes: config.Nodes, services: map[string]*runtimeService{}, signing: config.Signing, nodeID: config.NodeID, background: background, stopBackground: stopBackground, maintenanceSet: map[string]bool{}}
+	if manager.nodeID == "" {
+		manager.nodeID = "local"
+	}
 	if err := config.Router.RegisterServiceBoundary(manager); err != nil {
 		return nil, err
 	}
@@ -325,10 +318,7 @@ func (m *Manager) ReconcileAll(ctx context.Context) error {
 }
 
 func (m *Manager) reconcileAll(ctx context.Context, provision bool) error {
-	ids, err := m.definitions.ListStateServiceIDs()
-	if err != nil {
-		return err
-	}
+	ids := m.index.ServiceIDs()
 	var joined error
 	for _, serviceID := range ids {
 		if ctx.Err() != nil {
@@ -400,71 +390,10 @@ func (m *Manager) takeMaintenance(limit int) []string {
 	return result
 }
 
-func (m *Manager) Start(ctx context.Context, serviceID string) (Status, error) {
-	if _, err := m.definitions.ReadService(serviceID); err != nil {
-		return Status{}, err
-	}
-	state, err := m.definitions.MutateState(ctx, serviceID, func(state *workspacepackages.DesiredServiceState) error {
-		state.Enabled = true
-		return nil
-	})
-	if err != nil {
-		return Status{}, err
-	}
-	m.logDesiredState("start", serviceID, state)
-	return m.reconcileOne(ctx, serviceID)
-}
-
-func (m *Manager) Stop(ctx context.Context, serviceID string) (Status, error) {
-	if _, err := m.definitions.ReadService(serviceID); err != nil {
-		return Status{}, err
-	}
-	state, err := m.definitions.MutateState(ctx, serviceID, func(state *workspacepackages.DesiredServiceState) error {
-		state.Enabled = false
-		return nil
-	})
-	if err != nil {
-		return Status{}, err
-	}
-	m.logDesiredState("stop", serviceID, state)
-	return m.reconcileOne(ctx, serviceID)
-}
-
-func (m *Manager) Restart(ctx context.Context, serviceID string) (Status, error) {
-	if _, err := m.definitions.ReadService(serviceID); err != nil {
-		return Status{}, err
-	}
-	state, err := m.definitions.MutateState(ctx, serviceID, func(state *workspacepackages.DesiredServiceState) error {
-		state.Enabled = true
-		return nil
-	})
-	if err != nil {
-		return Status{}, err
-	}
-	m.logDesiredState("restart", serviceID, state)
-	return m.reconcileOne(ctx, serviceID)
-}
-
-// Reload increments the service version without changing whether the
-// service is enabled. Package synchronization uses it to replace only active
-// capacity while preserving environment-owned desired state.
-func (m *Manager) Reload(ctx context.Context, serviceID string) (Status, error) {
-	if _, err := m.definitions.ReadService(serviceID); err != nil {
-		return Status{}, err
-	}
-	state, err := m.definitions.MutateState(ctx, serviceID, nil)
-	if err != nil {
-		return Status{}, err
-	}
-	m.logDesiredState("reload", serviceID, state)
-	return m.reconcileOne(ctx, serviceID)
-}
-
-// Reconcile applies the current database-authoritative version without
-// changing desired state. Package publication and cross-node revision
-// convergence use this idempotent path after the version row is committed.
+// Reconcile applies the accepted runtime specification without changing
+// application desired state. All publication paths use this same operation.
 func (m *Manager) Reconcile(ctx context.Context, serviceID string) (Status, error) {
-	if _, err := m.definitions.ReadService(serviceID); err != nil {
+	if _, err := m.index.ReadService(serviceID); err != nil {
 		return Status{}, err
 	}
 	return m.reconcileOne(ctx, serviceID)
@@ -479,6 +408,15 @@ func (m *Manager) Retire(ctx context.Context, serviceID string) error {
 	}
 	unlockCapacity := m.lockServiceCapacity(serviceID)
 	defer unlockCapacity()
+	return m.retireService(ctx, serviceID)
+}
+
+func (m *Manager) retireService(ctx context.Context, serviceID string) (err error) {
+	defer func() {
+		if err != nil {
+			m.scheduleMaintenance(serviceID)
+		}
+	}()
 	records, err := m.pools.ListForService(serviceID)
 	if err != nil {
 		return err
@@ -489,24 +427,29 @@ func (m *Manager) Retire(ctx context.Context, serviceID string) error {
 			poolIDs[record.ServiceID] = true
 		}
 	}
-	m.mu.Lock()
-	delete(m.services, serviceID)
-	m.mu.Unlock()
-	m.persistentRoutes.discardService(serviceID)
 	var joined error
+	draining := false
 	for poolID := range poolIDs {
 		stopped, stopErr := m.pools.Stop(ctx, poolID)
 		if stopErr != nil && !errors.Is(stopErr, os.ErrNotExist) {
 			joined = errors.Join(joined, stopErr)
 			continue
 		}
-		if !stopped {
+		if !stopped && stopErr == nil {
+			draining = true
 			continue
 		}
 		if removeErr := m.pools.RemoveStopped(poolID); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 			joined = errors.Join(joined, removeErr)
 		}
 	}
+	if joined != nil || draining {
+		m.scheduleMaintenance(serviceID)
+		return joined
+	}
+	m.mu.Lock()
+	delete(m.services, serviceID)
+	m.mu.Unlock()
 	identity, _ := workspacepackages.ParseServiceID(serviceID)
 	observed := filepath.Join(m.observed, identity.Namespace, identity.Repository, identity.Service)
 	if removeErr := os.RemoveAll(observed); removeErr != nil {
@@ -517,65 +460,6 @@ func (m *Manager) Retire(ctx context.Context, serviceID string) error {
 	}
 	return joined
 }
-
-func (m *Manager) Scale(ctx context.Context, serviceID string, options ScaleOptions) (Status, error) {
-	if _, err := m.definitions.ReadService(serviceID); err != nil {
-		return Status{}, err
-	}
-	state, err := m.definitions.MutateState(ctx, serviceID, func(state *workspacepackages.DesiredServiceState) error {
-		if options.MinimumWorkers != nil {
-			state.Scaling.MinimumWorkers = copyInt(options.MinimumWorkers)
-		}
-		if options.MaximumWorkers != nil {
-			state.Scaling.MaximumWorkers = copyInt(options.MaximumWorkers)
-		}
-		if options.ConcurrencyPerWorker != nil {
-			state.Scaling.ConcurrencyPerWorker = copyInt(options.ConcurrencyPerWorker)
-		}
-		if options.TargetUtilization != nil {
-			value := *options.TargetUtilization
-			state.Scaling.TargetUtilization = &value
-		}
-		if options.WorkerKeepAlive != nil {
-			value := *options.WorkerKeepAlive
-			state.Scaling.WorkerKeepAlive = &value
-		}
-		if options.SandboxGroup != nil {
-			value := *options.SandboxGroup
-			state.Placement.SandboxGroup = &value
-		}
-		if options.MinimumSandboxes != nil {
-			state.Placement.MinimumSandboxes = copyInt(options.MinimumSandboxes)
-		}
-		if options.WorkersPerSandbox != nil {
-			state.Placement.WorkersPerSandbox = copyInt(options.WorkersPerSandbox)
-		}
-		if options.ServiceType != nil {
-			value := *options.ServiceType
-			state.Lifecycle.ServiceType = &value
-		}
-		if options.SessionKeepAlive != nil {
-			value := *options.SessionKeepAlive
-			state.Lifecycle.SessionKeepAlive = &value
-		}
-		return nil
-	})
-	if err != nil {
-		return Status{}, err
-	}
-	m.logDesiredState("scale", serviceID, state)
-	return m.reconcileOne(ctx, serviceID)
-}
-
-func (m *Manager) logDesiredState(action, serviceID string, state workspacepackages.DesiredServiceState) {
-	if m.logger == nil {
-		return
-	}
-	identity, _ := workspacepackages.ParseServiceID(serviceID)
-	m.logger.Info("service desired state changed", "action", action, "package_id", identity.PackageID(), "service_id", serviceID, "enabled", state.Enabled, "desired_version", state.Generation)
-}
-
-func copyInt(value *int) *int { copied := *value; return &copied }
 
 func (m *Manager) reconcileOne(ctx context.Context, serviceID string) (Status, error) {
 	status, err := m.reconcileService(ctx, serviceID, true)
@@ -591,23 +475,18 @@ func (m *Manager) reconcileService(ctx context.Context, serviceID string, provis
 	unlockCapacity := m.lockServiceCapacity(serviceID)
 	defer unlockCapacity()
 	defer m.scheduleMaintenanceIfNeeded(serviceID)
-	definition, err := m.definitions.ReadService(serviceID)
+	definition, err := m.index.ReadService(serviceID)
+	if errors.Is(err, os.ErrNotExist) {
+		return Status{}, m.retireService(ctx, serviceID)
+	}
 	if err != nil {
-		m.mu.Lock()
-		existing := m.services[serviceID]
-		if errors.Is(err, workspacepackages.ErrPackageNotReady) && existing != nil {
-			status := cloneRuntimeStatus(existing)
-			m.mu.Unlock()
-			return status, nil
-		}
-		m.mu.Unlock()
 		return m.retainFailedVersion(serviceID, 0, err)
 	}
-	if !definition.StateExists {
-		return m.statusFromDefinition(definition, StateDiscovered), nil
-	}
-	if !definition.State.Enabled {
+	if !definition.Enabled {
 		return m.stopRuntime(ctx, definition)
+	}
+	if _, err := assignedUser(definition); err != nil {
+		return m.failExecutionUser(definition, err)
 	}
 	m.mu.Lock()
 	existing := m.services[serviceID]
@@ -616,9 +495,9 @@ func (m *Manager) reconcileService(ctx context.Context, serviceID string, provis
 	if existing != nil {
 		retired = append(retired, existing.retired...)
 	}
-	sameVersion := existing != nil && existing.status.LoadedVersion == definition.State.Generation && (existing.status.State == StateReady || existing.status.State == StateDegraded || existing.status.State == StateIdle)
-	rejectedVersion := existing != nil && existing.rejected && existing.rejectedVersion == definition.State.Generation
-	failedVersion := existing != nil && existing.status.State == StateFailed && existing.status.DesiredVersion == definition.State.Generation
+	sameVersion := existing != nil && existing.definition.Release == definition.Release && (existing.status.State == StateReady || existing.status.State == StateDegraded || existing.status.State == StateIdle)
+	rejectedVersion := existing != nil && existing.rejected && existing.rejectedRelease == definition.Release
+	failedVersion := existing != nil && existing.status.State == StateFailed && existing.definition.Release == definition.Release
 	existingStatus := cloneRuntimeStatus(existing)
 	m.mu.Unlock()
 	if !provision && rejectedVersion {
@@ -631,7 +510,7 @@ func (m *Manager) reconcileService(ctx context.Context, serviceID string, provis
 		requiresCapacity := definition.Effective.Scaling.MinimumWorkers > 0 || definition.Effective.Placement.MinimumSandboxes > 0
 		if !requiresCapacity && (existing == nil || existing.status.State != StatePendingCapacity) {
 			idle := m.statusFromDefinition(definition, StateIdle)
-			idle.LoadedVersion, idle.VersionCount = definition.State.Generation, 1
+			idle.LoadedVersion, idle.VersionCount = definition.Version, 1
 			m.mu.Lock()
 			m.services[serviceID] = replacementRuntime(existing, idle, nil, retired, definition)
 			m.mu.Unlock()
@@ -646,7 +525,7 @@ func (m *Manager) reconcileService(ctx context.Context, serviceID string, provis
 	if sameVersion {
 		status, healthy, refreshErr := m.refreshVersion(ctx, definition, existing, previous)
 		if refreshErr != nil {
-			return m.retainFailedVersion(serviceID, definition.State.Generation, refreshErr)
+			return m.retainFailedVersion(serviceID, definition.Version, refreshErr)
 		}
 		if healthy {
 			m.mu.Lock()
@@ -680,7 +559,7 @@ func (m *Manager) reconcileService(ctx context.Context, serviceID string, provis
 	m.mu.Unlock()
 	_ = m.writeObserved(starting)
 	if m.logger != nil {
-		m.logger.Info("service version preparing", "package_id", definition.Identity.PackageID(), "service_id", serviceID, "desired_version", definition.State.Generation, "loaded_version", starting.LoadedVersion, "state", starting.State)
+		m.logger.Info("service version preparing", "package_id", definition.Identity.PackageID(), "service_id", serviceID, "desired_version", definition.Version, "loaded_version", starting.LoadedVersion, "state", starting.State)
 	}
 
 	startupContext, cancel := context.WithTimeout(ctx, m.startup)
@@ -712,7 +591,7 @@ func (m *Manager) reconcileService(ctx context.Context, serviceID string, provis
 		if cleanupErr != nil {
 			m.logVersionCleanupFailure(serviceID, cleanupErr)
 		}
-		return m.retainRejectedVersion(serviceID, definition.State.Generation, errors.Join(preparationFailure, cleanupErr))
+		return m.retainRejectedVersion(serviceID, definition, errors.Join(preparationFailure, cleanupErr))
 	}
 	if len(preparationErrors) > 0 && len(previous) > 0 {
 		previousPools := make(map[string]bool, len(previous))
@@ -724,7 +603,7 @@ func (m *Manager) reconcileService(ctx context.Context, serviceID string, provis
 				_, _ = m.pools.Stop(context.Background(), sandbox.status.PoolID)
 			}
 		}
-		return m.retainFailedVersion(serviceID, definition.State.Generation, errors.Join(preparationErrors...))
+		return m.retainFailedVersion(serviceID, definition.Version, errors.Join(preparationErrors...))
 	}
 	localMinimumSandboxes := len(m.minimumSandboxIndexes(definition))
 	if len(prepared) < localMinimumSandboxes {
@@ -745,7 +624,7 @@ func (m *Manager) reconcileService(ctx context.Context, serviceID string, provis
 	}
 	status := m.statusFromDefinition(definition, state)
 	if len(prepared) > 0 || localMinimumSandboxes == 0 {
-		status.LoadedVersion = definition.State.Generation
+		status.LoadedVersion = definition.Version
 		status.VersionCount = 1
 	}
 	status.LastRestartTime = time.Now().UTC()
@@ -766,7 +645,7 @@ func (m *Manager) reconcileService(ctx context.Context, serviceID string, provis
 		m.logVersionCleanupFailure(serviceID, cleanupErr)
 	}
 	if m.logger != nil {
-		m.logger.Info("service version ready", "service_id", serviceID, "desired_version", definition.State.Generation, "sandbox_count", len(prepared), "worker_count", status.WorkerCount, "state", status.State)
+		m.logger.Info("service version ready", "service_id", serviceID, "desired_version", definition.Version, "sandbox_count", len(prepared), "worker_count", status.WorkerCount, "state", status.State)
 	}
 	if len(preparationErrors) > 0 || cleanupErr != nil {
 		return cloneStatus(status), errors.Join(errors.Join(preparationErrors...), cleanupErr)
@@ -774,7 +653,7 @@ func (m *Manager) reconcileService(ctx context.Context, serviceID string, provis
 	return cloneStatus(status), nil
 }
 
-func (m *Manager) cleanupStaleVersionPools(ctx context.Context, definition workspacepackages.Definition, active []*runtimeSandbox) error {
+func (m *Manager) cleanupStaleVersionPools(ctx context.Context, definition Specification, active []*runtimeSandbox) error {
 	records, err := m.pools.ListForService(definition.Identity.ServiceID())
 	if err != nil {
 		return fmt.Errorf("list runtime pools for version cleanup: %w", err)
@@ -858,13 +737,13 @@ func (m *Manager) logVersionCleanupFailure(serviceID string, err error) {
 	}
 }
 
-func (m *Manager) refreshVersion(ctx context.Context, definition workspacepackages.Definition, service *runtimeService, sandboxes []*runtimeSandbox) (Status, bool, error) {
+func (m *Manager) refreshVersion(ctx context.Context, definition Specification, service *runtimeService, sandboxes []*runtimeSandbox) (Status, bool, error) {
 	minimumIndexes := m.minimumSandboxIndexes(definition)
 	capacity := make(map[string]executionservices.Record, len(sandboxes))
 	refreshed := make(map[*runtimeSandbox]ServiceSandboxStatus, len(sandboxes))
 	for _, sandbox := range sandboxes {
 		record, err := m.pools.Inspect(sandbox.status.PoolID)
-		if err != nil || (record.State != "READY" && record.State != "IDLE") || record.Generation != definition.State.Generation {
+		if err != nil || (record.State != "READY" && record.State != "IDLE") || record.ReleaseID != "service-version-"+definition.Release {
 			return Status{}, false, nil
 		}
 		status := sandbox.status
@@ -962,7 +841,7 @@ func (m *Manager) refreshVersion(ctx context.Context, definition workspacepackag
 		current.status.State = StateIdle
 	}
 	current.status.Enabled = true
-	current.status.DesiredVersion = definition.State.Generation
+	current.status.DesiredVersion = definition.Version
 	current.status.CapacityResource = ""
 	current.status.CapacityReason = ""
 	if complete {
@@ -995,7 +874,7 @@ func containsSandboxIndexes(sandboxes []*runtimeSandbox, required []int) bool {
 	return true
 }
 
-func (m *Manager) scaleDownSandbox(ctx context.Context, definition workspacepackages.Definition, service *runtimeService, sandboxes []*runtimeSandbox, capacity map[string]executionservices.Record, minimumWorkers map[int]int) ([]*runtimeSandbox, error) {
+func (m *Manager) scaleDownSandbox(ctx context.Context, definition Specification, service *runtimeService, sandboxes []*runtimeSandbox, capacity map[string]executionservices.Record, minimumWorkers map[int]int) ([]*runtimeSandbox, error) {
 	candidates := make(map[*runtimeSandbox]bool)
 	minimumIndexes := m.minimumSandboxIndexes(definition)
 	for _, sandbox := range sandboxes {
@@ -1006,7 +885,7 @@ func (m *Manager) scaleDownSandbox(ctx context.Context, definition workspacepack
 		if active != 0 {
 			continue
 		}
-		if isSessionService(definition) && m.persistentRoutes.hasPool(sandbox.status.PoolID) {
+		if isSessionService(definition) && (!exists || record.OccupiedSlots > 0) {
 			continue
 		}
 		unowned := !m.ownsIndex(sandbox.status.Index)
@@ -1060,7 +939,7 @@ func (m *Manager) scaleDownSandbox(ctx context.Context, definition workspacepack
 	return result, joined
 }
 
-func (m *Manager) prepareVersion(ctx context.Context, definition workspacepackages.Definition) ([]*runtimeSandbox, []error) {
+func (m *Manager) prepareVersion(ctx context.Context, definition Specification) ([]*runtimeSandbox, []error) {
 	indexes := m.minimumSandboxIndexes(definition)
 	prepared := make([]*runtimeSandbox, 0, len(indexes))
 	var failures []error
@@ -1089,7 +968,7 @@ func (m *Manager) prepareVersion(ctx context.Context, definition workspacepackag
 // ensureMinimumWorkers packs one Worker at a time into eligible service
 // sandboxes. A typed sandbox-capacity rejection blocks only that candidate for
 // this reconciliation; the next Worker is placed in a new compatible sandbox.
-func (m *Manager) ensureMinimumWorkers(ctx context.Context, definition workspacepackages.Definition, sandboxes []*runtimeSandbox, blocked map[string]bool) ([]*runtimeSandbox, error) {
+func (m *Manager) ensureMinimumWorkers(ctx context.Context, definition Specification, sandboxes []*runtimeSandbox, blocked map[string]bool) ([]*runtimeSandbox, error) {
 	minimum := len(m.localIndexes(definition.Effective.Scaling.MinimumWorkers))
 	if blocked == nil {
 		blocked = map[string]bool{}
@@ -1156,7 +1035,7 @@ func (m *Manager) ownsIndex(index int) bool {
 	return index >= 0 && (m.nodes == nil || m.nodes.OwnsIndex(index))
 }
 
-func (m *Manager) minimumSandboxIndexes(definition workspacepackages.Definition) []int {
+func (m *Manager) minimumSandboxIndexes(definition Specification) []int {
 	indexes := append([]int(nil), m.localIndexes(definition.Effective.Placement.MinimumSandboxes)...)
 	required := (len(m.localIndexes(definition.Effective.Scaling.MinimumWorkers)) + definition.Effective.Placement.WorkersPerSandbox - 1) / definition.Effective.Placement.WorkersPerSandbox
 	seen := make(map[int]bool, len(indexes))
@@ -1173,7 +1052,7 @@ func (m *Manager) minimumSandboxIndexes(definition workspacepackages.Definition)
 	return indexes
 }
 
-func (m *Manager) minimumWorkersBySandbox(definition workspacepackages.Definition, sandboxes []*runtimeSandbox) map[int]int {
+func (m *Manager) minimumWorkersBySandbox(definition Specification, sandboxes []*runtimeSandbox) map[int]int {
 	result := make(map[int]int, len(sandboxes))
 	ordered := append([]*runtimeSandbox(nil), sandboxes...)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].status.Index < ordered[j].status.Index })
@@ -1186,30 +1065,34 @@ func (m *Manager) minimumWorkersBySandbox(definition workspacepackages.Definitio
 	return result
 }
 
-func (m *Manager) prepareSandbox(ctx context.Context, definition workspacepackages.Definition, index, minimumWorkers, initialWorkers int) (*runtimeSandbox, error) {
-	poolID := versionPoolID(definition.Identity.ServiceID(), definition.State.Generation, index)
+func (m *Manager) prepareSandbox(ctx context.Context, definition Specification, index, minimumWorkers, initialWorkers int) (*runtimeSandbox, error) {
+	user, err := assignedUser(definition)
+	if err != nil {
+		return nil, err
+	}
+	poolID := versionPoolID(definition.Identity.ServiceID(), definition.Release, index)
 	record, err := m.pools.Start(ctx, poolID, definition.EntrypointURL, executionservices.Options{
+		User:                 user,
 		GroupKey:             definition.Effective.Placement.SandboxGroup,
 		Namespace:            definition.Identity.Namespace,
 		MinimumWorkers:       minimumWorkers,
 		MaximumWorkers:       definition.Effective.Placement.WorkersPerSandbox,
 		ConcurrencyPerWorker: definition.Effective.Scaling.ConcurrencyPerWorker,
 		WorkerKeepAlive:      definition.Effective.Scaling.WorkerKeepAlive,
-		ReleaseID:            fmt.Sprintf("service-version-%d", definition.State.Generation),
+		ReleaseID:            "service-version-" + definition.Release,
 		LogicalServiceID:     definition.Identity.ServiceID(),
-		Generation:           definition.State.Generation,
+		Generation:           definition.Version,
 		CanonicalBasePath:    definition.Identity.CanonicalBasePath(),
-		OpenAPI:              supervisor.OpenAPIMetadata{Title: definition.Service.OpenAPI.Title, Version: definition.Service.OpenAPI.Version, Description: coalesce(definition.Service.OpenAPI.Description, definition.Service.Description)},
+		OpenAPI:              definition.OpenAPI,
 		ValidateEntrypoint:   true,
 		SandboxIndex:         index,
-		DependencyMode:       runtimeDependencyMode(definition.Effective.DependencyMode),
 		ExecutionMode:        serviceExecutionMode(definition),
 		TargetUtilization:    definition.Effective.Scaling.TargetUtilization,
 		PlacementWorkers:     initialWorkers,
 	})
 	acquired := err == nil
 	if err != nil {
-		if existing, inspectErr := m.pools.Inspect(poolID); inspectErr == nil && (existing.State == "READY" || existing.State == "IDLE") && existing.Generation == definition.State.Generation {
+		if existing, inspectErr := m.pools.Inspect(poolID); inspectErr == nil && (existing.State == "READY" || existing.State == "IDLE") && existing.ReleaseID == "service-version-"+definition.Release {
 			record, err, acquired = existing, nil, true
 		}
 	}
@@ -1239,7 +1122,7 @@ func (m *Manager) prepareSandbox(ctx context.Context, definition workspacepackag
 	return &runtimeSandbox{status: ServiceSandboxStatus{Index: index, Version: record.Generation, PoolID: poolID, RuntimeGroupID: record.RuntimeGroupID, SandboxID: record.SandboxID, WorkerIDs: append([]string{}, record.WorkerIDs...)}}, nil
 }
 
-func (m *Manager) stopRuntime(ctx context.Context, definition workspacepackages.Definition) (Status, error) {
+func (m *Manager) stopRuntime(ctx context.Context, definition Specification) (Status, error) {
 	m.mu.Lock()
 	existing := m.services[definition.Identity.ServiceID()]
 	sandboxes := append([]*runtimeSandbox(nil), sandboxesOf(existing)...)
@@ -1247,7 +1130,7 @@ func (m *Manager) stopRuntime(ctx context.Context, definition workspacepackages.
 	if existing != nil {
 		retired = append(retired, existing.retired...)
 	}
-	alreadyStopped := existing != nil && existing.status.State == StateStopped && !existing.status.Enabled && existing.status.DesiredVersion == definition.State.Generation && len(sandboxes) == 0 && len(retired) == 0
+	alreadyStopped := existing != nil && existing.status.State == StateStopped && !existing.status.Enabled && existing.definition.Release == definition.Release && len(sandboxes) == 0 && len(retired) == 0
 	status := m.statusFromDefinition(definition, StateDisabled)
 	if existing != nil {
 		status.LoadedVersion = existing.status.LoadedVersion
@@ -1302,7 +1185,7 @@ func (m *Manager) stopRuntime(ctx context.Context, definition workspacepackages.
 	m.mu.Unlock()
 	_ = m.writeObserved(status)
 	if m.logger != nil && (!alreadyStopped || joined != nil) {
-		m.logger.Info("service stopped", "package_id", definition.Identity.PackageID(), "service_id", definition.Identity.ServiceID(), "desired_version", definition.State.Generation, "state", status.State)
+		m.logger.Info("service stopped", "package_id", definition.Identity.PackageID(), "service_id", definition.Identity.ServiceID(), "desired_version", definition.Version, "state", status.State)
 	}
 	return cloneStatus(status), joined
 }
@@ -1312,7 +1195,7 @@ func (m *Manager) retainFailedVersion(serviceID string, version uint64, cause er
 	existing := m.services[serviceID]
 	if existing == nil {
 		status := Status{ServiceID: serviceID, State: StateFailed, Metrics: emptyMetrics()}
-		existing = replacementRuntime(nil, status, nil, nil, workspacepackages.Definition{})
+		existing = replacementRuntime(nil, status, nil, nil, Specification{})
 		m.services[serviceID] = existing
 	}
 	failureState := StateFailed
@@ -1338,12 +1221,13 @@ func (m *Manager) retainFailedVersion(serviceID string, version uint64, cause er
 	return status, cause
 }
 
-func (m *Manager) retainRejectedVersion(serviceID string, version uint64, cause error) (Status, error) {
+func (m *Manager) retainRejectedVersion(serviceID string, spec Specification, cause error) (Status, error) {
+	version := spec.Version
 	status, err := m.retainFailedVersion(serviceID, version, cause)
 	m.mu.Lock()
 	if current := m.services[serviceID]; current != nil && current.status.DesiredVersion == version {
 		current.rejected = true
-		current.rejectedVersion = version
+		current.rejectedRelease = spec.Release
 		status = cloneRuntimeStatus(current)
 	}
 	m.mu.Unlock()
@@ -1351,74 +1235,60 @@ func (m *Manager) retainRejectedVersion(serviceID string, version uint64, cause 
 }
 
 func (m *Manager) List() ([]Status, error) {
-	definitions, err := m.definitions.ListServices()
-	if err != nil {
-		return nil, err
-	}
-	result := make([]Status, 0, len(definitions))
-	for _, item := range definitions {
-		if !item.Valid {
-			result = append(result, Status{ServiceID: item.ID, PackageID: item.PackageID, CanonicalBasePath: item.CanonicalBasePath, Description: item.Description, State: StateFailed, ValidationError: strings.Join(item.ValidationErrors, "; "), Metrics: emptyMetrics()})
-			continue
-		}
-		status, inspectErr := m.Inspect(item.ID)
-		if inspectErr != nil {
-			return nil, inspectErr
+	ids := m.index.ServiceIDs()
+	result := make([]Status, 0, len(ids))
+	for _, id := range ids {
+		status, err := m.Inspect(id)
+		if err != nil {
+			return nil, err
 		}
 		result = append(result, status)
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].ServiceID < result[j].ServiceID })
 	return result, nil
 }
 
 func (m *Manager) Inspect(serviceID string) (Status, error) {
-	definition, err := m.definitions.ReadService(serviceID)
+	definition, err := m.index.ReadService(serviceID)
 	if err != nil {
-		if errors.Is(err, workspacepackages.ErrPackageNotReady) {
-			m.mu.Lock()
-			existing := m.services[serviceID]
-			if existing != nil {
-				status := m.observedStatusLocked(cloneRuntimeStatus(existing), observedSandboxesOf(existing))
-				m.mu.Unlock()
-				return status, nil
-			}
-			m.mu.Unlock()
-		}
 		return Status{}, err
 	}
 	m.mu.Lock()
 	existing := m.services[serviceID]
 	if existing != nil {
 		status := cloneRuntimeStatus(existing)
-		status.Enabled, status.DesiredVersion = definition.State.Enabled, definition.State.Generation
-		status.Description, status.Entrypoint, status.Effective = definition.Service.Description, definition.EntrypointPath, definition.Effective
+		status.Enabled, status.DesiredVersion = definition.Enabled, definition.Version
+		status.Description, status.Entrypoint, status.Effective = definition.Description, definition.EntrypointURL, definition.Effective
 		status = m.observedStatusLocked(status, observedSandboxesOf(existing))
 		m.mu.Unlock()
 		return status, nil
 	}
 	m.mu.Unlock()
-	state := StateDiscovered
-	if definition.StateExists {
-		state = StateDisabled
+	state := StateDisabled
+	if definition.Enabled {
+		state = StateIdle
 	}
 	return m.statusFromDefinition(definition, state), nil
 }
 
 func (m *Manager) Validate(ctx context.Context, serviceID string) ValidationResult {
-	definition, err := m.definitions.ReadService(serviceID)
+	definition, err := m.index.ReadService(serviceID)
+	if err != nil {
+		return ValidationResult{ServiceID: serviceID, Error: err.Error()}
+	}
+	user, err := assignedUser(definition)
 	if err != nil {
 		return ValidationResult{ServiceID: serviceID, Error: err.Error()}
 	}
 	validationID := validationPoolID(serviceID)
 	record, err := m.pools.Start(ctx, validationID, definition.EntrypointURL, executionservices.Options{
+		User:     user,
 		GroupKey: "validation-" + validationID, Namespace: definition.Identity.Namespace,
 		MinimumWorkers: 1, MaximumWorkers: 1, ConcurrencyPerWorker: 1,
 		WorkerKeepAlive: definition.Effective.Scaling.WorkerKeepAlive,
 		ReleaseID:       "service-validation", LogicalServiceID: serviceID,
-		Generation: definition.State.Generation, CanonicalBasePath: definition.Identity.CanonicalBasePath(),
-		OpenAPI:            supervisor.OpenAPIMetadata{Title: definition.Service.OpenAPI.Title, Version: definition.Service.OpenAPI.Version, Description: coalesce(definition.Service.OpenAPI.Description, definition.Service.Description)},
+		Generation: definition.Version, CanonicalBasePath: definition.Identity.CanonicalBasePath(),
+		OpenAPI:            definition.OpenAPI,
 		ValidateEntrypoint: true,
-		DependencyMode:     runtimeDependencyMode(definition.Effective.DependencyMode),
 		ExecutionMode:      serviceExecutionMode(definition),
 		TargetUtilization:  definition.Effective.Scaling.TargetUtilization,
 		PlacementWorkers:   1,
@@ -1451,13 +1321,6 @@ func (m *Manager) retireValidationPool(poolID string) {
 	if err := m.pools.RemoveStopped(poolID); err != nil && !errors.Is(err, os.ErrNotExist) && m.logger != nil {
 		m.logger.Error("remove service validation pool", "service_pool_id", poolID, "error", err)
 	}
-}
-
-func runtimeDependencyMode(value string) model.DependencyMode {
-	if value == "online" {
-		return model.DependencyOnline
-	}
-	return model.DependencyCachedOnly
 }
 
 func (m *Manager) OpenAPI(ctx context.Context, serviceID string) (map[string]any, error) {
@@ -1520,54 +1383,63 @@ func (m *Manager) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	serviceID := identity.ServiceID()
+	admission, err := m.index.ReadService(serviceID)
+	if err != nil {
+		http.NotFound(writer, request)
+		return
+	}
 	m.mu.Lock()
 	runtime := m.services[serviceID]
 	hasCapacity := runtime != nil && len(runtime.sandboxes) > 0
-	definition := workspacepackages.Definition{}
-	loadedDefinition := hasCapacity && runtime.definition.Identity.Service != ""
-	if loadedDefinition {
+	definition := admission
+	if hasCapacity {
 		definition = runtime.definition
 	}
+	rejectedVersion := runtime != nil && runtime.rejected && runtime.rejectedRelease == admission.Release
 	m.mu.Unlock()
-	var definitionErr error
-	if !loadedDefinition {
-		definition, definitionErr = m.definitions.ReadService(serviceID)
-	}
-	m.mu.Lock()
-	if !loadedDefinition {
-		runtime = m.services[serviceID]
-		hasCapacity = runtime != nil && len(runtime.sandboxes) > 0
-	}
-	rejectedVersion := runtime != nil && runtime.rejected && runtime.rejectedVersion == definition.State.Generation
-	m.mu.Unlock()
-	if definitionErr != nil {
-		if !hasCapacity && errors.Is(definitionErr, os.ErrNotExist) {
-			http.NotFound(writer, request)
-		} else {
-			// Access policy is read from the exact manifest for every request.
-			// If it cannot be read, retained capacity must fail closed rather
-			// than accidentally bypass a previously authenticated boundary.
-			if forwarded, _ := m.forwardAvailable(writer, request); !forwarded {
-				http.Error(writer, "service unavailable", http.StatusServiceUnavailable)
-			}
-		}
-		return
-	}
-	if !definition.StateExists || !definition.State.Enabled {
+	if !admission.Enabled {
 		http.Error(writer, "service unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	authContext := auth.AuthContext{}
-	authContext, authenticated := m.authenticate(request)
-	if definition.Service.Access.Mode == workspacepackages.AccessModeAuthenticated {
-		if !authenticated {
-			m.respondUnauthenticated(writer, definition.Service.Access.Unauthenticated)
+	assigned, err := assignedUser(admission)
+	if err != nil {
+		_, _ = m.failExecutionUser(admission, err)
+		http.Error(writer, "service execution user unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var authentication *authenticationSetup
+	user := assigned
+	if admission.Access.Mode == "authenticated" {
+		token, fromCookie := auth.RequestToken(request)
+		var claims auth.TokenClaims
+		if m.authentication != nil && token != "" {
+			claims, err = m.authentication.VerifyToken(token)
+		} else {
+			err = auth.ErrInvalidToken
+		}
+		if err != nil {
+			if fromCookie {
+				auth.ClearTokenCookie(writer, requestScheme(request) == "https")
+			}
+			m.respondUnauthenticated(writer, admission.Access.Unauthenticated)
 			return
 		}
-	} else if !authenticated {
-		authContext = auth.AuthContext{}
+		user, err = auth.TokenUser(claims)
+		if err != nil || m.authenticator == "" {
+			http.Error(writer, "authentication unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		authentication = &authenticationSetup{Module: m.authenticator, Claims: claims, Unauthenticated: admission.Access.Unauthenticated}
 	}
-	if !hasCapacity {
+	routeToken := ""
+	if isSessionService(definition) {
+		routeToken, err = persistentRequestToken(request)
+		if err != nil {
+			http.Error(writer, "persistent execution lost", http.StatusConflict)
+			return
+		}
+	}
+	if !hasCapacity && routeToken == "" {
 		if rejectedVersion {
 			http.Error(writer, "service unavailable", http.StatusServiceUnavailable)
 			return
@@ -1594,14 +1466,16 @@ func (m *Manager) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		// first Worker and sandbox on demand.
 	}
 	if isSessionService(definition) {
-		route, routeErr := m.beginPersistentDispatch(request.Context(), runtime, definition, request, authContext.UserID, isWebSocketUpgrade(request))
+		route, routeErr := m.beginPersistentDispatch(request.Context(), runtime, definition, routeToken)
 		if routeErr != nil {
 			if errors.Is(routeErr, executionservices.ErrSandboxCapacity) {
 				if forwarded, _ := m.forwardAvailable(writer, request); !forwarded {
 					m.respondCapacityUnavailable(writer, routeErr)
 				}
-			} else {
+			} else if errors.Is(routeErr, auth.ErrInvalidRoute) || errors.Is(routeErr, errRouteNotFound) {
 				http.Error(writer, "persistent execution lost", http.StatusConflict)
+			} else {
+				http.Error(writer, "service unavailable", http.StatusServiceUnavailable)
 			}
 			return
 		}
@@ -1616,9 +1490,9 @@ func (m *Manager) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			return
 		}
 		if isWebSocketUpgrade(request) {
-			m.dispatchPersistentWebSocket(writer, request, identity, relativePath, runtime, route, authContext)
+			m.dispatchPersistentWebSocket(writer, request, identity, relativePath, runtime, route, authentication, user)
 		} else {
-			m.dispatch(writer, request, identity, relativePath, runtime, route.sandbox, definition.Effective.Timeouts.Request, authContext, route)
+			m.dispatch(writer, request, identity, relativePath, runtime, route.sandbox, definition.Effective.Timeouts.Request, authentication, user, route)
 		}
 		return
 	}
@@ -1630,13 +1504,13 @@ func (m *Manager) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	if isWebSocketUpgrade(request) {
-		m.dispatchRequestWebSocket(writer, request, identity, relativePath, runtime, sandbox, authContext)
+		m.dispatchRequestWebSocket(writer, request, identity, relativePath, runtime, sandbox, authentication, user)
 		return
 	}
-	m.dispatch(writer, request, identity, relativePath, runtime, sandbox, definition.Effective.Timeouts.Request, authContext, nil)
+	m.dispatch(writer, request, identity, relativePath, runtime, sandbox, definition.Effective.Timeouts.Request, authentication, user, nil)
 }
 
-func (m *Manager) dispatch(writer http.ResponseWriter, request *http.Request, identity workspacepackages.Identity, relativePath string, runtime *runtimeService, sandbox *runtimeSandbox, timeout time.Duration, authContext auth.AuthContext, persistent *persistentDispatch) {
+func (m *Manager) dispatch(writer http.ResponseWriter, request *http.Request, identity workspacepackages.Identity, relativePath string, runtime *runtimeService, sandbox *runtimeSandbox, timeout time.Duration, authentication *authenticationSetup, user execution.User, persistent *persistentDispatch) {
 	if sandbox == nil {
 		http.Error(writer, "service unavailable", http.StatusServiceUnavailable)
 		return
@@ -1648,15 +1522,13 @@ func (m *Manager) dispatch(writer http.ResponseWriter, request *http.Request, id
 		return
 	}
 	started := time.Now()
-	stopRouteKeepalive := m.keepPersistentRouteAlive(persistent)
-	defer stopRouteKeepalive()
 	ctx, cancel := context.WithTimeout(request.Context(), timeout)
 	defer cancel()
 	forwarded := request.Clone(ctx)
 	forwarded.URL = cloneURL(request.URL)
 	// Incoming server requests normally have only a path. Deno's Request
 	// constructor requires the supervisor-provided service URL to be absolute.
-	forwarded.URL.Scheme, forwarded.URL.Host = "http", "service"
+	forwarded.URL.Scheme, forwarded.URL.Host = requestScheme(request), "service"
 	forwarded.URL.Path, forwarded.URL.RawPath = relativePath, ""
 	query := forwarded.URL.Query()
 	query.Del("route")
@@ -1667,63 +1539,36 @@ func (m *Manager) dispatch(writer http.ResponseWriter, request *http.Request, id
 		forwarded.Header = make(http.Header)
 	}
 	for name := range forwarded.Header {
-		if strings.HasPrefix(textproto.CanonicalMIMEHeaderKey(name), internalHeaderPrefix) {
-			forwarded.Header.Del(name)
+		if strings.HasPrefix(strings.ToLower(name), internalHeaderPrefix) {
+			delete(forwarded.Header, name)
 		}
 	}
 	forwarded.Header.Del(RouteHeader)
-	if m.authentication != nil {
-		removeCookie(forwarded.Header, request.Cookies(), m.authentication.CookieName())
-	}
-	forwarded.Header.Set(internalHeaderPrefix+"Request-ID", requestID)
-	forwarded.Header.Set(internalHeaderPrefix+"Service-ID", identity.ServiceID())
+	forwarded.Header.Set(internalHeaderPrefix+"request-id", requestID)
+	forwarded.Header.Set(internalHeaderPrefix+"service-id", identity.ServiceID())
 	m.mu.Lock()
 	loadedVersion := runtime.status.LoadedVersion
 	m.mu.Unlock()
-	forwarded.Header.Set(internalHeaderPrefix+"Service-Generation", strconv.FormatUint(loadedVersion, 10))
-	forwarded.Header.Set(internalHeaderPrefix+"Canonical-Base-Path", identity.CanonicalBasePath())
-	forwarded.Header.Set(internalHeaderPrefix+"Original-URL", originalURL(request))
-	forwarded.Header.Set(internalHeaderPrefix+"Original-Path", request.URL.RequestURI())
-	forwarded.Header.Set(internalHeaderPrefix+"Original-Host", request.Host)
-	forwarded.Header.Set(internalHeaderPrefix+"Original-Scheme", requestScheme(request))
+	forwarded.Header.Set(internalHeaderPrefix+"service-generation", strconv.FormatUint(loadedVersion, 10))
+	forwarded.Header.Set(internalHeaderPrefix+"canonical-base-path", identity.CanonicalBasePath())
+	forwarded.Header.Set(internalHeaderPrefix+"original-url", originalURL(request))
+	forwarded.Header.Set(internalHeaderPrefix+"original-path", request.URL.RequestURI())
+	forwarded.Header.Set(internalHeaderPrefix+"original-host", request.Host)
+	forwarded.Header.Set(internalHeaderPrefix+"original-scheme", requestScheme(request))
 	setClientMetadata(forwarded.Header, request.RemoteAddr)
 	if persistent != nil {
-		forwarded.Header.Set(internalHeaderPrefix+"Persistent-Execution-ID", persistent.record.ExecutionID)
-		forwarded.Header.Set(internalHeaderPrefix+"Persistent-Keep-Alive-MS", strconv.FormatInt(persistent.record.KeepAlive.Milliseconds(), 10))
+		forwarded.Header.Set(internalHeaderPrefix+"persistent-execution-id", persistent.record.ExecutionID)
+		forwarded.Header.Set(internalHeaderPrefix+"persistent-keep-alive-ms", strconv.FormatInt(persistent.keepAlive.Milliseconds(), 10))
 		if persistent.record.WorkerID != "" {
-			forwarded.Header.Set(internalHeaderPrefix+"Target-Worker-ID", persistent.record.WorkerID)
+			forwarded.Header.Set(internalHeaderPrefix+"target-worker-id", persistent.record.WorkerID)
 		}
 		if !persistent.initial {
-			forwarded.Header.Set(internalHeaderPrefix+"Persistent-Existing", "true")
+			forwarded.Header.Set(internalHeaderPrefix+"persistent-existing", "true")
 		}
 	}
-	forwarded.Header.Set(internalHeaderPrefix+"Auth-Authenticated", strconv.FormatBool(authContext.Authenticated))
-	if authContext.Authenticated {
-		forwarded.Header.Set(internalHeaderPrefix+"Auth-Realm", authContext.Realm)
-		forwarded.Header.Set(internalHeaderPrefix+"Auth-User-ID", authContext.UserID)
-		forwarded.Header.Set(internalHeaderPrefix+"Auth-Username", authContext.Username)
-		forwarded.Header.Set(internalHeaderPrefix+"Auth-Version", strconv.FormatUint(authContext.AuthVersion, 10))
-	}
-	if m.runtimeRequests != nil {
-		release, registrationErr := m.runtimeRequests.BeginRuntimeRequest(auth.RuntimeRequest{
-			RequestID: requestID, ServiceID: identity.ServiceID(), RuntimeGroupID: sandbox.status.RuntimeGroupID,
-			SandboxID: sandbox.status.SandboxID, Auth: authContext, SecureTransport: requestScheme(request) == "https",
-		})
-		if registrationErr != nil {
-			if persistent != nil && persistent.initial {
-				m.persistentRoutes.discard(persistent.token)
-			}
-			m.finishRequest(runtime, sandbox, 0, 0, time.Since(started), false)
-			http.Error(writer, "service unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		defer release()
-	}
+	setAuthenticationMetadata(forwarded.Header, authentication, user)
 	response, dispatchErr := m.pools.Dispatch(ctx, sandbox.status.PoolID, forwarded)
 	if dispatchErr != nil {
-		if persistent != nil && persistent.initial {
-			m.persistentRoutes.discard(persistent.token)
-		}
 		m.finishRequest(runtime, sandbox, 0, 0, time.Since(started), errors.Is(ctx.Err(), context.DeadlineExceeded))
 		if m.logger != nil {
 			m.logger.Error("service request dispatch failed", "service_id", identity.ServiceID(), "request_id", requestID, "error", dispatchErr)
@@ -1736,16 +1581,13 @@ func (m *Manager) dispatch(writer http.ResponseWriter, request *http.Request, id
 		return
 	}
 	defer response.Body.Close()
-	selectedWorkerID := response.Header.Get(internalHeaderPrefix + "Selected-Worker-ID")
-	persistentSuccess := persistent != nil && response.StatusCode >= 200 && response.StatusCode < 400
-	if persistentSuccess {
-		m.persistentRoutes.succeed(persistent.token, selectedWorkerID)
-		writer.Header().Set(RouteHeader, persistent.token)
-	} else if persistent != nil && persistent.initial {
-		m.persistentRoutes.discard(persistent.token)
+	if err := m.prepareServiceResponse(response, persistent); err != nil {
+		m.finishRequest(runtime, sandbox, 0, 0, time.Since(started), false)
+		http.Error(writer, "service proxy failed", http.StatusBadGateway)
+		return
 	}
 	for name, values := range response.Header {
-		if strings.HasPrefix(textproto.CanonicalMIMEHeaderKey(name), internalHeaderPrefix) {
+		if strings.HasPrefix(strings.ToLower(name), internalHeaderPrefix) {
 			continue
 		}
 		for _, value := range values {
@@ -1764,50 +1606,21 @@ func (m *Manager) dispatch(writer http.ResponseWriter, request *http.Request, id
 	}
 }
 
-func (m *Manager) dispatchPersistentWebSocket(writer http.ResponseWriter, request *http.Request, identity workspacepackages.Identity, relativePath string, runtime *runtimeService, persistent *persistentDispatch, authContext auth.AuthContext) {
-	writer.Header().Set(RouteHeader, persistent.token)
+func (m *Manager) dispatchPersistentWebSocket(writer http.ResponseWriter, request *http.Request, identity workspacepackages.Identity, relativePath string, runtime *runtimeService, persistent *persistentDispatch, authentication *authenticationSetup, user execution.User) {
 	started := time.Now()
-	stopRouteKeepalive := m.keepPersistentRouteAlive(persistent)
-	defer stopRouteKeepalive()
-	succeeded := m.dispatchWebSocket(writer, request, identity, runtime, persistent.sandbox, relativePath, authContext, persistent)
-	m.persistentRoutes.disconnect(persistent.token, succeeded)
-	if !succeeded && persistent.initial {
-		m.persistentRoutes.discard(persistent.token)
-	}
+	m.dispatchWebSocket(writer, request, identity, runtime, persistent.sandbox, relativePath, authentication, user, persistent)
 	m.finishRequest(runtime, persistent.sandbox, http.StatusSwitchingProtocols, 0, time.Since(started), false)
 }
 
-func (m *Manager) keepPersistentRouteAlive(persistent *persistentDispatch) func() {
-	if persistent == nil || persistent.record.KeepAlive <= 0 {
-		return func() {}
-	}
-	interval := max(persistent.record.KeepAlive/2, time.Millisecond)
-	stop := make(chan struct{})
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				m.persistentRoutes.succeed(persistent.token, "")
-			case <-stop:
-				return
-			}
-		}
-	}()
-	var once sync.Once
-	return func() { once.Do(func() { close(stop) }) }
-}
-
-func (m *Manager) dispatchRequestWebSocket(writer http.ResponseWriter, request *http.Request, identity workspacepackages.Identity, relativePath string, runtime *runtimeService, sandbox *runtimeSandbox, authContext auth.AuthContext) {
+func (m *Manager) dispatchRequestWebSocket(writer http.ResponseWriter, request *http.Request, identity workspacepackages.Identity, relativePath string, runtime *runtimeService, sandbox *runtimeSandbox, authentication *authenticationSetup, user execution.User) {
 	started := time.Now()
 	defer func() {
 		m.finishRequest(runtime, sandbox, http.StatusSwitchingProtocols, 0, time.Since(started), false)
 	}()
-	m.dispatchWebSocket(writer, request, identity, runtime, sandbox, relativePath, authContext, nil)
+	m.dispatchWebSocket(writer, request, identity, runtime, sandbox, relativePath, authentication, user, nil)
 }
 
-func (m *Manager) dispatchWebSocket(writer http.ResponseWriter, request *http.Request, identity workspacepackages.Identity, runtime *runtimeService, sandbox *runtimeSandbox, relativePath string, authContext auth.AuthContext, persistent *persistentDispatch) bool {
+func (m *Manager) dispatchWebSocket(writer http.ResponseWriter, request *http.Request, identity workspacepackages.Identity, runtime *runtimeService, sandbox *runtimeSandbox, relativePath string, authentication *authenticationSetup, user execution.User, persistent *persistentDispatch) bool {
 	requestID, err := model.NewID("request")
 	if err != nil {
 		http.Error(writer, "service unavailable", http.StatusServiceUnavailable)
@@ -1815,7 +1628,7 @@ func (m *Manager) dispatchWebSocket(writer http.ResponseWriter, request *http.Re
 	}
 	forwarded := request.Clone(request.Context())
 	forwarded.URL = cloneURL(request.URL)
-	forwarded.URL.Scheme, forwarded.URL.Host = "http", "service"
+	forwarded.URL.Scheme, forwarded.URL.Host = requestScheme(request), "service"
 	forwarded.URL.Path, forwarded.URL.RawPath = relativePath, ""
 	query := forwarded.URL.Query()
 	query.Del("route")
@@ -1826,55 +1639,35 @@ func (m *Manager) dispatchWebSocket(writer http.ResponseWriter, request *http.Re
 		forwarded.Header = make(http.Header)
 	}
 	for name := range forwarded.Header {
-		if strings.HasPrefix(textproto.CanonicalMIMEHeaderKey(name), internalHeaderPrefix) {
-			forwarded.Header.Del(name)
+		if strings.HasPrefix(strings.ToLower(name), internalHeaderPrefix) {
+			delete(forwarded.Header, name)
 		}
 	}
 	forwarded.Header.Del(RouteHeader)
-	if m.authentication != nil {
-		removeCookie(forwarded.Header, request.Cookies(), m.authentication.CookieName())
-	}
-	forwarded.Header.Set(internalHeaderPrefix+"Request-ID", requestID)
-	forwarded.Header.Set(internalHeaderPrefix+"Service-ID", identity.ServiceID())
+	forwarded.Header.Set(internalHeaderPrefix+"request-id", requestID)
+	forwarded.Header.Set(internalHeaderPrefix+"service-id", identity.ServiceID())
 	m.mu.Lock()
 	loadedVersion := runtime.status.LoadedVersion
 	m.mu.Unlock()
-	forwarded.Header.Set(internalHeaderPrefix+"Service-Generation", strconv.FormatUint(loadedVersion, 10))
-	forwarded.Header.Set(internalHeaderPrefix+"Canonical-Base-Path", identity.CanonicalBasePath())
-	forwarded.Header.Set(internalHeaderPrefix+"Original-URL", originalURL(request))
-	forwarded.Header.Set(internalHeaderPrefix+"Original-Path", request.URL.RequestURI())
-	forwarded.Header.Set(internalHeaderPrefix+"Original-Host", request.Host)
-	forwarded.Header.Set(internalHeaderPrefix+"Original-Scheme", requestScheme(request))
+	forwarded.Header.Set(internalHeaderPrefix+"service-generation", strconv.FormatUint(loadedVersion, 10))
+	forwarded.Header.Set(internalHeaderPrefix+"canonical-base-path", identity.CanonicalBasePath())
+	forwarded.Header.Set(internalHeaderPrefix+"original-url", originalURL(request))
+	forwarded.Header.Set(internalHeaderPrefix+"original-path", request.URL.RequestURI())
+	forwarded.Header.Set(internalHeaderPrefix+"original-host", request.Host)
+	forwarded.Header.Set(internalHeaderPrefix+"original-scheme", requestScheme(request))
 	setClientMetadata(forwarded.Header, request.RemoteAddr)
 	if persistent != nil {
-		forwarded.Header.Set(internalHeaderPrefix+"Persistent-Execution-ID", persistent.record.ExecutionID)
-		forwarded.Header.Set(internalHeaderPrefix+"Persistent-Keep-Alive-MS", strconv.FormatInt(persistent.record.KeepAlive.Milliseconds(), 10))
+		forwarded.Header.Set(internalHeaderPrefix+"persistent-execution-id", persistent.record.ExecutionID)
+		forwarded.Header.Set(internalHeaderPrefix+"persistent-keep-alive-ms", strconv.FormatInt(persistent.keepAlive.Milliseconds(), 10))
 		if persistent.record.WorkerID != "" {
-			forwarded.Header.Set(internalHeaderPrefix+"Target-Worker-ID", persistent.record.WorkerID)
+			forwarded.Header.Set(internalHeaderPrefix+"target-worker-id", persistent.record.WorkerID)
 		}
 		if !persistent.initial {
-			forwarded.Header.Set(internalHeaderPrefix+"Persistent-Existing", "true")
+			forwarded.Header.Set(internalHeaderPrefix+"persistent-existing", "true")
 		}
 	}
-	forwarded.Header.Set(internalHeaderPrefix+"Auth-Authenticated", strconv.FormatBool(authContext.Authenticated))
-	if authContext.Authenticated {
-		forwarded.Header.Set(internalHeaderPrefix+"Auth-Realm", authContext.Realm)
-		forwarded.Header.Set(internalHeaderPrefix+"Auth-User-ID", authContext.UserID)
-		forwarded.Header.Set(internalHeaderPrefix+"Auth-Username", authContext.Username)
-		forwarded.Header.Set(internalHeaderPrefix+"Auth-Version", strconv.FormatUint(authContext.AuthVersion, 10))
-	}
-	if m.runtimeRequests != nil {
-		release, registrationErr := m.runtimeRequests.BeginRuntimeRequest(auth.RuntimeRequest{
-			RequestID: requestID, ServiceID: identity.ServiceID(), RuntimeGroupID: sandbox.status.RuntimeGroupID,
-			SandboxID: sandbox.status.SandboxID, Auth: authContext, SecureTransport: requestScheme(request) == "https",
-		})
-		if registrationErr != nil {
-			http.Error(writer, "service unavailable", http.StatusServiceUnavailable)
-			return false
-		}
-		defer release()
-	}
-	if err := m.pools.ProxyWebSocket(request.Context(), sandbox.status.PoolID, writer, forwarded); err != nil {
+	setAuthenticationMetadata(forwarded.Header, authentication, user)
+	if err := m.pools.ProxyWebSocket(request.Context(), sandbox.status.PoolID, writer, forwarded, func(response *http.Response) error { return m.prepareServiceResponse(response, persistent) }); err != nil {
 		if m.logger != nil {
 			m.logger.Error("service WebSocket proxy failed", "service_id", identity.ServiceID(), "request_id", requestID, "pool_id", sandbox.status.PoolID, "error", err)
 		}
@@ -1894,8 +1687,8 @@ func setClientMetadata(header http.Header, remoteAddress string) {
 		return
 	}
 	address = address.Unmap()
-	header.Set(internalHeaderPrefix+"Client-IP-Address", address.String())
-	header.Set(internalHeaderPrefix+"Client-Network-Scope", clientNetworkScope(address))
+	header.Set(internalHeaderPrefix+"client-ip-address", address.String())
+	header.Set(internalHeaderPrefix+"client-network-scope", clientNetworkScope(address))
 }
 
 func clientNetworkScope(address netip.Addr) string {
@@ -1913,48 +1706,56 @@ func clientNetworkScope(address netip.Addr) string {
 	}
 }
 
-func (m *Manager) authenticate(request *http.Request) (auth.AuthContext, bool) {
-	if m.authentication == nil {
-		return auth.AuthContext{}, false
+func setAuthenticationMetadata(header http.Header, authentication *authenticationSetup, user execution.User) {
+	if authentication != nil {
+		encoded, _ := json.Marshal(authentication)
+		header.Set(internalHeaderPrefix+"authentication", base64.StdEncoding.EncodeToString(encoded))
 	}
-	cookie, err := request.Cookie(m.authentication.CookieName())
-	if err != nil || cookie.Value == "" {
-		return auth.AuthContext{}, false
-	}
-	contextValue, err := m.authentication.ValidateCookieContext(request.Context(), cookie.Value)
-	if err != nil {
-		if m.logger != nil && !errors.Is(err, auth.ErrUnauthenticated) && !errors.Is(err, auth.ErrSessionExpired) {
-			m.logger.Warn("authentication validation failed", "error", err)
-		}
-		return auth.AuthContext{}, false
-	}
-	return contextValue, contextValue.Authenticated
+	header.Set(internalHeaderPrefix+"user-id", user.ID)
+	header.Set(internalHeaderPrefix+"username", user.Username)
 }
 
-func (m *Manager) respondUnauthenticated(writer http.ResponseWriter, policy workspacepackages.UnauthenticatedManifest) {
+func assignedUser(definition Specification) (execution.User, error) {
+	user, err := execution.UserForUsername(definition.Effective.Execution.AnonymousUser)
+	if err != nil {
+		return user, fmt.Errorf("%w: %v", execution.ErrInvalidUser, err)
+	}
+	return user, nil
+}
+
+func (m *Manager) failExecutionUser(definition Specification, cause error) (Status, error) {
+	serviceID := definition.Identity.ServiceID()
+	m.mu.Lock()
+	runtime := m.services[serviceID]
+	if runtime == nil {
+		runtime = replacementRuntime(nil, m.statusFromDefinition(definition, StateFailed), nil, nil, definition)
+		m.services[serviceID] = runtime
+	}
+	changed := runtime.status.State != StateFailed || runtime.status.LastStartupError != cause.Error()
+	runtime.status.State = StateFailed
+	runtime.status.DesiredVersion = definition.Version
+	runtime.status.ValidationError = cause.Error()
+	runtime.status.LastStartupError = cause.Error()
+	runtime.status.FailedVersion = definition.Version
+	status := cloneRuntimeStatus(runtime)
+	m.mu.Unlock()
+	if changed {
+		_ = m.writeObserved(status)
+		if m.logger != nil {
+			m.logger.Error("service execution user unavailable", "service_id", serviceID, "error", cause)
+		}
+	}
+	return status, cause
+}
+
+func (m *Manager) respondUnauthenticated(writer http.ResponseWriter, policy UnauthenticatedPolicy) {
 	writer.Header().Set("Cache-Control", "no-store")
-	if policy.Action == workspacepackages.UnauthenticatedRedirect {
+	if policy.Action == "redirect" {
 		writer.Header().Set("Location", policy.RedirectURL)
 		writer.WriteHeader(policy.Status)
 		return
 	}
 	http.Error(writer, policy.Message, policy.Status)
-}
-
-func removeCookie(header http.Header, cookies []*http.Cookie, name string) {
-	if name == "" {
-		return
-	}
-	header.Del("Cookie")
-	values := make([]string, 0, len(cookies))
-	for _, cookie := range cookies {
-		if cookie.Name != name {
-			values = append(values, cookie.String())
-		}
-	}
-	if len(values) > 0 {
-		header.Set("Cookie", strings.Join(values, "; "))
-	}
 }
 
 func (m *Manager) selectSandbox(runtime *runtimeService) *runtimeSandbox {
@@ -1975,7 +1776,7 @@ func (m *Manager) selectSandbox(runtime *runtimeService) *runtimeSandbox {
 	return selected
 }
 
-func (m *Manager) selectCapacitySandbox(ctx context.Context, runtime *runtimeService, definition workspacepackages.Definition) (*runtimeSandbox, error) {
+func (m *Manager) selectCapacitySandbox(ctx context.Context, runtime *runtimeService, definition Specification) (*runtimeSandbox, error) {
 	if sandbox, shouldScale := m.reserveCachedCapacity(ctx, runtime, definition); sandbox != nil {
 		if shouldScale {
 			m.triggerCapacityReconcile(runtime, definition)
@@ -1987,7 +1788,7 @@ func (m *Manager) selectCapacitySandbox(ctx context.Context, runtime *runtimeSer
 
 // reserveCachedCapacity is the normal warm path: one short in-memory routing
 // reservation and no Worker listing, reconciliation, or external I/O.
-func (m *Manager) reserveCachedCapacity(ctx context.Context, runtime *runtimeService, definition workspacepackages.Definition) (*runtimeSandbox, bool) {
+func (m *Manager) reserveCachedCapacity(ctx context.Context, runtime *runtimeService, definition Specification) (*runtimeSandbox, bool) {
 	type candidate struct {
 		sandbox *runtimeSandbox
 		active  int
@@ -2066,13 +1867,13 @@ func (m *Manager) reserveCachedCapacity(ctx context.Context, runtime *runtimeSer
 	return selected, shouldScale
 }
 
-func (m *Manager) selectCapacitySandboxSlow(ctx context.Context, runtime *runtimeService, definition workspacepackages.Definition) (*runtimeSandbox, error) {
+func (m *Manager) selectCapacitySandboxSlow(ctx context.Context, runtime *runtimeService, definition Specification) (*runtimeSandbox, error) {
 	unlockCapacity := m.lockServiceCapacity(definition.Identity.ServiceID())
 	defer unlockCapacity()
 	return m.selectCapacitySandboxLocked(ctx, runtime, definition, true)
 }
 
-func (m *Manager) selectCapacitySandboxLocked(ctx context.Context, runtime *runtimeService, definition workspacepackages.Definition, reserve bool) (*runtimeSandbox, error) {
+func (m *Manager) selectCapacitySandboxLocked(ctx context.Context, runtime *runtimeService, definition Specification, reserve bool) (*runtimeSandbox, error) {
 	type candidate struct {
 		sandbox *runtimeSandbox
 		active  int
@@ -2150,7 +1951,7 @@ func (m *Manager) selectCapacitySandboxLocked(ctx context.Context, runtime *runt
 	return nil, fmt.Errorf("%w: %v", executionservices.ErrSandboxCapacity, lastErr)
 }
 
-func (m *Manager) triggerCapacityReconcile(runtime *runtimeService, definition workspacepackages.Definition) {
+func (m *Manager) triggerCapacityReconcile(runtime *runtimeService, definition Specification) {
 	lock := m.serviceCapacityLock(definition.Identity.ServiceID())
 	if !lock.TryLock() {
 		return
@@ -2173,20 +1974,20 @@ func (m *Manager) triggerCapacityReconcile(runtime *runtimeService, definition w
 	}()
 }
 
-func (m *Manager) localWorkerMaximum(definition workspacepackages.Definition) int {
+func (m *Manager) localWorkerMaximum(definition Specification) int {
 	if definition.Effective.Scaling.MaximumWorkers == 0 {
 		return 0
 	}
 	return len(m.localIndexes(definition.Effective.Scaling.MaximumWorkers))
 }
 
-func (m *Manager) addCapacitySandbox(ctx context.Context, runtime *runtimeService, definition workspacepackages.Definition) (*runtimeSandbox, error) {
+func (m *Manager) addCapacitySandbox(ctx context.Context, runtime *runtimeService, definition Specification) (*runtimeSandbox, error) {
 	unlockCapacity := m.lockServiceCapacity(definition.Identity.ServiceID())
 	defer unlockCapacity()
 	return m.addCapacitySandboxLocked(ctx, runtime, definition)
 }
 
-func (m *Manager) addCapacitySandboxLocked(ctx context.Context, runtime *runtimeService, definition workspacepackages.Definition) (*runtimeSandbox, error) {
+func (m *Manager) addCapacitySandboxLocked(ctx context.Context, runtime *runtimeService, definition Specification) (*runtimeSandbox, error) {
 	m.mu.Lock()
 	current := m.services[definition.Identity.ServiceID()]
 	if current != runtime {
@@ -2347,62 +2148,7 @@ func persistentSandbox(value *persistentDispatch) *runtimeSandbox {
 	return value.sandbox
 }
 
-func (m *Manager) beginPersistentDispatch(ctx context.Context, runtime *runtimeService, definition workspacepackages.Definition, request *http.Request, userID string, connect bool) (*persistentDispatch, error) {
-	serviceID := definition.Identity.ServiceID()
-	headerToken := strings.TrimSpace(request.Header.Get(RouteHeader))
-	queryToken := ""
-	if connect {
-		queryToken = strings.TrimSpace(request.URL.Query().Get("route"))
-	}
-	if headerToken != "" && queryToken != "" && headerToken != queryToken {
-		return nil, errors.New("persistent route header and query disagree")
-	}
-	token := headerToken
-	if token == "" {
-		token = queryToken
-	}
-	if token != "" {
-		located, err := m.persistentRoutes.lookup(token, serviceID, userID)
-		if err != nil {
-			return nil, err
-		}
-		if located.NodeID != m.persistentRoutes.nodeID {
-			return &persistentDispatch{token: token, record: located, remoteNode: located.NodeID}, nil
-		}
-		record, err := m.persistentRoutes.resolve(token, serviceID, userID, connect)
-		if err != nil {
-			return nil, err
-		}
-		sandbox := m.selectPersistentSandbox(runtime, record.PoolID, record.WorkerID)
-		if sandbox == nil {
-			m.persistentRoutes.discard(token)
-			return nil, errRouteNotFound
-		}
-		return &persistentDispatch{token: token, record: record, sandbox: sandbox}, nil
-	}
-	sandbox, err := m.selectCapacitySandbox(ctx, runtime, definition)
-	if err != nil {
-		return nil, err
-	}
-	token, record, err := m.persistentRoutes.create(serviceID, sandbox.status.PoolID, sandbox.status.RuntimeGroupID, sandbox.status.SandboxID, userID, definition.Effective.Lifecycle.SessionKeepAlive, connect)
-	if err != nil {
-		m.finishRequest(runtime, sandbox, 0, 0, 0, false)
-		return nil, err
-	}
-	return &persistentDispatch{token: token, record: record, sandbox: sandbox, initial: true}, nil
-}
-
-func (m *Manager) CompletePersistentExecution(_ context.Context, target callback.PersistentExecutionTarget) error {
-	return m.persistentRoutes.complete(
-		target.PersistentExecutionID,
-		target.ServiceID,
-		target.RuntimeGroupID,
-		target.SandboxID,
-		target.WorkerID,
-	)
-}
-
-func (m *Manager) selectPersistentSandbox(runtime *runtimeService, poolID, workerID string) *runtimeSandbox {
+func (m *Manager) selectPersistentSandbox(runtime *runtimeService, sandboxID, workerID string) *runtimeSandbox {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if runtime == nil {
@@ -2410,7 +2156,7 @@ func (m *Manager) selectPersistentSandbox(runtime *runtimeService, poolID, worke
 	}
 	var selected *runtimeSandbox
 	for _, sandbox := range runtime.sandboxes {
-		if sandbox.status.PoolID == poolID {
+		if sandbox.status.SandboxID == sandboxID {
 			selected = sandbox
 			break
 		}
@@ -2482,15 +2228,15 @@ func releaseRequest(sandbox *runtimeSandbox, now time.Time) {
 	}
 }
 
-func (m *Manager) statusFromDefinition(definition workspacepackages.Definition, state State) Status {
-	return Status{ServiceID: definition.Identity.ServiceID(), PackageID: definition.Identity.PackageID(), CanonicalBasePath: definition.Identity.CanonicalBasePath(), Description: definition.Service.Description, ServiceType: definition.Effective.Lifecycle.ServiceType, AccessMode: definition.Service.Access.Mode, Enabled: definition.State.Enabled, DesiredVersion: definition.State.Generation, State: state, Entrypoint: definition.EntrypointPath, Effective: definition.Effective, Metrics: emptyMetrics()}
+func (m *Manager) statusFromDefinition(definition Specification, state State) Status {
+	return Status{ServiceID: definition.Identity.ServiceID(), PackageID: definition.Identity.PackageID(), CanonicalBasePath: definition.Identity.CanonicalBasePath(), Description: definition.Description, ServiceType: definition.Effective.Lifecycle.ServiceType, AccessMode: definition.Access.Mode, Enabled: definition.Enabled, DesiredVersion: definition.Version, State: state, Entrypoint: definition.EntrypointURL, Effective: definition.Effective, Metrics: emptyMetrics()}
 }
 
-func isSessionService(definition workspacepackages.Definition) bool {
-	return definition.Effective.Lifecycle.ServiceType == workspacepackages.ServiceTypeSession
+func isSessionService(definition Specification) bool {
+	return definition.Effective.Lifecycle.ServiceType == "session"
 }
 
-func serviceExecutionMode(definition workspacepackages.Definition) string {
+func serviceExecutionMode(definition Specification) string {
 	if isSessionService(definition) {
 		return "persistent"
 	}
@@ -2571,18 +2317,14 @@ func originalURL(request *http.Request) string {
 	return scheme + "://" + host + request.URL.RequestURI()
 }
 func requestScheme(request *http.Request) string {
-	if request.TLS != nil {
-		return "https"
-	}
-	forwarded := strings.TrimSpace(strings.Split(request.Header.Get("X-Forwarded-Proto"), ",")[0])
-	if strings.EqualFold(forwarded, "https") {
+	if auth.SecureTransport(request) {
 		return "https"
 	}
 	return "http"
 }
 func cloneURL(value *url.URL) *url.URL { copied := *value; return &copied }
-func versionPoolID(serviceID string, version uint64, index int) string {
-	return hashedID("service", fmt.Sprintf("%s\x00%d\x00%d", serviceID, version, index))
+func versionPoolID(serviceID, release string, index int) string {
+	return hashedID("service", fmt.Sprintf("%s\x00%s\x00%d", serviceID, release, index))
 }
 func validationPoolID(serviceID string) string {
 	id, _ := model.NewID("validation")
@@ -2591,14 +2333,6 @@ func validationPoolID(serviceID string) string {
 func hashedID(prefix, value string) string {
 	sum := sha256.Sum256([]byte(value))
 	return prefix + "-" + hex.EncodeToString(sum[:16])
-}
-func coalesce(values ...string) string {
-	for _, value := range values {
-		if value != "" {
-			return value
-		}
-	}
-	return ""
 }
 func sandboxesOf(service *runtimeService) []*runtimeSandbox {
 	if service == nil {
@@ -2634,7 +2368,7 @@ func replacementRuntime(
 	status Status,
 	sandboxes []*runtimeSandbox,
 	retired []*runtimeSandbox,
-	definition workspacepackages.Definition,
+	definition Specification,
 ) *runtimeService {
 	metrics := runtimeMetrics(existing)
 	status.Metrics = cloneMetrics(*metrics)
@@ -2661,7 +2395,9 @@ func (m *Manager) observedStatusLocked(status Status, current []*runtimeSandbox)
 		case StateIdle:
 			status.State = StateReady
 		case StatePendingCapacity, StateFailed:
-			status.State = StateDegraded
+			if status.ValidationError == "" {
+				status.State = StateDegraded
+			}
 		}
 	}
 	return status

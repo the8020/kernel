@@ -46,7 +46,9 @@
   snapshot observes it or proves it absent. CPU and RAM observations never
   reject Worker creation; admission never rejects dispatch to an existing Worker.
 - Worker startup injects the configured non-secret database backend so module
-  imports can construct the correct SQL compiler without a kernel callback.
+  imports can construct the correct SQL compiler without a kernel callback. It
+  also validates the required canonical execution user and workload-compatible
+  service/job/program origin before contacting the supervisor.
 - Node-wide and sandbox-local admission failures have distinct typed sentinels;
   service placement may spill a sandbox-local rejection into another compatible
   sandbox, while creating another local sandbox cannot evade node exhaustion.

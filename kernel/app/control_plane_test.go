@@ -228,7 +228,7 @@ func TestAdministrativeSocketPrecedesRuntimeInitialization(t *testing.T) {
 		t.Fatalf("shutdown progress=%#v err=%v", progress, err)
 	}
 	percent, ok := progressResult["shutdown_percent"].(json.Number)
-	if !ok || percent == "100" || progressResult["shutdown_total_steps"] != json.Number("9") {
+	if !ok || percent == "100" || progressResult["shutdown_total_steps"] != json.Number("8") {
 		t.Fatalf("shutdown accounting=%#v", progress.Result)
 	}
 	rejected, err := commandClient.Execute(context.Background(), core.Request{CommandID: "not.allowed.during.shutdown"})

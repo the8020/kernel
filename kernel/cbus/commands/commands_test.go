@@ -41,10 +41,6 @@ import (
 	servicelist "the8020/kernel/cbus/commands/service/list"
 	serviceopenapi "the8020/kernel/cbus/commands/service/openapi"
 	servicerequest "the8020/kernel/cbus/commands/service/request"
-	servicerestart "the8020/kernel/cbus/commands/service/restart"
-	servicescale "the8020/kernel/cbus/commands/service/scale"
-	servicestart "the8020/kernel/cbus/commands/service/start"
-	servicestop "the8020/kernel/cbus/commands/service/stop"
 	servicevalidate "the8020/kernel/cbus/commands/service/validate"
 	workerinspect "the8020/kernel/cbus/commands/worker/inspect"
 	workerkill "the8020/kernel/cbus/commands/worker/kill"
@@ -71,7 +67,6 @@ type callRecorder struct {
 	calls          map[string]int
 	jobOptions     jobs.Options
 	adminOptions   adminrun.Options
-	scaleOptions   webservices.ScaleOptions
 	requestOptions webservices.RequestOptions
 }
 
@@ -148,40 +143,18 @@ type fakePackages struct{ *callRecorder }
 
 func (f fakePackages) ListPackages() ([]workspacepackages.Package, error) {
 	f.record("package.list")
-	return []workspacepackages.Package{{ID: "the8020/demo", Description: "Example package", Valid: true, ServiceCount: 1}}, nil
+	return []workspacepackages.Package{{ID: "the8020/demo", Description: "Example package", Valid: true}}, nil
 }
 
 func (f fakePackages) InspectPackage(string) (workspacepackages.Package, error) {
 	f.record("package.inspect")
-	return workspacepackages.Package{ID: "the8020/demo", Valid: true, ServiceCount: 1}, nil
+	return workspacepackages.Package{ID: "the8020/demo", Valid: true}, nil
 }
 
 type fakeWebServices struct{ *callRecorder }
 
 func (f fakeWebServices) status() webservices.Status {
 	return webservices.Status{ServiceID: "the8020/demo/http", Description: "Example service", CanonicalBasePath: "/the8020/demo/http", Enabled: true, DesiredVersion: 1, LoadedVersion: 1, VersionCount: 1, State: webservices.StateReady, SandboxCount: 1, WorkerCount: 1, Sandboxes: []webservices.ServiceSandboxStatus{{Version: 1, SandboxID: "sandbox-1", RuntimeGroupID: "group-1"}}}
-}
-
-func (f fakeWebServices) Start(context.Context, string) (webservices.Status, error) {
-	f.record("service.start")
-	return f.status(), nil
-}
-
-func (f fakeWebServices) Stop(context.Context, string) (webservices.Status, error) {
-	f.record("service.stop")
-	status := f.status()
-	status.State = webservices.StateStopped
-	return status, nil
-}
-
-func (f fakeWebServices) Restart(context.Context, string) (webservices.Status, error) {
-	f.record("service.restart")
-	return f.status(), nil
-}
-
-func (f fakeWebServices) Reload(context.Context, string) (webservices.Status, error) {
-	f.record("service.reload")
-	return f.status(), nil
 }
 
 func (f fakeWebServices) Reconcile(context.Context, string) (webservices.Status, error) {
@@ -192,12 +165,6 @@ func (f fakeWebServices) Reconcile(context.Context, string) (webservices.Status,
 func (f fakeWebServices) Retire(context.Context, string) error {
 	f.record("service.retire")
 	return nil
-}
-
-func (f fakeWebServices) Scale(_ context.Context, _ string, options webservices.ScaleOptions) (webservices.Status, error) {
-	f.record("service.scale")
-	f.scaleOptions = options
-	return f.status(), nil
 }
 
 func (f fakeWebServices) List() ([]webservices.Status, error) {
@@ -342,11 +309,11 @@ func TestEveryPhase1BHandlerSurvivesDegradedRuntime(t *testing.T) {
 		"runtime.eval": runtimeeval.New(serviceSet), "runtime.run": runtimerun.New(serviceSet),
 		"sandbox.delete": sandboxdelete.New(serviceSet), "sandbox.inspect": sandboxinspect.New(serviceSet), "sandbox.refresh": sandboxrefresh.New(serviceSet), "sandbox.kill": sandboxkill.New(serviceSet), "sandbox.list": sandboxlist.New(serviceSet), "sandbox.metrics": sandboxmetrics.New(serviceSet), "sandbox.stop": sandboxstop.New(serviceSet),
 		"sandbox.history.list": sandboxhistorylist.New(serviceSet), "sandbox.history.inspect": sandboxhistoryinspect.New(serviceSet),
-		"service.inspect": serviceinspect.New(serviceSet), "service.list": servicelist.New(serviceSet), "service.openapi": serviceopenapi.New(serviceSet), "service.request": servicerequest.New(serviceSet), "service.restart": servicerestart.New(serviceSet), "service.scale": servicescale.New(serviceSet), "service.start": servicestart.New(serviceSet), "service.stop": servicestop.New(serviceSet), "service.validate": servicevalidate.New(serviceSet),
+		"service.inspect": serviceinspect.New(serviceSet), "service.list": servicelist.New(serviceSet), "service.openapi": serviceopenapi.New(serviceSet), "service.request": servicerequest.New(serviceSet), "service.validate": servicevalidate.New(serviceSet),
 		"worker.inspect": workerinspect.New(serviceSet), "worker.kill": workerkill.New(serviceSet), "worker.list": workerlist.New(serviceSet), "worker.stop": workerstop.New(serviceSet),
 	}
-	if len(handlers) != 36 {
-		t.Fatalf("degraded handler count = %d, want 36", len(handlers))
+	if len(handlers) != 32 {
+		t.Fatalf("degraded handler count = %d, want 32", len(handlers))
 	}
 	for id, handler := range handlers {
 		t.Run(id, func(t *testing.T) {
@@ -416,7 +383,6 @@ func TestEveryPhase1BHandlerSuccessfulPath(t *testing.T) {
 		"worker.inspect":          {handler: workerinspect.New(serviceSet), wantCall: "worker.inspect", arguments: map[string]any{"worker_id": "worker-1"}},
 		"worker.stop":             {handler: workerstop.New(serviceSet), wantCall: "worker.stop", arguments: map[string]any{"worker_id": "worker-1"}},
 		"worker.kill":             {handler: workerkill.New(serviceSet), wantCall: "worker.kill", arguments: map[string]any{"worker_id": "worker-1"}},
-		"service.start":           {handler: servicestart.New(serviceSet), wantCall: "service.start", arguments: map[string]any{"service_id": "the8020/demo/http"}},
 		"service.list":            {handler: servicelist.New(serviceSet), wantCall: "service.list"},
 		"service.inspect":         {handler: serviceinspect.New(serviceSet), wantCall: "service.inspect", arguments: map[string]any{"service_id": "the8020/demo/http"}},
 		"service.validate":        {handler: servicevalidate.New(serviceSet), wantCall: "service.validate", arguments: map[string]any{"service_id": "the8020/demo/http"}},
@@ -424,11 +390,6 @@ func TestEveryPhase1BHandlerSuccessfulPath(t *testing.T) {
 		"service.request": {handler: servicerequest.New(serviceSet), wantCall: "service.request", arguments: map[string]any{
 			"service_id": "the8020/demo/http", "method": "POST", "relative_path": "/echo", "headers": `{"X-Test":"yes"}`, "json": `{"value":42}`, "timeout": int64(1000),
 		}},
-		"service.restart": {handler: servicerestart.New(serviceSet), wantCall: "service.restart", arguments: map[string]any{"service_id": "the8020/demo/http"}},
-		"service.scale": {handler: servicescale.New(serviceSet), wantCall: "service.scale", arguments: map[string]any{
-			"service_id": "the8020/demo/http", "minimum_workers": int64(2), "maximum_workers": int64(8), "concurrency_per_worker": int64(8), "target_utilization": "0.65", "worker_keep_alive": "3m", "workers_per_sandbox": int64(4), "sandbox_group": "shared", "minimum_sandboxes": int64(1), "service_type": "session", "session_keep_alive": "10m",
-		}},
-		"service.stop": {handler: servicestop.New(serviceSet), wantCall: "service.stop", arguments: map[string]any{"service_id": "the8020/demo/http"}},
 		"job.run": {handler: jobrun.New(serviceSet), wantCall: "job.run", arguments: map[string]any{
 			"job_id": "job-1", "entrypoint": "file:///artifacts/job.ts", "input": `{"task":1}`, "detached": false, "group_key": "group-key", "namespace": "tests",
 			"timeout": int64(1000), "parallelism": int64(2), "reuse": true, "workspace": "development", "workspace_write": true,
@@ -447,8 +408,8 @@ func TestEveryPhase1BHandlerSuccessfulPath(t *testing.T) {
 		"pool.status":   {handler: poolstatus.New(serviceSet), wantCall: "pool.status"},
 		"pool.resize":   {handler: poolresize.New(serviceSet), wantCall: "pool.resize", arguments: map[string]any{"profile": "sha256:test", "count": int64(2)}},
 	}
-	if len(cases) != 41 {
-		t.Fatalf("successful Phase 1D handler count = %d, want 41", len(cases))
+	if len(cases) != 37 {
+		t.Fatalf("successful Phase 1D handler count = %d, want 37", len(cases))
 	}
 	for id, testCase := range cases {
 		t.Run(id, func(t *testing.T) {
@@ -467,9 +428,6 @@ func TestEveryPhase1BHandlerSuccessfulPath(t *testing.T) {
 	}
 	if recorder.jobOptions.Workspace != "development" || !recorder.jobOptions.WorkspaceWritable || recorder.adminOptions.Workspace != "development" || !recorder.adminOptions.WorkspaceWritable {
 		t.Fatalf("workspace options were not propagated: job=%#v admin=%#v", recorder.jobOptions, recorder.adminOptions)
-	}
-	if recorder.scaleOptions.MinimumWorkers == nil || *recorder.scaleOptions.MinimumWorkers != 2 || recorder.scaleOptions.MaximumWorkers == nil || *recorder.scaleOptions.MaximumWorkers != 8 || recorder.scaleOptions.WorkersPerSandbox == nil || *recorder.scaleOptions.WorkersPerSandbox != 4 || recorder.scaleOptions.ConcurrencyPerWorker == nil || *recorder.scaleOptions.ConcurrencyPerWorker != 8 || recorder.scaleOptions.TargetUtilization == nil || *recorder.scaleOptions.TargetUtilization != 0.65 || recorder.scaleOptions.SandboxGroup == nil || *recorder.scaleOptions.SandboxGroup != "shared" || recorder.scaleOptions.WorkerKeepAlive == nil || *recorder.scaleOptions.WorkerKeepAlive != "3m" || recorder.scaleOptions.ServiceType == nil || *recorder.scaleOptions.ServiceType != "session" || recorder.scaleOptions.SessionKeepAlive == nil || *recorder.scaleOptions.SessionKeepAlive != "10m" {
-		t.Fatalf("service scale options were not propagated: %#v", recorder.scaleOptions)
 	}
 	if recorder.requestOptions.Headers.Get("X-Test") != "yes" || recorder.requestOptions.Headers.Get("Content-Type") != "application/json" || recorder.requestOptions.Timeout != time.Second {
 		t.Fatalf("service request options were not propagated: %#v", recorder.requestOptions)
@@ -494,7 +452,7 @@ func TestResourceListHandlersExposeOnlyReadableSummaryFields(t *testing.T) {
 		{name: "sandbox history", collection: "sandboxes", handler: sandboxhistorylist.New(serviceSet), fields: []string{"history_id", "sandbox_id", "runtime_group_id", "workload_type", "state", "reason", "archived_at", "expires_at", "log_files", "log_bytes"}},
 		{name: "workers", collection: "workers", handler: workerlist.New(serviceSet), fields: []string{"worker_id", "workload_type", "state", "workload_id", "owner_id", "sandbox_id", "in_flight"}},
 		{name: "jobs", collection: "executions", handler: joblist.New(serviceSet), fields: []string{"execution_id", "job_id", "state", "owner_id", "detached", "duration"}},
-		{name: "packages", collection: "packages", handler: packagelist.New(serviceSet), fields: []string{"package_id", "description", "valid", "service_count"}},
+		{name: "packages", collection: "packages", handler: packagelist.New(serviceSet), fields: []string{"package_id", "description", "valid"}},
 		{name: "services", collection: "services", handler: servicelist.New(serviceSet), fields: []string{"service_id", "description", "canonical_base_path", "state", "enabled", "version_count", "sandbox_count", "worker_count", "service_type", "access_mode"}},
 		{name: "ports", collection: "ports", handler: portlist.New(serviceSet), fields: []string{"lease_id", "protocol", "state", "bind_address", "host_port", "sandbox_id", "internal_port", "purpose"}},
 		{name: "debug targets", collection: "targets", handler: debugtargets.New(serviceSet), arguments: map[string]any{"sandbox_id": "sandbox-1"}, fields: []string{"id", "type", "title", "execution_id"}},
@@ -591,30 +549,6 @@ func TestAdministrativeExecutionHandlersUseConciseDefaultAndExplicitDetail(t *te
 	}
 	if len(detailed) != 1 || detailed["execution"] == nil {
 		t.Fatalf("detailed result = %#v", detailed)
-	}
-}
-
-func TestServiceLifecycleHandlersUseConciseDefaultAndExplicitDetail(t *testing.T) {
-	recorder := &callRecorder{calls: map[string]int{}}
-	serviceSet := &services.Services{Runtime: &services.RuntimeServices{Services: fakeWebServices{recorder}}}
-
-	concise, err := servicestart.New(serviceSet)(context.Background(), core.Request{Arguments: map[string]any{"service_id": "the8020/demo/variables"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if concise["state"] != webservices.StateReady || concise["service_id"] != "the8020/demo/http" || concise["version_count"] != 1 || concise["sandbox_count"] != 1 {
-		t.Fatalf("concise status = %#v", concise)
-	}
-	if _, exists := concise["service"]; exists {
-		t.Fatalf("concise status exposed detail: %#v", concise)
-	}
-
-	detailed, err := servicerestart.New(serviceSet)(context.Background(), core.Request{Arguments: map[string]any{"service_id": "the8020/demo/variables", "detail": true}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(detailed) != 1 || detailed["service"] == nil {
-		t.Fatalf("detailed status = %#v", detailed)
 	}
 }
 

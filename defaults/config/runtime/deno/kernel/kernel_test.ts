@@ -1,5 +1,9 @@
 import { assertEquals, assertRejects } from "../test/assert.ts";
-import type { ServiceRequestMetadata } from "../worker/contracts.ts";
+import { context } from "../context/mod.ts";
+import type {
+  ExecutionMetadata,
+  ServiceRequestMetadata,
+} from "../worker/contracts.ts";
 import { createKernelBridge } from "./bridge.ts";
 import {
   AdminCommandError,
@@ -23,7 +27,25 @@ const metadata: ServiceRequestMetadata = {
     workerId: "wrk-test0001",
     workerExecutionId: "execution-1",
   },
+  user: { userId: "user:system", username: "system" },
   auth: { authenticated: false },
+};
+
+const workerMetadata: ExecutionMetadata = {
+  nodeId: "node-1",
+  runtimeGroupId: "rgp-test0001",
+  sandboxId: "sbx-test0001",
+  workerId: "wrk-test0001",
+  executionId: "execution-1",
+  workloadType: "service",
+  ownerId: "example/auth/login",
+  workloadId: "example/auth/login",
+  releaseId: "test",
+  entrypoint: "file:///workspace/service.ts",
+  debuggerName: "service:example/auth/login:execution-1:wrk-test0001",
+  databaseBackend: "postgresql",
+  user: { userId: "user:system", username: "system" },
+  origin: { type: "service", id: "example/auth/login" },
 };
 
 Deno.test("package command argument helpers return structured failures", () => {
@@ -40,6 +62,41 @@ Deno.test("package command argument helpers return structured failures", () => {
       assertEquals(error instanceof AdminCommandError, true);
       assertEquals((error as AdminCommandError).code, "invalid_arguments");
     }
+  }
+});
+
+Deno.test("the bridge rejects missing execution users instead of defaulting", async () => {
+  const channel = new MessageChannel();
+  const bridge = createKernelBridge(channel.port1, workerMetadata);
+  let called = false;
+  try {
+    const invalid = {
+      ...metadata,
+      user: undefined,
+    } as unknown as ServiceRequestMetadata;
+    await assertRejects(
+      async () => {
+        await bridge.withRequest(invalid, () => {
+          called = true;
+        });
+      },
+      TypeError,
+      "execution user",
+    );
+    await assertRejects(
+      async () => {
+        await bridge.withExecution(invalid, () => {
+          called = true;
+        });
+      },
+      TypeError,
+      "execution user",
+    );
+    assertEquals(called, false);
+  } finally {
+    bridge.close();
+    channel.port1.close();
+    channel.port2.close();
   }
 });
 const persistentMetadata: ServiceRequestMetadata = {
@@ -67,46 +124,30 @@ function createCallQueue(port: MessagePort) {
   };
 }
 
-Deno.test("typed kernel auth bridge correlates login and logout", async () => {
+Deno.test("cryptographic operations use the existing request bridge", async () => {
   const channel = new MessageChannel();
-  const bridge = createKernelBridge(channel.port1);
+  const bridge = createKernelBridge(channel.port1, workerMetadata);
   const calls = createCallQueue(channel.port2);
   try {
-    const loginPromise = bridge.withRequest(
+    const pending = bridge.withRequest(
       metadata,
-      () => kernel.auth.login({ username: "Admin", password: "private" }),
+      () => kernel.crypto.sign(new Uint8Array([1, 2, 3])),
     );
-    const loginCall = await calls.next();
-    assertEquals(loginCall.type, "kernel_call");
+    const call = await calls.next();
     assertEquals(
-      (loginCall.payload as { request: unknown }).request,
-      {
-        requestId: "request-1",
-        serviceId: "example/auth/login",
-        persistentExecutionId: undefined,
-      },
+      (call.payload as { operation: string }).operation,
+      "runtime.operation",
     );
+    assertEquals((call.payload as { arguments: unknown }).arguments, {
+      operation: "crypto.sign",
+      input: { data: "AQID" },
+    });
     bridge.handle({
       type: "kernel_result",
-      correlationId: loginCall.correlationId as string,
-      payload: { authenticated: true, setCookie: "opaque-header" },
+      correlationId: call.correlationId as string,
+      payload: { success: true, result: { signature: "signed" } },
     });
-    assertEquals(await loginPromise, {
-      authenticated: true,
-      setCookie: "opaque-header",
-    });
-
-    const logoutPromise = bridge.withRequest(
-      metadata,
-      () => kernel.auth.logoutCurrent(),
-    );
-    const logoutCall = await calls.next();
-    bridge.handle({
-      type: "kernel_result",
-      correlationId: logoutCall.correlationId as string,
-      payload: { setCookie: "cleared" },
-    });
-    assertEquals(await logoutPromise, { setCookie: "cleared" });
+    assertEquals(await pending, "signed");
   } finally {
     bridge.close();
     channel.port1.close();
@@ -114,38 +155,21 @@ Deno.test("typed kernel auth bridge correlates login and logout", async () => {
   }
 });
 
-Deno.test("current user uses only the exact asynchronous request context", async () => {
+Deno.test("authentication context is synchronous and never calls the kernel", () => {
   const channel = new MessageChannel();
-  const bridge = createKernelBridge(channel.port1);
-  const calls: unknown[] = [];
-  channel.port2.onmessage = (event) => calls.push(event.data);
-  channel.port2.start();
-  const authenticated: ServiceRequestMetadata = {
-    ...persistentMetadata,
-    auth: {
-      authenticated: true,
-      realm: "user",
-      userId: "user-1",
-      username: "Admin",
-      authVersion: 3,
-    },
-  };
+  const bridge = createKernelBridge(channel.port1, workerMetadata);
   try {
     assertEquals(
-      await bridge.withRequest(authenticated, () => kernel.auth.currentUser()),
-      { id: "user-1", username: "Admin", realm: "user" },
+      bridge.withRequest({
+        ...persistentMetadata,
+        auth: { authenticated: true },
+      }, () => context.authenticated),
+      true,
     );
     assertEquals(
-      await bridge.withRequest(metadata, () => kernel.auth.currentUser()),
-      undefined,
+      bridge.withRequest(metadata, () => context.authenticated),
+      false,
     );
-    await assertRejects(
-      () => kernel.auth.currentUser(),
-      Error,
-      "inside an execution",
-    );
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    assertEquals(calls, []);
   } finally {
     bridge.close();
     channel.port1.close();
@@ -155,7 +179,7 @@ Deno.test("current user uses only the exact asynchronous request context", async
 
 Deno.test("persistent completion and exact Worker calls use the generic bridge", async () => {
   const channel = new MessageChannel();
-  const bridge = createKernelBridge(channel.port1);
+  const bridge = createKernelBridge(channel.port1, workerMetadata);
   const calls = createCallQueue(channel.port2);
   try {
     const [completion, invocation] = bridge.withRequest(
@@ -205,7 +229,7 @@ Deno.test("persistent completion and exact Worker calls use the generic bridge",
 
 Deno.test("typed kernel admin bridge returns results and command errors", async () => {
   const channel = new MessageChannel();
-  const bridge = createKernelBridge(channel.port1);
+  const bridge = createKernelBridge(channel.port1, workerMetadata);
   const calls = createCallQueue(channel.port2);
   const authenticated: ServiceRequestMetadata = {
     ...persistentMetadata,
@@ -301,7 +325,7 @@ Deno.test("typed kernel admin bridge returns results and command errors", async 
 
 Deno.test("typed database bridge uses one execute operation", async () => {
   const channel = new MessageChannel();
-  const bridge = createKernelBridge(channel.port1);
+  const bridge = createKernelBridge(channel.port1, workerMetadata);
   const calls = createCallQueue(channel.port2);
   try {
     const query = bridge.withRequest(
@@ -396,7 +420,7 @@ Deno.test("typed database bridge uses one execute operation", async () => {
 
 Deno.test("interleaved asynchronous calls retain their exact request", async () => {
   const channel = new MessageChannel();
-  const bridge = createKernelBridge(channel.port1);
+  const bridge = createKernelBridge(channel.port1, workerMetadata);
   const calls = createCallQueue(channel.port2);
   let releaseFirst!: () => void;
   let releaseSecond!: () => void;
@@ -449,7 +473,7 @@ Deno.test("interleaved asynchronous calls retain their exact request", async () 
 
 Deno.test("overlapping persistent requests retain isolated immutable contexts", async () => {
   const channel = new MessageChannel();
-  const bridge = createKernelBridge(channel.port1);
+  const bridge = createKernelBridge(channel.port1, workerMetadata);
   const calls = createCallQueue(channel.port2);
   let resume!: () => void;
   const suspended = new Promise<void>((resolve) => resume = resolve);
@@ -477,6 +501,7 @@ Deno.test("overlapping persistent requests retain isolated immutable contexts", 
         requestId: "request-control",
         serviceId: "service-version-a",
         persistentExecutionId: "persistent-test",
+        user: workerMetadata.user,
       },
       () => kernel.admin.execute("service.inspect"),
     );
@@ -521,7 +546,7 @@ Deno.test("overlapping persistent requests retain isolated immutable contexts", 
 
 Deno.test("overlapping persistent database calls keep exact request scopes", async () => {
   const channel = new MessageChannel();
-  const bridge = createKernelBridge(channel.port1);
+  const bridge = createKernelBridge(channel.port1, workerMetadata);
   const calls = createCallQueue(channel.port2);
   const base: ServiceRequestMetadata = {
     ...persistentMetadata,
@@ -562,7 +587,7 @@ Deno.test("overlapping persistent database calls keep exact request scopes", asy
 
 Deno.test("request cancellation cancels its exact pending kernel call", async () => {
   const channel = new MessageChannel();
-  const bridge = createKernelBridge(channel.port1);
+  const bridge = createKernelBridge(channel.port1, workerMetadata);
   const calls = createCallQueue(channel.port2);
   const controller = new AbortController();
   try {
@@ -597,7 +622,7 @@ Deno.test("request cancellation cancels its exact pending kernel call", async ()
 
 Deno.test("typed secret and package APIs use private runtime operations", async () => {
   const channel = new MessageChannel();
-  const bridge = createKernelBridge(channel.port1);
+  const bridge = createKernelBridge(channel.port1, workerMetadata);
   const calls = createCallQueue(channel.port2);
   try {
     const authenticated: ServiceRequestMetadata = {
@@ -629,6 +654,40 @@ Deno.test("typed secret and package APIs use private runtime operations", async 
       });
       return await promise;
     };
+
+    assertEquals(
+      await respond(
+        inContext(() => kernel.events.emit("minute", { test: true })),
+        "event.emit",
+        { name: "minute", data: { test: true } },
+        { id: "event-1", listeners: 2 },
+      ),
+      { id: "event-1", listeners: 2 },
+    );
+    const programInput = {
+      programId: "acme/tools/report",
+      arguments: [{ day: 1 }],
+      username: "robot",
+      sandboxGroup: "batch",
+      timeoutMs: 300000,
+    };
+    const programResult = {
+      state: "failed",
+      failure: "example",
+      executionId: "job-1",
+      packageCommit: "abc",
+      result: null,
+      logs: [{ level: "error", message: "example" }],
+    };
+    assertEquals(
+      await respond(
+        inContext(() => kernel.programs.run(programInput)),
+        "program.run",
+        programInput,
+        programResult,
+      ),
+      programResult,
+    );
 
     assertEquals(
       await respond(
@@ -830,7 +889,7 @@ Deno.test("typed secret and package APIs use private runtime operations", async 
 
 Deno.test("Worker metadata and database info are available before execution", async () => {
   const channel = new MessageChannel();
-  const bridge = createKernelBridge(channel.port1, "postgresql");
+  const bridge = createKernelBridge(channel.port1, workerMetadata);
   const calls = createCallQueue(channel.port2);
   try {
     assertEquals(kernelDatabaseBackend(), "postgresql");
@@ -857,9 +916,77 @@ Deno.test("Worker metadata and database info are available before execution", as
     });
     assertEquals((await info).backend, "postgresql");
     await assertRejects(
-      () => kernel.auth.logoutCurrent(),
+      () => kernel.crypto.token.verify("invalid"),
       Error,
       "inside an execution",
+    );
+  } finally {
+    bridge.close();
+    channel.port1.close();
+    channel.port2.close();
+  }
+});
+
+Deno.test("execution context is immutable and isolated across requests", async () => {
+  const channel = new MessageChannel();
+  const bridge = createKernelBridge(channel.port1, workerMetadata);
+  const calls = createCallQueue(channel.port2);
+  try {
+    const values = await Promise.all([
+      bridge.withRequest(
+        {
+          ...metadata,
+          requestId: "request-alice",
+          user: { userId: "user:alice", username: "alice" },
+        },
+        async () => {
+          await Promise.resolve();
+          return context.current;
+        },
+      ),
+      bridge.withRequest(
+        {
+          ...metadata,
+          requestId: "request-bob",
+          user: { userId: "user:bob", username: "bob" },
+        },
+        async () => {
+          await Promise.resolve();
+          return context.current;
+        },
+      ),
+    ]);
+    assertEquals(values.map((value) => [value.username, value.requestId]), [
+      ["alice", "request-alice"],
+      ["bob", "request-bob"],
+    ]);
+    assertEquals(Object.isFrozen(values[0]), true);
+    assertEquals(Reflect.set(values[0], "username", "changed"), false);
+    assertEquals(values[0].username, "alice");
+    const mutableUser = { userId: "user:alice", username: "alice" };
+    const pending = bridge.withRequest(
+      { ...metadata, user: mutableUser },
+      () => {
+        mutableUser.username = "tampered";
+        assertEquals(context.username, "alice");
+        return kernel.admin.execute("kernel.status");
+      },
+    );
+    const call = await calls.next();
+    assertEquals(
+      (call.payload as { request: { user: unknown } }).request.user,
+      { userId: "user:alice", username: "alice" },
+    );
+    bridge.handle({
+      type: "kernel_result",
+      correlationId: call.correlationId as string,
+      payload: { protocol_version: 2, success: true, result: {} },
+    });
+    await pending;
+    await assertRejects(
+      () => Promise.resolve().then(() => context.current),
+      Error,
+      "inside an invocation",
     );
   } finally {
     bridge.close();

@@ -8,6 +8,7 @@
   },
   "imports": {
     "@std/assert": "jsr:@std/assert@1.0.14",
+    "@the8020/context": "./context/mod.ts",
     "@the8020/http": "./http/mod.ts",
     "@the8020/kernel": "./kernel/mod.ts",
     "@the8020/protocol": "../protocol/generated.ts",
@@ -16,7 +17,7 @@
     "zod": "npm:zod@4.1.5"
   },
   "tasks": {
-    "check": "deno fmt --check . ../protocol/generated.ts && deno lint . ../protocol/generated.ts && deno check supervisor/main.ts worker/runtime_worker_test.ts supervisor/supervisor_test.ts http/http_test.ts",
+    "check": "deno fmt --check . ../protocol/generated.ts && deno lint . ../protocol/generated.ts && deno check context/mod.ts supervisor/main.ts worker/runtime_worker_test.ts supervisor/supervisor_test.ts http/http_test.ts",
     "test": "deno test --unstable-worker-options --allow-read=.,../protocol --allow-net --allow-import ."
   }
 }

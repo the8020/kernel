@@ -16,7 +16,7 @@
 # Local Contracts
 
 - The authenticated lowercase alphanumeric `user_id` is the only control-plane
-  key. Authentication guarantees 3-32 characters. The runtime ID is exactly
+  key. The shared kernel principal contract guarantees 3-32 characters. The runtime ID is exactly
   `dev-<user_id>`; there are no workspace IDs, aliases, hashes, conversions, or
   compatibility paths.
 - Durable state is confined to `users/<username>/dev-sandbox/`: `sandbox.toml`,

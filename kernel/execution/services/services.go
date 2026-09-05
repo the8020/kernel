@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"the8020/kernel/execution"
 	"the8020/kernel/execution/coordinator"
 	executionprofile "the8020/kernel/execution/profile"
 	"the8020/kernel/execution/records"
@@ -34,7 +35,7 @@ type WorkerManager interface {
 	ConfigureService(context.Context, string, string, []string, int) error
 	ServiceOpenAPI(context.Context, string, string) (map[string]any, error)
 	DispatchService(context.Context, string, string, *http.Request) (*http.Response, error)
-	ProxyServiceWebSocket(context.Context, string, string, http.ResponseWriter, *http.Request) error
+	ProxyServiceWebSocket(context.Context, string, string, http.ResponseWriter, *http.Request, func(*http.Response) error) error
 }
 type Policy struct {
 	Strategy        model.GroupingStrategy
@@ -45,6 +46,7 @@ type Policy struct {
 	Logger          *slog.Logger
 }
 type Options struct {
+	User                 execution.User
 	GroupKey             string
 	Namespace            string
 	MinimumWorkers       int
@@ -61,12 +63,12 @@ type Options struct {
 	OpenAPI              supervisor.OpenAPIMetadata
 	ValidateEntrypoint   bool
 	SandboxIndex         int
-	DependencyMode       model.DependencyMode
 	ExecutionMode        string
 	TargetUtilization    float64
 	PlacementWorkers     int
 }
 type Record struct {
+	User                 execution.User               `json:"user"`
 	ServiceID            string                       `json:"service_id"`
 	Entrypoint           string                       `json:"entrypoint"`
 	RuntimeGroupID       string                       `json:"runtime_group_id,omitempty"`
@@ -134,7 +136,7 @@ type Manager struct {
 
 func New(groupCoordinator GroupCoordinator, workerManager WorkerManager, store *records.Store, policy Policy) (*Manager, error) {
 	if groupCoordinator == nil || workerManager == nil || store == nil {
-		return nil, errors.New("coordinator, Worker manager, and service store are required")
+		return nil, errors.New("coordinator, Worker manager, service store are required")
 	}
 	if policy.Strategy == "" {
 		policy.Strategy = model.GroupingOwner
@@ -172,11 +174,7 @@ func (m *Manager) Start(ctx context.Context, serviceID, entrypoint string, optio
 	if options.TargetUtilization <= 0 || options.TargetUtilization > 1 {
 		return Record{}, errors.New("service target utilization must be greater than zero and at most one")
 	}
-	baseProfile := m.policy.Profile
-	if options.DependencyMode != "" {
-		baseProfile.DependencyMode = options.DependencyMode
-	}
-	profile, err := executionprofile.ForWorkerWithWorkspace(baseProfile, options.Permissions, executionprofile.Workspace{Source: options.Workspace, OwnerID: serviceID, Writable: options.WorkspaceWritable}, m.policy.WorkspaceMounts)
+	profile, err := executionprofile.ForWorkerWithWorkspace(m.policy.Profile, options.Permissions, executionprofile.Workspace{Source: options.Workspace, OwnerID: serviceID, Writable: options.WorkspaceWritable}, m.policy.WorkspaceMounts)
 	if err != nil {
 		return Record{}, err
 	}
@@ -193,6 +191,9 @@ func (m *Manager) Start(ctx context.Context, serviceID, entrypoint string, optio
 		m.quarantineInvalidRecord(serviceID, loadErr)
 	}
 	minimum := options.MinimumWorkers
+	if !options.User.Valid() {
+		return Record{}, fmt.Errorf("%w: a valid username must be assigned", execution.ErrInvalidUser)
+	}
 	maximum := options.MaximumWorkers
 	concurrency := options.ConcurrencyPerWorker
 	placementWorkers := options.PlacementWorkers
@@ -206,6 +207,7 @@ func (m *Manager) Start(ctx context.Context, serviceID, entrypoint string, optio
 	if record.LogicalServiceID == "" {
 		record.LogicalServiceID = serviceID
 	}
+	record.User = options.User
 	if err := m.save(record); err != nil {
 		return Record{}, err
 	}
@@ -842,7 +844,7 @@ func (m *Manager) startWorker(ctx context.Context, record Record, permissions su
 	if err != nil {
 		return "", err
 	}
-	started, err := m.workers.Start(ctx, record.RuntimeGroupID, supervisor.StartWorkerRequest{Metadata: supervisor.ExecutionMetadata{WorkerID: workerID, ExecutionID: executionID, WorkloadType: model.WorkloadService, OwnerID: record.LogicalServiceID, WorkloadID: record.ServiceID, ReleaseID: record.ReleaseID, Entrypoint: record.Entrypoint, DebuggerName: "service:" + record.LogicalServiceID + ":" + executionID + ":" + workerID, ValidateEntrypoint: record.ValidateEntrypoint, Service: &supervisor.ServiceExecutionMetadata{ServiceID: record.LogicalServiceID, Generation: record.Generation, CanonicalBasePath: record.CanonicalBasePath, OpenAPI: record.OpenAPI, ExecutionMode: record.ExecutionMode}}, Permissions: permissions})
+	started, err := m.workers.Start(ctx, record.RuntimeGroupID, supervisor.StartWorkerRequest{Metadata: supervisor.ExecutionMetadata{WorkerID: workerID, ExecutionID: executionID, WorkloadType: model.WorkloadService, OwnerID: record.LogicalServiceID, WorkloadID: record.ServiceID, ReleaseID: record.ReleaseID, Entrypoint: record.Entrypoint, DebuggerName: "service:" + record.LogicalServiceID + ":" + executionID + ":" + workerID, ValidateEntrypoint: record.ValidateEntrypoint, User: record.User, Origin: execution.Origin{Type: execution.OriginService, ID: record.LogicalServiceID}, Service: &supervisor.ServiceExecutionMetadata{ServiceID: record.LogicalServiceID, Generation: record.Generation, CanonicalBasePath: record.CanonicalBasePath, OpenAPI: record.OpenAPI, ExecutionMode: record.ExecutionMode}}, Permissions: permissions})
 	if err != nil {
 		if supervisor.IsRequestRejected(err) {
 			return "", &invalidServiceDefinitionError{cause: err}
@@ -861,11 +863,6 @@ func (m *Manager) Dispatch(ctx context.Context, serviceID string, request *http.
 	response, err := m.workers.DispatchService(ctx, current.RuntimeGroupID, current.ServiceID, request)
 	if err != nil {
 		return nil, err
-	}
-	workerID := response.Header.Get("X-80-20-Runtime-Worker-ID")
-	response.Header.Del("X-80-20-Runtime-Worker-ID")
-	if workerID != "" {
-		response.Header.Set("X-80-20-Internal-Selected-Worker-ID", workerID)
 	}
 	return response, nil
 }
@@ -897,7 +894,7 @@ func (m *Manager) Capacity(ctx context.Context, serviceID string) (Record, error
 	return record, nil
 }
 
-func (m *Manager) ProxyWebSocket(ctx context.Context, serviceID string, writer http.ResponseWriter, request *http.Request) error {
+func (m *Manager) ProxyWebSocket(ctx context.Context, serviceID string, writer http.ResponseWriter, request *http.Request, modifyResponse func(*http.Response) error) error {
 	record, err := m.Inspect(serviceID)
 	if err != nil {
 		return err
@@ -905,7 +902,7 @@ func (m *Manager) ProxyWebSocket(ctx context.Context, serviceID string, writer h
 	if record.State != "READY" {
 		return errors.New("service sandbox pool is unavailable")
 	}
-	return m.workers.ProxyServiceWebSocket(ctx, record.RuntimeGroupID, record.ServiceID, writer, request)
+	return m.workers.ProxyServiceWebSocket(ctx, record.RuntimeGroupID, record.ServiceID, writer, request, modifyResponse)
 }
 
 // EnsureCapacity grows one sandbox-local pool up to the supplied allowance and

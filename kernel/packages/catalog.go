@@ -58,7 +58,7 @@ func (c *Catalog) ListPackages() ([]Package, error) {
 				if !item.Valid {
 					level = slog.LevelWarn
 				}
-				c.logger.Log(context.Background(), level, "package discovered", "package_id", item.ID, "path", item.Path, "valid", item.Valid, "service_count", item.ServiceCount, "validation_errors", item.ValidationErrors)
+				c.logger.Log(context.Background(), level, "package discovered", "package_id", item.ID, "path", item.Path, "valid", item.Valid, "validation_errors", item.ValidationErrors)
 			}
 		}
 	}
@@ -105,17 +105,7 @@ func (c *Catalog) inspectPackage(identity Identity) Package {
 			}
 			result.Description, result.DocumentationURL, result.License = manifest.Description, manifest.DocumentationURL, manifest.License
 		}
-		services, err := os.ReadDir(filepath.Join(root, "services"))
-		if err == nil {
-			for _, entry := range services {
-				if strings.HasPrefix(entry.Name(), ".") || (!entry.IsDir() && entry.Type()&os.ModeSymlink == 0) {
-					continue
-				}
-				if _, statErr := os.Lstat(filepath.Join(root, "services", entry.Name(), "service.toml")); statErr == nil {
-					result.ServiceCount++
-				}
-			}
-		}
+
 	}
 	result.Valid = len(result.ValidationErrors) == 0
 	return result

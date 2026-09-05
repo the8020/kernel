@@ -1,0 +1,24 @@
+version = 1
+id = "kernel.signing.replace"
+path = ["kernel.signing.replace"]
+summary = "Replace the deployment signing key"
+description = "Atomically persists and activates a supplied Ed25519 seed. Previous tokens become invalid immediately. A non-empty THE8020_SIGNING_KEY overrides this value at the next startup."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/system/signing/signing.go"
+symbol = "Replace"
+[[parameters]]
+name = "key"
+type = "string"
+required = true
+description = "Standard base64-encoded 32-byte Ed25519 seed."
+secret = true
+secret_prompt = "Signing key: "
+secret_stdin_option = "key-stdin"
+[[result]]
+name = "fingerprint"
+type = "string"
+
+[[examples]]
+command = "kernel.signing.replace --key-stdin"

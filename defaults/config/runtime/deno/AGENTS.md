@@ -1,7 +1,8 @@
 # Purpose
 
 - Implement the package-neutral supervisor, Worker bootstrap, HTTP framework,
-  and kernel SDK packaged in the service/job runtime image.
+  kernel SDK, and immutable execution-context SDK packaged in the service/job
+  runtime image.
 
 # Ownership
 
@@ -17,6 +18,9 @@
 - The supervisor never imports application entrypoints; `worker/bootstrap.ts`
   loads each entrypoint in a named Web Worker with explicit permissions.
 - Generic workload types are exactly `service` and `job`.
+- Ordered hook chains use the ordinary `worker/hook_dispatch.ts` job entrypoint
+  and share one invocation-local mutable object inside one Worker. Hook dispatch
+  has no separate supervisor protocol, sandbox, or permission model.
 - Service bodies use transferable streams with cancellation and backpressure.
   Stateless slots count active HTTP streams or WebSockets; persistent slots
   count logical execution bindings and target one exact Worker through opaque
@@ -25,11 +29,15 @@
   named functions are invocable; input/output are bounded JSON, function names
   are never interpreted by generic code, and arbitrary module exports or `eval`
   are forbidden.
-- `@the8020/kernel` exposes execution-scoped secure input, authentication/admin
-  capabilities, typed private package/domain operations, a unified database
-  bridge with scoped transactions, exact Worker invocation, and persistent
-  completion. The Worker bridge binds calls to trusted current request/execution
-  identity without cookies or route tokens.
+- `@the8020/kernel` exposes execution-scoped secure input, cryptographic/admin
+  capabilities, asynchronous local events, ordinary program invocation, typed
+  private package/domain operations, a unified database bridge with scoped
+  transactions, exact Worker invocation, and persistent completion. The Worker
+  bridge binds calls to trusted current request/execution identity without
+  cookies or route tokens.
+- `@the8020/context` exposes a frozen invocation-local snapshot of the validated
+  user, outer service/job/program origin, node, sandbox, Worker, execution, and
+  request identities. Package-local identities remain package-owned.
 - Current service metadata exposes package-neutral node, runtime-group, sandbox,
   Worker, and execution identity plus the kernel-observed client IP address and
   network scope. No application settings map is transported.
@@ -84,6 +92,7 @@
 # Child DOX Index
 
 - `http/AGENTS.md`: generic Hono/Zod HTTP and WebSocket service framework.
+- `context/AGENTS.md`: immutable package-facing execution context.
 - `kernel/AGENTS.md`: package-neutral Worker-to-kernel SDK and bridge.
 - `supervisor/AGENTS.md`: infrastructure control and Worker orchestration.
 - `worker/AGENTS.md`: common bootstrap and service/job contracts.

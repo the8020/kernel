@@ -504,20 +504,6 @@ func TestConversionsAndCrossValidation(t *testing.T) {
 	if _, err := manager.Set(context.Background(), "logging.max_file_size", "11GB"); err == nil {
 		t.Fatal("accepted file limit above total limit")
 	}
-	serviceDefaults := Values{
-		"services.default_minimum_workers": int64(1), "services.default_maximum_workers": int64(4),
-	}
-	if err := validateSnapshot(serviceDefaults); err != nil {
-		t.Fatalf("valid service defaults: %v", err)
-	}
-	serviceDefaults["services.default_minimum_workers"] = int64(5)
-	if err := validateSnapshot(serviceDefaults); err == nil || !strings.Contains(err.Error(), "greater than or equal") {
-		t.Fatalf("invalid service defaults error = %v", err)
-	}
-	serviceDefaults["services.default_maximum_workers"] = int64(0)
-	if err := validateSnapshot(serviceDefaults); err != nil {
-		t.Fatalf("unlimited service maximum rejected: %v", err)
-	}
 	databasePool := Values{
 		"database.maximum_open_connections": int64(32), "database.maximum_idle_connections": int64(8),
 	}

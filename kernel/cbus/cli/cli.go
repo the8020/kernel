@@ -527,7 +527,7 @@ func orderedSummaryKeys(values map[string]any) []string {
 		"session_id":   {"user_id", "state", "worker_id", "runtime_group_id", "failure"},
 		"execution_id": {"job_id", "state", "owner_id", "detached", "duration", "failure"},
 		"service_id":   {"description", "canonical_base_path", "state", "enabled", "version_count", "sandbox_count", "worker_count", "validation_error"},
-		"package_id":   {"description", "valid", "service_count", "validation_error"},
+		"package_id":   {"description", "valid", "validation_error"},
 		"lease_id":     {"protocol", "state", "bind_address", "host_port", "sandbox_id", "internal_port", "purpose", "expires_at"},
 		"id":           {"type", "title", "execution_id", "description"},
 		"profile_hash": {"desired_warm_count", "ready_warm_count", "creating_count", "reserved_count", "assigned_count", "failed_count", "replenish_count"},

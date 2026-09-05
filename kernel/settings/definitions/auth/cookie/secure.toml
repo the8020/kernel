@@ -1,8 +1,0 @@
-key = "auth.cookie.secure"
-type = "boolean"
-storage = "global"
-default = false
-environment = "THE8020_AUTH_COOKIE_SECURE"
-runtime_mutable = false
-restart_required = true
-description = "Always emit the authentication cookie with the Secure attribute."

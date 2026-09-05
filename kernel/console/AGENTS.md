@@ -15,8 +15,10 @@
 # Local Contracts
 
 - `/_the8020/console` is loopback-only through the main kernel listener and
-  requires the ordinary opaque authentication cookie and
+  requires a valid platform JWT and users-package session approval, plus the
   `the8020.console.v1` subprotocol.
+- JWT failure is rejected before an ordinary users-package validation job starts.
+  Selected invalid cookies are cleared with the common platform cookie scope.
 - Any authenticated user may currently open a console in any selected running
   runtime or development sandbox. Granular authorization is deferred to the
   full permission system.

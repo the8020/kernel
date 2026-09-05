@@ -83,20 +83,16 @@ type PackageVersions struct {
 }
 
 type PackageSynchronization struct {
-	PackageID         string   `json:"package_id"`
-	Source            string   `json:"source,omitempty"`
-	Requested         string   `json:"requested"`
-	PreviousCommit    string   `json:"previous_commit,omitempty"`
-	Commit            string   `json:"commit,omitempty"`
-	Changed           bool     `json:"changed"`
-	Cloned            bool     `json:"cloned"`
-	Local             bool     `json:"local"`
-	PreviousServices  []string `json:"-"`
-	Services          []string `json:"services"`
-	RestartedServices []string `json:"restarted_services,omitempty"`
-	RetiredServices   []string `json:"retired_services,omitempty"`
-	Success           bool     `json:"success"`
-	Error             string   `json:"error,omitempty"`
+	PackageID      string `json:"package_id"`
+	Source         string `json:"source,omitempty"`
+	Requested      string `json:"requested"`
+	PreviousCommit string `json:"previous_commit,omitempty"`
+	Commit         string `json:"commit,omitempty"`
+	Changed        bool   `json:"changed"`
+	Cloned         bool   `json:"cloned"`
+	Local          bool   `json:"local"`
+	Success        bool   `json:"success"`
+	Error          string `json:"error,omitempty"`
 }
 
 type LocalPackage struct {
@@ -350,14 +346,12 @@ func (s *Store) synchronizePackage(ctx context.Context, packageID, transientToke
 		if err != nil {
 			return result, err
 		}
-		result.PreviousServices, _ = serviceIDsAt(destination, packageID)
 	}
 	if entry.Local {
 		if !exists {
 			return result, errors.New("local package repository does not exist")
 		}
 		result.Commit = result.PreviousCommit
-		result.Services = append([]string(nil), result.PreviousServices...)
 		return result, nil
 	}
 	identity, _ := ParsePackageID(packageID)
@@ -389,10 +383,6 @@ func (s *Store) synchronizePackage(ctx context.Context, packageID, transientToke
 		return result, err
 	}
 	result.Commit = commit
-	result.Services, err = serviceIDsAt(stage, packageID)
-	if err != nil {
-		return result, err
-	}
 	if exists && result.PreviousCommit == result.Commit && entry.State == "ready" && entry.ActiveCommit == result.Commit {
 		if output, commandErr := s.runGit(ctx, destination, nil, "remote", "set-url", "origin", entry.Source); commandErr != nil {
 			return result, fmt.Errorf("update package remote: %w: %s", commandErr, cleanGitOutput(output))
@@ -778,28 +768,6 @@ func validateStagedPackage(root string) error {
 		return errors.New("synchronized package manifest description is required")
 	}
 	return nil
-}
-
-func serviceIDsAt(root, packageID string) ([]string, error) {
-	directory := filepath.Join(root, "services")
-	entries, err := os.ReadDir(directory)
-	if errors.Is(err, os.ErrNotExist) {
-		return []string{}, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	result := []string{}
-	for _, entry := range entries {
-		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") || ValidateName(entry.Name()) != nil {
-			continue
-		}
-		if info, statErr := os.Lstat(filepath.Join(directory, entry.Name(), "service.toml")); statErr == nil && info.Mode().IsRegular() {
-			result = append(result, packageID+"/"+entry.Name())
-		}
-	}
-	sort.Strings(result)
-	return result, nil
 }
 
 func (s *Store) lockPackage(ctx context.Context, packageID string) (func(), error) {

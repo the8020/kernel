@@ -13,8 +13,13 @@ export interface RequestMetadata {
   persistentExecutionId?: string;
   persistentKeepAliveMilliseconds?: number;
   execution: CurrentExecutionMetadata;
+  user: ExecutionUserMetadata;
   auth: AuthContext;
-  authenticatedUser?: string;
+}
+
+export interface ExecutionUserMetadata {
+  userId: string;
+  username: string;
 }
 
 export interface ClientConnectionMetadata {
@@ -36,7 +41,6 @@ export interface AuthContext {
   realm?: "user";
   userId?: string;
   username?: string;
-  authVersion?: number;
 }
 
 export interface RuntimeServiceContext {
@@ -323,7 +327,7 @@ class Service implements ServiceBuilder {
         return Promise.resolve(
           new Response(null, {
             status: 204,
-            headers: { "x-80-20-websocket-accepted": "true" },
+            headers: { "the8020-internal-websocket-accepted": "true" },
           }),
         );
       };

@@ -48,6 +48,25 @@ type Store interface {
 	BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
 }
 
+// RelationExists checks whether a table/view name exists without reading its
+// rows. Catalog lookup failures are errors, never evidence of absence.
+func RelationExists(ctx context.Context, store Store, name string) (bool, error) {
+	statement := `SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE name = $1 AND type IN ('table', 'view'))`
+	parameter := name
+	switch store.Backend() {
+	case BackendSQLite:
+	case BackendPostgreSQL:
+		// pg_catalog does not hide relations just because SELECT is denied.
+		statement = `SELECT to_regclass($1) IS NOT NULL`
+		parameter = quoteIdentifier(name)
+	default:
+		return false, fmt.Errorf("unsupported database backend %q", store.Backend())
+	}
+	var exists bool
+	err := store.QueryRowContext(ctx, statement, parameter).Scan(&exists)
+	return exists, err
+}
+
 // Backend reports the configured non-secret SQL dialect.
 func (m *Manager) Backend() string {
 	if m == nil {

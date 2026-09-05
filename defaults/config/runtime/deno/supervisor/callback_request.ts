@@ -55,53 +55,31 @@ export function kernelCallbackRequest(
           }),
           function: call.arguments.function,
           input: call.arguments.input,
+          user: call.user,
           ...identity,
         },
       };
     case "execution.completePersistent":
-      return {
-        path: "/v1/runtime/execution/complete",
-        messageType: "persistent_execution_complete",
-        responseMessageType: "persistent_execution_completed",
-        payload: {
-          ...identity,
-          service_id: call.serviceId,
-          persistent_execution_id: call.persistentExecutionId,
-        },
-      };
+      throw new Error("persistent completion belongs to the local supervisor");
     case "admin.execute":
       return {
         path: "/v1/runtime/admin/execute",
         messageType: "admin_command",
         responseMessageType: "admin_result",
-        payload: { ...call.arguments, ...identity },
+        payload: { ...call.arguments, user: call.user, ...identity },
       };
     case "runtime.operation":
       return {
         path: "/v1/runtime/operation/execute",
         messageType: "admin_command",
         responseMessageType: "admin_result",
-        payload: { ...call.arguments, ...identity },
+        payload: { ...call.arguments, user: call.user, ...identity },
       };
     case "database.execute":
       return {
         path: "/v1/runtime/database/execute",
         messageType: "database_execute",
         responseMessageType: "database_result",
-        payload: { ...call.arguments, ...identity },
-      };
-    case "auth.login":
-      return {
-        path: "/v1/runtime/auth/login",
-        messageType: "auth_login",
-        responseMessageType: "auth_result",
-        payload: { ...call.arguments, ...identity },
-      };
-    case "auth.logoutCurrent":
-      return {
-        path: "/v1/runtime/auth/logout-current",
-        messageType: "auth_logout_current",
-        responseMessageType: "auth_result",
         payload: { ...call.arguments, ...identity },
       };
   }

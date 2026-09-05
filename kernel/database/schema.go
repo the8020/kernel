@@ -617,6 +617,11 @@ func (m *Manager) InitializeCatalog(ctx context.Context) (Status, error) {
 	m.status.State = StateInitializing
 	m.status.Error = ""
 	m.statusMu.Unlock()
+	exists, err := RelationExists(ctx, m, "_8020_catalog")
+	if err != nil {
+		m.setCatalogFailure(err)
+		return m.Status(), err
+	}
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		m.setCatalogFailure(err)
@@ -627,23 +632,25 @@ func (m *Manager) InitializeCatalog(ctx context.Context) (Status, error) {
 		m.setCatalogFailure(err)
 		return m.Status(), err
 	}
-	for _, statement := range catalogStatements(m.status.Backend) {
-		if _, err := tx.ExecContext(ctx, statement); err != nil {
-			failure := fmt.Errorf("initialize database catalog: %w", err)
-			m.setCatalogFailure(failure)
-			return m.Status(), failure
+	if !exists {
+		for _, statement := range catalogStatements(m.status.Backend) {
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				failure := fmt.Errorf("initialize database catalog: %w", err)
+				m.setCatalogFailure(failure)
+				return m.Status(), failure
+			}
 		}
-	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	emptyPackages := map[string]string{}
-	emptyPackagesJSON, _ := json.Marshal(emptyPackages)
-	if _, err := tx.ExecContext(ctx, `INSERT INTO _8020_catalog
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		emptyPackages := map[string]string{}
+		emptyPackagesJSON, _ := json.Marshal(emptyPackages)
+		if _, err := tx.ExecContext(ctx, `INSERT INTO _8020_catalog
 		(catalog_id, catalog_version, initialized, package_set_hash, package_set_json, descriptor_set_hash,
 		created_at, initialized_at, updated_at, last_error, last_deployment_at, last_deployment_error)
 		VALUES ('system', $1, 0, $2, $3, '', $4, '', $4, '', '', '') ON CONFLICT (catalog_id) DO NOTHING`,
-		catalogVersion, PackageSetHash(emptyPackages), string(emptyPackagesJSON), now); err != nil {
-		m.setCatalogFailure(err)
-		return m.Status(), err
+			catalogVersion, PackageSetHash(emptyPackages), string(emptyPackagesJSON), now); err != nil {
+			m.setCatalogFailure(err)
+			return m.Status(), err
+		}
 	}
 	var version int
 	var initialized int

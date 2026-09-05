@@ -12,6 +12,7 @@ import (
 	"the8020/kernel/database"
 	"the8020/kernel/debugging"
 	"the8020/kernel/development"
+	"the8020/kernel/events"
 	"the8020/kernel/execution/adminrun"
 	"the8020/kernel/execution/groups"
 	"the8020/kernel/execution/jobs"
@@ -49,7 +50,7 @@ type Services struct {
 	Nodes             *nodes.Manager
 	Logging           *logging.Manager
 	Lifecycle         *lifecycle.Manager
-	Auth              AuthService
+	Signing           *auth.Signer
 	Secrets           SecretService
 	Instance          InstanceInfo
 	Runtime           *RuntimeServices
@@ -67,7 +68,6 @@ type Services struct {
 type PlatformServices struct {
 	Network     *network.Manager
 	Nodes       *nodes.Manager
-	Auth        AuthService
 	Secrets     SecretService
 	Packages    PackageService
 	Development DevelopmentService
@@ -80,7 +80,6 @@ func (s *Services) PublishPlatform(platform PlatformServices) {
 	s.platformMu.Lock()
 	s.Network = platform.Network
 	s.Nodes = platform.Nodes
-	s.Auth = platform.Auth
 	s.Secrets = platform.Secrets
 	s.Packages = platform.Packages
 	s.Development = platform.Development
@@ -95,7 +94,7 @@ func (s *Services) PlatformSnapshot() PlatformServices {
 	s.platformMu.RLock()
 	defer s.platformMu.RUnlock()
 	return PlatformServices{
-		Network: s.Network, Nodes: s.Nodes, Auth: s.Auth, Secrets: s.Secrets,
+		Network: s.Network, Nodes: s.Nodes, Secrets: s.Secrets,
 		Packages: s.Packages, Development: s.Development,
 	}
 }
@@ -141,15 +140,6 @@ type SecretService interface {
 	List() ([]secrets.Summary, error)
 	Get(string) (secrets.Secret, error)
 	Set(context.Context, string, string) (secrets.Summary, error)
-}
-
-// AuthService is the handler- and runtime-facing user authentication
-// contract. It deliberately exposes summaries and opaque cookie headers only.
-type AuthService interface {
-	CookieName() string
-	Login(context.Context, string, string, bool) (auth.LoginResult, error)
-	ValidateCookieContext(context.Context, string) (auth.AuthContext, error)
-	LogoutCurrentContext(context.Context, auth.AuthContext, bool) (auth.LogoutResult, error)
 }
 
 // SandboxService is the handler-facing sandbox lifecycle contract.
@@ -225,13 +215,8 @@ type DevelopmentService interface {
 // WebServiceService is the handler-facing service lifecycle and
 // canonical request contract.
 type WebServiceService interface {
-	Start(context.Context, string) (webservices.Status, error)
-	Stop(context.Context, string) (webservices.Status, error)
-	Restart(context.Context, string) (webservices.Status, error)
-	Reload(context.Context, string) (webservices.Status, error)
 	Reconcile(context.Context, string) (webservices.Status, error)
 	Retire(context.Context, string) error
-	Scale(context.Context, string, webservices.ScaleOptions) (webservices.Status, error)
 	List() ([]webservices.Status, error)
 	Inspect(string) (webservices.Status, error)
 	Validate(context.Context, string) webservices.ValidationResult
@@ -277,30 +262,32 @@ type AdminRunService interface {
 // RuntimeServices is the typed Phase 1B dependency set. Doctor remains
 // available when host runtime initialization fails; lifecycle services are nil.
 type RuntimeServices struct {
-	Versions        runtimehost.Versions
-	Doctor          *runtimehost.Doctor
-	RootlessDoctor  *runtimehost.RootlessDoctor
-	Isolation       runtimehost.IsolationReport
-	Failure         string
-	Sandboxes       SandboxService
-	Workers         WorkerService
-	Services        WebServiceService
-	Jobs            JobService
-	Programs        *programrunner.Runner
-	ReindexCommands func(context.Context) (core.Result, error)
-	Ports           PortService
-	Debugging       DebugService
-	Pool            PoolService
-	AdminRun        AdminRunService
+	Versions       runtimehost.Versions
+	Doctor         *runtimehost.Doctor
+	RootlessDoctor *runtimehost.RootlessDoctor
+	Isolation      runtimehost.IsolationReport
+	Failure        string
+	Sandboxes      SandboxService
+	Workers        WorkerService
+	Services       WebServiceService
+	Jobs           JobService
+	Programs       *programrunner.Runner
+	Events         *events.Manager
+	ListPrograms   func(context.Context) ([]workspacepackages.ProgramDefinition, error)
+	Reindex        func(context.Context, []string) (core.Result, error)
+	Ports          PortService
+	Debugging      DebugService
+	Pool           PoolService
+	AdminRun       AdminRunService
 }
 
 // New constructs the dependency container without adding lookup behavior.
-func New(settingManager *settings.Manager, networkManager *network.Manager, loggingManager *logging.Manager, lifecycleManager *lifecycle.Manager, authService AuthService, packageService PackageService, developmentService DevelopmentService, uuid string, paths instance.Paths, startedAt time.Time, buildID string, runtimeServices ...*RuntimeServices) *Services {
+func New(settingManager *settings.Manager, networkManager *network.Manager, loggingManager *logging.Manager, lifecycleManager *lifecycle.Manager, signer *auth.Signer, packageService PackageService, developmentService DevelopmentService, uuid string, paths instance.Paths, startedAt time.Time, buildID string, runtimeServices ...*RuntimeServices) *Services {
 	var phase1B *RuntimeServices
 	if len(runtimeServices) > 0 {
 		phase1B = runtimeServices[0]
 	}
-	serviceSet := &Services{Settings: settingManager, Network: networkManager, Logging: loggingManager, Lifecycle: lifecycleManager, Auth: authService, Packages: packageService, Development: developmentService, Runtime: phase1B, Instance: InstanceInfo{UUID: uuid, PID: os.Getpid(), Paths: paths, StartedAt: startedAt, BuildID: buildID}}
+	serviceSet := &Services{Settings: settingManager, Network: networkManager, Logging: loggingManager, Lifecycle: lifecycleManager, Signing: signer, Packages: packageService, Development: developmentService, Runtime: phase1B, Instance: InstanceInfo{UUID: uuid, PID: os.Getpid(), Paths: paths, StartedAt: startedAt, BuildID: buildID}}
 	if management, ok := packageService.(PackageManagementService); ok {
 		serviceSet.PackageManagement = management
 	}

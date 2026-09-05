@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"the8020/kernel/execution"
 	"the8020/kernel/execution/supervisor"
 	"the8020/kernel/nodes"
 	"the8020/kernel/sandbox/manager"
@@ -66,8 +67,17 @@ type fakeControl struct {
 	persistentID string
 	function     string
 	input        any
+	user         execution.User
 	invoke       supervisor.WorkerInvocationResult
 	invokeErr    error
+}
+
+func jobMetadata(workerID, executionID string) supervisor.ExecutionMetadata {
+	return supervisor.ExecutionMetadata{
+		WorkerID: workerID, ExecutionID: executionID, WorkloadType: model.WorkloadJob,
+		OwnerID: "job", Entrypoint: "file:///programs/main.ts",
+		User: execution.SystemUser(), Origin: execution.Origin{Type: execution.OriginJob, ID: "job"},
+	}
 }
 
 func (f *fakeControl) Workers(_ context.Context, spec model.SandboxSpec) ([]supervisor.WorkerStatus, error) {
@@ -83,8 +93,8 @@ func (f *fakeControl) StopWorker(_ context.Context, spec model.SandboxSpec, _ st
 	f.stoppedIn = spec.RuntimeGroupID
 	return nil
 }
-func (f *fakeControl) InvokeWorker(_ context.Context, spec model.SandboxSpec, workerID, persistentID, function string, input any) (supervisor.WorkerInvocationResult, error) {
-	f.invokedIn, f.invokedID, f.persistentID, f.function, f.input = spec, workerID, persistentID, function, input
+func (f *fakeControl) InvokeWorker(_ context.Context, spec model.SandboxSpec, workerID, persistentID, function string, input any, user execution.User) (supervisor.WorkerInvocationResult, error) {
+	f.invokedIn, f.invokedID, f.persistentID, f.function, f.input, f.user = spec, workerID, persistentID, function, input, user
 	if f.invokeErr != nil {
 		return supervisor.WorkerInvocationResult{}, f.invokeErr
 	}
@@ -105,7 +115,7 @@ func (f *fakeControl) ServiceOpenAPI(context.Context, model.SandboxSpec, string)
 func (f *fakeControl) DispatchService(context.Context, model.SandboxSpec, string, *http.Request) (*http.Response, error) {
 	return nil, nil
 }
-func (f *fakeControl) ProxyServiceWebSocket(context.Context, model.SandboxSpec, string, http.ResponseWriter, *http.Request) error {
+func (f *fakeControl) ProxyServiceWebSocket(context.Context, model.SandboxSpec, string, http.ResponseWriter, *http.Request, func(*http.Response) error) error {
 	return nil
 }
 func TestWorkerValidationLookupAndTermination(t *testing.T) {
@@ -116,7 +126,7 @@ func TestWorkerValidationLookupAndTermination(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := supervisor.StartWorkerRequest{Metadata: supervisor.ExecutionMetadata{WorkerID: "new-worker", ExecutionID: "new-execution", WorkloadType: model.WorkloadJob, OwnerID: "job", Entrypoint: "file:///programs/main.ts"}, Permissions: supervisor.WorkerPermissions{Read: []string{"/programs/module"}, Write: []string{"/data/file"}, Sys: []string{"hostname"}}}
+	request := supervisor.StartWorkerRequest{Metadata: jobMetadata("new-worker", "new-execution"), Permissions: supervisor.WorkerPermissions{Read: []string{"/programs/module"}, Write: []string{"/data/file"}, Sys: []string{"hostname"}}}
 	started, err := manager.Start(context.Background(), "group", request)
 	if err != nil {
 		t.Fatal(err)
@@ -204,7 +214,7 @@ func TestWorkerStartEnforcesNodeMaximum(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := supervisor.StartWorkerRequest{Metadata: supervisor.ExecutionMetadata{WorkerID: "next", ExecutionID: "execution", WorkloadType: model.WorkloadJob, OwnerID: "job", Entrypoint: "file:///programs/main.ts"}}
+	request := supervisor.StartWorkerRequest{Metadata: jobMetadata("next", "execution")}
 	if _, err := manager.Start(context.Background(), "group", request); err == nil || !strings.Contains(err.Error(), "Worker capacity") {
 		t.Fatalf("start error=%v", err)
 	} else if !errors.Is(err, ErrNodeCapacity) {
@@ -213,7 +223,7 @@ func TestWorkerStartEnforcesNodeMaximum(t *testing.T) {
 }
 
 func TestWorkerStartEnforcesSandboxWorkerMaximum(t *testing.T) {
-	request := supervisor.StartWorkerRequest{Metadata: supervisor.ExecutionMetadata{WorkerID: "next", ExecutionID: "execution", WorkloadType: model.WorkloadJob, OwnerID: "job", Entrypoint: "file:///programs/main.ts"}}
+	request := supervisor.StartWorkerRequest{Metadata: jobMetadata("next", "execution")}
 	spec := model.SandboxSpec{SandboxID: "sandbox", RuntimeGroupID: "group", WorkloadType: model.WorkloadJob, DependencyMode: model.DependencyCachedOnly, Permissions: model.Permissions{ReadPaths: []string{"/programs"}}}
 	sandboxes := &fakeSandboxes{items: []manager.Inspection{{Spec: spec, Workers: []supervisor.WorkerStatus{{WorkerID: "first"}, {WorkerID: "second"}}}}}
 	control := &fakeControl{workers: map[string][]supervisor.WorkerStatus{"group": {{WorkerID: "first"}, {WorkerID: "second"}}}}
@@ -236,7 +246,7 @@ func TestSuccessfulWorkerReservationPersistsUntilANewerSnapshotObservesIt(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := supervisor.StartWorkerRequest{Metadata: supervisor.ExecutionMetadata{WorkerID: "first", ExecutionID: "execution-first", WorkloadType: model.WorkloadJob, OwnerID: "job", Entrypoint: "file:///programs/main.ts"}}
+	request := supervisor.StartWorkerRequest{Metadata: jobMetadata("first", "execution-first")}
 	if _, err := workerManager.Start(context.Background(), spec.RuntimeGroupID, request); err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +272,7 @@ func TestResourceObservationsDoNotRejectWorkerAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := supervisor.StartWorkerRequest{Metadata: supervisor.ExecutionMetadata{WorkerID: "first", ExecutionID: "execution", WorkloadType: model.WorkloadJob, OwnerID: "job", Entrypoint: "file:///programs/main.ts"}}
+	request := supervisor.StartWorkerRequest{Metadata: jobMetadata("first", "execution")}
 	if _, err := manager.Start(context.Background(), "group", request); err != nil {
 		t.Fatalf("resource observations rejected Worker admission: %v", err)
 	}
@@ -298,7 +308,7 @@ func TestWorkerInvocationTargetsOneExactLocalWorker(t *testing.T) {
 	manager, _ := New(&fakeSandboxes{items: []manager.Inspection{{Spec: spec}}}, control, 0, 64, "sqlite")
 	router := &fakeNodeRouter{local: "node-a"}
 	manager.SetNodeRouter(router)
-	input := nodes.WorkerInvocationRequest{NodeID: "node-a", SandboxID: "sandbox-a", WorkerID: "worker-a", Function: "example.inspect", Input: map[string]any{"id": float64(7)}}
+	input := nodes.WorkerInvocationRequest{NodeID: "node-a", SandboxID: "sandbox-a", WorkerID: "worker-a", Function: "example.inspect", Input: map[string]any{"id": float64(7)}, User: execution.SystemUser()}
 	result := manager.InvokeWorker(context.Background(), input)
 	if !result.OK || result.Output != "controlled" || control.invokedIn.SandboxID != "sandbox-a" || control.invokedID != "worker-a" || control.function != "example.inspect" {
 		t.Fatalf("result=%#v control=%#v", result, control)
@@ -328,7 +338,7 @@ func TestWorkerInvocationRejectsMismatchedExactTarget(t *testing.T) {
 	control := &fakeControl{}
 	manager, _ := New(&fakeSandboxes{items: []manager.Inspection{{Spec: spec}}}, control, 0, 64, "sqlite")
 	manager.SetNodeRouter(&fakeNodeRouter{local: "node-a"})
-	base := nodes.WorkerInvocationRequest{NodeID: "node-a", SandboxID: "sandbox-a", WorkerID: "worker-a", Function: "example.inspect", Input: nil}
+	base := nodes.WorkerInvocationRequest{NodeID: "node-a", SandboxID: "sandbox-a", WorkerID: "worker-a", Function: "example.inspect", Input: nil, User: execution.SystemUser()}
 
 	nodeMismatch := base
 	nodeMismatch.NodeID = "node-b"
@@ -360,9 +370,14 @@ func TestWorkerInvocationForwardsOnlyToNamedRemoteNode(t *testing.T) {
 	manager, _ := New(&fakeSandboxes{}, control, 0, 64, "sqlite")
 	router := &fakeNodeRouter{local: "node-a", result: nodes.WorkerInvocationResult{OK: true, Output: "remote"}}
 	manager.SetNodeRouter(router)
-	input := nodes.WorkerInvocationRequest{NodeID: "node-b", SandboxID: "sandbox-b", WorkerID: "worker-b", Function: "example.inspect", Input: map[string]any{"value": "opaque"}}
+	input := nodes.WorkerInvocationRequest{NodeID: "node-b", SandboxID: "sandbox-b", WorkerID: "worker-b", Function: "example.inspect", Input: map[string]any{"value": "opaque"}, User: execution.SystemUser()}
 	result := manager.InvokeWorker(context.Background(), input)
 	if !result.OK || result.Output != "remote" || len(router.forwarded) != 1 || router.forwarded[0].WorkerID != "worker-b" || control.invokedID != "" {
 		t.Fatalf("result=%#v forwarded=%#v control=%#v", result, router.forwarded, control)
+	}
+	input.User = execution.User{}
+	result = manager.InvokeWorker(context.Background(), input)
+	if result.Error == nil || result.Error.Code != "invalid_request" || len(router.forwarded) != 1 {
+		t.Fatalf("missing execution user forwarded: %#v", result)
 	}
 }

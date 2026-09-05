@@ -57,7 +57,7 @@ BASE_DIGEST=$(toml_value deno base_image_digest)
 NAMESPACE="the8020-$INSTANCE_UUID"
 
 SOURCE_HASH=$(
-  find "$RUNTIME_SOURCE/deno/supervisor" "$RUNTIME_SOURCE/deno/worker" "$RUNTIME_SOURCE/deno/kernel" "$RUNTIME_SOURCE/deno/http" -maxdepth 1 -type f \( -name '*.ts' -o -name '*.d.ts' \) ! -name '*_test.ts' -print0 | sort -z | xargs -0 sha256sum
+  find "$RUNTIME_SOURCE/deno/supervisor" "$RUNTIME_SOURCE/deno/worker" "$RUNTIME_SOURCE/deno/kernel" "$RUNTIME_SOURCE/deno/context" "$RUNTIME_SOURCE/deno/http" -maxdepth 1 -type f \( -name '*.ts' -o -name '*.d.ts' \) ! -name '*_test.ts' -print0 | sort -z | xargs -0 sha256sum
   sha256sum "$RUNTIME_SOURCE/deno/deno.json" "$RUNTIME_SOURCE/deno/deno.lock" "$MANIFEST" "$IMAGE_DEFINITION/Containerfile" "$IMAGE_DEFINITION/build.sh" "$IMAGE_DEFINITION/deno.json" "$IMAGE_DEFINITION/deno.lock" "$RUNTIME_SOURCE/build-image.sh" "$RUNTIME_SOURCE/stage-service-runtime.sh" "$RUNTIME_SOURCE/bundle-runtime.sh" "$RUNTIME_SOURCE/protocol/generated.ts"
   printf '%s\n' "$BASE_MANIFEST"
 )

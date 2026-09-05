@@ -1,24 +1,25 @@
-export interface LoginInput {
-  username: string;
-  password: string;
-}
+export type {
+  ServiceConfiguration,
+  ServiceIndexScope,
+  ServiceIndexState,
+  ServiceSpecification,
+} from "./services.ts";
+import type {
+  EventReceipt,
+  ProgramRun,
+  ProgramRunInput,
+  ProgramSummary,
+} from "./programs.ts";
+export type {
+  EventReceipt,
+  PackageEvent,
+  ProgramRun,
+  ProgramRunInput,
+  ProgramSummary,
+} from "./programs.ts";
 
-export interface User {
-  id: string;
-  username: string;
-  realm: "user";
-}
-
-export interface LoginResult {
-  authenticated: boolean;
-  user?: User;
-  setCookie?: string;
-  error?: "invalid_credentials" | "disabled" | "internal_error";
-}
-
-export interface LogoutResult {
-  setCookie: string;
-}
+// The signing key stays in the kernel. Claim meanings belong to callers.
+export type TokenClaims = Readonly<Record<string, unknown>>;
 
 export interface SecretSummary {
   name: string;
@@ -315,9 +316,6 @@ export interface DatabaseSynchronizationResult {
 }
 
 export type KernelOperation =
-  | "auth.currentUser"
-  | "auth.login"
-  | "auth.logoutCurrent"
   | "admin.execute"
   | "runtime.operation"
   | "database.info"
@@ -581,26 +579,17 @@ function settingOperations(scope: "global" | "node") {
 }
 
 export const kernel = Object.freeze({
-  auth: Object.freeze({
-    currentUser(): Promise<User | undefined> {
-      return invoke<User | undefined>("auth.currentUser", {});
+  programs: Object.freeze({
+    list(): Promise<ProgramSummary[]> {
+      return executeRuntimeOperation("program.list");
     },
-    login(input: LoginInput): Promise<LoginResult> {
-      if (
-        input === null || typeof input !== "object" ||
-        typeof input.username !== "string" || typeof input.password !== "string"
-      ) {
-        return Promise.reject(
-          new TypeError("username and password are required"),
-        );
-      }
-      return invoke<LoginResult>("auth.login", {
-        username: input.username,
-        password: input.password,
-      });
+    run(input: ProgramRunInput): Promise<ProgramRun> {
+      return executeRuntimeOperation("program.run", { ...input });
     },
-    logoutCurrent(): Promise<LogoutResult> {
-      return invoke<LogoutResult>("auth.logoutCurrent", {});
+  }),
+  events: Object.freeze({
+    emit(name: string, data: unknown = null): Promise<EventReceipt> {
+      return executeRuntimeOperation("event.emit", { name, data });
     },
   }),
   worker: Object.freeze({
@@ -635,16 +624,25 @@ export const kernel = Object.freeze({
     },
   }),
   crypto: Object.freeze({
-    password: Object.freeze({
-      async hash(password: string): Promise<string> {
-        if (typeof password !== "string") {
-          throw new TypeError("password must be a string");
-        }
-        return await runtimeOperationField<string>(
-          "crypto.password.hash",
-          { password },
-          "hash",
-        );
+    sign(data: Uint8Array): Promise<string> {
+      return runtimeOperationField(
+        "crypto.sign",
+        { data: data.toBase64() },
+        "signature",
+      );
+    },
+    verify(data: Uint8Array, signature: string): Promise<boolean> {
+      return runtimeOperationField("crypto.verify", {
+        data: data.toBase64(),
+        signature,
+      }, "valid");
+    },
+    token: Object.freeze({
+      sign(claims: TokenClaims): Promise<string> {
+        return runtimeOperationField("crypto.token.sign", { claims }, "token");
+      },
+      verify(token: string): Promise<TokenClaims | null> {
+        return executeRuntimeOperation("crypto.token.verify", { token });
       },
     }),
   }),
@@ -669,30 +667,6 @@ export const kernel = Object.freeze({
         { service_id: serviceId },
         "service",
       );
-    },
-    start(serviceId: string, detail = false): Promise<Record<string, unknown>> {
-      return executeRuntimeOperation("service.start", {
-        service_id: serviceId,
-        detail,
-      });
-    },
-    stop(serviceId: string, detail = false): Promise<Record<string, unknown>> {
-      return executeRuntimeOperation("service.stop", {
-        service_id: serviceId,
-        detail,
-      });
-    },
-    restart(
-      serviceId: string,
-      detail = false,
-    ): Promise<Record<string, unknown>> {
-      return executeRuntimeOperation("service.restart", {
-        service_id: serviceId,
-        detail,
-      });
-    },
-    scale(input: Record<string, unknown>): Promise<Record<string, unknown>> {
-      return executeRuntimeOperation("service.scale", input);
     },
     validate(serviceId: string): Promise<Record<string, unknown>> {
       return executeRuntimeOperation("service.validate", {
@@ -790,7 +764,12 @@ export const kernel = Object.freeze({
     },
     transaction: Object.freeze({
       begin(
-        settings: { isolationLevel?: string; readOnly?: boolean } = {},
+        settings: {
+          isolationLevel?: string;
+          readOnly?: boolean;
+          timeoutMs?: number;
+          lockTimeoutMs?: number;
+        } = {},
       ): Promise<{ transaction: string }> {
         return invoke("database.transaction.begin", { settings });
       },

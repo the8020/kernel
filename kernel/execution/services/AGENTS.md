@@ -13,6 +13,10 @@
 
 # Local Contracts
 
+- Services inherit dependency and egress policy from the ordinary runtime profile.
+  Never add a hidden service-specific cache-only override or an authentication
+  dependency preload path; dynamic package imports use that same profile.
+
 - A typed terminal-runtime failure marks the affected pool `FAILED` and
   `runtime_unavailable` without probing or stopping vanished Workers. The next
   start releases its old sandbox ownership before recreating the same desired
@@ -28,6 +32,11 @@
 - Shared service groups retain separate pools keyed by service ID. Requests
   select least-in-flight eligible Workers and remain streaming across
   Go/supervisor/Worker boundaries.
+- Every service Worker starts with the configured execution principal and its
+  logical service origin. Validation checks canonical identity only, independently
+  of accounts and tables. Public requests retain the configured user; protected
+  requests carry the kernel-verified principal into the same Worker. Users-package
+  policy runs there before handler invocation, preserving per-request identity.
 - Each sandbox-local pool records internal stateless/persistent execution mode,
   concurrency per Worker, Worker minimum/maximum, target utilization, and Worker
   keepalive. Concurrency one is strict; larger values are targets with one

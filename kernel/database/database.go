@@ -564,8 +564,12 @@ func (m *Manager) ready(statement string, parameters []any) error {
 		return fmt.Errorf("SQL statement exceeds %d bytes", maxStatementBytes)
 	}
 	for _, parameter := range parameters {
-		switch parameter.(type) {
+		switch value := parameter.(type) {
 		case nil, bool, int64, float64, string, []byte, time.Time:
+		case json.RawMessage:
+			if !json.Valid(value) {
+				return errors.New("invalid JSON SQL parameter")
+			}
 		default:
 			return fmt.Errorf("unsupported SQL parameter type %T", parameter)
 		}

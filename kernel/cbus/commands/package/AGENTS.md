@@ -15,9 +15,9 @@
 
 - Package source inspection delegates to the filesystem catalog; desired and
   active package state comes from the system database.
-- `package list` exposes only package identity, description, validity, service
-  count, and any validation failure. `package inspect` owns filesystem paths,
-  complete package metadata, fixed-depth service/program metadata, and the
+- `package list` exposes only package identity, description, validity,
+  and any validation failure. `package inspect` owns filesystem paths,
+  complete package metadata, fixed-depth program metadata, and the
   bounded non-Git file inventory for one selected package.
 - Built-in recovery commands remain visible when package discovery, users, or
   the ordinary service plane is degraded.
@@ -28,11 +28,9 @@
   and reports bounded commit history. Synchronization accepts one, several, or
   all indexed packages and reports only package ID, resolved commit, and
   success for each result; Git and service-refresh details remain internal.
-- A changed synchronized package retires removed service capacity and creates
-  new versions of its current services so active Workers reload. A completed
-  version switch remains a successful synchronization while occupied old
-  Workers drain asynchronously. Offline dispatch performs only the package
-  transaction because no runtime exists.
+- Activation invokes the shared package-scoped reindex entry point after source
+  publication. Command adapters neither enumerate services nor implement their
+  configuration or refresh. Publication failures remain explicit package results.
 - Local creation writes a minimal valid manifest, initializes an independent
   Git repository and first commit, and records a source-free local package row.
 - Repository initialization is explicit, never inferred from discovery, and
@@ -53,7 +51,7 @@
 - Generator catalog and aggregate handler tests cover the four recovery
   commands and private operation adapters; package-store tests own
   discovery/path safety and real Git synchronization/authentication.
-  Package-command tests cover changed-service reload, retirement, and refresh
+  Package-command tests cover concise package results and publication
   failure reporting; package-domain tests own schema/hook activation history.
 
 # Child DOX Index

@@ -104,7 +104,7 @@ func TestPackageIndexRemoteInspectionSynchronizationAndVersionSelection(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 1 || !results[0].Success || !results[0].Changed || !results[0].Cloned || results[0].Commit != firstCommit || !slices.Equal(results[0].Services, []string{"the8020/demo/old"}) {
+	if len(results) != 1 || !results[0].Success || !results[0].Changed || !results[0].Cloned || results[0].Commit != firstCommit {
 		t.Fatalf("initial synchronization = %#v", results)
 	}
 	if packages, err := store.ListPackages(); err != nil || len(packages) != 1 || packages[0].ID != "the8020/demo" {
@@ -128,7 +128,7 @@ func TestPackageIndexRemoteInspectionSynchronizationAndVersionSelection(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 1 || !results[0].Success || results[0].PreviousCommit != firstCommit || results[0].Commit != secondCommit || !slices.Equal(results[0].PreviousServices, []string{"the8020/demo/old"}) || !slices.Equal(results[0].Services, []string{"the8020/demo/new"}) {
+	if len(results) != 1 || !results[0].Success || results[0].PreviousCommit != firstCommit || results[0].Commit != secondCommit {
 		t.Fatalf("updated synchronization = %#v", results)
 	}
 	if len(hook.prepared) != 1 || hook.prepared[0].PackageID != "the8020/demo" || hook.prepared[0].Commit != secondCommit || !slices.Equal(hook.completed, []bool{true}) {
@@ -292,7 +292,7 @@ func TestPackageRepositoryPullCheckoutAndPush(t *testing.T) {
 	}}
 	store.SetSchemaDeployment(hook)
 	pulled, err := store.PullPackageRepository(context.Background(), "example/repo")
-	if err != nil || !pulled.Changed || pulled.Repository.Head != second || !slices.Equal(pulled.PreviousServices, []string{"example/repo/old"}) || !slices.Equal(pulled.Services, []string{"example/repo/new"}) {
+	if err != nil || !pulled.Changed || pulled.Repository.Head != second {
 		t.Fatalf("pull = %#v, %v", pulled, err)
 	}
 	if !slices.Equal(hook.completed, []bool{true}) {
@@ -357,7 +357,6 @@ func TestPackageRepositoryUsesSelectedSecretWithoutPersistingOrPassingPlaintext(
 	store, err := New(Config{
 		WorkspaceRoot: root, GitPath: wrapper,
 		Secrets:    testSecretResolver{"github": token},
-		StateStore: &memoryServiceStateStore{states: map[string]DesiredServiceState{}},
 		IndexStore: newMemoryPackageIndexStore(),
 	})
 	if err != nil {

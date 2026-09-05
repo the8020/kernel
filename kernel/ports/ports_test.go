@@ -121,7 +121,7 @@ func TestExposeHTTPUsesGoOwnedStreamingHandler(t *testing.T) {
 	}
 	defer manager.CloseAll()
 	handler := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		writer.Header().Set("X-80-20-Test", "stream")
+		writer.Header().Set("X-Test", "stream")
 		writer.WriteHeader(http.StatusCreated)
 		_, _ = io.Copy(writer, request.Body)
 	})
@@ -135,8 +135,8 @@ func TestExposeHTTPUsesGoOwnedStreamingHandler(t *testing.T) {
 	}
 	body, readErr := io.ReadAll(response.Body)
 	_ = response.Body.Close()
-	if readErr != nil || response.StatusCode != http.StatusCreated || response.Header.Get("X-80-20-Test") != "stream" || string(body) != "streamed" {
-		t.Fatalf("status=%d header=%q body=%q err=%v", response.StatusCode, response.Header.Get("X-80-20-Test"), body, readErr)
+	if readErr != nil || response.StatusCode != http.StatusCreated || response.Header.Get("X-Test") != "stream" || string(body) != "streamed" {
+		t.Fatalf("status=%d header=%q body=%q err=%v", response.StatusCode, response.Header.Get("X-Test"), body, readErr)
 	}
 }
 

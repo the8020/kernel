@@ -8,6 +8,7 @@
     "lib": ["deno.ns", "dom", "dom.iterable", "esnext"]
   },
   "imports": {
+    "@the8020/context": "./context/mod.ts",
     "@the8020/http": "./http/the8020_http.js",
     "@the8020/kernel": "./kernel/mod.ts",
     "@the8020/protocol": "./protocol.ts",

@@ -3,8 +3,8 @@ import type { ServiceEntrypoint } from "../worker/contracts.ts";
 
 export const fetch: ServiceEntrypoint = async (request) => {
   const path = new URL(request.url).pathname;
-  if (path === "/logout") {
-    return Response.json(await kernel.auth.logoutCurrent());
+  if (path === "/verify") {
+    return Response.json(await kernel.crypto.token.verify("presented-token"));
   }
   if (path === "/admin") {
     return Response.json(await kernel.admin.execute("kernel.status"));
@@ -39,9 +39,6 @@ export const fetch: ServiceEntrypoint = async (request) => {
       }),
     );
   }
-  const credentials = await request.json() as {
-    username: string;
-    password: string;
-  };
-  return Response.json(await kernel.auth.login(credentials));
+  const claims = await request.json();
+  return Response.json(await kernel.crypto.token.sign(claims));
 };

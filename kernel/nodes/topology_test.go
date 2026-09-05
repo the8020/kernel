@@ -12,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/net/websocket"
 	"the8020/kernel/database"
+	"the8020/kernel/execution"
 )
 
 const testSharedSecret = "shared-node-test-secret"
@@ -138,7 +140,19 @@ func TestForwardingRecipientRequiresSharedAuthentication(t *testing.T) {
 	if _, err := manager.Set(context.Background(), Node{ID: "node-a", URL: "http://127.0.0.1", RecipientAddress: "127.0.0.1", RecipientPort: port, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.Start(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { _, _ = writer.Write([]byte("forwarded")) })); err != nil {
+	if err := manager.Start(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("the8020-authorization") != "Bearer end-user-token" || request.Header.Get("Cookie") != "the8020_auth=end-user-cookie" || request.Header.Get("Authorization") != "" {
+			http.Error(writer, "credential boundary changed", 400)
+			return
+		}
+		if strings.EqualFold(request.Header.Get("Upgrade"), "websocket") {
+			websocket.Handler(func(socket *websocket.Conn) {
+				_ = websocket.Message.Send(socket, "forwarded-websocket")
+			}).ServeHTTP(writer, request)
+			return
+		}
+		_, _ = writer.Write([]byte("forwarded"))
+	})); err != nil {
 		t.Fatal(err)
 	}
 	unauthorized, err := http.Get("http://127.0.0.1:" + portString(port) + "/service")
@@ -159,7 +173,10 @@ func TestForwardingRecipientRequiresSharedAuthentication(t *testing.T) {
 		t.Fatal(err)
 	}
 	recorder := httptest.NewRecorder()
-	if err := peer.Proxy("node-a", recorder, httptest.NewRequest(http.MethodGet, "http://the8020/service", nil)); err != nil {
+	request := httptest.NewRequest(http.MethodGet, "http://the8020/service", nil)
+	request.Header.Set("the8020-authorization", "Bearer end-user-token")
+	request.Header.Set("Cookie", "the8020_auth=end-user-cookie")
+	if err := peer.Proxy("node-a", recorder, request); err != nil {
 		t.Fatal(err)
 	}
 	response := recorder.Result()
@@ -167,6 +184,27 @@ func TestForwardingRecipientRequiresSharedAuthentication(t *testing.T) {
 	response.Body.Close()
 	if response.StatusCode != http.StatusOK || string(body) != "forwarded" {
 		t.Fatalf("status=%d body=%q", response.StatusCode, body)
+	}
+	front := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if err := peer.Proxy("node-a", writer, request); err != nil {
+			http.Error(writer, err.Error(), http.StatusBadGateway)
+		}
+	}))
+	defer front.Close()
+	config, err := websocket.NewConfig("ws"+strings.TrimPrefix(front.URL, "http")+"/service", front.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.Header = request.Header.Clone()
+	socket, err := websocket.DialConfig(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer socket.Close()
+	_ = socket.SetDeadline(time.Now().Add(5 * time.Second))
+	var message string
+	if err := websocket.Message.Receive(socket, &message); err != nil || message != "forwarded-websocket" {
+		t.Fatalf("WebSocket credential forwarding: message=%q err=%v", message, err)
 	}
 }
 
@@ -184,7 +222,14 @@ func TestAvailableForwardingUsesAdvertisedCapacity(t *testing.T) {
 		t.Fatal(err)
 	}
 	owner.SetCapacityProvider(staticCapacityProvider{capacity: Capacity{Accepting: true, AvailableWorkers: 8, AvailableSandboxes: 2, UpdatedAt: time.Now().UTC()}})
-	if err := owner.Start(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { _, _ = writer.Write([]byte("capacity-routed")) })); err != nil {
+	if err := owner.Start(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		path, _ := request.Context().Value(forwardingPathKey{}).([]string)
+		if strings.Join(path, ",") != "node-b" {
+			http.Error(writer, "untrusted forwarding history", 400)
+			return
+		}
+		_, _ = writer.Write([]byte("capacity-routed"))
+	})); err != nil {
 		t.Fatal(err)
 	}
 	peer, err := New(db, "node-b", testSharedSecret)
@@ -193,7 +238,9 @@ func TestAvailableForwardingUsesAdvertisedCapacity(t *testing.T) {
 	}
 	defer peer.Close()
 	recorder := httptest.NewRecorder()
-	forwarded, err := peer.ProxyAvailable(recorder, httptest.NewRequest(http.MethodGet, "http://the8020/core/service/path", nil))
+	request := httptest.NewRequest(http.MethodGet, "http://the8020/core/service/path", nil)
+	request.Header.Set("ThE8020-InTeRnAl-FoRwArDeD-NoDeS", "node-a,node-b,forged")
+	forwarded, err := peer.ProxyAvailable(recorder, request)
 	if err != nil || !forwarded {
 		t.Fatalf("forwarded=%v err=%v", forwarded, err)
 	}
@@ -231,9 +278,9 @@ func TestExactWorkerInvocationForwardsAcrossNodes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer peer.Close()
-	input := WorkerInvocationRequest{NodeID: "node-a", SandboxID: "sandbox-a", WorkerID: "worker-a", Function: "example.inspect", Input: map[string]any{"id": "value"}}
+	input := WorkerInvocationRequest{NodeID: "node-a", SandboxID: "sandbox-a", WorkerID: "worker-a", Function: "example.inspect", Input: map[string]any{"id": "value"}, User: execution.SystemUser()}
 	result := peer.InvokeWorker(context.Background(), input)
-	if !result.OK || result.Output != "exact-worker-output" || len(invoker.calls) != 1 || invoker.calls[0].NodeID != "node-a" || invoker.calls[0].SandboxID != "sandbox-a" || invoker.calls[0].WorkerID != "worker-a" || invoker.calls[0].Function != "example.inspect" {
+	if !result.OK || result.Output != "exact-worker-output" || len(invoker.calls) != 1 || invoker.calls[0].NodeID != "node-a" || invoker.calls[0].SandboxID != "sandbox-a" || invoker.calls[0].WorkerID != "worker-a" || invoker.calls[0].Function != "example.inspect" || invoker.calls[0].User != execution.SystemUser() {
 		t.Fatalf("result=%#v calls=%#v", result, invoker.calls)
 	}
 	if value, ok := invoker.calls[0].Input.(map[string]any)["id"]; !ok || value != "value" {
@@ -253,7 +300,7 @@ func TestWorkerInvocationRejectsInvalidAndOversizedInputBeforeDispatch(t *testin
 	if result := manager.InvokeWorker(context.Background(), invalid); result.Error == nil || result.Error.Code != "invalid_request" {
 		t.Fatalf("invalid result=%#v", result)
 	}
-	oversized := WorkerInvocationRequest{NodeID: "node-a", SandboxID: "sandbox-a", WorkerID: "worker-a", Function: "example.inspect", Input: strings.Repeat("x", maximumWorkerInvocationBytes)}
+	oversized := WorkerInvocationRequest{NodeID: "node-a", SandboxID: "sandbox-a", WorkerID: "worker-a", Function: "example.inspect", Input: strings.Repeat("x", maximumWorkerInvocationBytes), User: execution.SystemUser()}
 	if result := manager.InvokeWorker(context.Background(), oversized); result.Error == nil || result.Error.Code != "invalid_request" {
 		t.Fatalf("oversized result=%#v", result)
 	}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -41,15 +42,19 @@ type StatementResult struct {
 type TransactionSettings struct {
 	IsolationLevel string `json:"isolationLevel,omitempty"`
 	ReadOnly       bool   `json:"readOnly,omitempty"`
+	TimeoutMS      int64  `json:"timeoutMs,omitempty"`
+	LockTimeoutMS  *int64 `json:"lockTimeoutMs,omitempty"`
 }
 
 type transaction struct {
-	tx      *sql.Tx
-	conn    *sql.Conn
-	scope   string
-	cancel  context.CancelFunc
-	release func()
-	once    sync.Once
+	tx       *sql.Tx
+	conn     *sql.Conn
+	scope    string
+	deadline time.Time
+	cancel   context.CancelFunc
+	release  func()
+	restore  func() error
+	once     sync.Once
 }
 
 type sqlRunner interface {
@@ -65,6 +70,19 @@ func (m *Manager) BeginTransaction(ctx context.Context, scope string, settings T
 	if scope == "" {
 		return "", errors.New("database transaction scope is required")
 	}
+	duration := transactionMaximumDuration
+	if settings.TimeoutMS < 0 || settings.TimeoutMS > transactionMaximumDuration.Milliseconds() {
+		return "", errors.New("transaction timeoutMs must be between 0 and 300000")
+	}
+	if settings.TimeoutMS > 0 {
+		duration = time.Duration(settings.TimeoutMS) * time.Millisecond
+	}
+	if settings.LockTimeoutMS != nil && (*settings.LockTimeoutMS < 1 || *settings.LockTimeoutMS > 300000) {
+		return "", errors.New("transaction lockTimeoutMs must be between 1 and 300000")
+	}
+	deadline := time.Now().Add(duration)
+	ctx, stopAcquisition := context.WithDeadline(ctx, deadline)
+	defer stopAcquisition()
 	isolation, err := isolationLevel(settings.IsolationLevel)
 	if err != nil {
 		return "", err
@@ -81,10 +99,23 @@ func (m *Manager) BeginTransaction(ctx context.Context, scope string, settings T
 		release()
 		return "", err
 	}
-	lifetime, cancel := context.WithTimeout(context.Background(), transactionMaximumDuration)
+	restore, err := m.transactionLockTimeout(ctx, conn, settings.LockTimeoutMS)
+	if err != nil {
+		_ = conn.Close()
+		release()
+		return "", err
+	}
+	lifetime, cancel := context.WithDeadline(context.Background(), deadline)
 	tx, err := conn.BeginTx(lifetime, &sql.TxOptions{Isolation: isolation, ReadOnly: settings.ReadOnly})
+	if err == nil && settings.LockTimeoutMS != nil && m.Backend() == BackendPostgreSQL {
+		_, err = tx.ExecContext(ctx, `SELECT set_config('lock_timeout', $1, true)`, strconv.FormatInt(*settings.LockTimeoutMS, 10)+"ms")
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}
 	if err != nil {
 		cancel()
+		_ = restore()
 		_ = conn.Close()
 		release()
 		return "", err
@@ -93,12 +124,13 @@ func (m *Manager) BeginTransaction(ctx context.Context, scope string, settings T
 	if _, err := rand.Read(random[:]); err != nil {
 		_ = tx.Rollback()
 		cancel()
+		_ = restore()
 		_ = conn.Close()
 		release()
 		return "", fmt.Errorf("create database transaction token: %w", err)
 	}
 	token := hex.EncodeToString(random[:])
-	entry := &transaction{tx: tx, conn: conn, scope: scope, cancel: cancel, release: release}
+	entry := &transaction{tx: tx, conn: conn, scope: scope, deadline: deadline, cancel: cancel, release: release, restore: restore}
 	m.transactionsMu.Lock()
 	m.transactions[token] = entry
 	m.transactionsMu.Unlock()
@@ -126,10 +158,38 @@ func (t *transaction) finish(commit bool) error {
 			}
 		}
 		t.cancel()
+		if t.restore != nil {
+			result = errors.Join(result, t.restore())
+		}
 		result = errors.Join(result, t.conn.Close())
 		t.release()
 	})
 	return result
+}
+
+// SQLite's busy timeout belongs to the pooled connection. Restore its original
+// value after this transaction, or discard the connection if restoration fails.
+func (m *Manager) transactionLockTimeout(ctx context.Context, conn *sql.Conn, milliseconds *int64) (func() error, error) {
+	noop := func() error { return nil }
+	if milliseconds == nil || m.Backend() != "sqlite" {
+		return noop, nil
+	}
+	var previous int64
+	if err := conn.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&previous); err != nil {
+		return noop, err
+	}
+	if _, err := conn.ExecContext(ctx, "PRAGMA busy_timeout="+strconv.FormatInt(*milliseconds, 10)); err != nil {
+		return noop, err
+	}
+	return func() error {
+		reset, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_, err := conn.ExecContext(reset, "PRAGMA busy_timeout="+strconv.FormatInt(previous, 10))
+		if err != nil {
+			_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+		}
+		return err
+	}, nil
 }
 
 func isolationLevel(value string) (sql.IsolationLevel, error) {
@@ -149,14 +209,14 @@ func isolationLevel(value string) (sql.IsolationLevel, error) {
 	}
 }
 
-func (m *Manager) transaction(token, scope string) (*sql.Tx, error) {
+func (m *Manager) transaction(token, scope string) (*transaction, error) {
 	m.transactionsMu.Lock()
 	defer m.transactionsMu.Unlock()
 	entry := m.transactions[token]
 	if entry == nil || entry.scope != scope {
 		return nil, errors.New("database transaction is unavailable in this execution")
 	}
-	return entry.tx, nil
+	return entry, nil
 }
 
 // FinishTransaction commits or rolls back a scoped runtime transaction.
@@ -239,10 +299,16 @@ func (m *Manager) RunStatement(ctx context.Context, scope string, request Statem
 	}
 	var runner sqlRunner = m.db
 	if request.Transaction != "" {
-		runner, err = m.transaction(request.Transaction, scope)
+		entry, err := m.transaction(request.Transaction, scope)
 		if err != nil {
 			return StatementResult{}, err
 		}
+		// BeginTx's context rolls back after expiry but cannot cancel a query
+		// already running with its own callback context. Bound that query too.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, entry.deadline)
+		defer cancel()
+		runner = entry.tx
 	} else {
 		release, acquireErr := m.application.acquire(ctx)
 		if acquireErr != nil {

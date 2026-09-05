@@ -47,19 +47,6 @@ Deno.test("kernel callback payloads contain only operation-owned fields", () => 
   assertEquals(
     kernelCallbackRequest({
       ...base,
-      operation: "execution.completePersistent",
-    }).payload,
-    {
-      execution_id: "execution-test",
-      worker_id: "wrk-source01",
-      request_id: "request-test",
-      service_id: "example/persistent",
-      persistent_execution_id: "persistent-test",
-    },
-  );
-  assertEquals(
-    kernelCallbackRequest({
-      ...base,
       operation: "database.execute",
       arguments: { statement: "SELECT $1", parameters: [1], return_rows: true },
     }),
@@ -176,6 +163,8 @@ function metadata(id: string): ExecutionMetadata {
     workloadType: "service",
     ownerId: "owner",
     workloadId: "service-a",
+    user: { userId: "user:system", username: "system" },
+    origin: { type: "service", id: "service-a" },
     releaseId: "test",
     databaseBackend: "sqlite",
     entrypoint: new URL("../examples/service.ts", import.meta.url).href,
@@ -218,7 +207,7 @@ Deno.test("supervisor authenticates health/status and rejects cross-type Workers
     }),
   );
   assertEquals(health.status, 200);
-  assertEquals((await health.json()).protocol_version, 1);
+  assertEquals((await health.json()).protocol_version, PROTOCOL_VERSION);
   const wrong = metadata("wrong");
   wrong.workloadType = "job";
   await assertRejects(
@@ -230,6 +219,28 @@ Deno.test("supervisor authenticates health/status and rejects cross-type Workers
     Error,
     "does not match",
   );
+  const invalidUser = metadata("invalid-user");
+  invalidUser.user = { userId: "user:alice", username: "bob" };
+  await assertRejects(
+    () =>
+      supervisor.startWorker({
+        metadata: invalidUser,
+        permissions: { read: [examples] },
+      }),
+    TypeError,
+    "execution user is invalid",
+  );
+  const invalidOrigin = metadata("invalid-origin");
+  invalidOrigin.origin = { type: "job", id: "job" };
+  await assertRejects(
+    () =>
+      supervisor.startWorker({
+        metadata: invalidOrigin,
+        permissions: { read: [examples] },
+      }),
+    TypeError,
+    "execution origin is invalid",
+  );
   const protocolMismatch = await supervisor.handler(
     new Request("http://runtime/v1/workers/start", {
       method: "POST",
@@ -237,7 +248,7 @@ Deno.test("supervisor authenticates health/status and rejects cross-type Workers
         authorization: `Bearer ${token}`,
         "content-type": "application/json",
       },
-      body: controlEnvelope("start_worker", {}, 2),
+      body: controlEnvelope("start_worker", {}, PROTOCOL_VERSION + 1),
     }),
   );
   const protocolError = await protocolMismatch.json();
@@ -359,14 +370,14 @@ Deno.test("supervisor tracks Workers, service pools, and drain", async () => {
       method: "POST",
       headers: {
         authorization: `Bearer ${token}`,
-        "x-80-20-method": "POST",
-        "x-80-20-url": "http://service/routed",
+        "the8020-internal-method": "POST",
+        "the8020-internal-url": "http://service/routed",
       },
       body: "body",
     }),
   );
   assertEquals(
-    routed.headers.get("x-80-20-runtime-worker-id"),
+    routed.headers.get("the8020-internal-selected-worker-id"),
     "worker-a",
   );
   assertEquals(await routed.text(), "POST:/routed:streamed:body");
@@ -397,8 +408,8 @@ Deno.test("higher concurrency has one bounded temporary slot per Worker", async 
         method: "POST",
         headers: {
           authorization: `Bearer ${token}`,
-          "x-80-20-method": "GET",
-          "x-80-20-url": "http://service/stream",
+          "the8020-internal-method": "GET",
+          "the8020-internal-url": "http://service/stream",
         },
       }),
     );
@@ -513,28 +524,32 @@ Deno.test("persistent executions reserve hard slots and return to the same Worke
         method: "POST",
         headers: {
           authorization: `Bearer ${token}`,
-          "x-80-20-method": "GET",
-          "x-80-20-url": "http://service/persistent",
-          "x-80-20-internal-persistent-execution-id": executionId,
-          "x-80-20-internal-persistent-keep-alive-ms": String(keepAlive),
+          "the8020-internal-method": "GET",
+          "the8020-internal-url": "http://service/persistent",
+          "the8020-internal-persistent-execution-id": executionId,
+          "the8020-internal-persistent-keep-alive-ms": String(keepAlive),
           ...(targetWorkerId === undefined ? {} : {
-            "x-80-20-internal-target-worker-id": targetWorkerId,
+            "the8020-internal-target-worker-id": targetWorkerId,
           }),
         },
       }),
     );
   try {
     const first = await dispatch("execution-one");
-    const firstWorker = first.headers.get("x-80-20-runtime-worker-id");
+    const firstWorker = first.headers.get(
+      "the8020-internal-selected-worker-id",
+    );
     await first.body?.cancel();
     const resumed = await dispatch("execution-one");
     assertEquals(
-      resumed.headers.get("x-80-20-runtime-worker-id"),
+      resumed.headers.get("the8020-internal-selected-worker-id"),
       firstWorker,
     );
     await resumed.body?.cancel();
     const second = await dispatch("execution-two");
-    const secondWorker = second.headers.get("x-80-20-runtime-worker-id");
+    const secondWorker = second.headers.get(
+      "the8020-internal-selected-worker-id",
+    );
     assertEquals(secondWorker === firstWorker, false);
     await second.body?.cancel();
     assertEquals(supervisor.workers().map((worker) => worker.in_flight), [
@@ -554,7 +569,7 @@ Deno.test("persistent executions reserve hard slots and return to the same Worke
     const targeted = await dispatch("execution-three", 30, firstWorker!);
     assertEquals(targeted.status, 201);
     assertEquals(
-      targeted.headers.get("x-80-20-runtime-worker-id"),
+      targeted.headers.get("the8020-internal-selected-worker-id"),
       firstWorker,
     );
     await targeted.body?.cancel();
@@ -610,11 +625,11 @@ Deno.test("persistent follow-up requests obey strict single-request concurrency"
         method: "POST",
         headers: {
           authorization: `Bearer ${token}`,
-          "x-80-20-method": "GET",
-          "x-80-20-url": "http://service/stream",
-          "x-80-20-internal-persistent-execution-id": "session-one",
-          "x-80-20-internal-persistent-keep-alive-ms": "100",
-          "x-80-20-internal-target-worker-id": worker.metadata.workerId,
+          "the8020-internal-method": "GET",
+          "the8020-internal-url": "http://service/stream",
+          "the8020-internal-persistent-execution-id": "session-one",
+          "the8020-internal-persistent-keep-alive-ms": "100",
+          "the8020-internal-target-worker-id": worker.metadata.workerId,
         },
       }),
     );
@@ -693,11 +708,11 @@ Deno.test("concurrent persistent database requests retain isolated request IDs",
         method: "POST",
         headers: {
           authorization: `Bearer ${token}`,
-          "x-80-20-method": "GET",
-          "x-80-20-url": "http://service/database-query",
-          "x-80-20-internal-request-id": requestId,
-          "x-80-20-internal-persistent-execution-id": "session-one",
-          "x-80-20-internal-persistent-keep-alive-ms": "100",
+          "the8020-internal-method": "GET",
+          "the8020-internal-url": "http://service/database-query",
+          "the8020-internal-request-id": requestId,
+          "the8020-internal-persistent-execution-id": "session-one",
+          "the8020-internal-persistent-keep-alive-ms": "100",
         },
       }),
     )
@@ -758,10 +773,10 @@ Deno.test("session reservation expiry starts an independent Worker idle clock", 
         method: "POST",
         headers: {
           authorization: `Bearer ${token}`,
-          "x-80-20-method": "GET",
-          "x-80-20-url": "http://service/persistent",
-          "x-80-20-internal-persistent-execution-id": "session-one",
-          "x-80-20-internal-persistent-keep-alive-ms": "100",
+          "the8020-internal-method": "GET",
+          "the8020-internal-url": "http://service/persistent",
+          "the8020-internal-persistent-execution-id": "session-one",
+          "the8020-internal-persistent-keep-alive-ms": "100",
         },
       }),
     );
@@ -775,6 +790,7 @@ Deno.test("session reservation expiry starts an independent Worker idle clock", 
       null,
       new AbortController().signal,
       "session-other",
+      { userId: "user:system", username: "system" },
     );
     assertEquals(mismatch.error?.code, "target_mismatch");
     const exact = await supervisor.invokeWorker(
@@ -783,6 +799,7 @@ Deno.test("session reservation expiry starts an independent Worker idle clock", 
       null,
       new AbortController().signal,
       "session-one",
+      { userId: "user:system", username: "system" },
     );
     assertEquals(exact.error?.code, "function_not_found");
 
@@ -850,13 +867,13 @@ Sec-WebSocket-Key: ${key}\r
 Sec-WebSocket-Version: 13\r
 Sec-WebSocket-Protocol: the8020.echo\r
 Authorization: Bearer ${token}\r
-X-80-20-URL: http://service/echo/main\r
-X-80-20-Internal-Request-ID: request-websocket-supervisor\r
-X-80-20-Internal-Service-ID: example/websocket/service\r
-X-80-20-Internal-Service-Generation: 2\r
-X-80-20-Internal-Canonical-Base-Path: /example/websocket/service\r
-X-80-20-Internal-Original-URL: https://example.test/example/websocket/service/echo/main\r
-X-80-20-Internal-Auth-Authenticated: false\r
+the8020-internal-url: http://service/echo/main\r
+the8020-internal-request-id: request-websocket-supervisor\r
+the8020-internal-service-id: example/websocket/service\r
+the8020-internal-service-generation: 2\r
+the8020-internal-canonical-base-path: /example/websocket/service\r
+the8020-internal-original-url: https://example.test/example/websocket/service/echo/main\r
+the8020-internal-auth-authenticated: false\r
 \r
 `,
       ));
@@ -939,7 +956,9 @@ Deno.test("supervisor converts only trusted internal authentication metadata", a
   ).href;
   const worker = await supervisor.startWorker({
     metadata: authMetadata,
-    permissions: { read: [examples] },
+    permissions: {
+      read: [examples, new URL("../worker/testdata", import.meta.url).pathname],
+    },
   });
   supervisor.configureService("service-a", [worker.metadata.workerId], 32);
   const response = await supervisor.handler(
@@ -947,12 +966,21 @@ Deno.test("supervisor converts only trusted internal authentication metadata", a
       method: "POST",
       headers: {
         authorization: `Bearer ${token}`,
-        "x-80-20-url": "http://service/auth",
-        "x-80-20-internal-auth-authenticated": "true",
-        "x-80-20-internal-auth-realm": "user",
-        "x-80-20-internal-auth-user-id": "user:Admin",
-        "x-80-20-internal-auth-username": "Admin",
-        "x-80-20-internal-auth-version": "7",
+        "the8020-internal-url": "http://service/auth",
+        "the8020-internal-authentication": btoa(
+          JSON.stringify({
+            module:
+              "data:application/typescript,export function authenticate() {}",
+            claims: { sub: "user:admin" },
+            unauthenticated: { action: "reject", status: 401 },
+          }),
+        ),
+        "the8020-internal-auth-realm": "user",
+        "the8020-internal-auth-user-id": "user:admin",
+        "the8020-internal-auth-username": "admin",
+        "the8020-internal-auth-version": "7",
+        "the8020-internal-user-id": "user:admin",
+        "the8020-internal-username": "admin",
       },
     }),
   );
@@ -960,10 +988,10 @@ Deno.test("supervisor converts only trusted internal authentication metadata", a
     auth: {
       authenticated: true,
       realm: "user",
-      userId: "user:Admin",
-      username: "Admin",
-      authVersion: 7,
+      userId: "user:admin",
+      username: "admin",
     },
+    user: { userId: "user:admin", username: "admin" },
     execution: {
       nodeId: "group-auth",
       runtimeGroupId: "group-auth",
@@ -1000,6 +1028,7 @@ Deno.test("exact Worker control invokes only explicitly registered functions", a
       body: controlEnvelope("worker_invoke", {
         function: "example.echo",
         input: { value: "ok" },
+        user: { userId: "user:system", username: "system" },
       }).replace(
         '"runtime_group_id":"group-job"',
         '"runtime_group_id":"group-control"',
@@ -1016,6 +1045,7 @@ Deno.test("exact Worker control invokes only explicitly registered functions", a
       body: controlEnvelope("worker_invoke", {
         function: "example.echo",
         input: { value: "wrong target" },
+        user: { userId: "user:system", username: "system" },
       }).replace(
         '"runtime_group_id":"group-job"',
         '"runtime_group_id":"group-control"',
@@ -1037,6 +1067,7 @@ Deno.test("exact Worker control invokes only explicitly registered functions", a
       body: controlEnvelope("worker_invoke", {
         function: "default",
         input: null,
+        user: { userId: "user:system", username: "system" },
       }).replace(
         '"runtime_group_id":"group-job"',
         '"runtime_group_id":"group-control"',
@@ -1077,6 +1108,7 @@ Deno.test("job dispatch returns bounded structured and console logs", async () =
   const job = metadata("worker-job");
   job.workloadType = "job";
   job.workloadId = "job-a";
+  job.origin = { type: "job", id: "job-a" };
   job.entrypoint = new URL("../examples/job.ts", import.meta.url).href;
   await supervisor.startWorker({
     metadata: job,
@@ -1135,6 +1167,7 @@ Deno.test("job dispatch preserves structured command failures", async () => {
   const job = metadata("worker-job-error");
   job.workloadType = "job";
   job.workloadId = "job-error";
+  job.origin = { type: "job", id: "job-error" };
   job.entrypoint = new URL("../examples/job_error.ts", import.meta.url).href;
   await supervisor.startWorker({
     metadata: job,
@@ -1255,3 +1288,157 @@ function encodeBase64(value: Uint8Array): string {
   for (const byte of value) binary += String.fromCharCode(byte);
   return btoa(binary);
 }
+
+Deno.test("persistent follow-ups reject wrong owners and cannot revive completed or expired bindings", async () => {
+  let now = 1_000;
+  const supervisor = new Supervisor({
+    runtimeGroupId: "group-route",
+    sandboxId: "sandbox-route",
+    workloadType: "service",
+    token,
+    supervisorVersion: "test",
+    now: () => now,
+    kernelCall: () => {
+      throw new Error("completion must stay in its owning supervisor");
+    },
+  });
+  const target = metadata("route-worker");
+  target.workloadId = "route-service";
+  target.entrypoint =
+    new URL("../examples/service_control.ts", import.meta.url).href;
+  target.service = {
+    serviceId: "service-a",
+    generation: 1,
+    canonicalBasePath: "/service-a",
+    executionMode: "persistent",
+  };
+  target.databaseAccess = "none";
+  const worker = await supervisor.startWorker({
+    metadata: target,
+    permissions: { read: [examples] },
+  });
+  supervisor.configureService(target.workloadId, [target.workerId], 1);
+  const dispatch = (
+    executionId: string,
+    existing: boolean,
+    user = "alice",
+    workerId = target.workerId,
+    service = target.workloadId,
+  ) =>
+    supervisor.handler(
+      new Request(`http://runtime/v1/services/${service}/dispatch`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "the8020-internal-url": "http://service/",
+          "the8020-internal-persistent-execution-id": executionId,
+          "the8020-internal-persistent-keep-alive-ms": "100",
+          "the8020-internal-target-worker-id": workerId,
+          "the8020-internal-user-id": `user:${user}`,
+          "the8020-internal-username": user,
+          ...(existing
+            ? { "the8020-internal-persistent-existing": "true" }
+            : {}),
+        },
+      }),
+    );
+  const expect = async (response: Promise<Response>, status: number) => {
+    const value = await response;
+    assertEquals(value.status, status);
+    await value.body?.cancel();
+  };
+  try {
+    await expect(dispatch("first", false), 204);
+    await expect(dispatch("first", true), 204);
+    await expect(dispatch("first", true, "bob"), 409);
+    await expect(dispatch("first", true, "alice", "other-worker"), 409);
+    await expect(
+      dispatch("first", true, "alice", target.workerId, "other-service"),
+      409,
+    );
+    await expect(dispatch("missing", true), 409);
+    assertEquals(supervisor.workers()[0]?.persistent_executions, 1);
+    const completed = await supervisor.invokeWorker(
+      worker.metadata.workerId,
+      "example.complete-persistent",
+      null,
+      new AbortController().signal,
+      "first",
+      { userId: "user:alice", username: "alice" },
+    );
+    assertEquals(completed.ok, true);
+    await expect(dispatch("first", true), 409);
+    assertEquals(supervisor.workers()[0]?.persistent_executions, 0);
+    await expect(dispatch("second", false), 204);
+    now += 100;
+    await expect(dispatch("second", true), 409);
+    assertEquals(supervisor.workers()[0]?.persistent_executions, 0);
+    await expect(dispatch("third", false), 204);
+    await expect(dispatch("first", true), 409);
+    await expect(dispatch("second", true), 409);
+    await expect(dispatch("third", true), 204);
+    assertEquals(supervisor.workers()[0]?.persistent_executions, 1);
+  } finally {
+    await supervisor.stopWorker(target.workerId, true);
+  }
+});
+
+Deno.test("persistent HTTP response streams retain their binding through consumption", async () => {
+  let now = 1_000;
+  const supervisor = new Supervisor({
+    runtimeGroupId: "group-stream",
+    sandboxId: "sandbox-stream",
+    workloadType: "service",
+    token,
+    supervisorVersion: "test",
+    now: () => now,
+  });
+  const target = metadata("stream-worker");
+  target.service = {
+    serviceId: target.workloadId,
+    generation: 1,
+    canonicalBasePath: "/service-a",
+    executionMode: "persistent",
+  };
+  await supervisor.startWorker({
+    metadata: target,
+    permissions: { read: [examples] },
+  });
+  supervisor.configureService(target.workloadId, [target.workerId], 1);
+  const dispatch = (existing: boolean) =>
+    supervisor.handler(
+      new Request(`http://runtime/v1/services/${target.workloadId}/dispatch`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "the8020-internal-url": "http://service/sse",
+          "the8020-internal-persistent-execution-id": "stream",
+          "the8020-internal-persistent-keep-alive-ms": "100",
+          ...(existing
+            ? {
+              "the8020-internal-persistent-existing": "true",
+              "the8020-internal-target-worker-id": target.workerId,
+            }
+            : {}),
+        },
+      }),
+    );
+  try {
+    const initial = await dispatch(false);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    now += 10_000;
+    assertEquals(supervisor.workers()[0]?.persistent_executions, 1);
+    assertEquals(await initial.text(), "event: ready\ndata: streamed\n\n");
+    now += 99;
+    const followup = await dispatch(true);
+    assertEquals(followup.status, 201);
+    await followup.body?.cancel();
+    now += 100;
+    const expired = await dispatch(true);
+    assertEquals(expired.status, 409);
+    await expired.body?.cancel();
+    assertEquals(supervisor.workers()[0]?.persistent_executions, 0);
+  } finally {
+    await supervisor.stopWorker(target.workerId, true);
+  }
+});

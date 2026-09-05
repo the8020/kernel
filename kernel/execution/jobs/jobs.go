@@ -55,6 +55,7 @@ type Options struct {
 	Secrets           map[string]string
 	Detached          bool
 	GroupKey          string
+	PlacementGroup    *string
 	Namespace         string
 	Timeout           time.Duration
 	Parallelism       int
@@ -66,6 +67,8 @@ type Options struct {
 	DatabaseAccess    string
 	CheckModules      []string
 	Mounts            []model.Mount
+	User              execution.User
+	Origin            execution.Origin
 }
 
 // Record is an in-process view of one job. Result and Logs are returned to the
@@ -75,6 +78,8 @@ type Record struct {
 	ExecutionID        string                       `json:"execution_id"`
 	JobID              string                       `json:"job_id"`
 	OwnerID            string                       `json:"owner_id"`
+	User               execution.User               `json:"user"`
+	Origin             execution.Origin             `json:"origin"`
 	ProfileHash        string                       `json:"profile_hash"`
 	Entrypoint         string                       `json:"entrypoint"`
 	RuntimeGroupID     string                       `json:"runtime_group_id,omitempty"`
@@ -119,7 +124,7 @@ type Manager struct {
 
 func New(groupCoordinator GroupCoordinator, workerManager WorkerManager, policy Policy) (*Manager, error) {
 	if groupCoordinator == nil || workerManager == nil {
-		return nil, errors.New("group coordinator and Worker manager are required")
+		return nil, errors.New("group coordinator, Worker manager are required")
 	}
 	if policy.Strategy == "" {
 		policy.Strategy = model.GroupingOwner
@@ -149,20 +154,25 @@ func New(groupCoordinator GroupCoordinator, workerManager WorkerManager, policy 
 }
 
 type submission struct {
-	record    Record
-	profile   model.RuntimeProfile
-	groupKey  string
-	namespace string
-	arguments []any
-	secrets   map[string]string
+	record         Record
+	profile        model.RuntimeProfile
+	groupKey       string
+	placementGroup *string
+	namespace      string
+	arguments      []any
+	secrets        map[string]string
 }
 
 func (m *Manager) Run(ctx context.Context, jobID, entrypoint string, options Options) (Record, error) {
+	caller, hasCaller := execution.CallerFromContext(ctx)
+	if options.User.Empty() && hasCaller {
+		options.User = caller.User
+	}
 	prepared, err := m.prepare(jobID, entrypoint, options)
 	if err != nil {
 		return Record{}, err
 	}
-	if caller, ok := execution.CallerFromContext(ctx); ok && caller.Workload == model.WorkloadJob {
+	if hasCaller && caller.Workload == model.WorkloadJob {
 		prepared.record.CallerExecutionID = caller.ExecutionID
 	}
 	m.mu.Lock()
@@ -243,6 +253,17 @@ func (m *Manager) prepare(jobID, entrypoint string, options Options) (submission
 	if options.ReleaseID == "" {
 		options.ReleaseID = "development"
 	}
+	user := options.User
+	if !user.Valid() {
+		return submission{}, fmt.Errorf("%w: a valid username must be assigned", execution.ErrInvalidUser)
+	}
+	origin := options.Origin
+	if origin == (execution.Origin{}) {
+		origin = execution.Origin{Type: execution.OriginJob, ID: jobID}
+	}
+	if !origin.ValidForWorkload(model.WorkloadJob) {
+		return submission{}, errors.New("job execution origin is invalid")
+	}
 	if options.Parallelism < 0 {
 		return submission{}, errors.New("job parallelism must not be negative")
 	}
@@ -274,15 +295,20 @@ func (m *Manager) prepare(jobID, entrypoint string, options Options) (submission
 		return submission{}, errors.New("job database access must be full, metadata, or none")
 	}
 	arguments := append([]any(nil), options.Arguments...)
+	var placementGroup *string
+	if options.PlacementGroup != nil {
+		value := *options.PlacementGroup
+		placementGroup = &value
+	}
 	record := Record{
-		ExecutionID: executionID, JobID: jobID, OwnerID: ownerID,
+		ExecutionID: executionID, JobID: jobID, OwnerID: ownerID, User: user, Origin: origin,
 		ProfileHash: profileHash, Entrypoint: entrypoint, WorkerID: workerID,
 		ReleaseID: options.ReleaseID, State: "STARTING", Detached: options.Detached,
 		Reuse: reuse, Timeout: timeout, Parallelism: parallelism, Permissions: permissions,
 		DatabaseAccess: databaseAccess, CheckModules: append([]string(nil), options.CheckModules...),
 	}
 	return submission{
-		record: record, profile: profile, groupKey: options.GroupKey,
+		record: record, profile: profile, groupKey: options.GroupKey, placementGroup: placementGroup,
 		namespace: options.Namespace, arguments: arguments, secrets: copySecrets(options.Secrets),
 	}, nil
 }
@@ -325,9 +351,9 @@ func (m *Manager) start(ctx context.Context, prepared submission) (Record, error
 
 	group, err := m.coordinator.Ensure(ctx, coordinator.Request{
 		WorkloadType: model.WorkloadJob, OwnerID: record.OwnerID,
-		AllocationID: record.WorkerID,
-		ExecutionID:  record.ExecutionID, Namespace: prepared.namespace,
-		ExplicitGroupKey: prepared.groupKey, Strategy: m.policy.Strategy,
+		AllocationID: record.WorkerID, RequestedWorkers: 1,
+		ExecutionID: record.ExecutionID, Namespace: prepared.namespace,
+		ExplicitGroupKey: prepared.groupKey, PlacementGroup: prepared.placementGroup, Strategy: m.policy.Strategy,
 		Profile: prepared.profile, ResourceLimits: m.policy.Resources, Lifecycle: m.policy.Lifecycle,
 	})
 	if err != nil {
@@ -352,6 +378,8 @@ func (m *Manager) start(ctx context.Context, prepared submission) (Record, error
 			ReleaseID: record.ReleaseID, Entrypoint: record.Entrypoint,
 			DebuggerName:   "job:" + record.OwnerID + ":" + record.ExecutionID + ":" + record.WorkerID,
 			DatabaseAccess: record.DatabaseAccess,
+			User:           record.User,
+			Origin:         record.Origin,
 		}, Permissions: record.Permissions,
 	})
 	if err != nil {
@@ -643,7 +671,7 @@ func (m *Manager) launch(run func(context.Context)) error {
 
 func (m *Manager) reusableLocked(wanted Record) (Record, bool) {
 	for _, item := range m.records {
-		if item.JobID == wanted.JobID && item.OwnerID == wanted.OwnerID && item.ReleaseID == wanted.ReleaseID && item.ProfileHash == wanted.ProfileHash && item.DatabaseAccess == wanted.DatabaseAccess && reflect.DeepEqual(item.Permissions, wanted.Permissions) && item.Entrypoint == wanted.Entrypoint && item.State == "IDLE" && item.Reuse {
+		if item.JobID == wanted.JobID && item.OwnerID == wanted.OwnerID && item.User == wanted.User && item.Origin == wanted.Origin && item.ReleaseID == wanted.ReleaseID && item.ProfileHash == wanted.ProfileHash && item.DatabaseAccess == wanted.DatabaseAccess && reflect.DeepEqual(item.Permissions, wanted.Permissions) && item.Entrypoint == wanted.Entrypoint && item.State == "IDLE" && item.Reuse {
 			return item, true
 		}
 	}

@@ -258,8 +258,9 @@ func TestRepositoryCatalogContainsOnlyKernelAndDeferredCommands(t *testing.T) {
 		"debug.close", "debug.open", "debug.targets",
 		"job.cancel", "job.inspect", "job.list", "job.run",
 		"kernel.config.get", "kernel.config.list", "kernel.config.set", "kernel.config.unset",
+		"kernel.events.emit",
 		"kernel.packages.inspect", "kernel.packages.list", "kernel.packages.set", "kernel.packages.synchronize",
-		"kernel.reindex", "kernel.restart", "kernel.shutdown", "kernel.status",
+		"kernel.reindex", "kernel.restart", "kernel.shutdown", "kernel.signing.replace", "kernel.signing.status", "kernel.status",
 		"pool.resize", "pool.status", "port.close", "port.expose", "port.list",
 		"runtime.doctor", "runtime.eval", "runtime.image.status", "runtime.run", "runtime.status",
 		"sandbox.delete", "sandbox.history.inspect", "sandbox.history.list", "sandbox.inspect", "sandbox.kill", "sandbox.list", "sandbox.metrics", "sandbox.refresh", "sandbox.stop",
@@ -318,6 +319,7 @@ func TestEveryKernelRecoveryCommandExampleTraversesBothCLIModes(t *testing.T) {
 	}
 	executor := &catalogExecutor{}
 	runner := cli.New(catalog, executor)
+	runner.SetSecretResolver(func(string, string, bool) (string, error) { return "fixture-secure-input", nil })
 	count := 0
 	for _, command := range catalog {
 		if !strings.HasPrefix(command.ID, "kernel.") {
@@ -342,8 +344,8 @@ func TestEveryKernelRecoveryCommandExampleTraversesBothCLIModes(t *testing.T) {
 		}
 		count++
 	}
-	if count != 12 {
-		t.Fatalf("kernel recovery CLI command count = %d, want 12", count)
+	if count != 15 {
+		t.Fatalf("kernel recovery CLI command count = %d, want 15", count)
 	}
 }
 
@@ -393,13 +395,7 @@ func TestRepositoryCatalogContainsEveryRequiredPlatformSetting(t *testing.T) {
 		}
 	}
 	for _, key := range []string{
-		"auth.session_duration", "auth.cleanup_interval",
-		"auth.cookie.name", "auth.cookie.secure", "auth.cookie.same_site",
-		"auth.argon2.memory", "auth.argon2.iterations", "auth.argon2.parallelism",
 		"services.reconcile_interval", "services.startup_timeout",
-		"services.default_request_timeout", "services.default_drain_timeout", "services.default_minimum_workers",
-		"services.default_maximum_workers", "services.default_concurrency_per_worker", "services.default_target_utilization_percent",
-		"services.default_worker_keep_alive", "services.default_workers_per_sandbox", "services.default_minimum_sandboxes", "services.default_session_keep_alive",
 		"runtime.sandbox.maximum_workers",
 		"database.backend", "database.location", "database.username", "database.password",
 		"database.maximum_open_connections", "database.maximum_idle_connections",
@@ -445,11 +441,8 @@ func TestRepositoryCatalogContainsEveryRequiredPlatformSetting(t *testing.T) {
 		}
 	}
 	wantGlobal := []string{
-		"auth.argon2.iterations", "auth.argon2.memory", "auth.argon2.parallelism",
-		"auth.cookie.name", "auth.cookie.same_site", "auth.cookie.secure", "auth.session_duration",
 		"job.default.execution_timeout", "job.default.idle_runtime_timeout", "job.default.maximum_parallel_workers", "job.default.queued_execution_limit", "job.default.worker_reuse",
 		"network.root_alias",
-		"services.default_concurrency_per_worker", "services.default_drain_timeout", "services.default_maximum_workers", "services.default_minimum_sandboxes", "services.default_minimum_workers", "services.default_request_timeout", "services.default_session_keep_alive", "services.default_target_utilization_percent", "services.default_worker_keep_alive", "services.default_workers_per_sandbox",
 	}
 	if fmt.Sprint(global) != fmt.Sprint(wantGlobal) {
 		t.Fatalf("global settings = %v, want %v", global, wantGlobal)

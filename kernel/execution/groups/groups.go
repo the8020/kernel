@@ -85,13 +85,10 @@ func Select(request Request, existing []Group) (Selection, error) {
 
 func selectKey(request Request) (string, error) {
 	if request.PlacementGroup != nil {
-		if request.WorkloadType != model.WorkloadService {
-			return "", errors.New("placement groups are valid only for services")
-		}
 		if len(*request.PlacementGroup) > 256 || strings.ContainsRune(*request.PlacementGroup, '\x00') {
-			return "", errors.New("service placement group is invalid")
+			return "", errors.New("sandbox placement group is invalid")
 		}
-		return "service:placement:" + base64.RawURLEncoding.EncodeToString([]byte(*request.PlacementGroup)), nil
+		return string(request.WorkloadType) + ":placement:" + base64.RawURLEncoding.EncodeToString([]byte(*request.PlacementGroup)), nil
 	}
 	if request.ExplicitGroupKey != "" {
 		return string(request.WorkloadType) + ":explicit:" + request.ExplicitGroupKey, nil

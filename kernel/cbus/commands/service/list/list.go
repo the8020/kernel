@@ -12,6 +12,8 @@ import (
 
 type summary struct {
 	ServiceID         string            `json:"service_id"`
+	PackageID         string            `json:"package_id"`
+	Entrypoint        string            `json:"source_entrypoint"`
 	Description       string            `json:"description,omitempty"`
 	CanonicalBasePath string            `json:"canonical_base_path"`
 	State             webservices.State `json:"state"`
@@ -42,6 +44,7 @@ func New(serviceSet *services.Services) core.Handler {
 			status = serviceview.Observed(ctx, status, runtimeServices.Sandboxes)
 			items = append(items, summary{
 				ServiceID: status.ServiceID, CanonicalBasePath: status.CanonicalBasePath, Description: status.Description,
+				PackageID: status.PackageID, Entrypoint: status.Entrypoint,
 				Enabled: status.Enabled, State: status.State, VersionCount: status.VersionCount, SandboxCount: status.SandboxCount,
 				WorkerCount: status.WorkerCount, ValidationError: status.ValidationError,
 				ServiceType: status.ServiceType, AccessMode: status.AccessMode,

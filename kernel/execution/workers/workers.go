@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"the8020/kernel/execution"
 	"the8020/kernel/execution/supervisor"
 	"the8020/kernel/nodes"
 	"the8020/kernel/sandbox/manager"
@@ -30,12 +31,12 @@ type Control interface {
 	Workers(context.Context, model.SandboxSpec) ([]supervisor.WorkerStatus, error)
 	StartWorker(context.Context, model.SandboxSpec, supervisor.StartWorkerRequest) (supervisor.WorkerStatus, error)
 	StopWorker(context.Context, model.SandboxSpec, string, bool) error
-	InvokeWorker(context.Context, model.SandboxSpec, string, string, string, any) (supervisor.WorkerInvocationResult, error)
+	InvokeWorker(context.Context, model.SandboxSpec, string, string, string, any, execution.User) (supervisor.WorkerInvocationResult, error)
 	RunJob(context.Context, model.SandboxSpec, string, []any, map[string]string, []string) (supervisor.JobResult, error)
 	ConfigureService(context.Context, model.SandboxSpec, string, []string, int) error
 	ServiceOpenAPI(context.Context, model.SandboxSpec, string) (map[string]any, error)
 	DispatchService(context.Context, model.SandboxSpec, string, *http.Request) (*http.Response, error)
-	ProxyServiceWebSocket(context.Context, model.SandboxSpec, string, http.ResponseWriter, *http.Request) error
+	ProxyServiceWebSocket(context.Context, model.SandboxSpec, string, http.ResponseWriter, *http.Request, func(*http.Response) error) error
 }
 
 type Manager struct {
@@ -96,6 +97,9 @@ func New(sandboxes Sandboxes, control Control, maximumWorkers, maximumWorkersPer
 }
 
 func (m *Manager) Start(ctx context.Context, runtimeGroupID string, request supervisor.StartWorkerRequest) (Record, error) {
+	if !request.Metadata.User.Valid() || !request.Metadata.Origin.ValidForWorkload(request.Metadata.WorkloadType) {
+		return Record{}, errors.New("Worker execution user and origin are invalid")
+	}
 	inspection, err := m.sandboxes.Inspect(ctx, runtimeGroupID)
 	if err != nil {
 		return Record{}, err
@@ -282,6 +286,9 @@ func (m *Manager) StopInGroup(ctx context.Context, runtimeGroupID, workerID stri
 	return nil
 }
 func (m *Manager) InvokeWorker(ctx context.Context, input nodes.WorkerInvocationRequest) nodes.WorkerInvocationResult {
+	if !input.User.Valid() {
+		return invocationFailure("invalid_request", "a valid execution user is required")
+	}
 	if m.nodes == nil {
 		return invocationFailure("unavailable", "node routing is unavailable")
 	}
@@ -295,7 +302,7 @@ func (m *Manager) InvokeLocalWorker(ctx context.Context, input nodes.WorkerInvoc
 	if m.nodes == nil || input.NodeID != m.nodes.LocalNodeID() {
 		return invocationFailure("target_mismatch", "target node does not match this kernel")
 	}
-	if input.SandboxID == "" || input.WorkerID == "" || input.Function == "" || len(input.Function) > 128 {
+	if input.SandboxID == "" || input.WorkerID == "" || input.Function == "" || len(input.Function) > 128 || !input.User.Valid() {
 		return invocationFailure("invalid_request", "exact Worker target and registered function are required")
 	}
 	encoded, err := json.Marshal(input.Input)
@@ -312,7 +319,7 @@ func (m *Manager) InvokeLocalWorker(ctx context.Context, input nodes.WorkerInvoc
 	if inspection.Spec.SandboxID != input.SandboxID {
 		return invocationFailure("target_mismatch", "sandbox identity does not match target")
 	}
-	result, err := m.control.InvokeWorker(ctx, inspection.Spec, input.WorkerID, input.PersistentExecutionID, input.Function, input.Input)
+	result, err := m.control.InvokeWorker(ctx, inspection.Spec, input.WorkerID, input.PersistentExecutionID, input.Function, input.Input, input.User)
 	if err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
 			return invocationFailure("timeout", "Worker invocation timed out")
@@ -387,7 +394,7 @@ func (m *Manager) DispatchService(ctx context.Context, runtimeGroupID, serviceID
 	return m.control.DispatchService(ctx, inspection.Spec, serviceID, request)
 }
 
-func (m *Manager) ProxyServiceWebSocket(ctx context.Context, runtimeGroupID, serviceID string, writer http.ResponseWriter, request *http.Request) error {
+func (m *Manager) ProxyServiceWebSocket(ctx context.Context, runtimeGroupID, serviceID string, writer http.ResponseWriter, request *http.Request, modifyResponse func(*http.Response) error) error {
 	inspection, err := m.sandboxes.Inspect(ctx, runtimeGroupID)
 	if err != nil {
 		return err
@@ -398,7 +405,7 @@ func (m *Manager) ProxyServiceWebSocket(ctx context.Context, runtimeGroupID, ser
 	if inspection.Spec.WorkloadType != model.WorkloadService {
 		return errors.New("runtime group is not a service group")
 	}
-	return m.control.ProxyServiceWebSocket(ctx, inspection.Spec, serviceID, writer, request)
+	return m.control.ProxyServiceWebSocket(ctx, inspection.Spec, serviceID, writer, request, modifyResponse)
 }
 
 func (m *Manager) find(ctx context.Context, workerID string) (Record, model.SandboxSpec, error) {

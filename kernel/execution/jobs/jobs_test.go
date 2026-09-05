@@ -116,7 +116,7 @@ func TestSecureValuesAreRedactedFromResultsLogsAndFailures(t *testing.T) {
 		}},
 	}}
 	manager, _ := New(&fakeCoordinator{}, workersFake, testPolicy())
-	record, err := manager.Run(context.Background(), "secure", "file:///programs/secure.ts", Options{Secrets: map[string]string{"password": password}})
+	record, err := manager.Run(context.Background(), "secure", "file:///programs/secure.ts", Options{User: execution.SystemUser(), Secrets: map[string]string{"password": password}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestSecureValuesAreRedactedFromResultsLogsAndFailures(t *testing.T) {
 		Message: "program rejected " + password,
 		Details: map[string]any{"reason": password},
 	}
-	record, err = manager.Run(context.Background(), "secure", "file:///programs/secure.ts", Options{Secrets: map[string]string{"password": password}})
+	record, err = manager.Run(context.Background(), "secure", "file:///programs/secure.ts", Options{User: execution.SystemUser(), Secrets: map[string]string{"password": password}})
 	if err == nil || strings.Contains(err.Error(), password) || strings.Contains(record.Failure, password) {
 		t.Fatalf("unredacted failure: record=%#v error=%v", record, err)
 	}
@@ -146,7 +146,7 @@ func TestSecretFreeFailurePreservesItsCause(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = manager.Run(context.Background(), "deadline", "file:///programs/deadline.ts", Options{})
+	_, err = manager.Run(context.Background(), "deadline", "file:///programs/deadline.ts", Options{User: execution.SystemUser()})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("job failure lost its cause: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestOneTimeJobReturnsOutputWithoutRetainingHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	passwords := map[string]string{"password": "do-not-persist"}
-	record, err := manager.Run(context.Background(), "job", "file:///programs/job.ts", Options{
+	record, err := manager.Run(context.Background(), "job", "file:///programs/job.ts", Options{User: execution.SystemUser(),
 		Arguments: []any{"Alice Smith", "--admin"}, Secrets: passwords,
 	})
 	if err != nil {
@@ -177,6 +177,9 @@ func TestOneTimeJobReturnsOutputWithoutRetainingHistory(t *testing.T) {
 	}
 	if record.State != "SUCCEEDED" || len(record.Logs) != 1 || !reflect.DeepEqual(record.Result, []any{"Alice Smith", "--admin"}) {
 		t.Fatalf("record = %#v", record)
+	}
+	if record.User != execution.SystemUser() || record.Origin != (execution.Origin{Type: execution.OriginJob, ID: "job"}) {
+		t.Fatalf("execution identity = user %#v origin %#v", record.User, record.Origin)
 	}
 	items, err := manager.List()
 	if err != nil || len(items) != 0 {
@@ -187,6 +190,9 @@ func TestOneTimeJobReturnsOutputWithoutRetainingHistory(t *testing.T) {
 	}
 	workersFake.mu.Lock()
 	defer workersFake.mu.Unlock()
+	if len(workersFake.starts) != 1 || workersFake.starts[0].Metadata.User != execution.SystemUser() || workersFake.starts[0].Metadata.Origin != record.Origin {
+		t.Fatalf("Worker execution identity = %#v", workersFake.starts)
+	}
 	if !reflect.DeepEqual(workersFake.arguments, []any{"Alice Smith", "--admin"}) || workersFake.secretCopy["password"] != "do-not-persist" || len(workersFake.secretRef) != 0 {
 		t.Fatalf("arguments=%#v copied secrets=%#v live secrets=%#v", workersFake.arguments, workersFake.secretCopy, workersFake.secretRef)
 	}
@@ -195,6 +201,9 @@ func TestOneTimeJobReturnsOutputWithoutRetainingHistory(t *testing.T) {
 	}
 	coordinatorFake.mu.Lock()
 	defer coordinatorFake.mu.Unlock()
+	if len(coordinatorFake.requests) != 1 || coordinatorFake.requests[0].RequestedWorkers != 1 {
+		t.Fatalf("job Worker capacity request = %#v", coordinatorFake.requests)
+	}
 	if len(coordinatorFake.releases) != 1 || coordinatorFake.releases[0] != "group:"+record.WorkerID+":" {
 		t.Fatalf("runtime releases = %#v", coordinatorFake.releases)
 	}
@@ -204,13 +213,27 @@ func TestStructuredArgumentArrayIsPassedUnchanged(t *testing.T) {
 	workersFake := &fakeWorkers{}
 	manager, _ := New(&fakeCoordinator{}, workersFake, testPolicy())
 	input := map[string]any{"table": "users"}
-	if _, err := manager.Run(context.Background(), "hook", "file:///programs/hook.ts", Options{Arguments: []any{input}}); err != nil {
+	if _, err := manager.Run(context.Background(), "hook", "file:///programs/hook.ts", Options{User: execution.SystemUser(), Arguments: []any{input}}); err != nil {
 		t.Fatal(err)
 	}
 	workersFake.mu.Lock()
 	defer workersFake.mu.Unlock()
 	if len(workersFake.arguments) != 1 || !reflect.DeepEqual(workersFake.arguments[0], input) {
 		t.Fatalf("arguments = %#v", workersFake.arguments)
+	}
+}
+
+func TestPreparedJobCopiesSandboxPlacement(t *testing.T) {
+	m, _ := New(&fakeCoordinator{}, &fakeWorkers{}, testPolicy())
+	defer m.Close()
+	group := "batch"
+	prepared, err := m.prepare("job", "file:///programs/job.ts", Options{User: execution.SystemUser(), PlacementGroup: &group})
+	if err != nil {
+		t.Fatal(err)
+	}
+	group = "changed"
+	if prepared.placementGroup == nil || *prepared.placementGroup != "batch" {
+		t.Fatal("prepared job retained caller-owned placement")
 	}
 }
 
@@ -221,7 +244,7 @@ func TestCompatibleReuseRetainsOnlyIdleWorkerMetadata(t *testing.T) {
 	policy.IdleRuntimeTimeout = time.Hour
 	manager, _ := New(&fakeCoordinator{}, workersFake, policy)
 	defer manager.Close()
-	first, err := manager.Run(context.Background(), "job", "file:///programs/job.ts", Options{Arguments: []any{"one"}})
+	first, err := manager.Run(context.Background(), "job", "file:///programs/job.ts", Options{User: execution.SystemUser(), Arguments: []any{"one"}})
 	if err != nil || first.State != "IDLE" {
 		t.Fatalf("first=%#v err=%v", first, err)
 	}
@@ -229,7 +252,7 @@ func TestCompatibleReuseRetainsOnlyIdleWorkerMetadata(t *testing.T) {
 	if err != nil || live.Result != nil || live.Logs != nil || live.ModuleDependencies != nil {
 		t.Fatalf("live idle record=%#v err=%v", live, err)
 	}
-	second, err := manager.Run(context.Background(), "job", "file:///programs/job.ts", Options{Arguments: []any{"two"}})
+	second, err := manager.Run(context.Background(), "job", "file:///programs/job.ts", Options{User: execution.SystemUser(), Arguments: []any{"two"}})
 	if err != nil || second.WorkerID != first.WorkerID || second.ExecutionID == first.ExecutionID {
 		t.Fatalf("first=%#v second=%#v err=%v", first, second, err)
 	}
@@ -252,7 +275,7 @@ func TestJobQueueIsBoundedAndCancellationDoesNotStartWorker(t *testing.T) {
 	policy.QueuedExecutionLimit = 1
 	manager, _ := New(&fakeCoordinator{}, workersFake, policy)
 	defer manager.Close()
-	first, err := manager.Run(context.Background(), "first", "file:///programs/job.ts", Options{Detached: true})
+	first, err := manager.Run(context.Background(), "first", "file:///programs/job.ts", Options{User: execution.SystemUser(), Detached: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,11 +284,11 @@ func TestJobQueueIsBoundedAndCancellationDoesNotStartWorker(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("first job did not start")
 	}
-	queued, err := manager.Run(context.Background(), "queued", "file:///programs/job.ts", Options{Detached: true})
+	queued, err := manager.Run(context.Background(), "queued", "file:///programs/job.ts", Options{User: execution.SystemUser(), Detached: true})
 	if err != nil || queued.State != "QUEUED" {
 		t.Fatalf("queued=%#v err=%v", queued, err)
 	}
-	if _, err := manager.Run(context.Background(), "overflow", "file:///programs/job.ts", Options{Detached: true}); err == nil {
+	if _, err := manager.Run(context.Background(), "overflow", "file:///programs/job.ts", Options{User: execution.SystemUser(), Detached: true}); err == nil {
 		t.Fatal("queue limit was not enforced")
 	}
 	if err := manager.Cancel(context.Background(), queued.ExecutionID); err != nil {
@@ -295,9 +318,13 @@ func TestSynchronousChildDoesNotQueueBehindItsWaitingParent(t *testing.T) {
 	policy.MaximumParallel = 1
 	manager, _ := New(coordinatorFake, workersFake, policy)
 	manager.records["parent"] = Record{ExecutionID: "parent", JobID: "parent-job", State: "RUNNING", Parallelism: 1}
-	ctx := execution.WithCaller(context.Background(), execution.Caller{ExecutionID: "parent", Workload: model.WorkloadJob})
+	alice, err := execution.UserForUsername("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := execution.WithCaller(context.Background(), execution.Caller{ExecutionID: "parent", Workload: model.WorkloadJob, User: alice})
 	record, err := manager.Run(ctx, "child-job", "file:///programs/child.ts", Options{Parallelism: 1})
-	if err != nil || record.State != "SUCCEEDED" {
+	if err != nil || record.State != "SUCCEEDED" || record.User != alice {
 		t.Fatalf("child=%#v err=%v", record, err)
 	}
 }
@@ -317,7 +344,7 @@ func TestParallelismAppliesPerLogicalJob(t *testing.T) {
 func TestJobTimeoutIncludesWorkerStartup(t *testing.T) {
 	workersFake := &fakeWorkers{startBlocking: true}
 	manager, _ := New(&fakeCoordinator{}, workersFake, testPolicy())
-	record, err := manager.Run(context.Background(), "slow", "file:///programs/slow.ts", Options{Timeout: 20 * time.Millisecond})
+	record, err := manager.Run(context.Background(), "slow", "file:///programs/slow.ts", Options{User: execution.SystemUser(), Timeout: 20 * time.Millisecond})
 	if !errors.Is(err, context.DeadlineExceeded) || record.State != "FAILED" {
 		t.Fatalf("record=%#v err=%v", record, err)
 	}
@@ -331,7 +358,7 @@ func TestWorkerStartFailureReleasesItsSandboxClaim(t *testing.T) {
 	coordinatorFake := &fakeCoordinator{}
 	workersFake := &fakeWorkers{startFailure: errors.New("start failed")}
 	manager, _ := New(coordinatorFake, workersFake, testPolicy())
-	record, err := manager.Run(context.Background(), "broken", "file:///programs/broken.ts", Options{})
+	record, err := manager.Run(context.Background(), "broken", "file:///programs/broken.ts", Options{User: execution.SystemUser()})
 	if err == nil || record.State != "FAILED" {
 		t.Fatalf("record=%#v err=%v", record, err)
 	}
@@ -349,7 +376,7 @@ func TestReusableWorkerReleasesItsClaimAfterIdleTimeout(t *testing.T) {
 	policy.Reuse = true
 	policy.IdleRuntimeTimeout = time.Millisecond
 	manager, _ := New(coordinatorFake, workersFake, policy)
-	if _, err := manager.Run(context.Background(), "reusable", "file:///programs/reusable.ts", Options{}); err != nil {
+	if _, err := manager.Run(context.Background(), "reusable", "file:///programs/reusable.ts", Options{User: execution.SystemUser()}); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(time.Second)
@@ -368,7 +395,7 @@ func TestReusableWorkerReleasesItsClaimAfterIdleTimeout(t *testing.T) {
 func TestJobUsesExplicitOwnerAndRelease(t *testing.T) {
 	coordinatorFake, workersFake := &fakeCoordinator{}, &fakeWorkers{}
 	manager, _ := New(coordinatorFake, workersFake, testPolicy())
-	if _, err := manager.Run(context.Background(), "logical-job", "file:///programs/job.ts", Options{OwnerID: "the8020/users", Namespace: "the8020", ReleaseID: "commit"}); err != nil {
+	if _, err := manager.Run(context.Background(), "logical-job", "file:///programs/job.ts", Options{User: execution.SystemUser(), OwnerID: "the8020/users", Namespace: "the8020", ReleaseID: "commit"}); err != nil {
 		t.Fatal(err)
 	}
 	coordinatorFake.mu.Lock()

@@ -16,10 +16,9 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 
-	"the8020/kernel/auth"
 	"the8020/kernel/cbus/core"
 	platformconsole "the8020/kernel/console"
-	"the8020/kernel/database"
+	"the8020/kernel/execution"
 	"the8020/kernel/sandbox/backend"
 	sshserver "the8020/kernel/ssh"
 )
@@ -265,43 +264,29 @@ func waitForOverlayReset(t *testing.T, manager *Manager, userID string) {
 	t.Fatal("development overlay did not reset after helper activation")
 }
 
+// This fixture proves SSH/PTY behavior; authentication policy runs in users-package tests.
+type sshProofAuthentication struct{}
+
+func (sshProofAuthentication) AuthenticatePassword(username string, password []byte) (execution.User, error) {
+	if string(password) != "development-ssh-proof" {
+		return execution.User{}, errors.New("denied")
+	}
+	return sshProofAuthentication{}.AuthenticateUser(username)
+}
+func (sshProofAuthentication) AuthenticateUser(username string) (execution.User, error) {
+	if username != "developer" {
+		return execution.User{}, errors.New("denied")
+	}
+	return execution.UserForUsername(username)
+}
+func (sshProofAuthentication) AuthenticateToken(context.Context, string) (execution.User, error) {
+	return execution.User{}, errors.New("not used")
+}
+
 func proveSSHConsole(t *testing.T, root string, developmentManager *Manager) {
 	t.Helper()
-	db := database.New(database.Config{Backend: database.BackendSQLite, Location: filepath.Join(root, "database", "system.db")})
-	if _, err := db.Check(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	for _, statement := range []string{
-		`CREATE TABLE "the8020__users__users" ("username" TEXT PRIMARY KEY, "passwordHash" TEXT NOT NULL, "enabled" INTEGER NOT NULL, "authVersion" INTEGER NOT NULL, "createdAt" TEXT NOT NULL, "updatedAt" TEXT NOT NULL) STRICT`,
-		`CREATE TABLE "the8020__users__sessions" ("sessionId" TEXT PRIMARY KEY, "username" TEXT NOT NULL, "secretHash" TEXT NOT NULL, "authVersion" INTEGER NOT NULL, "createdAt" TEXT NOT NULL, "expiresAt" TEXT NOT NULL) STRICT`,
-	} {
-		if _, err := db.ExecContext(context.Background(), statement); err != nil {
-			t.Fatal(err)
-		}
-	}
-	parameters := auth.Argon2Parameters{Memory: 8, Iterations: 1, Parallelism: 1, SaltLength: 8, OutputLength: 16}
-	hasher, err := auth.NewPasswordHasher(parameters, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	authentication, err := auth.New(auth.Config{
-		Database: db,
-		Argon2:   parameters,
-		Hasher:   hasher,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	const password = "development-ssh-proof"
-	passwordHash, err := hasher.Hash(password)
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := database.EncodeTime(db, time.Now())
-	if _, err := db.ExecContext(context.Background(), `INSERT INTO "the8020__users__users" ("username", "passwordHash", "enabled", "authVersion", "createdAt", "updatedAt") VALUES ($1, $2, $3, 1, $4, $4)`, "developer", passwordHash, true, now); err != nil {
-		t.Fatal(err)
-	}
+	authentication := sshProofAuthentication{}
 	consoleManager, err := platformconsole.New(platformconsole.Config{Authentication: authentication, Development: developmentManager})
 	if err != nil {
 		t.Fatal(err)

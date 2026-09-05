@@ -1,65 +1,64 @@
 # Purpose
 
-- Own ordinary users and opaque database-backed authentication sessions.
+- Own deployment cryptographic integrity and the platform JWT transport contract.
 
 # Ownership
 
-- Own Argon2id password hashing and PHC parsing, read-only user authentication,
-  opaque authentication-cookie creation and validation, current-session
-  logout, expiration cleanup, and trusted authentication context.
-- Do not own user/session administration, HTTP service access policy, Deno
-  transport, UUI logical sessions, browser rendering, roles, or permissions.
+- Own the Ed25519 private key, atomic persistence/replacement, arbitrary-byte
+  signing/verification, JWT issuance/verification, credential selection, and
+  rejected-cookie removal. Never query application tables or depend on a database.
+- Deno users owns accounts, password hashing, sessions, revocation, application
+  cookie construction, and login/logout. Kernel execution principals are
+  independent of all account rows, including system.
 
 # Local Contracts
 
-- Users and authentication sessions live only in
-  `the8020__users__users` and `the8020__users__sessions`. All users are peers
-  until a future permissions package defines roles. The package-owned
-  `users.*` commands exclusively create and administer users and authentication
-  sessions; the kernel has no parallel CRUD API or recovery-user commands.
-- Zero users is a valid state. Construction verifies the users and
-  authentication-session tables with bounded empty queries; missing or
-  inaccessible tables block the service/UUI plane while the admin socket and
-  database/package recovery remain available.
-- Usernames are the shared Linux/storage/sandbox identity: 3-32 lowercase ASCII
-  letters or digits, with no normalization, aliases, or path-safe conversion.
-- Passwords use Argon2id with per-password random salts and encoded PHC parameters; unknown users follow the same Argon2 verification path as wrong passwords.
-- Browser login may create an opaque authentication session. SSH password
-  verification returns only trusted user context, accepts mutable password
-  bytes without creating an immutable copy, and never retains or persists the
-  presented secret. SSH public-key verification may resolve the same trusted
-  context only for an existing enabled user after the protocol adapter verifies
-  the separate key factor.
-- Authentication cookies are opaque `v1.<id>.<secret>` values; the database
-  contains only SHA-256 secret hashes and collision-safe inserts never overwrite
-  an existing session.
-- Package-owned database transactions serialize mutations across kernels.
-  Password changes, disable operations, and explicit invalidation increment
-  `auth_version`, which authentication observes on its next read.
-- Ordinary validation is read-only except idempotent lazy deletion of expired
-  sessions.
-- Login, validation, logout, and cleanup pass the caller context through every
-  database operation, so request cancellation and shutdown cannot leave pool
-  acquisition or SQL work detached. Request-facing interfaces require those
-  context-aware methods directly.
-- Cookie headers are created completely by the kernel and always use `HttpOnly`,
-  `Path=/`, and configured `SameSite`/`Secure` attributes.
-- Active service dispatches register short-lived request identities and full
-  kernel-only authentication context for authenticated supervisor callbacks;
-  entries are removed when dispatch completes and are never persisted.
-
-# Work Guidance
-
-- Keep authentication-session and UUI-session terminology distinct. Never log
-  or return password hashes, presented passwords, cookie secrets, or stored
-  secret hashes.
+- `node/kernel/keys/signing.key` stores one standard base64-encoded 32-byte
+  Ed25519 seed, mode 0600 beneath a mode-0700 directory. It is outside all
+  service/job/development mounts, database storage, and the named secret store.
+- Startup precedence: non-empty `THE8020_SIGNING_KEY` is validated and atomically
+  persisted; otherwise load the file; otherwise generate once with crypto/rand.
+  Invalid provisioning fails startup without exposing the value.
+- `kernel.signing.replace` uses normal CBus secure input, atomically persists a
+  replacement, and immediately activates it. A still-configured environment
+  override wins again on the next restart. Status/replacement return only a
+  SHA-256 public-key fingerprint. Never log or return private material.
+- Nodes explicitly provisioned with the same seed accept the same tokens.
+  Replacing it invalidates previous tokens immediately; there is no key ring,
+  rotation grace period, external key lookup, or node-encryption scheme.
+- Authentication JWT uses golang-jwt/v5, EdDSA with Ed25519 only, typ `the8020-auth+jwt`, kid
+  equal to the current fingerprint, issuer `the8020`, and audience `the8020`.
+  Require iat and exp, exp after iat, unexpired exp, iat not in the future, and
+  valid nbf when present, without clock leeway. Tokens are at most 8192 bytes.
+- Routing JWTs use the same deployment key/EdDSA/kid/issuer/audience with the
+  distinct `the8020-route+jwt` type. Their only target fields are node, sandbox,
+  Worker, and persistent execution IDs. They carry no service/user records or
+  expiry lease: live supervisors alone govern keepalive and completion. Token
+  verification proves integrity, never existence or permission to recreate an
+  execution. Routing and authentication profiles reject each other's tokens.
+- Claims require canonical `sub = user:<username>`, a nonempty opaque `sid` of
+  at most 128 bytes, and a positive safe-integer `ver`. Only Deno interprets
+  session existence, account state, and authentication-version eligibility.
+  Cryptography cannot detect a revoked session or disabled account by itself.
+- `the8020-authorization: Bearer <jwt>` and `the8020_auth=<jwt>` carry the same
+  token. Explicit header presence wins, including empty, duplicate, or malformed
+  headers; it never falls back to cookies. Duplicate platform cookies fail.
+- Public services ignore tokens completely and forward credentials unverified
+  under their configured user. Protected services verify before request-triggered
+  execution and pass trusted claims to the existing target Worker for policy.
+  Rejection uses existing service configuration and clears the selected rejected
+  cookie with Path=/, HttpOnly, SameSite=Lax, and Secure on HTTPS.
+- Trusted Deno services and jobs use the existing private operations bridge to
+  sign arbitrary bytes and issue/verify JWTs. Raw signature validity never
+  qualifies as HTTP authentication. There are no signing allowlists or special
+  authentication sandboxes, Workers, services, or package copies.
+- Peer credentials use their existing separate transport; node forwarding
+  preserves the end-user platform header and cookie.
 
 # Verification
 
-- Authentication and SSH tests cover PHC creation/parsing/verification, bounded
-  table readiness, mutable transport-secret verification, package-owned user
-  state changes, opaque session creation and cross-node validation, revocation,
-  expiration, cleanup concurrency, cookie headers, password and public-key
-  identity resolution, and secret non-disclosure.
+- Tests cover private key persistence/modes/replacement, safe invalid input,
+  DB-independent cross-node signatures and routes, strict JWT rejection, precedence, and
+  cookie scope. HTTP/Worker and users-package regressions cover the policy split.
 
 # Child DOX Index

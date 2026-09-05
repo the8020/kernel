@@ -1,3 +1,4 @@
+import { trackStream } from "../worker/streams.ts";
 import {
   assertEnvelope,
   type Envelope,
@@ -6,11 +7,16 @@ import {
 } from "@the8020/protocol";
 import type {
   ExecutionMetadata,
+  ExecutionUserMetadata,
   KernelCall,
   RuntimeLogEvent,
   ServiceRequestMetadata,
   WorkerPermissionSet,
   WorkloadType,
+} from "../worker/contracts.ts";
+import {
+  canonicalExecutionOrigin,
+  canonicalExecutionUser,
 } from "../worker/contracts.ts";
 import {
   RuntimeWorker,
@@ -60,6 +66,8 @@ export interface WorkerStatus {
 
 interface PersistentBinding {
   workerId: string;
+  userId: string;
+  keepAliveMilliseconds: number;
   expiresAt: number;
   connections: number;
 }
@@ -70,6 +78,8 @@ interface ServiceWorkerLease {
   keepAliveMilliseconds: number;
   created: boolean;
   admitted: boolean;
+  binding?: PersistentBinding;
+  connected?: boolean;
 }
 
 interface ServicePool {
@@ -174,6 +184,11 @@ export class Supervisor {
     if (options.metadata.workloadType !== this.options.workloadType) {
       throw new Error("Worker workload type does not match runtime group");
     }
+    const user = canonicalExecutionUser(options.metadata.user);
+    const origin = canonicalExecutionOrigin(
+      options.metadata.origin,
+      options.metadata.workloadType,
+    );
     if (
       options.metadata.databaseBackend !== "sqlite" &&
       options.metadata.databaseBackend !== "postgresql"
@@ -185,6 +200,8 @@ export class Supervisor {
       nodeId: this.options.nodeId,
       runtimeGroupId: this.options.runtimeGroupId,
       sandboxId: this.options.sandboxId,
+      user,
+      origin,
     };
     const fingerprint = canonicalJSON({
       metadata,
@@ -248,32 +265,30 @@ export class Supervisor {
           workerId: metadata.workerId,
         }).catch(() => {});
       },
-      kernelCall: this.options.kernelCall === undefined
-        ? undefined
-        : async (call, signal) => {
-          const databaseAccess = metadata.databaseAccess ?? "full";
-          if (
-            call.operation.startsWith("database.") &&
-            call.operation !== "database.scope.close" &&
-            databaseAccess !== "full"
-          ) {
-            throw new Error(
-              "database SQL is not available to this Worker",
-            );
+      kernelCall: async (call, signal) => {
+        if (call.operation === "execution.completePersistent") {
+          if (call.persistentExecutionId === undefined) {
+            throw new Error("persistent execution identity is required");
           }
-          const result = await this.options.kernelCall!(call, signal);
-          if (
-            call.operation === "execution.completePersistent" &&
-            call.persistentExecutionId !== undefined
-          ) {
-            this.completePersistentExecution(
-              metadata.workloadId,
-              call.persistentExecutionId,
-              call.workerId,
-            );
-          }
-          return result;
-        },
+          this.completePersistentExecution(
+            metadata.workloadId,
+            call.persistentExecutionId,
+            call.workerId,
+          );
+          return { completed: true };
+        }
+        if (
+          call.operation.startsWith("database.") &&
+          call.operation !== "database.scope.close" &&
+          metadata.databaseAccess === "none"
+        ) {
+          throw new Error("database SQL is not available to this Worker");
+        }
+        if (this.options.kernelCall === undefined) {
+          throw new Error("kernel bridge is unavailable");
+        }
+        return await this.options.kernelCall(call, signal);
+      },
     });
     this.#workers.set(options.metadata.workerId, worker);
     this.#workerStartFingerprints.set(options.metadata.workerId, fingerprint);
@@ -312,7 +327,8 @@ export class Supervisor {
     functionName: string,
     input: unknown,
     signal: AbortSignal,
-    persistentExecutionId?: string,
+    persistentExecutionId: string | undefined,
+    user: ExecutionUserMetadata,
   ): Promise<WorkerInvocationResult> {
     const worker = this.#workers.get(workerId);
     if (worker === undefined || worker.closed || worker.draining) {
@@ -325,8 +341,9 @@ export class Supervisor {
       };
     }
     if (persistentExecutionId !== undefined) {
-      const binding = this.#servicePools.get(worker.metadata.workloadId)
-        ?.bindings.get(persistentExecutionId);
+      const pool = this.#servicePools.get(worker.metadata.workloadId);
+      if (pool !== undefined) this.#sweepPersistentBindings(pool);
+      const binding = pool?.bindings.get(persistentExecutionId);
       if (binding?.workerId !== workerId) {
         return {
           ok: false,
@@ -342,6 +359,7 @@ export class Supervisor {
       input,
       signal,
       persistentExecutionId,
+      user,
     );
   }
 
@@ -526,114 +544,78 @@ export class Supervisor {
     signal: AbortSignal,
   ): Promise<ServiceWorkerLease> {
     const pool = this.#servicePools.get(serviceId);
+    const existingOnly =
+      headers.get("the8020-internal-persistent-existing") === "true";
     if (pool === undefined) {
+      if (existingOnly) throw new PersistentExecutionLostError();
       throw new ServiceUnavailableError(`service ${serviceId} is unavailable`);
     }
-    const targetWorkerID = headers.get(
-      "x-80-20-internal-target-worker-id",
-    );
-    if (targetWorkerID !== null) {
-      const target = pool.workers.has(targetWorkerID)
-        ? this.#workers.get(targetWorkerID)
-        : undefined;
-      if (target === undefined || target.closed || target.draining) {
-        throw new ServiceUnavailableError(
-          `target Worker ${targetWorkerID} is unavailable`,
-        );
-      }
-      const executionId = headers.get(
-        "x-80-20-internal-persistent-execution-id",
-      ) ?? "";
-      if (pool.executionMode === "persistent" && executionId !== "") {
-        const keepAliveMilliseconds = Number(
-          headers.get("x-80-20-internal-persistent-keep-alive-ms") ?? "0",
-        );
-        if (
-          !Number.isSafeInteger(keepAliveMilliseconds) ||
-          keepAliveMilliseconds < 1
-        ) {
-          throw new TypeError(
-            "persistent keepalive must be a positive integer",
-          );
-        }
-        this.#sweepPersistentBindings(pool);
-        const existing = pool.bindings.get(executionId);
-        if (existing !== undefined && existing.workerId !== targetWorkerID) {
-          throw new ServiceUnavailableError(
-            `persistent execution ${executionId} belongs to another Worker`,
-          );
-        }
-        if (existing === undefined) {
-          let reservations = 0;
-          for (const binding of pool.bindings.values()) {
-            if (binding.workerId === targetWorkerID) reservations++;
-          }
-          if (reservations >= routingLimit(pool.concurrencyPerWorker)) {
-            throw new ServiceUnavailableError(
-              `target Worker ${targetWorkerID} has no persistent execution slot`,
-            );
-          }
-          pool.bindings.set(executionId, {
-            workerId: targetWorkerID,
-            expiresAt: this.options.now() + keepAliveMilliseconds,
-            connections: 0,
-          });
-          this.#notifyCapacity();
-        }
-        return await this.#admitPersistentLease(serviceId, pool, {
-          worker: target,
-          executionId,
-          keepAliveMilliseconds,
-          created: existing === undefined,
-          admitted: false,
-        }, signal);
-      }
-      await this.#waitForWorkerCapacity(serviceId, pool, target, signal);
-      return {
-        worker: target,
-        keepAliveMilliseconds: 0,
-        created: false,
-        admitted: true,
-      };
-    }
+    const targetWorkerId = headers.get("the8020-internal-target-worker-id");
     if (pool.executionMode === "stateless") {
+      if (existingOnly) throw new PersistentExecutionLostError();
+      const target = targetWorkerId === null
+        ? undefined
+        : this.#workers.get(targetWorkerId);
+      if (
+        targetWorkerId !== null &&
+        (target === undefined || !pool.workers.has(targetWorkerId))
+      ) {
+        throw new ServiceUnavailableError("target Worker is unavailable");
+      }
+      if (target !== undefined) {
+        await this.#waitForWorkerCapacity(serviceId, pool, target, signal);
+      }
       return {
-        worker: await this.#acquireServiceWorker(serviceId, signal),
+        worker: target ?? await this.#acquireServiceWorker(serviceId, signal),
         keepAliveMilliseconds: 0,
         created: false,
         admitted: true,
       };
     }
-    const executionId = headers.get(
-      "x-80-20-internal-persistent-execution-id",
-    ) ?? "";
+    const executionId =
+      headers.get("the8020-internal-persistent-execution-id") ?? "";
     const keepAliveMilliseconds = Number(
-      headers.get("x-80-20-internal-persistent-keep-alive-ms") ?? "0",
+      headers.get("the8020-internal-persistent-keep-alive-ms") ?? "0",
     );
     if (executionId.length === 0 || executionId.length > 256) {
       throw new TypeError("persistent execution ID is required");
     }
     if (
-      !Number.isSafeInteger(keepAliveMilliseconds) ||
-      keepAliveMilliseconds < 1
-    ) throw new TypeError("persistent keepalive must be a positive integer");
-
+      !Number.isSafeInteger(keepAliveMilliseconds) || keepAliveMilliseconds < 1
+    ) {
+      throw new TypeError("persistent keepalive must be a positive integer");
+    }
     const acquire = (): ServiceWorkerLease | undefined => {
       this.#sweepPersistentBindings(pool);
       const existing = pool.bindings.get(executionId);
       if (existing !== undefined) {
         const worker = this.#workers.get(existing.workerId);
-        if (worker !== undefined && !worker.closed && !worker.draining) {
-          return {
-            worker,
-            executionId,
-            keepAliveMilliseconds,
-            created: false,
-            admitted: false,
-          };
+        if (
+          worker === undefined || worker.closed || worker.draining ||
+          !pool.workers.has(existing.workerId)
+        ) {
+          pool.bindings.delete(executionId);
+          this.#notifyCapacity();
+          throw new PersistentExecutionLostError();
         }
-        pool.bindings.delete(executionId);
+        if (
+          targetWorkerId !== null && existing.workerId !== targetWorkerId ||
+          existing.userId !== requestUser(headers, worker.metadata).userId
+        ) {
+          throw new PersistentExecutionLostError();
+        }
+        return {
+          worker,
+          executionId,
+          keepAliveMilliseconds: existing.keepAliveMilliseconds,
+          created: false,
+          admitted: false,
+          binding: existing,
+        };
       }
+      // A signed route can select only a live binding. Never turn a follow-up
+      // into a new execution, even when its original Worker still exists.
+      if (existingOnly) throw new PersistentExecutionLostError();
       const reserved = new Map<string, number>();
       for (const binding of pool.bindings.values()) {
         reserved.set(
@@ -644,13 +626,17 @@ export class Supervisor {
       const candidates = [...pool.workers].map((id) => this.#workers.get(id)!)
         .filter((worker) =>
           !worker.closed && !worker.draining &&
+          (targetWorkerId === null ||
+            worker.metadata.workerId === targetWorkerId) &&
           (reserved.get(worker.metadata.workerId) ?? 0) <
             routingLimit(pool.concurrencyPerWorker)
-        ).sort((left, right) =>
+        )
+        .sort((left, right) =>
           Number(
               (reserved.get(left.metadata.workerId) ?? 0) >=
                 pool.concurrencyPerWorker,
-            ) - Number(
+            ) -
+            Number(
               (reserved.get(right.metadata.workerId) ?? 0) >=
                 pool.concurrencyPerWorker,
             ) ||
@@ -661,11 +647,14 @@ export class Supervisor {
         );
       const worker = candidates[0];
       if (worker === undefined) return undefined;
-      pool.bindings.set(executionId, {
+      const binding: PersistentBinding = {
         workerId: worker.metadata.workerId,
+        userId: requestUser(headers, worker.metadata).userId,
+        keepAliveMilliseconds,
         expiresAt: this.options.now() + keepAliveMilliseconds,
         connections: 0,
-      });
+      };
+      pool.bindings.set(executionId, binding);
       this.#notifyCapacity();
       return {
         worker,
@@ -673,6 +662,7 @@ export class Supervisor {
         keepAliveMilliseconds,
         created: true,
         admitted: false,
+        binding,
       };
     };
 
@@ -719,6 +709,7 @@ export class Supervisor {
     signal: AbortSignal,
     alreadyQueued = false,
   ): Promise<ServiceWorkerLease> {
+    this.#connectServiceWorkerLease(serviceId, lease);
     try {
       await this.#waitForWorkerCapacity(
         serviceId,
@@ -728,12 +719,12 @@ export class Supervisor {
         alreadyQueued,
       );
       lease.admitted = true;
+      if (pool.bindings.get(lease.executionId!) !== lease.binding) {
+        throw new PersistentExecutionLostError();
+      }
       return lease;
     } catch (error) {
-      if (lease.created) {
-        pool.bindings.delete(lease.executionId!);
-        this.#notifyCapacity();
-      }
+      this.#finishServiceWorkerLease(serviceId, lease, false);
       throw error;
     }
   }
@@ -790,10 +781,11 @@ export class Supervisor {
     successful: boolean,
   ): void {
     this.#releaseWorkerAdmission(serviceId, lease);
+    this.#disconnectServiceWorkerLease(serviceId, lease);
     if (lease.executionId === undefined) return;
     const pool = this.#servicePools.get(serviceId);
     const binding = pool?.bindings.get(lease.executionId);
-    if (binding?.workerId !== lease.worker.metadata.workerId) return;
+    if (binding === undefined || binding !== lease.binding) return;
     if (successful) {
       binding.expiresAt = this.options.now() + lease.keepAliveMilliseconds;
     } else if (lease.created) {
@@ -848,7 +840,10 @@ export class Supervisor {
     const binding = this.#servicePools.get(serviceId)?.bindings.get(
       lease.executionId,
     );
-    if (binding?.workerId === lease.worker.metadata.workerId) {
+    if (
+      binding !== undefined && binding === lease.binding && !lease.connected
+    ) {
+      lease.connected = true;
       binding.connections++;
     }
   }
@@ -861,7 +856,8 @@ export class Supervisor {
     const binding = this.#servicePools.get(serviceId)?.bindings.get(
       lease.executionId,
     );
-    if (binding?.workerId === lease.worker.metadata.workerId) {
+    if (binding !== undefined && binding === lease.binding && lease.connected) {
+      lease.connected = false;
       binding.connections = Math.max(0, binding.connections - 1);
       binding.expiresAt = this.options.now() + lease.keepAliveMilliseconds;
     }
@@ -1126,12 +1122,14 @@ export class Supervisor {
             (typeof payload.persistent_execution_id !== "string" ||
               payload.persistent_execution_id.length === 0)
           ) throw new TypeError("persistent execution ID must be non-empty");
+          const user = canonicalExecutionUser(payload.user);
           return await this.invokeWorker(
             decodeURIComponent(workerInvoke[1]!),
             payload.function,
             payload.input,
             request.signal,
             payload.persistent_execution_id,
+            user,
           );
         },
       );
@@ -1232,10 +1230,10 @@ export class Supervisor {
           request.signal,
         );
         const worker = lease.worker;
-        const method = request.headers.get("x-80-20-method") ?? "GET";
+        const method = request.headers.get("the8020-internal-method") ?? "GET";
         const responsePromise = worker.dispatchService(
           new Request(
-            request.headers.get("x-80-20-url") ?? "http://service/",
+            request.headers.get("the8020-internal-url") ?? "http://service/",
             {
               method,
               headers: forwardedHeaders(request.headers),
@@ -1250,14 +1248,22 @@ export class Supervisor {
         this.#releaseWorkerAdmission(serviceId, lease);
         const response = await responsePromise;
         const headers = new Headers(response.headers);
-        headers.set("x-80-20-runtime-worker-id", worker.metadata.workerId);
-        headers.set("x-80-20-service-response", "true");
-        this.#finishServiceWorkerLease(
-          serviceId,
-          lease,
-          response.status >= 200 && response.status < 400,
+        headers.set(
+          "the8020-internal-selected-worker-id",
+          worker.metadata.workerId,
         );
-        return new Response(response.body, {
+        headers.set("the8020-internal-service-response", "true");
+        const finish = () =>
+          this.#finishServiceWorkerLease(
+            serviceId,
+            lease!,
+            response.status >= 200 && response.status < 400,
+          );
+        const body = response.body === null
+          ? null
+          : trackStream(response.body, finish);
+        if (body === null) finish();
+        return new Response(body, {
           status: response.status,
           statusText: response.statusText,
           headers,
@@ -1266,12 +1272,18 @@ export class Supervisor {
         if (lease !== undefined) {
           this.#finishServiceWorkerLease(serviceId, lease, false);
         }
+        if (error instanceof PersistentExecutionLostError) {
+          return Response.json({ error: "persistent_execution_lost" }, {
+            status: 409,
+            headers: { "the8020-internal-service-response": "true" },
+          });
+        }
         if (error instanceof ServiceUnavailableError) {
           return Response.json(
             { error: "service_unavailable", message: error.message },
             {
               status: 503,
-              headers: { "x-80-20-service-response": "true" },
+              headers: { "the8020-internal-service-response": "true" },
             },
           );
         }
@@ -1349,7 +1361,7 @@ export class Supervisor {
       return Response.json({
         error: "service_unavailable",
         message: errorMessage(error),
-      }, { status: 503 });
+      }, { status: error instanceof PersistentExecutionLostError ? 409 : 503 });
     }
     const worker = lease.worker;
     const requestedProtocols = (request.headers.get("sec-websocket-protocol") ??
@@ -1363,7 +1375,7 @@ export class Supervisor {
     try {
       const openedPromise = worker.openServiceWebSocket(
         new Request(
-          request.headers.get("x-80-20-url") ?? "http://service/",
+          request.headers.get("the8020-internal-url") ?? "http://service/",
           {
             method: "GET",
             headers: forwardedHeaders(request.headers),
@@ -1409,8 +1421,6 @@ export class Supervisor {
         headers: opened.headers,
       });
     }
-    this.#finishServiceWorkerLease(serviceId, lease, true);
-    this.#connectServiceWorkerLease(serviceId, lease);
     const upgraded = Deno.upgradeWebSocket(request, {
       protocol: protocol || undefined,
     });
@@ -1444,11 +1454,15 @@ export class Supervisor {
     };
     socket.onclose = (event) => {
       opened.connection.close(event.code || 1000, event.reason);
-      this.#disconnectServiceWorkerLease(serviceId, lease);
+      this.#finishServiceWorkerLease(serviceId, lease, true);
     };
     socket.onerror = () => {
       opened.connection.close(1011, "WebSocket transport failed");
     };
+    upgraded.response.headers.set(
+      "the8020-internal-selected-worker-id",
+      worker.metadata.workerId,
+    );
     return upgraded.response;
   }
 
@@ -1557,12 +1571,12 @@ function sendWebSocket(socket: WebSocket, data: string | Uint8Array): void {
 function forwardedHeaders(headers: Headers): Headers {
   const result = new Headers(headers);
   result.delete("authorization");
-  result.delete("x-80-20-method");
-  result.delete("x-80-20-url");
-  result.delete("x-80-20-runtime-worker-id");
-  result.delete("x-80-20-service-response");
+  result.delete("the8020-internal-method");
+  result.delete("the8020-internal-url");
+  result.delete("the8020-internal-selected-worker-id");
+  result.delete("the8020-internal-service-response");
   for (const name of [...result.keys()]) {
-    if (name.toLowerCase().startsWith("x-80-20-internal-")) {
+    if (name.toLowerCase().startsWith("the8020-internal-")) {
       result.delete(name);
     }
   }
@@ -1570,35 +1584,40 @@ function forwardedHeaders(headers: Headers): Headers {
 }
 
 class ServiceUnavailableError extends Error {}
+class PersistentExecutionLostError extends Error {
+  constructor() {
+    super("persistent execution lost");
+  }
+}
 
 function trustedServiceMetadata(
   headers: Headers,
   worker: ExecutionMetadata,
 ): ServiceRequestMetadata {
   const generation = Number(
-    headers.get("x-80-20-internal-service-generation") ??
+    headers.get("the8020-internal-service-generation") ??
       worker.service?.generation ?? 0,
   );
   return {
-    requestId: headers.get("x-80-20-internal-request-id") ||
+    requestId: headers.get("the8020-internal-request-id") ||
       crypto.randomUUID(),
-    serviceId: headers.get("x-80-20-internal-service-id") ||
+    serviceId: headers.get("the8020-internal-service-id") ||
       worker.service?.serviceId || worker.workloadId,
     serviceGeneration: Number.isSafeInteger(generation) ? generation : 0,
-    canonicalBasePath: headers.get("x-80-20-internal-canonical-base-path") ||
+    canonicalBasePath: headers.get("the8020-internal-canonical-base-path") ||
       worker.service?.canonicalBasePath || "/",
-    originalUrl: headers.get("x-80-20-internal-original-url") ||
-      headers.get("x-80-20-url") || "http://service/",
+    originalUrl: headers.get("the8020-internal-original-url") ||
+      headers.get("the8020-internal-url") || "http://service/",
     client: {
-      ipAddress: headers.get("x-80-20-internal-client-ip-address") || "",
+      ipAddress: headers.get("the8020-internal-client-ip-address") || "",
       networkScope: clientNetworkScope(headers),
     },
     persistentExecutionId: headers.get(
-      "x-80-20-internal-persistent-execution-id",
+      "the8020-internal-persistent-execution-id",
     ) || undefined,
     persistentKeepAliveMilliseconds: positiveIntegerHeader(
       headers,
-      "x-80-20-internal-persistent-keep-alive-ms",
+      "the8020-internal-persistent-keep-alive-ms",
     ),
     execution: {
       nodeId: worker.nodeId,
@@ -1607,19 +1626,27 @@ function trustedServiceMetadata(
       workerId: worker.workerId,
       workerExecutionId: worker.executionId,
       persistentExecutionId: headers.get(
-        "x-80-20-internal-persistent-execution-id",
+        "the8020-internal-persistent-execution-id",
       ) || undefined,
     },
-    auth: trustedAuthContext(headers),
-    authenticatedUser: headers.get("x-80-20-internal-auth-username") ||
-      undefined,
+    auth: { authenticated: false },
+    authentication: headers.has("the8020-internal-authentication")
+      ? JSON.parse(
+        new TextDecoder().decode(
+          Uint8Array.fromBase64(
+            headers.get("the8020-internal-authentication")!,
+          ),
+        ),
+      )
+      : undefined,
+    user: requestUser(headers, worker),
   };
 }
 
 function clientNetworkScope(
   headers: Headers,
 ): ServiceRequestMetadata["client"]["networkScope"] {
-  const value = headers.get("x-80-20-internal-client-network-scope");
+  const value = headers.get("the8020-internal-client-network-scope");
   return value === "loopback" || value === "private" ||
       value === "link_local" || value === "public" || value === "special"
     ? value
@@ -1634,28 +1661,6 @@ function positiveIntegerHeader(
   if (raw === null) return undefined;
   const value = Number(raw);
   return Number.isSafeInteger(value) && value > 0 ? value : undefined;
-}
-
-function trustedAuthContext(
-  headers: Headers,
-): import("../worker/contracts.ts").AuthContext {
-  if (headers.get("x-80-20-internal-auth-authenticated") !== "true") {
-    return { authenticated: false };
-  }
-  const authVersion = Number(
-    headers.get("x-80-20-internal-auth-version") ?? "0",
-  );
-  return {
-    authenticated: true,
-    realm: headers.get("x-80-20-internal-auth-realm") === "user"
-      ? "user"
-      : undefined,
-    userId: headers.get("x-80-20-internal-auth-user-id") || undefined,
-    username: headers.get("x-80-20-internal-auth-username") || undefined,
-    authVersion: Number.isSafeInteger(authVersion) && authVersion > 0
-      ? authVersion
-      : undefined,
-  };
 }
 
 async function validateEntrypoints(entrypoints: string[]): Promise<void> {
@@ -1769,4 +1774,14 @@ export function serviceCheckArguments(
   const args = ["check", "--config=/opt/runtime/deno.json"];
   args.push(...(Array.isArray(entrypoint) ? entrypoint : [entrypoint]));
   return args;
+}
+
+function requestUser(
+  headers: Headers,
+  worker: ExecutionMetadata,
+): ExecutionUserMetadata {
+  return canonicalExecutionUser({
+    userId: headers.get("the8020-internal-user-id") || worker.user.userId,
+    username: headers.get("the8020-internal-username") || worker.user.username,
+  });
 }

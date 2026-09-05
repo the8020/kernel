@@ -5,14 +5,15 @@
 
 # Ownership
 
-- Reconcile shared package desired state into node-local low-level service
+- Reconcile accepted runtime specifications into node-local low-level service
   sandbox allocations, perform rolling version replacement, retain healthy
   versions on replacement failure, and publish node-local observed status.
 - Enforce public/authenticated access, strip canonical service prefixes and
   untrusted internal headers, attach trusted request/auth/execution metadata,
   stream HTTP bodies, proxy WebSockets, and select local or remote capacity.
-- Own the shared opaque session-route registry and route follow-up work to an
-  exact node, sandbox, Worker, and execution context.
+- Issue and verify signed route descriptors, then dispatch to exact node,
+  sandbox, Worker, and persistent execution identities. No database dependency
+  or route registry exists here; the supervisor owns execution lifetime.
 - Do not parse manifests, execute application handlers, interpret UUI messages,
   schedule inside a sandbox-local pool, or implement sandbox lifecycle.
 
@@ -21,28 +22,46 @@
 - Canonical service lifecycle is `stateless` or `session`; the latter translates
   once to the supervisor's generic internal `persistent` execution mode. HTTP,
   streaming, SSE, and WebSocket routing use the same boundary in either mode.
-- A persistent first request creates a high-entropy `X-80-20-Route`; only its
-  SHA-256 key is persisted in `the8020__services__routes`. Routes are service-
-  and authenticated-user-bound and resolve to node, pool, Worker, and logical
-  execution. Missing, expired, or lost routes return a conflict and never
-  silently create replacement state.
-- Ordinary clients reuse the route header. Browser WebSockets first establish
-  through HTTP, then carry the same token as `?route=` because browser APIs
-  cannot set/read arbitrary upgrade headers. The query is removed before Worker
-  dispatch and route values are never logged.
-- Active HTTP streams and WebSockets refresh their route lease; a stopped or
-  crashed owning transport stops refreshing, so even a previously connected
-  route expires after session keepalive. Worker keepalive does not extend it.
-- A local persisted route is valid only while its exact pool and Worker remain
-  present. Kernel restart or Worker replacement invalidates a route whose old
-  Worker identity is gone and returns `409` so ordinary clients can establish a
-  replacement instead of looping on a supervisor `503`.
-- A generic authenticated persistent-completion callback removes only the route
-  for the caller's exact service, Worker, and logical execution. The kernel does
-  not receive or infer an application termination reason.
+- Initial HTTP or WebSocket responses sign `the8020-route+jwt` only after the
+  exact Worker is known, using the existing deployment signer. The descriptor
+  contains node, sandbox, Worker, and persistent execution IDs. Routing and
+  authentication validators reject each other's JWT type.
+- Ordinary clients reuse `the8020-route`; browser WebSockets reuse it as
+  `?route=` after HTTP establishment. Remove the query and header before Worker
+  dispatch and never log tokens. Signed routes require no table, token hash,
+  kernel lease timer, denylist, or refresh protocol.
+- Follow-ups resolve node IDs through topology without cold allocation. Local
+  pools prove membership in the service selected by the URL; the supervisor
+  proves the exact binding exists and belongs to the current principal.
+  Missing/expired/completed bindings return `409` and never recreate state.
+  Replacement runtime IDs cannot inherit stale routes. Unknown transport
+  outcomes and temporarily unavailable nodes stay transport failures; no replay
+  or replacement execution is attempted.
+- The supervisor holds bindings through HTTP/stream/SSE/WebSocket lifetime and
+  disconnect keepalive, and releases them on expiry or explicit local completion.
+  Cached absolute occupancy drives kernel capacity, draining, and retirement;
+  there is no duplicate route lease or completion RPC back to Go.
+- Headers use lowercase `the8020-*` names in source. All private transport
+  metadata uses `the8020-internal-`; stripping compares lowercase names even
+  when net/http canonicalizes them. Worker responses cannot forge route headers
+  or expose private metadata. WebSocket response modification runs before the
+  proxy sends upgrade headers, preserving streaming and the selected target.
 - Stateless requests choose least-loaded local sandboxes and Workers. Session
   follow-ups target the recorded Worker; initial session work reserves one
   logical execution slot through the generic supervisor contract.
+- Public dispatch never reads or verifies platform credentials, evaluates an
+  account/session, or supplies an authentication hook. It uses the configured
+  execution principal and preserves credentials as ordinary unverified request
+  data. Authenticated dispatch uses `kernel/auth` JWT verification before cold
+  reconciliation, capacity, persistent binding, or Worker dispatch. An explicit
+  `the8020-authorization` header wins over `the8020_auth`, including when invalid.
+  Rejection uses the service's existing unauthenticated response and clears a
+  rejected selected browser cookie. Client-forged internal headers are stripped.
+- Successful verification carries claims, the composition-selected package hook,
+  and the existing unauthenticated response policy as trusted request metadata.
+  It never marks application authentication complete. The target Worker approves
+  user/session policy before handler/upgrade; kernel routing and callbacks retain
+  the signed principal. Go never queries the users package tables.
 - Warm routing uses one immutable definition lookup, one cache-only supervisor
   capacity read per candidate sandbox, a short reservation, and final dispatch.
   It performs no manifest read, Worker scan, live supervisor inspection, metrics
@@ -87,16 +106,17 @@
   the same rejected version; an explicit restart or a new version clears the
   rejection and attempts it once. Capacity and infrastructure failures remain
   retryable `PENDING_CAPACITY` behavior.
-- Startup performs one fixed-depth package/service discovery. Periodic
+- Startup consumes the accepted service runtime index. Periodic
   maintenance consumes at most 256 deduplicated queued services with live
   runtime sandboxes, draining pools, or pending capacity; it never scans the
-  service/package catalogs or every runtime pool.
+  service/package catalogs or every runtime pool. Failed retirement remains in
+  this same queue until stopped pools and observed records are removed.
   Explicit service mutations, requests, and `ReconcileAll` reconcile
   immediately.
 - Active request routing uses the immutable definition snapshot belonging to the
   loaded Worker version; it never reparses manifests or scans shared state on
-  the hot path. Cold starts and reconciliation read the authoritative activated
-  definition before allocating capacity.
+  the hot path. Cold starts and reconciliation read the accepted runtime
+  specification before allocating capacity.
 - Background capacity reconciliation is single-flight per service, owned by the
   manager lifecycle, cancelled during close, and joined before shutdown returns.
 - Service reconciliation uses the same per-service capacity lock and holds no
@@ -109,10 +129,10 @@
   generation. Every stale pool follows the same drain workflow: it receives no
   new routed work, occupied Workers remain `DRAINING` without making the switch
   fail, and maintenance retries until it can remove the fully stopped record.
-- Package synchronization increments every current service version through
-  `Reload` and uses `Retire` to stop and forget runtime capacity for services no
-  longer declared by the package. Shared service desired state remains intact so
-  restoring a prior package version can reconcile it again.
+- `Index.ReplacePackage` validates the entire fragment, then replaces it under
+  one short publication lock and reports removed IDs for retirement. Hook or
+  specification failure leaves the old fragment untouched. The owning reindex
+  path handles boot, activation, removal, edits, and revision convergence.
 - Entrypoint/OpenAPI validation uses an isolated temporary pool and removes its
   terminal record after validation; reconciliation garbage-collects stopped
   validation records left by earlier kernels.
@@ -131,8 +151,6 @@
 - Request and response bodies remain streaming. Canonical path validation
   rejects encoded separators, backslashes, nulls, traversal, invalid UTF-8, and
   client-supplied internal headers.
-- Cookie validation receives the public request context directly so a cancelled
-  request cannot leave database work detached.
 - Trusted request metadata includes the normalized IP address observed on the
   kernel socket and its loopback, private, link-local, public, or special
   network scope. Client-supplied internal address metadata is discarded; proxy
@@ -140,15 +158,15 @@
 
 # Work Guidance
 
-- Re-read exact manifests during reconciliation and cold start, never warm
-  dispatch. Keep runtime snapshots limited to observed execution state and keep
+- Read only accepted runtime specifications during routing/reconciliation.
+  Keep runtime snapshots limited to observed execution state and keep
   reservations private to routing.
 
 # Verification
 
 - `webservices_test.go` and `persistent_routes_test.go` cover canonical and
   authenticated routing, streaming, generic HTTP/WebSocket persistence, exact
-  Worker reuse, shared token-safe routes, crash expiry, node forwarding,
+  Worker reuse, signed exact-target routes, supervisor expiry, node forwarding,
   assigned sandbox indexes, reserved-demand Worker scaling, finite maximums,
   fake-clock Worker keepalive, minimum Worker and sandbox floors, compatible
   sandbox packing and Worker-limit-triggered minimum spillover, per-service
@@ -159,7 +177,7 @@
   degraded cold-start routing, in-place missing-capacity recovery, capacity
   states, stale-pool cleanup, terminal pool-record removal, validation-pool
   cleanup, stale persistent-Worker rejection, exact persistent completion,
-  one-time catalog discovery, bounded background maintenance, stable
+  accepted-index discovery, bounded background maintenance, stable
   rejected-version suppression with explicit retry, and duplicate failure
   suppression.
 

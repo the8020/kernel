@@ -6,8 +6,9 @@
 
 - Own `/run/the8020/kernel.sock` host-side lifecycle, per-sandbox token
   verification, protocol envelopes, in-memory runtime snapshots, and
-  supervisor-mediated authentication, administration, typed runtime operations,
-  database, exact-Worker invocation, and persistent completion calls.
+  supervisor-mediated administration, typed runtime operations,
+  database, and exact-Worker invocation calls. Persistent completion remains
+  local to the owning supervisor and never traverses this socket.
 - Do not expose public APIs, control Workers, probe containerd, allocate
   networking, or replace direct supervisor health checks.
 
@@ -15,8 +16,8 @@
 
 - Public API: `New`, `Server.Start`, runtime dependency setters,
   `Server.Address`, and `Close`.
-- Only generated registration, heartbeat, authentication,
-  administrative, database, Worker-invocation, and persistent-completion
+- Only generated registration, heartbeat,
+  administrative, database, and Worker-invocation
   envelopes are accepted; envelope/payload versions and runtime-group identity
   must agree, constant-time bearer validation uses the state store's preloaded
   token cache, unknown identities remain cache-only misses, and terminal groups
@@ -30,19 +31,21 @@
   validation and required nonempty execution/request identity. They do not
   reverse-query the supervisor or scan Workers per call.
 - Administration and typed-operation calls carry the trusted Worker execution
-  in Go context so synchronous child jobs cannot queue behind the waiting parent
-  that requested them.
+  and effective user in Go context so child jobs inherit identity and cannot
+  queue behind the waiting parent that requested them.
 - Sandbox and workload identity derive from the authenticated runtime envelope.
   Payloads carry only Worker execution and request identity plus fields owned by
-  the selected operation; service identity appears only where persistent routing
-  requires it.
-- Authentication login/logout alone remains service-request scoped because it
-  consumes the public request's security and current-user context. Password
-  payloads are never logged, and the callback request context reaches all
-  authentication database work without compatibility fallbacks.
+  the selected operation.
+- Signing and verification are ordinary typed runtime operations for both
+  service and job Workers. There are no login/logout endpoints, application
+  account/session types, or active HTTP request registry. Secure program inputs
+  use the existing job path and never enter diagnostics.
 - Administrative calls dispatch the existing transport-independent registry;
   typed package operations use the separate private dispatcher and never
   recurse through public package commands.
+- Typed-operation results always include `result`, preserving JSON null as null.
+  Never omit it or add caller-specific null/undefined coercions; verification and
+  other optional results depend on the shared transport preserving their value.
 - Database calls delegate to the kernel-owned database. The backend name needed
   during module import travels in non-secret Worker metadata.
 - Database transaction tokens are scoped by runtime group, sandbox, Worker,
@@ -51,11 +54,9 @@
   transactions. These checks are in memory and never validate Worker liveness.
   Evaluator Workers have database calls disabled.
 - Worker invocation applies a five-second context and forwards one exact
-  node/sandbox/Worker plus optional persistent-execution target while treating
-  the registered function and JSON as opaque.
-- Persistent completion derives source placement and execution identity from the
-  trusted Worker call and removes only an exactly matching generic route; it
-  carries no application reason.
+  node/sandbox/Worker, the caller's validated effective user, and an optional
+  persistent-execution target while treating the registered function and JSON
+  as opaque.
 - Production mounts the socket's containing node-private directory for the
   trusted supervisor, while application Worker permissions deny both the socket
   and token. Supervisors open a new Unix connection per call so a socket replaced
@@ -72,7 +73,7 @@
 
 - Unit tests cover Unix listener lifecycle/reconnect, token/protocol and
   terminal-state rejection, memory-only revisioned snapshots, job/service
-  runtime identity, authentication, administration and typed operations,
-  concurrent database access, exact Worker invocation, and persistent completion.
+  runtime identity, administration and typed operations,
+  concurrent database access, and exact Worker invocation.
 
 # Child DOX Index

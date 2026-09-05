@@ -14,15 +14,13 @@ import (
 // PackageSetUpdate is the targeted local work caused by one published shared
 // package-set revision. Source has already converged when Poll returns it.
 type PackageSetUpdate struct {
-	Revision          uint64
-	Packages          []string
-	ReconcileServices []string
-	RetireServices    []string
+	Revision uint64
+	Packages []string
 }
 
 // PackageRevisionFollower keeps one node's package checkouts aligned with the
 // exact commits published in the shared database. The common no-change path is
-// one scalar query; package rows and service rows are read only after revision
+// one scalar query; package rows are read only after revision
 // advancement.
 type PackageRevisionFollower struct {
 	store *Store
@@ -32,81 +30,6 @@ type PackageRevisionFollower struct {
 	commits         map[string]string
 	pendingRevision uint64
 	pendingCommits  map[string]string
-}
-
-// ServiceSetUpdate is the exact desired-state work published since one node's
-// last acknowledged service revision.
-type ServiceSetUpdate struct {
-	Revision          uint64
-	ReconcileServices []string
-	RetireServices    []string
-}
-
-// ServiceRevisionFollower observes operator service changes independently of
-// package revisions. Its unchanged path is one scalar query; a changed path
-// reads only the latest markers newer than the acknowledged revision.
-type ServiceRevisionFollower struct {
-	store ServiceRevisionStore
-
-	mu              sync.Mutex
-	revision        uint64
-	pendingRevision uint64
-}
-
-func NewServiceRevisionFollower(ctx context.Context, store *Store) (*ServiceRevisionFollower, error) {
-	if store == nil {
-		return nil, errors.New("package store is required")
-	}
-	revisions, ok := store.state.(ServiceRevisionStore)
-	if !ok {
-		return nil, errors.New("service state store cannot follow shared revisions")
-	}
-	revision, err := revisions.ServiceRevision(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("read service revision: %w", err)
-	}
-	return &ServiceRevisionFollower{store: revisions, revision: revision}, nil
-}
-
-func (f *ServiceRevisionFollower) Poll(ctx context.Context) (ServiceSetUpdate, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	revision, err := f.store.ServiceRevision(ctx)
-	if err != nil {
-		return ServiceSetUpdate{}, fmt.Errorf("read service revision: %w", err)
-	}
-	if revision < f.revision {
-		return ServiceSetUpdate{}, fmt.Errorf("service revision moved backwards from %d to %d", f.revision, revision)
-	}
-	if revision == f.revision {
-		return ServiceSetUpdate{}, nil
-	}
-	changes, err := f.store.ServiceChanges(ctx, f.revision, revision)
-	if err != nil {
-		return ServiceSetUpdate{}, fmt.Errorf("load changed services: %w", err)
-	}
-	update := ServiceSetUpdate{Revision: revision}
-	for _, change := range changes {
-		if change.Active {
-			update.ReconcileServices = append(update.ReconcileServices, change.ServiceID)
-		} else {
-			update.RetireServices = append(update.RetireServices, change.ServiceID)
-		}
-	}
-	update.ReconcileServices = uniqueSorted(update.ReconcileServices)
-	update.RetireServices = uniqueSorted(update.RetireServices)
-	f.pendingRevision = revision
-	return update, nil
-}
-
-func (f *ServiceRevisionFollower) Acknowledge(revision uint64) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if revision == 0 || revision != f.pendingRevision {
-		return fmt.Errorf("service revision %d is not pending", revision)
-	}
-	f.revision, f.pendingRevision = revision, 0
-	return nil
 }
 
 func NewPackageRevisionFollower(ctx context.Context, store *Store, installed map[string]string) (*PackageRevisionFollower, error) {
@@ -156,28 +79,7 @@ func (f *PackageRevisionFollower) Poll(ctx context.Context) (PackageSetUpdate, e
 			return PackageSetUpdate{}, fmt.Errorf("converge package %s: %w", packageID, err)
 		}
 	}
-	inventory, ok := f.store.state.(interface {
-		PackageServices(context.Context, string) ([]PackageServiceState, error)
-	})
-	if !ok {
-		return PackageSetUpdate{}, errors.New("service state store cannot list package services")
-	}
 	update := PackageSetUpdate{Revision: revision, Packages: changed}
-	for _, packageID := range changed {
-		services, err := inventory.PackageServices(ctx, packageID)
-		if err != nil {
-			return PackageSetUpdate{}, fmt.Errorf("load services for package %s: %w", packageID, err)
-		}
-		for _, service := range services {
-			if service.Active {
-				update.ReconcileServices = append(update.ReconcileServices, service.ServiceID)
-			} else {
-				update.RetireServices = append(update.RetireServices, service.ServiceID)
-			}
-		}
-	}
-	update.ReconcileServices = uniqueSorted(update.ReconcileServices)
-	update.RetireServices = uniqueSorted(update.RetireServices)
 	f.pendingRevision, f.pendingCommits = revision, target
 	return update, nil
 }

@@ -1,5 +1,5 @@
 schema_version = 1
-runtime_protocol_version = 1
+runtime_protocol_version = 3
 runtime_image_schema_version = 1
 
 [containerd]

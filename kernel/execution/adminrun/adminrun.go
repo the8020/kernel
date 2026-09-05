@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"the8020/kernel/execution"
 	"the8020/kernel/execution/jobs"
 	"the8020/kernel/execution/supervisor"
 	"the8020/kernel/sandbox/model"
@@ -146,7 +147,7 @@ func (m *Manager) submit(ctx context.Context, jobID, artifactID, relative string
 	if options.Input != nil {
 		arguments = []any{options.Input}
 	}
-	record, err := m.jobs.Run(ctx, jobID, entrypoint, jobs.Options{OwnerID: options.OwnerID, Arguments: arguments, Detached: options.Detached, GroupKey: options.GroupKey, Namespace: options.Namespace, Timeout: options.Timeout, Reuse: options.Reuse, Permissions: permissions, ReleaseID: artifactID, Workspace: options.Workspace, WorkspaceWritable: options.WorkspaceWritable})
+	record, err := m.jobs.Run(ctx, jobID, entrypoint, jobs.Options{User: execution.DefaultUser(ctx), OwnerID: options.OwnerID, Arguments: arguments, Detached: options.Detached, GroupKey: options.GroupKey, Namespace: options.Namespace, Timeout: options.Timeout, Reuse: options.Reuse, Permissions: permissions, ReleaseID: artifactID, Workspace: options.Workspace, WorkspaceWritable: options.WorkspaceWritable})
 	if err != nil {
 		return Result{ArtifactID: artifactID, Entrypoint: entrypoint, Execution: record}, err
 	}

@@ -1,0 +1,32 @@
+version = 1
+id = "kernel.events.emit"
+path = ["kernel.events.emit"]
+summary = "Emit a local package event"
+description = "Queues all listeners for this event on the current node and returns immediately with an event ID and listener count. Listeners receive the event metadata and an independent copy of the JSON data. A native command uses system identity; a command invoked from Deno inherits its execution user."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/system/emit/emit.go"
+symbol = "New"
+[[parameters]]
+name = "event"
+type = "string"
+position = 0
+required = true
+description = "Event name matching the event field in flat events/*.toml declarations."
+[[parameters]]
+name = "data"
+type = "string"
+option = "data"
+required = false
+description = "JSON data up to 64 KiB; omitted data is null."
+[[result]]
+name = "id"
+type = "string"
+[[result]]
+name = "listeners"
+type = "integer"
+[[examples]]
+command = "kernel.events.emit minute"
+[[examples]]
+command = "kernel.events.emit order-created --data '{\"orderId\":\"123\"}'"

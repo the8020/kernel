@@ -16,7 +16,6 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"the8020/kernel/auth"
 	"the8020/kernel/cbus/core"
 	"the8020/kernel/cbus/discovery"
 	platformconsole "the8020/kernel/console"
@@ -24,6 +23,7 @@ import (
 	databaseevaluator "the8020/kernel/database/evaluator"
 	"the8020/kernel/debugging"
 	"the8020/kernel/development"
+	"the8020/kernel/events"
 	"the8020/kernel/execution/adminrun"
 	"the8020/kernel/execution/coordinator"
 	"the8020/kernel/execution/jobs"
@@ -69,13 +69,13 @@ type runtimeCleanup struct {
 	pool          *pool.Controller
 	webservices   *webservices.Manager
 	jobs          *jobs.Manager
+	events        *events.Manager
 	policy        manager.ShutdownPolicy
 	console       *platformconsole.Manager
 	publicNetwork *mainnetwork.Manager
 	development   *development.Manager
 	ssh           *kernelssh.Manager
 	nodes         *nodes.Manager
-	stopAuth      func()
 	err           error
 }
 
@@ -122,17 +122,15 @@ func (c *runtimeCleanup) Close(ctx context.Context, report shutdownProgressFunc)
 			c.publicNetwork.Close()
 		}
 		reportShutdownProgress(report, false, "public_http", "public HTTP", "public HTTP listener closed")
-		reportShutdownProgress(report, true, "authentication", "authentication maintenance", "stopping authentication-session cleanup")
-		if c.stopAuth != nil {
-			c.stopAuth()
-		}
-		reportShutdownProgress(report, false, "authentication", "authentication maintenance", "authentication maintenance stopped")
 		reportShutdownProgress(report, true, "runtime_controllers", "runtime controllers", "stopping runtime monitors, reconcilers, schedulers, and timers")
 		if c.monitorCancel != nil {
 			c.monitorCancel()
 			c.monitorWait.Wait()
 		}
 		var controllerTasks []func() error
+		if c.events != nil {
+			controllerTasks = append(controllerTasks, c.events.Close)
+		}
 		if c.webservices != nil {
 			controllerTasks = append(controllerTasks, c.webservices.Close)
 		}
@@ -498,7 +496,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	}
 	packageStore, err := workspacepackages.New(workspacepackages.Config{
 		WorkspaceRoot: root, PackagesRoot: paths.Packages, RepositoryMu: repositoryMu,
-		Secrets: secretManager, Database: systemDatabase, Defaults: serviceFrameworkDefaults(settingManager), Logger: logger,
+		Secrets: secretManager, Database: systemDatabase, Logger: logger,
 	})
 	if err != nil {
 		runtimeServices.Failure = "initialize packages: " + err.Error()
@@ -514,11 +512,28 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		runtimeServices.Failure = "initialize package command index: " + err.Error()
 		return runtimeServices, closeRuntime
 	}
-	runtimeServices.Programs = programRunner
-	runtimeServices.ReindexCommands = func(ctx context.Context) (core.Result, error) {
-		report, err := commandIndexer.Reindex(ctx)
-		return core.Result{"revision": report.Revision, "packages": report.Packages, "commands": report.Commands, "diagnostics": report.Diagnostics}, err
+	eventManager, err := events.New(packageStore, programRunner, instanceUUID, logger)
+	if err != nil {
+		runtimeServices.Failure = "initialize events: " + err.Error()
+		return runtimeServices, closeRuntime
 	}
+	cleanup.events, runtimeServices.Events = eventManager, eventManager
+	runtimeServices.Programs = programRunner
+	runtimeServices.ListPrograms = packageStore.ListPrograms
+	serviceIndex := webservices.NewIndex()
+	indexer := &runtimeIndexer{handlers: packageStore, commands: commandIndexer, packages: packageStore, jobs: jobManager, services: serviceIndex}
+	lifecycleReindex := func(ctx context.Context, ids []string) error {
+		_, err := indexer.Reindex(ctx, ids)
+		var publication *indexPublicationError
+		if errors.As(err, &publication) {
+			if logger != nil {
+				logger.Error("service index publication failed; local repair remains available", "error", err)
+			}
+			return nil
+		}
+		return err
+	}
+	runtimeServices.Reindex = indexer.Reindex
 	packageCommits, err := tableEvaluator.PackageSet(ctx)
 	if err != nil {
 		runtimeServices.Failure = "inspect installed package set: " + err.Error()
@@ -527,10 +542,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	activationCoordinator, err := workspacepackages.NewActivationCoordinator(workspacepackages.ActivationCoordinatorConfig{
 		Database: systemDatabase, Schema: tableEvaluator, Packages: packageStore, Jobs: jobManager,
 		ValidateCandidates: commandIndexer.ValidateCandidates,
-		RefreshCommands: func(ctx context.Context) error {
-			_, err := commandIndexer.Reindex(ctx)
-			return err
-		},
+		Reindex:            lifecycleReindex,
 	})
 	if err != nil {
 		runtimeServices.Failure = "initialize package activation: " + err.Error()
@@ -575,26 +587,19 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
 	}
-	argonParameters := auth.Argon2Parameters{
-		Memory:       uint32(activeInt(settingManager, "auth.argon2.memory", 64*1024)),
-		Iterations:   uint32(activeInt(settingManager, "auth.argon2.iterations", 3)),
-		Parallelism:  uint8(activeInt(settingManager, "auth.argon2.parallelism", 1)),
-		SaltLength:   16,
-		OutputLength: 32,
-	}
-	passwordHasher, err := auth.NewPasswordHasher(argonParameters, nil)
-	if err != nil {
-		runtimeServices.Failure = "initialize password hashing: " + err.Error()
-		return runtimeServices, closeRuntime
-	}
-	operationDispatcher, err := runtimeoperations.New(serviceSet, passwordHasher)
+	operationDispatcher, err := runtimeoperations.New(serviceSet)
 	if err != nil {
 		runtimeServices.Failure = "initialize runtime operations: " + err.Error()
 		return runtimeServices, closeRuntime
 	}
 	callbackServer.SetRuntimeOperations(operationDispatcher)
-	if _, err := commandIndexer.Reindex(ctx); err != nil {
-		runtimeServices.Failure = "index package commands: " + err.Error()
+	indexFollower, err := workspacepackages.NewIndexRevisionFollower(ctx, systemDatabase)
+	if err != nil {
+		runtimeServices.Failure = "initialize index convergence: " + err.Error()
+		return runtimeServices, closeRuntime
+	}
+	if err := lifecycleReindex(ctx, nil); err != nil {
+		runtimeServices.Failure = "reindex packages: " + err.Error()
 		return runtimeServices, closeRuntime
 	}
 	packageFollower, err := workspacepackages.NewPackageRevisionFollower(ctx, packageStore, packageCommits)
@@ -602,36 +607,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		runtimeServices.Failure = "initialize package-set convergence: " + err.Error()
 		return runtimeServices, closeRuntime
 	}
-	serviceFollower, err := workspacepackages.NewServiceRevisionFollower(ctx, packageStore)
-	if err != nil {
-		runtimeServices.Failure = "initialize service-state convergence: " + err.Error()
-		return runtimeServices, closeRuntime
-	}
-	authentication, err := auth.New(auth.Config{
-		Database: systemDatabase, SessionDuration: activeDuration(settingManager, "auth.session_duration", 12*time.Hour),
-		CleanupInterval: activeDuration(settingManager, "auth.cleanup_interval", 15*time.Minute),
-		Cookie: auth.CookieConfig{
-			Name:     activeString(settingManager, "auth.cookie.name", "the8020_auth"),
-			Secure:   activeBoolDefault(settingManager, "auth.cookie.secure", false),
-			SameSite: activeString(settingManager, "auth.cookie.same_site", "lax"),
-		},
-		Argon2: argonParameters,
-		Hasher: passwordHasher,
-	})
-	if err != nil {
-		runtimeServices.Failure = "initialize authentication: " + err.Error()
-		return runtimeServices, closeRuntime
-	}
-	authContext, cancelAuth := context.WithCancel(ctx)
-	var authWait sync.WaitGroup
-	authWait.Add(1)
-	go func() {
-		defer authWait.Done()
-		authentication.RunCleanup(authContext, func(cleanupErr error) {
-			logger.Error("authentication-session cleanup failed", "error", cleanupErr)
-		})
-	}()
-	cleanup.stopAuth = func() { cancelAuth(); authWait.Wait() }
+	authentication := &packageAuthentication{context: ctx, programs: programRunner, signing: serviceSet.Signing}
 	nodeManager, err := nodes.New(systemDatabase, instanceUUID, forwardingSecret.Value)
 	if err != nil {
 		runtimeServices.Failure = "initialize node topology: " + err.Error()
@@ -703,7 +679,6 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
 	}
-	callbackServer.SetAuthentication(authentication, authentication)
 	adminManager, err := adminrun.New(adminrun.Config{InstanceRoot: root, ArtifactsRoot: paths.RuntimeAttachments, Jobs: jobManager})
 	if err != nil {
 		runtimeServices.Failure = err.Error()
@@ -725,17 +700,17 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		return runtimeServices, closeRuntime
 	}
 	webServiceManager, err := webservices.New(webservices.Config{
-		Definitions:       packageStore,
+		Index:             serviceIndex,
 		Pools:             serviceManager,
 		Router:            publicNetwork,
 		ObservedRoot:      paths.RuntimeServices,
 		ReconcileInterval: activeDuration(settingManager, "services.reconcile_interval", time.Second),
 		StartupTimeout:    activeDuration(settingManager, "services.startup_timeout", 30*time.Second),
 		Logger:            logger,
-		Authentication:    authentication,
-		RuntimeRequests:   authentication,
+		Authentication:    serviceSet.Signing,
+		Authenticator:     authenticationModule,
 		NodeID:            instanceUUID,
-		Database:          systemDatabase,
+		Signing:           serviceSet.Signing,
 		Nodes:             nodeManager,
 	})
 	if err != nil {
@@ -748,13 +723,13 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		return runtimeServices, closeRuntime
 	}
 	serviceSet.PublishPlatform(services.PlatformServices{
-		Network: publicNetwork, Nodes: nodeManager, Auth: authentication, Secrets: secretManager,
+		Network: publicNetwork, Nodes: nodeManager, Secrets: secretManager,
 		Packages: packageStore, Development: developmentManager,
 	})
 	cleanup.webservices, runtimeServices.Services = webServiceManager, webServiceManager
-	callbackServer.SetPersistentExecutionCompleter(webServiceManager)
+	indexer.runtime = webServiceManager
 	webServiceManager.StartReconciler(ctx)
-	startRuntimeMonitor(cleanup, sandboxManager, serviceManager, jobManager, systemDatabase, settingManager, &runtimeSharedState{packages: packageFollower, serviceChanges: serviceFollower, services: webServiceManager, commands: commandIndexer, topology: nodeManager, nextTopology: time.Now().Add(30 * time.Second)}, publicNetwork, heartbeatInterval, heartbeatTimeout, logger)
+	startRuntimeMonitor(cleanup, sandboxManager, serviceManager, jobManager, systemDatabase, settingManager, &runtimeSharedState{packages: packageFollower, indexes: indexFollower, reindex: indexer.Reindex, retry: indexer.RetryPending, logger: logger, topology: nodeManager, nextTopology: time.Now().Add(30 * time.Second)}, publicNetwork, heartbeatInterval, heartbeatTimeout, logger)
 	return runtimeServices, closeRuntime
 }
 
@@ -836,28 +811,6 @@ func remainingInt(limit, used int) int {
 		return int(^uint(0) >> 1)
 	}
 	return max(limit-used, 0)
-}
-
-func serviceFrameworkDefaults(manager *settings.Manager) workspacepackages.FrameworkDefaults {
-	return workspacepackages.FrameworkDefaults{
-		SessionKeepAlive: activeDuration(manager, "services.default_session_keep_alive", 10*time.Minute),
-		Scaling: workspacepackages.ScalingConfiguration{
-			MinimumWorkers:       activeInt(manager, "services.default_minimum_workers", 0),
-			MaximumWorkers:       activeInt(manager, "services.default_maximum_workers", 0),
-			ConcurrencyPerWorker: activeInt(manager, "services.default_concurrency_per_worker", 32),
-			TargetUtilization:    float64(activeInt(manager, "services.default_target_utilization_percent", 70)) / 100,
-			WorkerKeepAlive:      activeDuration(manager, "services.default_worker_keep_alive", 2*time.Minute),
-		},
-		Placement: workspacepackages.PlacementConfiguration{
-			MinimumSandboxes:  activeInt(manager, "services.default_minimum_sandboxes", 0),
-			WorkersPerSandbox: activeInt(manager, "services.default_workers_per_sandbox", 4),
-		},
-		Timeouts: workspacepackages.TimeoutConfiguration{
-			Request: activeDuration(manager, "services.default_request_timeout", 30*time.Second),
-			Drain:   activeDuration(manager, "services.default_drain_timeout", 30*time.Second),
-		},
-		DependencyMode: "cached-only",
-	}
 }
 
 const zeroImageDigest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
@@ -983,7 +936,11 @@ type servicePlaneGate interface {
 }
 
 func reconcileSharedState(ctx context.Context, db sharedStateDatabase, global sharedSettings, gate servicePlaneGate, packages ...sharedPackageState) error {
-	status, err := db.Check(ctx)
+	// Health probes stay short. Derived indexes run ordinary jobs and use the
+	// enclosing convergence deadline, independent of this database probe.
+	checkContext, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	status, err := db.Check(checkContext)
 	if err != nil {
 		gate.SetAvailable(false, "database unavailable")
 		return err
@@ -996,11 +953,12 @@ func reconcileSharedState(ctx context.Context, db sharedStateDatabase, global sh
 		gate.SetAvailable(false, "database unavailable")
 		return err
 	}
-	if _, err = global.RefreshGlobal(ctx); err != nil {
+	if _, err = global.RefreshGlobal(checkContext); err != nil {
 		db.MarkUnavailable(err)
 		gate.SetAvailable(false, "global settings unavailable")
 		return err
 	}
+	cancel()
 	if len(packages) > 0 && packages[0] != nil {
 		if err = packages[0].Refresh(ctx); err != nil {
 			gate.SetAvailable(false, "package state unavailable")
@@ -1016,28 +974,21 @@ type packageRevisionFollower interface {
 	Acknowledge(uint64) error
 }
 
-type serviceRevisionFollower interface {
-	Poll(context.Context) (workspacepackages.ServiceSetUpdate, error)
-	Acknowledge(uint64) error
-}
-
 type targetedServiceReconciler interface {
 	Reconcile(context.Context, string) (webservices.Status, error)
 	Retire(context.Context, string) error
 }
 
-type commandReindexer interface {
-	Reindex(context.Context) (discovery.Report, error)
-}
-
 type runtimeSharedState struct {
-	packages       packageRevisionFollower
-	serviceChanges serviceRevisionFollower
-	services       targetedServiceReconciler
-	commands       commandReindexer
-	topology       interface{ Refresh(context.Context) error }
-	now            func() time.Time
-	nextTopology   time.Time
+	packages     packageRevisionFollower
+	indexes      packageRevisionFollower
+	reindex      func(context.Context, []string) (core.Result, error)
+	retry        func(context.Context) error
+	logger       *slog.Logger
+	lastFailure  string
+	topology     interface{ Refresh(context.Context) error }
+	now          func() time.Time
+	nextTopology time.Time
 }
 
 func (s *runtimeSharedState) Refresh(ctx context.Context) error {
@@ -1056,51 +1007,58 @@ func (s *runtimeSharedState) Refresh(ctx context.Context) error {
 	if err := s.refreshPackages(ctx); err != nil {
 		return err
 	}
-	return s.refreshServices(ctx)
+	// A timed-out provider leaves unpublished owners pending. Its deadline is
+	// not evidence that the shared database or accepted services became invalid.
+	if ctx.Err() != nil {
+		return nil
+	}
+	if err := s.refreshIndexes(ctx); err != nil {
+		return err
+	}
+	if s.retry != nil {
+		s.recordPublicationFailure(s.retry(ctx))
+	}
+	return nil
 }
 
 func (s *runtimeSharedState) refreshPackages(ctx context.Context) error {
-	update, err := s.packages.Poll(ctx)
+	return s.refreshIndexSource(ctx, s.packages)
+}
+
+func (s *runtimeSharedState) refreshIndexes(ctx context.Context) error {
+	return s.refreshIndexSource(ctx, s.indexes)
+}
+
+func (s *runtimeSharedState) refreshIndexSource(ctx context.Context, follower packageRevisionFollower) error {
+	if follower == nil {
+		return nil
+	}
+	update, err := follower.Poll(ctx)
 	if err != nil || update.Revision == 0 {
 		return err
 	}
-	if err := s.apply(ctx, update.ReconcileServices, update.RetireServices); err != nil {
-		// Source and database state already converged. Keep the revision pending so
-		// the affected services retry, but do not make their local runtime failure
-		// look like a shared-state outage for every unrelated service.
-		return nil
-	}
-	if s.commands != nil {
-		if _, err := s.commands.Reindex(ctx); err != nil {
+	if s.reindex != nil && len(update.Packages) > 0 {
+		_, err = s.reindex(ctx, update.Packages)
+		var publication *indexPublicationError
+		if err != nil && !errors.As(err, &publication) {
 			return err
 		}
+		s.recordPublicationFailure(err)
 	}
-	return s.packages.Acknowledge(update.Revision)
+	// Invalid application fragments stay pending in the indexer, not in source
+	// convergence. Healthy services and local commands remain available.
+	return follower.Acknowledge(update.Revision)
 }
 
-func (s *runtimeSharedState) refreshServices(ctx context.Context) error {
-	update, err := s.serviceChanges.Poll(ctx)
-	if err != nil || update.Revision == 0 {
-		return err
+func (s *runtimeSharedState) recordPublicationFailure(err error) {
+	if err == nil {
+		s.lastFailure = ""
+		return
 	}
-	if err := s.apply(ctx, update.ReconcileServices, update.RetireServices); err != nil {
-		// Reconciliation records and logs the service-local failure. Leaving the
-		// revision unacknowledged makes the next cheap poll retry it idempotently.
-		return nil
+	if s.logger != nil && err.Error() != s.lastFailure {
+		s.logger.Error("service index publication failed", "error", err)
 	}
-	return s.serviceChanges.Acknowledge(update.Revision)
-}
-
-func (s *runtimeSharedState) apply(ctx context.Context, reconcile, retire []string) error {
-	var joined error
-	for _, serviceID := range retire {
-		joined = errors.Join(joined, s.services.Retire(ctx, serviceID))
-	}
-	for _, serviceID := range reconcile {
-		_, err := s.services.Reconcile(ctx, serviceID)
-		joined = errors.Join(joined, err)
-	}
-	return joined
+	s.lastFailure = err.Error()
 }
 
 func startRuntimeMonitor(cleanup *runtimeCleanup, sandboxes *manager.Manager, serviceManager *executionservices.Manager, jobManager *jobs.Manager, systemDatabase sharedStateDatabase, global sharedSettings, packages sharedPackageState, publicNetwork servicePlaneGate, interval, timeout time.Duration, logger *slog.Logger) {
@@ -1164,7 +1122,7 @@ func startRuntimeMonitor(cleanup *runtimeCleanup, sandboxes *manager.Manager, se
 			case <-monitorContext.Done():
 				return
 			case <-ticker.C:
-				checkContext, cancel := context.WithTimeout(monitorContext, 5*time.Second)
+				checkContext, cancel := context.WithTimeout(monitorContext, 5*time.Minute)
 				err := reconcileSharedState(checkContext, systemDatabase, global, publicNetwork, packages)
 				cancel()
 				if err != nil && available {

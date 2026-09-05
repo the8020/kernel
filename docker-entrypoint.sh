@@ -91,12 +91,12 @@ users_json=${users_json//$'\n'/}
 users_json=${users_json//$'\r'/}
 users_json=${users_json//$'\t'/}
 users_json=${users_json// /}
-if [[ "$users_json" == *'"result":{"users":[]}'* ]]; then
+if [[ "$users_json" != *'"enabled":true,"has_password":true'* ]]; then
   printf '%s\n' "$initial_password" |
     "$ADMIN" --root "$INSTANCE_ROOT" users.add "$initial_username" --password-stdin >/dev/null
   echo "created initial 80|20 user: $initial_username" >&2
 else
-  echo "initial user bootstrap skipped because users already exist" >&2
+  echo "initial user bootstrap skipped because an enabled login user already exists" >&2
 fi
 unset initial_username initial_password
 

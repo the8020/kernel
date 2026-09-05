@@ -8,7 +8,8 @@
   synchronous/detached execution, argument and secure-input delivery,
   cancellation, and optional compatible idle-Worker reuse.
 - Do not persist, replay, schedule, or create automatic history for ordinary
-  jobs. Cron/workflow scheduling and durable history belong to future packages.
+  jobs. Durable calendars and history belong to the `the8020/jobs` Deno package;
+  generic event dispatch submits listeners through this same ordinary job path.
 
 # Local Contracts
 
@@ -22,18 +23,30 @@
   Redaction preserves structured execution error classification and details;
   secret-free failures retain their original Go cause.
 - One started execution maps to one Worker unless explicit compatible reuse is
-  enabled. Each Worker owns one sandbox allocation claim. Program-command
-  invocations disable reuse, then stop their exact Worker and release that claim
-  after one call; reusable Workers retain it only until idle retirement.
+  enabled. Sandbox selection requests capacity for that one Worker. Each Worker
+  owns one sandbox allocation claim. Non-reusable Workers stop and release
+  that claim after one call; reusable Workers retain it until idle retirement.
+  Package commands follow this same policy without caller-specific overrides.
 - An explicit instance-root-bounded development workspace becomes an
   owner-scoped runtime-profile mount at `/workspace`; writable access is opt-in.
-  Additional program mounts must be read-only and enter profile compatibility.
+  Additional staged activation/evaluator mounts must be read-only and enter
+  profile compatibility; ordinary package commands use the existing mounts.
 - Jobs use the same runtime image, package/runtime read access, kernel API,
   writable temp/cache paths, and network/import access as services.
+- A job requires an explicit canonical principal or inherits its synchronous
+  runtime caller. Account rows, enabled state, passwords, and sessions are outside
+  admission. System and other principals follow the same structural validation.
+  Queued and reused jobs retain their principal independently of account changes.
+  The immutable origin is the job ID or the resolved package program ID.
+- Compatible Worker reuse includes user and origin identity; work from different
+  users or origins never shares a reusable Worker.
 - `Options.CheckModules` asks the supervisor to type-check a bounded module list
   before import. Database access may be full, metadata-only, or absent.
 - An execution timeout covers queueing, sandbox acquisition, Worker startup,
   validation, and invocation. Cancelling queued work starts no Worker.
+- Optional `PlacementGroup` uses the same exact sandbox-group value contract as
+  services, scoped to job workloads. Preparation copies the selected value so
+  queued work cannot change placement through caller mutation.
 
 # Work Guidance
 

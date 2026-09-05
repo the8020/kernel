@@ -7,30 +7,22 @@
 
 - Do not publish CBus metadata; `the8020/services` owns visible `services.*`
   command programs.
-- Retain thin list/inspect/refresh/validate/start/stop/restart/scale/request/
-  OpenAPI handlers behind the private dispatcher.
+- Retain thin list/inspect/refresh/validate/request/OpenAPI adapters only.
+  Deno services owns configuration and start/stop/restart/scale/defaults commands.
 
 # Local Contracts
 
-- Service IDs and canonical prefixes are filesystem-derived; commands cannot supply entrypoints, route prefixes, package IDs, or source mounts.
-- `service list` exposes only service identity, description, canonical path,
-  state, enabled status, version count, and unique local sandbox/Worker counts;
-  `service inspect` owns versioned sandbox identities, effective configuration,
-  failures, and metrics. Both use cached supervisor observations, not routing
-  reservations. `service refresh` performs bounded live refresh only for the
-  selected service's unique sandboxes before returning the same detail shape.
-- Lifecycle commands return version/capacity summaries by default and expose complete status only through `--detail`.
-- `service scale` mutates the canonical service type, minimum/maximum Workers,
-  per-Worker concurrency and target utilization, Worker/session keepalives,
-  sandbox group, minimum sandboxes, and Workers-per-sandbox through validated
-  desired state. Zero minimum permits scale-to-zero; zero maximum is unlimited
-  only at the service-policy layer.
+- Runtime list/inspect read accepted identity and supervisor observations;
+  refresh performs bounded probes of the selected service's sandboxes.
+- List includes the accepted package owner and source entrypoint, allowing Deno
+  package administration to compose its views without service declarations in
+  generic package records or a separate inspection call for every service.
 - `service request` uses the ordinary canonical kernel boundary and never invokes a handler directly.
 
 # Work Guidance
 
-- Delegate desired-state changes, rolling replacement, pool bounds, scheduling,
-  and cleanup to the high-level web-service manager.
+- Delegate only runtime observations and execution operations to webservices;
+  never restore Go application policy, persistence, or command implementations.
 
 # Verification
 

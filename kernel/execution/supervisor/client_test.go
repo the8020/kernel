@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"the8020/kernel/execution"
 	"the8020/kernel/runtime/protocol"
 	"the8020/kernel/sandbox/model"
 )
@@ -38,7 +39,7 @@ func TestStatusWorkersAndControlRoutes(t *testing.T) {
 		}
 		switch request.URL.Path {
 		case "/v1/status":
-			_, _ = io.WriteString(writer, `{"protocol_version":1,"supervisor_version":"test","deno_version":"2.9.4","runtime_group_id":"group","sandbox_id":"sandbox","workload_type":"job","worker_count":2,"ready_worker_count":1,"failed_worker_count":1,"active_requests":1,"active_execution_count":1,"recent_failures":[{"worker_id":"failed-worker","execution_id":"failed-execution","reason":"boom"}]}`)
+			_, _ = io.WriteString(writer, `{"protocol_version":3,"supervisor_version":"test","deno_version":"2.9.4","runtime_group_id":"group","sandbox_id":"sandbox","workload_type":"job","worker_count":2,"ready_worker_count":1,"failed_worker_count":1,"active_requests":1,"active_execution_count":1,"recent_failures":[{"worker_id":"failed-worker","execution_id":"failed-execution","reason":"boom"}]}`)
 		case "/v1/workers":
 			_, _ = io.WriteString(writer, `{"workers":[{"worker_id":"worker","execution_id":"execution","workload_id":"job","owner_id":"owner","debugger_name":"job:execution","in_flight":0,"idle_since_ms":1700000000000,"state":"failed","failure":"boom"}]}`)
 		case "/v1/workers/start":
@@ -86,7 +87,7 @@ func TestStatusWorkersAndControlRoutes(t *testing.T) {
 	if err != nil || len(workers) != 1 || workers[0].WorkerID != "worker" || workers[0].IdleSinceMS != 1700000000000 || workers[0].State != "failed" || workers[0].Failure != "boom" {
 		t.Fatalf("workers=%#v err=%v", workers, err)
 	}
-	request := StartWorkerRequest{Metadata: ExecutionMetadata{WorkerID: "worker", ExecutionID: "execution", WorkloadType: model.WorkloadJob, OwnerID: "owner", WorkloadID: "job", Entrypoint: "file:///artifacts/job.ts", DebuggerName: "job:execution"}}
+	request := StartWorkerRequest{Metadata: ExecutionMetadata{WorkerID: "worker", ExecutionID: "execution", WorkloadType: model.WorkloadJob, OwnerID: "owner", WorkloadID: "job", Entrypoint: "file:///artifacts/job.ts", DebuggerName: "job:execution", User: execution.SystemUser(), Origin: execution.Origin{Type: execution.OriginJob, ID: "job"}}}
 	if worker, err := client.StartWorker(context.Background(), spec, request); err != nil || worker.WorkerID != "worker" {
 		t.Fatalf("start=%#v err=%v", worker, err)
 	}
@@ -97,7 +98,7 @@ func TestStatusWorkersAndControlRoutes(t *testing.T) {
 	if err := client.StopWorker(context.Background(), spec, "worker", true); err != nil {
 		t.Fatal(err)
 	}
-	if output, err := client.InvokeWorker(context.Background(), spec, "worker", "persistent-1", "example.inspect", map[string]any{"id": 1}); err != nil || !output.OK || output.Output != "reply" {
+	if output, err := client.InvokeWorker(context.Background(), spec, "worker", "persistent-1", "example.inspect", map[string]any{"id": 1}, execution.SystemUser()); err != nil || !output.OK || output.Output != "reply" {
 		t.Fatalf("Worker invocation=%#v err=%v", output, err)
 	}
 	if err := client.ConfigureService(context.Background(), spec, "service-a", nil, 2); err != nil {
@@ -159,8 +160,8 @@ func writeControlResponse(writer http.ResponseWriter, request protocol.Envelope,
 
 func TestStatusRejectsProtocolAndIdentityMismatch(t *testing.T) {
 	tests := []string{
-		`{"protocol_version":2,"runtime_group_id":"group","sandbox_id":"sandbox","workload_type":"job"}`,
-		`{"protocol_version":1,"runtime_group_id":"other","sandbox_id":"sandbox","workload_type":"job"}`,
+		`{"protocol_version":99,"runtime_group_id":"group","sandbox_id":"sandbox","workload_type":"job"}`,
+		`{"protocol_version":3,"runtime_group_id":"other","sandbox_id":"sandbox","workload_type":"job"}`,
 	}
 	for _, response := range tests {
 		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(writer, response) }))
@@ -175,7 +176,7 @@ func TestStatusRejectsProtocolAndIdentityMismatch(t *testing.T) {
 func TestServiceDispatchStreamsRequestAndResponse(t *testing.T) {
 	const body = "stream-one\nstream-two\n"
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/v1/services/service-a/dispatch" || request.Header.Get("X-80-20-Method") != "PATCH" || request.Header.Get("Authorization") != "Bearer "+testToken {
+		if request.URL.Path != "/v1/services/service-a/dispatch" || request.Header.Get("the8020-internal-method") != "PATCH" || request.Header.Get("Authorization") != "Bearer "+testToken {
 			http.Error(writer, "wrong request", http.StatusBadRequest)
 			return
 		}
@@ -206,7 +207,7 @@ func TestServiceDispatchReturnsRedirectWithoutFollowingPrivateSupervisorPath(t *
 		}
 		writer.Header().Set("Location", "/example/application/")
 		writer.Header().Set("Set-Cookie", "the8020_auth=opaque; HttpOnly; Path=/")
-		writer.Header().Set("X-80-20-Service-Response", "true")
+		writer.Header().Set("the8020-internal-service-response", "true")
 		writer.WriteHeader(http.StatusSeeOther)
 	}))
 	defer server.Close()
@@ -239,18 +240,18 @@ func TestServiceWebSocketProxyPreservesOriginalURLAndAuthenticatesSupervisorHop(
 	original.Header.Set("Upgrade", "websocket")
 	original.Header.Set("Sec-WebSocket-Protocol", "the8020.echo")
 	recorder := httptest.NewRecorder()
-	if err := client.ProxyServiceWebSocket(context.Background(), testSpec(), "service-a", recorder, original); err != nil {
+	if err := client.ProxyServiceWebSocket(context.Background(), testSpec(), "service-a", recorder, original, nil); err != nil {
 		t.Fatal(err)
 	}
 	if received == nil || received.URL.Path != "/v1/services/service-a/websocket" || received.URL.RawQuery != "format=text" {
 		t.Fatalf("supervisor WebSocket target = %#v", received)
 	}
-	if received.Header.Get("Authorization") != "Bearer "+testToken || received.Header.Get("X-80-20-URL") != "http://public.example/core/events/echo?format=text" || received.Header.Get("Sec-WebSocket-Protocol") != "the8020.echo" {
+	if received.Header.Get("Authorization") != "Bearer "+testToken || received.Header.Get("the8020-internal-url") != "http://public.example/core/events/echo?format=text" || received.Header.Get("Sec-WebSocket-Protocol") != "the8020.echo" {
 		t.Fatalf("supervisor WebSocket headers = %#v", received.Header)
 	}
 	missingToken := testSpec()
 	missingToken.InternalToken = ""
-	if err := client.ProxyServiceWebSocket(context.Background(), missingToken, "service-a", httptest.NewRecorder(), original); err == nil || !strings.Contains(err.Error(), "token") {
+	if err := client.ProxyServiceWebSocket(context.Background(), missingToken, "service-a", httptest.NewRecorder(), original, nil); err == nil || !strings.Contains(err.Error(), "token") {
 		t.Fatalf("missing WebSocket token error = %v", err)
 	}
 }
@@ -273,7 +274,7 @@ func TestRemoteErrorIsBoundedAndTokenIsRequired(t *testing.T) {
 
 func testClient(t *testing.T, endpoint string) *Client {
 	t.Helper()
-	client, err := New(Config{ProtocolVersion: 1, HTTPClient: http.DefaultClient, Endpoint: func(model.SandboxSpec) (string, error) { return endpoint, nil }})
+	client, err := New(Config{ProtocolVersion: protocol.ProtocolVersion, HTTPClient: http.DefaultClient, Endpoint: func(model.SandboxSpec) (string, error) { return endpoint, nil }})
 	if err != nil {
 		t.Fatal(err)
 	}

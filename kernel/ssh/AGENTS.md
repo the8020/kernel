@@ -21,7 +21,9 @@
 - SSH accepts password authentication and public keys listed in an existing
   development sandbox's `/root/.ssh/authorized_keys`, always against a real
   enabled 80|20 user. Public-key lookup does not create or start a sandbox;
-  password remains the fallback. Presented password bytes are never persisted
+  password remains the fallback. Account/password eligibility is delegated to
+  the users package through the ordinary program runner; Go owns only the SSH
+  proof/transport and receives a canonical principal. Presented password bytes are never persisted
   or logged and are cleared after verification; key material and authorized-key
   content are never logged. Connections, sessions, authentication attempts,
   handshakes, key-file parsing, selector payloads, and terminal geometry are bounded.

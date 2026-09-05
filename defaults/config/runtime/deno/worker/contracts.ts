@@ -1,5 +1,51 @@
 export type WorkloadType = "service" | "job";
 
+export interface ExecutionUserMetadata {
+  readonly userId: string;
+  readonly username: string;
+}
+
+export interface ExecutionOriginMetadata {
+  readonly type: "service" | "job" | "program";
+  readonly id: string;
+}
+
+export function canonicalExecutionUser(
+  value: unknown,
+): ExecutionUserMetadata {
+  if (value === null || typeof value !== "object") {
+    throw new TypeError("execution user must be an object");
+  }
+  const user = value as Record<string, unknown>;
+  if (
+    typeof user.userId !== "string" ||
+    typeof user.username !== "string" ||
+    !/^[a-z0-9]{3,32}$/.test(user.username) ||
+    user.userId !== `user:${user.username}`
+  ) throw new TypeError("execution user is invalid");
+  return Object.freeze({ userId: user.userId, username: user.username });
+}
+
+export function canonicalExecutionOrigin(
+  value: unknown,
+  workloadType: WorkloadType,
+): ExecutionOriginMetadata {
+  if (value === null || typeof value !== "object") {
+    throw new TypeError("execution origin must be an object");
+  }
+  const origin = value as Record<string, unknown>;
+  const validType = workloadType === "service"
+    ? origin.type === "service"
+    : origin.type === "job" || origin.type === "program";
+  if (!validType || typeof origin.id !== "string" || origin.id.length === 0) {
+    throw new TypeError("execution origin is invalid");
+  }
+  return Object.freeze({
+    type: origin.type,
+    id: origin.id,
+  }) as ExecutionOriginMetadata;
+}
+
 export interface ExecutionMetadata {
   nodeId: string;
   runtimeGroupId: string;
@@ -15,6 +61,8 @@ export interface ExecutionMetadata {
   validateEntrypoint?: boolean;
   databaseBackend: "sqlite" | "postgresql";
   databaseAccess?: "full" | "none";
+  user: ExecutionUserMetadata;
+  origin: ExecutionOriginMetadata;
   service?: ServiceExecutionMetadata;
 }
 
@@ -40,8 +88,18 @@ export interface ServiceRequestMetadata {
   persistentExecutionId?: string;
   persistentKeepAliveMilliseconds?: number;
   execution: CurrentExecutionMetadata;
+  user: ExecutionUserMetadata;
   auth: AuthContext;
-  authenticatedUser?: string;
+  authentication?: {
+    module: string;
+    claims: Record<string, unknown>;
+    unauthenticated: {
+      action: string;
+      status: number;
+      message?: string;
+      redirect_url?: string;
+    };
+  };
 }
 
 export interface ClientConnectionMetadata {
@@ -63,12 +121,9 @@ export interface AuthContext {
   realm?: "user";
   userId?: string;
   username?: string;
-  authVersion?: number;
 }
 
 export type KernelOperation =
-  | "auth.login"
-  | "auth.logoutCurrent"
   | "admin.execute"
   | "runtime.operation"
   | "database.info"
@@ -88,6 +143,7 @@ export interface KernelCallRequest {
   executionId: string;
   workerId: string;
   persistentExecutionId?: string;
+  user?: ExecutionUserMetadata;
 }
 
 export type KernelCall = (

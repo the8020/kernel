@@ -5,7 +5,7 @@
 
 # Ownership
 
-- Public TOML remains only for `kernel.*` recovery/config/lifecycle plus the
+- Public TOML remains only for `kernel.*` recovery/config/lifecycle/events plus the
   explicitly deferred debug, job, pool, port, runtime, sandbox, and Worker
   families. Package-owned users, authentication sessions, services, packages,
   secrets, database, nodes/global settings, and development commands have no
@@ -31,7 +31,8 @@
 
 # Child DOX Index
 
-- `system/AGENTS.md`: kernel status, restart, shutdown, and package-command reindex.
+- `system/AGENTS.md`: kernel status, restart, shutdown, package declaration reindex,
+  and local event emission.
 - `settings/AGENTS.md`: node-local `kernel.config.*` commands.
 - `runtime/AGENTS.md`: runtime diagnostics, image state, eval/run, and aggregate status.
 - `sandbox/AGENTS.md`: sandbox inventory, inspection, resources, and lifecycle.

@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"the8020/kernel/database"
 	"the8020/kernel/deployment"
@@ -59,11 +60,104 @@ type activationJobRecorder struct {
 	calls    map[string]int
 }
 
+type activationRunFunc func(context.Context, string, string, jobs.Options) (jobs.Record, error)
+
+func (f activationRunFunc) Run(ctx context.Context, id, entrypoint string, options jobs.Options) (jobs.Record, error) {
+	return f(ctx, id, entrypoint, options)
+}
+
+func TestHookUsesReferencedCandidateProgramAndWaitsForCompletion(t *testing.T) {
+	_, store, db := activationStore(t)
+	owner := writeActivationPackage(t, t.TempDir(), "acme/orders", false)
+	target := writeActivationPackage(t, t.TempDir(), "other/shared", false)
+	writeHandlerProgram(t, target, "prepare")
+	writeHandlerProgram(t, target, "enhance")
+	writeFile(t, filepath.Join(owner, "hooks", "pre-activate.toml"), "hook = \"pre-activate\"\ndescription = \"Prepare order data\"\nprogram = \"other/shared/prepare\"\n")
+	writeFile(t, filepath.Join(owner, "hooks", "enhance.toml"), "hook = \"pre-activate\"\ndescription = \"Enhance order data\"\nprogram = \"other/shared/enhance\"\norder = 10\n")
+	started, release := make(chan struct{}), make(chan struct{})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	runner := activationRunFunc(func(ctx context.Context, id, entrypoint string, options jobs.Options) (jobs.Record, error) {
+		input := options.Arguments[1].(ActivationHookContext)
+		handlers := options.Arguments[0].([]HookReference)
+		if id != "acme/orders/pre-activate" || entrypoint != HookDispatcherEntrypoint || options.OwnerID != "acme/orders" || options.ReleaseID == "" || input.PackageID != "acme/orders" || input.CandidateCommit != "orders-new" || input.ActivationID == "" {
+			t.Errorf("resolved hook id=%s entrypoint=%s options=%#v input=%#v", id, entrypoint, options, input)
+		}
+		if len(handlers) != 2 || handlers[0].Entrypoint != "file:///workspace/packages/other/shared/programs/prepare/main.ts" || handlers[0].Commit != "shared-new" || handlers[1].Entrypoint != "file:///workspace/packages/other/shared/programs/enhance/main.ts" {
+			t.Errorf("resolved chain = %#v", handlers)
+		}
+		if options.Reuse != nil || options.Permissions != nil || options.GroupKey != "" || options.User.Username != "system" {
+			t.Errorf("hook overrode ordinary execution policy: %#v", options)
+		}
+		mounted := map[string]string{}
+		for _, mount := range options.Mounts {
+			if !mount.ReadOnly {
+				t.Error("writable activation source")
+			}
+			mounted[mount.Target] = mount.Source
+		}
+		if mounted["/workspace/packages/acme/orders"] != owner || mounted["/workspace/packages/other/shared"] != target {
+			t.Errorf("candidate mounts=%#v", mounted)
+		}
+		close(started)
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return jobs.Record{}, ctx.Err()
+		}
+		return jobs.Record{}, nil
+	})
+	trace := []string{}
+	coordinator, err := NewActivationCoordinator(ActivationCoordinatorConfig{Database: db, Schema: &activationSchemaRecorder{events: &trace}, Packages: store, Jobs: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- coordinator.Prepare(ctx, []deployment.Candidate{{PackageID: "acme/orders", Root: owner, Commit: "orders-new"}, {PackageID: "other/shared", Root: target, Commit: "shared-new"}})
+	}()
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("hook did not start")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("activation returned before hook completion: %v", err)
+	default:
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinator.Complete(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestInvalidHookReferenceRejectsBeforeSchemaOrHooks(t *testing.T) {
+	_, store, db := activationStore(t)
+	root := writeActivationPackage(t, t.TempDir(), "acme/orders", true)
+	writeFile(t, filepath.Join(root, "hooks", "post-activate.toml"), "hook = \"post-activate\"\ndescription = \"Unavailable program\"\nprogram = \"acme/orders/missing\"\n")
+	trace := []string{}
+	runner := &activationJobRecorder{events: &trace, failures: map[string]int{}, calls: map[string]int{}}
+	coordinator, err := NewActivationCoordinator(ActivationCoordinatorConfig{Database: db, Schema: &activationSchemaRecorder{events: &trace}, Packages: store, Jobs: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinator.Prepare(context.Background(), []deployment.Candidate{{PackageID: "acme/orders", Root: root, Commit: "new"}}); err == nil {
+		t.Fatal("accepted missing hook program")
+	}
+	if len(trace) != 0 {
+		t.Fatalf("invalid declaration caused side effects: %#v", trace)
+	}
+}
+
 func (r *activationJobRecorder) Run(_ context.Context, jobID, _ string, options jobs.Options) (jobs.Record, error) {
 	key := jobID + ":" + options.OwnerID
 	r.calls[key]++
 	*r.events = append(*r.events, key)
-	if options.DatabaseAccess != "full" || options.ReleaseID == "" || len(options.CheckModules) != 1 {
+	if options.DatabaseAccess != "" || options.ReleaseID == "" || options.Reuse != nil || options.Permissions != nil || len(options.Arguments) != 3 {
 		return jobs.Record{}, errors.New("activation hook did not receive its execution contract")
 	}
 	if r.failures[key] > 0 {
@@ -78,10 +172,27 @@ func TestActivationPublishesOnlyAfterBothHooks(t *testing.T) {
 	active := writeActivationPackage(t, filepath.Join(root, "packages"), "acme/orders", true)
 	putActivePackage(t, store, "acme/orders", "commit-old")
 	candidate := writeActivationPackage(t, t.TempDir(), "acme/orders", true)
+	for _, phase := range []string{"pre-activate", "post-activate"} {
+		if err := os.Rename(filepath.Join(candidate, "hooks", phase+".toml"), filepath.Join(candidate, "hooks", "arbitrary-"+phase+".toml")); err != nil {
+			t.Fatal(err)
+		}
+	}
 	events := []string{}
 	jobs := &activationJobRecorder{events: &events, failures: map[string]int{}, calls: map[string]int{}}
 	coordinator, err := NewActivationCoordinator(ActivationCoordinatorConfig{
 		Database: db, Schema: &activationSchemaRecorder{events: &events}, Packages: store, Jobs: jobs,
+		Reindex: func(ctx context.Context, ids []string) error {
+			if !reflect.DeepEqual(ids, []string{"acme/orders"}) {
+				t.Fatalf("activation reindexed unrelated packages: %#v", ids)
+			}
+			entry, _, err := store.index.Get(ctx, ids[0])
+			if err != nil || entry.State != "ready" || entry.ActiveCommit != "commit-new" {
+				t.Fatalf("reindex preceded publication: %#v %v", entry, err)
+			}
+			events = append(events, "reindex")
+			_, err = store.ReindexHandlers(ctx, ids...)
+			return err
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -103,7 +214,7 @@ func TestActivationPublishesOnlyAfterBothHooks(t *testing.T) {
 	if err := coordinator.Complete(context.Background(), true); err != nil {
 		t.Fatal(err)
 	}
-	wantEvents := []string{"schema:1", "package-pre-activate:acme/orders", "package-post-activate:acme/orders", "schema-complete:true"}
+	wantEvents := []string{"schema:1", "acme/orders/pre-activate:acme/orders", "acme/orders/post-activate:acme/orders", "schema-complete:true", "reindex"}
 	if !reflect.DeepEqual(events, wantEvents) {
 		t.Fatalf("events=%#v want=%#v", events, wantEvents)
 	}
@@ -114,6 +225,9 @@ func TestActivationPublishesOnlyAfterBothHooks(t *testing.T) {
 	assertActivationState(t, db, "complete")
 	assertHookAttempts(t, db, "acme/orders", "pre-activate", "succeeded", 1)
 	assertHookAttempts(t, db, "acme/orders", "post-activate", "succeeded", 1)
+	if handlers := store.PackageHooks("acme/orders", "post-activate"); len(handlers) != 1 || handlers[0].ProgramID != "acme/orders/post-activate" {
+		t.Fatalf("published hook missing from the index: %#v", handlers)
+	}
 }
 
 func TestActivationLockCoversDurableRecordThroughCompletion(t *testing.T) {
@@ -179,7 +293,7 @@ func TestFailedPreActivationKeepsPreviousPackageReady(t *testing.T) {
 	candidate := writeActivationPackage(t, t.TempDir(), "acme/orders", true)
 	events := []string{}
 	runner := &activationJobRecorder{
-		events: &events, failures: map[string]int{"package-pre-activate:acme/orders": 1}, calls: map[string]int{},
+		events: &events, failures: map[string]int{"acme/orders/pre-activate:acme/orders": 1}, calls: map[string]int{},
 	}
 	coordinator, err := NewActivationCoordinator(ActivationCoordinatorConfig{
 		Database: db, Schema: &activationSchemaRecorder{events: &events}, Packages: store, Jobs: runner,
@@ -206,7 +320,7 @@ func TestRecoveryRetriesOnlyUnfinishedPostHook(t *testing.T) {
 	root, store, db := activationStore(t)
 	events := []string{}
 	runner := &activationJobRecorder{
-		events: &events, failures: map[string]int{"package-post-activate:acme/b": 1}, calls: map[string]int{},
+		events: &events, failures: map[string]int{"acme/b/post-activate:acme/b": 1}, calls: map[string]int{},
 	}
 	candidates := make([]deployment.Candidate, 0, 2)
 	for _, packageID := range []string{"acme/a", "acme/b"} {
@@ -248,7 +362,7 @@ func TestRecoveryRetriesOnlyUnfinishedPostHook(t *testing.T) {
 	if err := recovered.Recover(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if runner.calls["package-post-activate:acme/a"] != 1 || runner.calls["package-post-activate:acme/b"] != 2 {
+	if runner.calls["acme/a/post-activate:acme/a"] != 1 || runner.calls["acme/b/post-activate:acme/b"] != 2 {
 		t.Fatalf("post hook retries=%#v", runner.calls)
 	}
 	for _, packageID := range []string{"acme/a", "acme/b"} {
@@ -267,7 +381,7 @@ func TestRecoveryKeepsFailedPostHookRetryable(t *testing.T) {
 	candidate := writeActivationPackage(t, t.TempDir(), "acme/orders", true)
 	events := []string{}
 	runner := &activationJobRecorder{
-		events: &events, failures: map[string]int{"package-post-activate:acme/orders": 2}, calls: map[string]int{},
+		events: &events, failures: map[string]int{"acme/orders/post-activate:acme/orders": 2}, calls: map[string]int{},
 	}
 	schema := &activationSchemaRecorder{events: &events}
 	coordinator, err := NewActivationCoordinator(ActivationCoordinatorConfig{Database: db, Schema: schema, Packages: store, Jobs: runner})
@@ -299,7 +413,7 @@ func TestRecoveryKeepsFailedPostHookRetryable(t *testing.T) {
 	if err := secondRetry.Recover(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if runner.calls["package-post-activate:acme/orders"] != 3 {
+	if runner.calls["acme/orders/post-activate:acme/orders"] != 3 {
 		t.Fatalf("post hook attempts=%#v", runner.calls)
 	}
 	assertActivationState(t, db, "complete")
@@ -338,7 +452,7 @@ func TestRecoveryResumesMissingPreHookWhenCandidateSourceIsPresent(t *testing.T)
 	if err := recovered.Recover(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if runner.calls["package-pre-activate:acme/orders"] != 2 || runner.calls["package-post-activate:acme/orders"] != 1 {
+	if runner.calls["acme/orders/pre-activate:acme/orders"] != 2 || runner.calls["acme/orders/post-activate:acme/orders"] != 1 {
 		t.Fatalf("hook calls=%#v", runner.calls)
 	}
 	assertActivationState(t, db, "complete")
@@ -472,7 +586,7 @@ func TestRepositoryMutationLeavesPostFailureForDurableRecovery(t *testing.T) {
 
 	events := []string{}
 	runner := &activationJobRecorder{
-		events: &events, failures: map[string]int{"package-post-activate:acme/orders": 1}, calls: map[string]int{},
+		events: &events, failures: map[string]int{"acme/orders/post-activate:acme/orders": 1}, calls: map[string]int{},
 	}
 	schema := &activationSchemaRecorder{events: &events}
 	coordinator, err := NewActivationCoordinator(ActivationCoordinatorConfig{Database: db, Schema: schema, Packages: store, Jobs: runner})
@@ -501,7 +615,7 @@ func TestRepositoryMutationLeavesPostFailureForDurableRecovery(t *testing.T) {
 	if err := recovered.Recover(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if runner.calls["package-post-activate:acme/orders"] != 2 {
+	if runner.calls["acme/orders/post-activate:acme/orders"] != 2 {
 		t.Fatalf("post hook attempts=%#v", runner.calls)
 	}
 	entry, _, err = store.index.Get(context.Background(), "acme/orders")
@@ -537,7 +651,8 @@ func writeActivationPackage(t *testing.T, parent, packageID string, hooks bool) 
 	writeFile(t, filepath.Join(root, "package.toml"), "schema = 1\n")
 	if hooks {
 		for _, hook := range []string{"pre-activate", "post-activate"} {
-			writeFile(t, filepath.Join(root, "hooks", hook+".ts"), "export default async () => {};\n")
+			writeFile(t, filepath.Join(root, "hooks", hook+".toml"), "hook = \""+hook+"\"\ndescription = \"Activation hook\"\nprogram = \""+packageID+"/"+hook+"\"\n")
+			writeHandlerProgram(t, root, hook)
 		}
 	}
 	return root

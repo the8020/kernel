@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 
+	"the8020/kernel/execution"
 	"the8020/kernel/runtime/protocol"
 	"the8020/kernel/sandbox/model"
 )
@@ -106,6 +107,8 @@ type ExecutionMetadata struct {
 	ValidateEntrypoint bool                      `json:"validateEntrypoint,omitempty"`
 	DatabaseBackend    string                    `json:"databaseBackend"`
 	DatabaseAccess     string                    `json:"databaseAccess,omitempty"`
+	User               execution.User            `json:"user"`
+	Origin             execution.Origin          `json:"origin"`
 	Service            *ServiceExecutionMetadata `json:"service,omitempty"`
 }
 
@@ -230,8 +233,8 @@ func (c *Client) Snapshot(ctx context.Context, spec model.SandboxSpec) (model.Ru
 }
 
 func (c *Client) StartWorker(ctx context.Context, spec model.SandboxSpec, request StartWorkerRequest) (WorkerStatus, error) {
-	if request.Metadata.WorkloadType != spec.WorkloadType || request.Metadata.WorkerID == "" || request.Metadata.ExecutionID == "" {
-		return WorkerStatus{}, errors.New("Worker identity and matching workload type are required")
+	if request.Metadata.WorkloadType != spec.WorkloadType || request.Metadata.WorkerID == "" || request.Metadata.ExecutionID == "" || !request.Metadata.User.Valid() || !request.Metadata.Origin.ValidForWorkload(request.Metadata.WorkloadType) {
+		return WorkerStatus{}, errors.New("Worker identity, user, origin, and matching workload type are required")
 	}
 	var response struct {
 		Worker WorkerStatus `json:"worker"`
@@ -252,9 +255,9 @@ func (c *Client) StopWorker(ctx context.Context, spec model.SandboxSpec, workerI
 	}{Immediate: immediate}, protocol.MessageWorkerStateChange, nil)
 }
 
-func (c *Client) InvokeWorker(ctx context.Context, spec model.SandboxSpec, workerID, persistentExecutionID, function string, input any) (WorkerInvocationResult, error) {
-	if workerID == "" || function == "" || len(function) > 128 {
-		return WorkerInvocationResult{}, errors.New("Worker ID and registered function are required")
+func (c *Client) InvokeWorker(ctx context.Context, spec model.SandboxSpec, workerID, persistentExecutionID, function string, input any, user execution.User) (WorkerInvocationResult, error) {
+	if workerID == "" || function == "" || len(function) > 128 || !user.Valid() {
+		return WorkerInvocationResult{}, errors.New("Worker ID, registered function, and execution user are required")
 	}
 	payload, err := json.Marshal(input)
 	if err != nil {
@@ -265,10 +268,11 @@ func (c *Client) InvokeWorker(ctx context.Context, spec model.SandboxSpec, worke
 	}
 	var result WorkerInvocationResult
 	if err := c.control(ctx, spec, "/v1/workers/"+url.PathEscape(workerID)+"/invoke", protocol.MessageWorkerInvoke, struct {
-		Function              string `json:"function"`
-		Input                 any    `json:"input"`
-		PersistentExecutionID string `json:"persistent_execution_id,omitempty"`
-	}{Function: function, Input: input, PersistentExecutionID: persistentExecutionID}, protocol.MessageWorkerResult, &result); err != nil {
+		Function              string         `json:"function"`
+		Input                 any            `json:"input"`
+		PersistentExecutionID string         `json:"persistent_execution_id,omitempty"`
+		User                  execution.User `json:"user"`
+	}{Function: function, Input: input, PersistentExecutionID: persistentExecutionID, User: user}, protocol.MessageWorkerResult, &result); err != nil {
 		return WorkerInvocationResult{}, err
 	}
 	encoded, err := json.Marshal(result.Output)
@@ -337,8 +341,8 @@ func (c *Client) DispatchService(ctx context.Context, spec model.SandboxSpec, se
 	}
 	request.Header = original.Header.Clone()
 	request.Header.Set("Authorization", "Bearer "+spec.InternalToken)
-	request.Header.Set("X-80-20-Method", original.Method)
-	request.Header.Set("X-80-20-URL", original.URL.String())
+	request.Header.Set("the8020-internal-method", original.Method)
+	request.Header.Set("the8020-internal-url", original.URL.String())
 	client := *c.httpClient
 	client.CheckRedirect = func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
@@ -347,18 +351,18 @@ func (c *Client) DispatchService(ctx context.Context, spec model.SandboxSpec, se
 	if err != nil {
 		return nil, err
 	}
-	if (response.StatusCode < 200 || response.StatusCode >= 300) && response.Header.Get("X-80-20-Service-Response") != "true" {
+	if (response.StatusCode < 200 || response.StatusCode >= 300) && response.Header.Get("the8020-internal-service-response") != "true" {
 		defer response.Body.Close()
 		message, _ := io.ReadAll(io.LimitReader(response.Body, 8192))
 		return nil, fmt.Errorf("supervisor service dispatch returned %s: %s", response.Status, strings.TrimSpace(string(message)))
 	}
-	response.Header.Del("X-80-20-Service-Response")
+	response.Header.Del("the8020-internal-service-response")
 	return response, nil
 }
 
 // ProxyServiceWebSocket preserves the upgraded byte stream while replacing the
 // public hop with the authenticated supervisor hop selected by the kernel.
-func (c *Client) ProxyServiceWebSocket(ctx context.Context, spec model.SandboxSpec, serviceID string, writer http.ResponseWriter, original *http.Request) error {
+func (c *Client) ProxyServiceWebSocket(ctx context.Context, spec model.SandboxSpec, serviceID string, writer http.ResponseWriter, original *http.Request, modifyResponse func(*http.Response) error) error {
 	if len(spec.InternalToken) < 16 {
 		return errors.New("sandbox internal token is unavailable")
 	}
@@ -371,7 +375,7 @@ func (c *Client) ProxyServiceWebSocket(ctx context.Context, spec model.SandboxSp
 		return err
 	}
 	director := func(request *http.Request) {
-		request.Header.Set("X-80-20-URL", original.URL.String())
+		request.Header.Set("the8020-internal-url", original.URL.String())
 		request.URL.Scheme = target.Scheme
 		request.URL.Host = target.Host
 		request.URL.Path = "/v1/services/" + url.PathEscape(serviceID) + "/websocket"
@@ -379,7 +383,7 @@ func (c *Client) ProxyServiceWebSocket(ctx context.Context, spec model.SandboxSp
 		request.Host = target.Host
 		request.Header.Set("Authorization", "Bearer "+spec.InternalToken)
 	}
-	proxy := &httputil.ReverseProxy{Director: director, Transport: c.httpClient.Transport}
+	proxy := &httputil.ReverseProxy{Director: director, Transport: c.httpClient.Transport, ModifyResponse: modifyResponse}
 	proxy.ServeHTTP(writer, original.WithContext(ctx))
 	return nil
 }

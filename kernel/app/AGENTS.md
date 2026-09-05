@@ -6,7 +6,7 @@
 
 - Own startup/shutdown order, generic settings arguments,
   system-database pool composition and catalog-gated service readiness,
-  database-backed authentication composition and cleanup lifecycle,
+  private deployment-key and users-package hook composition,
   full-versus-rootless runtime selection, degraded diagnostics,
   package/database-store composition, service-package mounts, and service
   reconciliation, plus development-sandbox composition and
@@ -25,9 +25,9 @@
   fixed package/user/node/database layout, validates Unix permissions, and
   records node identity and node-local settings in `kernel.toml`; it never
   installs packages, tools, or images. `--init-only` exits after node creation.
-- Startup order is load the fixed layout → lock → node settings → logging →
+- Startup order is load the fixed layout → lock → private signing key → node settings → logging →
   built-in command registry/socket → asynchronous database connection and internal
-  catalog initialization → database-backed global settings, authentication,
+  catalog initialization → database-backed global settings,
   secrets, topology, packages and services →
   development manager → network → authenticated console route → SSH listener → appliers →
   runtime-image
@@ -35,10 +35,9 @@
   sandbox-history cleanup →
   configured fast inherited-sandbox destruction or explicit reconciliation →
   service-record cleanup → initialize/validate the database catalog → compose
-  the non-durable job runtime, exact-package program runner, and table evaluator
+  the non-durable job runtime, shared-package program runner, and table evaluator
   → recover a pending schema deployment or
-  fully synchronize an uninitialized database → atomically index package CBus
-  commands → one-time installed-service discovery plus
+  fully synchronize an uninitialized database → index package commands, events, and hooks → run ordinary service-index hook jobs and publish package fragments plus
   active-runtime-only maintenance → heartbeat/OOM and hourly history-retention
   monitoring.
 - The command socket publishes `runtime initialization is in progress` until one
@@ -49,9 +48,13 @@
   logged and cached in status. It never prevents the administrative socket or
   built-in `kernel.config.*` and package recovery commands from running, but it
   prevents package commands, ordinary services, and UUI from starting.
-- Authentication composition verifies its package-owned users and session
-  tables before the service plane is published; an empty users table is valid,
-  while an inaccessible table is a runtime initialization failure.
+- Before database startup, load or generate the signing key under
+  `node/kernel/keys/signing.key`. Publish its primitive directly to the existing
+  command bus; status and replacement remain available during database failure.
+  Composition selects `/p/the8020/users/mod.ts` for protected target-Worker hooks.
+  Native SSH/browser-console adapters run `the8020/users/authenticate` through
+  the ordinary system-user program/job path, with normal mounts and secure inputs.
+  No auth-specific service, runtime, registry, or maintenance timer exists.
 - A fresh database synchronizes every installed package table in bounded
   evaluator batches and becomes `READY` only after all schemas and package
   activation hooks succeed. A normal boot trusts the initialized marker and
@@ -76,6 +79,22 @@
   debug listeners are always discarded because their token and Go handler are
   memory-only.
 - Ordinary jobs are memory-only and have no startup restoration phase.
+- The event dispatcher starts its minute-aligned timer only after the complete
+  runtime dependency snapshot is published. One `runtimeIndexer.Reindex` entry point refreshes commands and both handler
+  indexes and package-scoped service fragments at startup, after local activation, after remote source convergence,
+  and through `kernel.reindex`. A nil/empty package selection is a full rebuild;
+  lifecycle callers pass only changed package IDs. A successful revision refresh
+  is retained across service retries so those retries never repeat discovery.
+  The activation owner validates event/hook declarations and their program
+  references against candidate and ready package roots before publication. Dispatcher shutdown
+  cancels and joins outstanding listeners alongside the ordinary job controller.
+  Application scheduling and durable recovery remain in Deno packages. Invalid
+  service fragments report publication errors while native commands and the
+  ordinary job runtime remain available for normal services-package repair.
+  Accepted fragments stay live on failure, and unrelated packages keep serving.
+  Runtime startup/retirement errors after publication are reported as accepted
+  fragments with runtime diagnostics; they never rerun provider jobs. The
+  existing service maintenance queue owns capacity and retirement retries.
 - Persisted live service pools whose sandbox is absent from the reconciled
   healthy set are retired locally before service restoration, including pools
   already left `FAILED` by an earlier run; startup never waits on supervisor
@@ -116,7 +135,7 @@
   it would expose protected `node/kernel` data.
 - Runtime composition supplies the already registered command bus to the
   authenticated supervisor callback and publishes runtime operations plus the
-  package-command indexer after the job/program path is ready; it does not
+  shared package reindex entry point after the job/program path is ready; it does not
   construct a second administrative registry.
 - Runtime composition supplies the kernel-owned database service to the
   authenticated supervisor callback. Neither the supervisor nor a Worker
@@ -125,6 +144,9 @@
   into the package manager; command services separately expose authenticated
   secret administration. Deno and application packages never receive the
   secret storage internals.
+- Service defaults never override the normal runtime dependency profile. Online
+  imports remain available to dynamic package dependencies, including request
+  authentication, without warming an unrelated service or job first.
 - Service and job runtime profiles mount the activated package root read-only at
   `/workspace/packages` and the runtime callback directory at `/run/the8020`,
   grant Workers read-only access to bundled `/opt/runtime` modules, unrestricted
@@ -133,12 +155,11 @@
   application data goes through the kernel database bridge.
 - Runtime composition derives the node temporary-storage budget when its
   node-local setting is zero, applies node Worker admission and the kernel-wide
-  per-sandbox Worker maximum, derives the canonical service framework defaults,
-  and publishes local sandbox/Worker/execution-slot capacity to the authenticated
+  per-sandbox Worker maximum, and publishes local sandbox/Worker/execution-slot capacity to the authenticated
   node topology owner. CPU and RAM are not admission dimensions.
 - Runtime composition exposes generic exact-Worker invocation through the
   authenticated local/cross-node path and generic persistent-execution
-  completion through the supervisor callback. Function names and JSON payloads
+  completion in the owning supervisor, without a Go route registry or callback. Function names and JSON payloads
   remain opaque to composition.
 - Database-backed topology initializes before runtime composition. The
   configured local recipient listener starts only after the service router
@@ -146,14 +167,13 @@
 - Main-listener composition reads the restart-required global
   `network.root_alias` value and supplies it to the network owner before the
   listener starts.
-- Graceful shutdown has nine completed-stage progress units rather than an
+- Graceful shutdown has eight completed-stage progress units rather than an
   elapsed-time estimate: public HTTP, runtime initialization join, runtime
   controllers, runtime ports, runtime sandboxes, runtime backends,
-  authentication maintenance, administrative socket, and process resources.
+  administrative socket and process resources.
 - Shutdown first drains command intake while retaining `kernel.status` and
   idempotent `kernel.shutdown` and `kernel.restart`. SSH and console sessions
-  close before sandbox cleanup. Public HTTP draining, authentication cleanup,
-  and runtime cancellation/join overlap; package-service,
+  close before sandbox cleanup. Public HTTP draining and runtime cancellation/join overlap; package-service,
   execution-service, job, and warm-pool controllers stop concurrently after
   monitoring stops; ports then close before sandboxes; callback and sandbox
   backend endpoints close concurrently after sandbox cleanup. The administrative
@@ -166,17 +186,20 @@
   destroys owned sandbox processes, then completes before logging and
   instance-lock release.
 - Service maintenance never polls the complete package catalog.
-  Startup discovers once; explicit service actions and cold requests reconcile
+  Startup indexes through Deno; explicit service actions and cold requests reconcile
   directly, while the timer touches only live or capacity-pending services.
-  The shared-state monitor scalar-polls package and direct-service revisions;
+  The shared-state monitor scalar-polls package and generic index revisions;
   only an advanced revision loads and reconciles its affected IDs. Database or
   package-source convergence failures gate the public plane; a failure to start
   one affected service remains local, keeps its revision pending, and retries
   without taking unrelated services offline.
-- The runtime monitor uses cheap scalar package/service revisions on its normal
+- The runtime monitor uses cheap scalar package/index revisions on its normal
   cadence. Shared node topology refresh is independently bounded and never
   becomes a per-request or one-second full-table dependency; runtime callbacks
-  update sandbox observations directly between refreshes.
+  update sandbox observations directly between refreshes. Database/settings
+  health probes have a five-second deadline; convergence uses the ordinary
+  five-minute job bound. A provider timeout retains unprocessed package fragments
+  for retry and never classifies healthy shared storage as unavailable.
 - Extend composition only when a kernel-owned Phase requirement adds a real
   lifecycle service.
 

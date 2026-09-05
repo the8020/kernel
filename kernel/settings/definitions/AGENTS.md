@@ -12,8 +12,7 @@
   history, startup/shutdown, PID/tmpfs resources, and debugging; `runtime/` owns
   generic supervisor timing, node count/storage admission budgets, and the
   kernel-wide sandbox Worker capacity; `execution/`, `service/`, `services/`, and `job/` own generic
-  grouping, canonical service defaults, reconciliation, and job policy; and
-  `auth/` owns authentication-session, cookie, and Argon2id settings;
+  grouping, reconciliation, and job policy;
   `database/` owns node-local backend, location, credentials, connection-pool,
   and result-limit settings required before shared state can be loaded.
 - No definition subtree or setting may describe an application protocol,

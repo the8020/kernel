@@ -14,6 +14,9 @@
 - Service groups additionally require the same exact placement-group value and
   reject candidates already containing the logical service. Empty placement
   group is the ordinary shared default; there is no dedicated flag or tag list.
+- Jobs also accept an exact placement-group value, including empty, while
+  remaining isolated from service groups by workload type. This does not add
+  Worker reuse or service scaling to jobs.
 - Candidate snapshots carry observed Worker count. Selection excludes candidates
   at the kernel-wide Worker limit so the coordinator can provision compatible
   capacity; CPU and RAM are not selection inputs.

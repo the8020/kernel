@@ -22,12 +22,15 @@
 
 - Every node has one stable ID, public URL, recipient address and port, and
   enabled state.
+- End-user `the8020-authorization` and `the8020_auth` cookies survive every
+  forwarding hop unchanged; peer `Authorization` is verified and stripped before
+  service routing. The deployment signing key is separate from peer credentials.
 - Recipient listeners accept only the shared authenticated kernel transport and
   proxy both HTTP and WebSocket traffic without interpreting service protocols.
 - Exact Worker forwarding validates the target node and bounded envelope,
-  including an optional persistent-execution target, dispatches directly to the
-  registered local invoker, and returns structured opaque results without
-  scanning nodes, sandboxes, or Workers.
+  including its canonical effective user and an optional persistent-execution
+  target, dispatches directly to the registered local invoker, and returns
+  structured opaque results without scanning nodes, sandboxes, or Workers.
 - The internal capacity endpoint reports temporary-storage reservations, sandbox
   and Worker limits/counts, service sandboxes and health, and available versus
   occupied execution slots. Capacity queries are bounded and happen for
@@ -35,6 +38,9 @@
 - Global service-allocation indexes are partitioned round-robin over sorted
   enabled node IDs. An unconfigured local node is the single-node default; an
   explicitly disabled local node owns no indexes.
+- Only authenticated recipient requests contribute forwarding history through
+  trusted request context. Proxying regenerates `the8020-internal-forwarded-nodes`;
+  public header values never control peer selection, regardless of casing.
 - Spillover excludes nodes already present in the forwarding path, queries
   remaining peers concurrently, ignores unreachable/non-accepting peers, and
   prefers the greatest advertised Worker then sandbox headroom.

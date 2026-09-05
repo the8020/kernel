@@ -1,9 +1,0 @@
-key = "auth.cookie.same_site"
-type = "enum"
-storage = "global"
-default = "lax"
-environment = "THE8020_AUTH_COOKIE_SAME_SITE"
-allowed = ["lax", "strict", "none"]
-runtime_mutable = false
-restart_required = true
-description = "SameSite policy for the authentication cookie."

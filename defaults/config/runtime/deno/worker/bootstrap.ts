@@ -9,6 +9,8 @@ import type {
   WorkerControlFunctions,
   WorkerExecutionFailure,
 } from "./contracts.ts";
+import { canonicalExecutionUser } from "./contracts.ts";
+import { authenticateRequest } from "./request_authentication.ts";
 import { createKernelBridge } from "../kernel/bridge.ts";
 
 interface InitializeMessage {
@@ -155,7 +157,7 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
   if (initialized || event.data.type !== "initialize") return;
   initialized = true;
   const { metadata, port } = event.data;
-  const kernelBridge = createKernelBridge(port, metadata.databaseBackend);
+  const kernelBridge = createKernelBridge(port, metadata);
   const controller = new AbortController();
   const activeRequests = new Map<string, AbortController>();
   const activeControls = new Map<string, AbortController>();
@@ -310,6 +312,7 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
               {
                 requestId: message.correlationId,
                 serviceId: metadata.workloadId,
+                user: metadata.user,
                 secrets,
                 signal: controller.signal,
               },
@@ -334,6 +337,7 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
               function?: unknown;
               input?: unknown;
               persistentExecutionId?: unknown;
+              user?: unknown;
             };
             const name = typeof input.function === "string"
               ? input.function
@@ -371,6 +375,7 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
                   requestId: message.correlationId,
                   serviceId: kernelServiceId,
                   persistentExecutionId,
+                  user: canonicalExecutionUser(input.user),
                   signal: control.signal,
                 },
                 async () => {
@@ -423,7 +428,7 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
               body: message.body,
               signal: requestController.signal,
             });
-            const context: ServiceContext = {
+            let context: ServiceContext = {
               ...base,
               signal: requestController.signal,
               requestId: requestMetadata.meta?.requestId ??
@@ -442,12 +447,20 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
                   workerId: metadata.workerId,
                   workerExecutionId: metadata.executionId,
                 },
+                user: metadata.user,
                 auth: { authenticated: false },
               },
             };
             let response: Response;
             try {
-              response = await kernelBridge.withRequest(
+              const setup = await authenticateRequest(
+                request,
+                context.meta,
+                kernelBridge,
+                requestController.signal,
+              );
+              context = { ...context, meta: setup.meta };
+              response = setup.response ?? await kernelBridge.withRequest(
                 context.meta,
                 () =>
                   platformService === undefined
@@ -542,7 +555,14 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
             });
             let response: Response;
             try {
-              response = await kernelBridge.withRequest(
+              const setup = await authenticateRequest(
+                request,
+                input.meta,
+                kernelBridge,
+                socket.signal,
+              );
+              input.meta = setup.meta;
+              response = setup.response ?? await kernelBridge.withRequest(
                 input.meta,
                 () =>
                   platformService.connectWebSocket(request, {
@@ -558,7 +578,8 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
             }
             if (
               response.status !== 204 ||
-              response.headers.get("x-80-20-websocket-accepted") !== "true"
+              response.headers.get("the8020-internal-websocket-accepted") !==
+                "true"
             ) {
               await closeRequestDatabaseScope(input.meta);
               socket.remoteClose(1008, "WebSocket route rejected");
@@ -567,7 +588,7 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
                 correlationId: message.correlationId,
                 status: response.status,
                 headers: [...response.headers.entries()].filter(([name]) =>
-                  name.toLowerCase() !== "x-80-20-websocket-accepted"
+                  name.toLowerCase() !== "the8020-internal-websocket-accepted"
                 ),
               });
               break;

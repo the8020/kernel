@@ -18,6 +18,11 @@
   `job`. Its bearer token never reaches Workers.
 - Worker/job/service-pool/drain controls use generated versioned envelopes and
   validate message type, runtime-group identity, and correlation.
+- Worker startup requires a canonical user and a workload-compatible service,
+  job, or program origin. Exact job/program calls carry an explicit validated
+  effective user; service requests use trusted per-request user metadata and
+  otherwise retain the Worker's configured execution user. No username has
+  special treatment inside the runtime.
 - Job control errors preserve bounded structured command failures while keeping
   ordinary runtime failures as plain messages.
 - Service validation invokes pinned in-sandbox Deno with the configured
@@ -29,11 +34,20 @@
   Main-isolate pending admissions close the handoff between Worker selection and
   the Worker's synchronous in-flight increment, so concurrent dispatch cannot
   claim the same strict slot.
-- Persistent initial requests reserve an exact Worker binding; follow-ups reuse
-  it, disconnect preserves it only for keep-alive, and an explicit generic
-  completion releases it immediately. Cleanup is idempotent after authoritative
-  kernel completion but rejects a binding owned by another Worker. Live
-  WebSockets cannot be swept.
+- Persistent initial requests reserve an exact Worker binding with its original
+  principal and keepalive. Follow-ups require that live binding and principal; a
+  missing, completed, expired, wrong-service, or wrong-Worker target returns
+  `409` before handler/upgrade. Never recreate a binding for an existing route.
+  Admission rechecks binding identity after any asynchronous capacity wait.
+- HTTP response streams, SSE, and WebSockets hold their bindings through
+  consumption/cancel/disconnect. Thereafter supervisor keepalive owns expiry.
+  `worker/streams.ts` shares stream completion accounting with RuntimeWorker.
+  Explicit completion resolves inside this supervisor, idempotently removes only
+  that Worker's exact binding, and publishes ordinary capacity snapshots. No Go
+  completion RPC, route table, or duplicate lease exists.
+- Internal transport fields use lowercase `the8020-internal-*`. Both HTTP and
+  WebSocket responses publish `the8020-internal-selected-worker-id` only after
+  choosing the Worker; application requests never receive private headers.
 - Exact Worker control addresses one known Worker and invokes only a function
   explicitly registered by its entrypoint. An optional persistent-execution
   target must match that Worker's live binding in its version-specific service
@@ -48,11 +62,12 @@
   snapshots omit logs, are absolute and revisioned, and remain observed truth.
   Dirty changes are coalesced with one submission in flight, while the periodic
   heartbeat resends a complete snapshot to repair dropped updates.
-- The trusted supervisor stamps Worker execution and request identity on kernel
-  calls; application payloads do not supply sandbox or workload identity. The
-  kernel-selected database backend is available synchronously before entrypoint
-  import, while Worker policy either permits or denies database operations.
-  Request completion and Worker shutdown close corresponding transaction scopes.
+- The trusted supervisor stamps Worker execution, outer origin, effective user,
+  and request identity on kernel calls; application payloads do not supply
+  sandbox or workload identity. The kernel-selected database backend is
+  available synchronously before entrypoint import, while Worker policy either
+  permits or denies database operations. Request completion and Worker shutdown
+  close corresponding transaction scopes.
 - Kernel calls use HTTP/JSON over `KERNEL_SOCKET_PATH`. Each call opens a fresh
   Unix-socket connection so a restarted kernel can replace the socket without
   restarting the sandbox. Response reads complete at the declared HTTP body

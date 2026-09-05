@@ -5,16 +5,14 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
-
-	workspacepackages "the8020/kernel/packages"
 )
 
 func BenchmarkWarmServiceDispatch(b *testing.B) {
 	root := b.TempDir()
-	store := writeCanonicalTestService(b, root, "the8020/demo/variables", 1, 1, 1, 1, workspacepackages.ServiceTypeStateless)
+	store := writeCanonicalTestService(b, root, "the8020/demo/variables", 1, 1, 1, 1, "stateless")
 	pools, router := newFakePools(), &fakeRouter{}
 	manager := newTestManager(b, store, pools, router, filepath.Join(root, "node", "kernel", "services"))
-	status, err := manager.Start(b.Context(), "the8020/demo/variables")
+	status, err := manager.Reconcile(b.Context(), "the8020/demo/variables")
 	if err != nil || len(status.Sandboxes) != 1 {
 		b.Fatalf("start=%#v err=%v", status, err)
 	}
