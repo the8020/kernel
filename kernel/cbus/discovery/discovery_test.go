@@ -97,6 +97,7 @@ func TestPackageCommandPreservesStructuredProgramErrors(t *testing.T) {
 func TestReindexUsesExplicitNamesAndPreservesProgramDispatch(t *testing.T) {
 	root := t.TempDir()
 	writeCommandPackage(t, root, "the8020/users", "Arbitrary filename.toml", "users.sessions.revoke", "revoke", "")
+	writeFile(t, filepath.Join(root, "the8020/users/cbus/commands/AGENTS.md"), "# User commands\n")
 	writeCommandPackage(t, root, "acme/billing", ".hidden.toml", "payments.refund", "refund", "")
 	packages := &fakePackages{root: root, entries: []workspacepackages.PackageIndex{
 		{PackageID: "the8020/users", State: "ready", ActiveCommit: "commit-users"},
@@ -388,7 +389,7 @@ func TestCommandFieldIsRequiredAndValidated(t *testing.T) {
 }
 
 func TestCommandDirectoryRejectsNestedFilesAndSymlinks(t *testing.T) {
-	for _, kind := range []string{"nested", "source", "file symlink", "directory symlink", "parent symlink"} {
+	for _, kind := range []string{"nested", "file symlink", "directory symlink", "parent symlink"} {
 		t.Run(kind, func(t *testing.T) {
 			root := t.TempDir()
 			writeCommandPackage(t, root, "acme/tools", "valid.toml", "tools.check", "check", "")
@@ -398,9 +399,6 @@ func TestCommandDirectoryRejectsNestedFilesAndSymlinks(t *testing.T) {
 			switch kind {
 			case "nested":
 				writeFile(t, filepath.Join(folder, "nested/command.toml"), "version = 1\n")
-				want = "flat TOML"
-			case "source":
-				writeFile(t, filepath.Join(folder, "handler.ts"), "export default () => {};\n")
 				want = "flat TOML"
 			case "file symlink":
 				if err := os.Symlink(filepath.Join(folder, "valid.toml"), filepath.Join(folder, "linked.toml")); err != nil {

@@ -77,7 +77,8 @@ func readHandler(root, path, kind string) (HandlerDefinition, string, int, error
 }
 
 // DeclarationFiles lists an optional flat TOML directory beneath a package root.
-// Filenames are opaque; symlinks, nested directories, and other files are invalid.
+// Filenames are opaque; other regular files do not declare handlers or commands.
+// Symlinks and nested directories are invalid.
 func DeclarationFiles(root, kind string) ([]string, error) {
 	folder := filepath.Join(root, kind)
 	if _, err := os.Lstat(folder); errors.Is(err, os.ErrNotExist) {
@@ -92,12 +93,15 @@ func DeclarationFiles(root, kind string) ([]string, error) {
 	}
 	var paths []string
 	for _, file := range files {
-		if file.IsDir() || !strings.HasSuffix(file.Name(), ".toml") {
+		if file.IsDir() {
 			return nil, fmt.Errorf("%s must contain only flat TOML declarations: %s", kind, file.Name())
 		}
 		path := filepath.Join(folder, file.Name())
 		if err := requireRealPath(root, path, false); err != nil {
 			return nil, err
+		}
+		if !strings.HasSuffix(file.Name(), ".toml") {
+			continue
 		}
 		paths = append(paths, path)
 		if len(paths) > 2048 {

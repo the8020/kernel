@@ -16,6 +16,28 @@ func writeIndexedHandlers(t *testing.T, root, id string) {
 	writeHandlerProgram(t, root, "run")
 	writeFile(t, filepath.Join(root, "events", "arbitrary name.toml"), fmt.Sprintf("event = %q\ndescription = %q\nprogram = %q\n", "minute", "Run", id+"/run"))
 	writeFile(t, filepath.Join(root, "hooks", "unrelated name.toml"), fmt.Sprintf("hook = %q\ndescription = %q\nprogram = %q\n", "post-activate", "Setup", id+"/run"))
+	for _, kind := range []string{"events", "hooks"} {
+		writeFile(t, filepath.Join(root, kind, "AGENTS.md"), "# Declaration ownership\n")
+	}
+}
+
+func TestDeclarationFilesIgnoreNonDeclarations(t *testing.T) {
+	for _, kind := range []string{"hooks", "events", "cbus/commands"} {
+		t.Run(kind, func(t *testing.T) {
+			root := t.TempDir()
+			for _, name := range []string{"AGENTS.md", "README.md", ".gitkeep", "handler.ts"} {
+				writeFile(t, filepath.Join(root, kind, name), "not a TOML declaration\n")
+			}
+			if files, err := DeclarationFiles(root, kind); err != nil || len(files) != 0 {
+				t.Fatalf("documentation-only folder: files=%v error=%v", files, err)
+			}
+			declaration := filepath.Join(root, kind, ".handler.toml")
+			writeFile(t, declaration, "description = \"Handler\"\n")
+			if files, err := DeclarationFiles(root, kind); err != nil || !reflect.DeepEqual(files, []string{declaration}) {
+				t.Fatalf("documented declaration folder: files=%v error=%v", files, err)
+			}
+		})
+	}
 }
 
 func TestScopedHandlerReindexReplacesBothKindsWithoutReadingOtherDeclarations(t *testing.T) {

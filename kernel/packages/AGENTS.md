@@ -56,8 +56,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   Filenames never select triggers. Program IDs are full
   `namespace/package/program` identifiers; ordinary program manifests own
   entrypoints. Unknown fields, missing/invalid triggers, descriptions or
-  programs, nested folders, symlinks, and executable declarations fail
-  validation.
+  programs, nested folders, and symlinks fail validation. Loose source files
+  never declare or execute handlers.
 - `ReindexHandlers(ctx, packageIDs...)` atomically replaces both process-local
   handler indexes. Omission rebuilds all ready packages. A selection reads only
   selected declaration folders, removes deleted/inactive declarations, retains
@@ -87,7 +87,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   changed IDs; explicit `kernel.reindex` also supports a full rebuild.
 - `DeclarationFiles` supplies shared flat TOML discovery for hooks, events, and
   `cbus/commands`. It treats filenames as opaque and validates real contained
-  files and directories, rejecting nesting, symlinks, and non-TOML files.
+  files and directories, rejecting nesting and symlinks. Only `.toml` files
+  declare runtime behavior; other regular files, including `AGENTS.md`, are
+  ignored. Documentation must never prevent package activation or indexing.
 - Programs resolve from ready active database records and validate only the
   selected manifest and entrypoint. Invocation never runs Git, fingerprints or
   copies package trees, or acquires a repository lock. Entrypoints refer to the
@@ -137,6 +139,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   ordering/idempotence, durable phase recovery, PostgreSQL lock ordering,
   retirement/trim behavior, targeted package refresh, and automatic cross-node
   index propagation without application-table scans.
+- Declaration regressions include documentation-only and documented TOML
+  folders, candidate activation validation, and live handler reindexing.
 
 # Child DOX Index
 

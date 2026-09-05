@@ -43,7 +43,7 @@ func TestEventCatalogResolvesTOMLProgramsAcrossReadyPackages(t *testing.T) {
 	}
 }
 
-func TestHandlerDefinitionsRejectInvalidTOMLAndExecutableFiles(t *testing.T) {
+func TestHandlerDefinitionsRejectInvalidTOMLAndIgnoreSourceFiles(t *testing.T) {
 	for name, body := range map[string]string{
 		"missing description": "program = \"acme/tools/run\"",
 		"missing program":     "description = \"Run\"",
@@ -70,11 +70,11 @@ func TestHandlerDefinitionsRejectInvalidTOMLAndExecutableFiles(t *testing.T) {
 		path := filepath.Join(root, kind, "pre-activate.ts")
 		writeFile(t, path, "export default () => {}")
 		if kind == "hooks" {
-			if _, err := HookHandlers(root); err == nil {
-				t.Fatal("accepted TypeScript hook")
+			if handlers, err := HookHandlers(root); err != nil || len(handlers) != 0 {
+				t.Fatalf("source file declared a hook: handlers=%v error=%v", handlers, err)
 			}
-		} else if _, err := ValidateEventListeners(root, "acme/tools"); err == nil {
-			t.Fatal("accepted TypeScript event")
+		} else if handlers, err := ValidateEventListeners(root, "acme/tools"); err != nil || len(handlers) != 0 {
+			t.Fatalf("source file declared an event: handlers=%v error=%v", handlers, err)
 		}
 		_ = os.Remove(path)
 		outside := filepath.Join(t.TempDir(), "handler.toml")
@@ -100,6 +100,8 @@ func TestCandidateHandlersResolveOtherCandidatesBeforePublication(t *testing.T) 
 	definition := "description = \"Shared candidate\"\nprogram = \"acme/second/run\"\n"
 	writeFile(t, filepath.Join(first, "hooks", "pre-activate.toml"), "hook = \"pre-activate\"\n"+definition)
 	writeFile(t, filepath.Join(first, "events", "run.toml"), "event = \"example\"\n"+definition)
+	writeFile(t, filepath.Join(first, "hooks", "AGENTS.md"), "# Activation hooks\n")
+	writeFile(t, filepath.Join(first, "events", "AGENTS.md"), "# Event handlers\n")
 	candidates := []deployment.Candidate{{PackageID: "acme/first", Root: first, Commit: "first"}, {PackageID: "acme/second", Root: second, Commit: "second"}}
 	if err := store.ValidateHandlers(context.Background(), candidates); err != nil {
 		t.Fatal(err)

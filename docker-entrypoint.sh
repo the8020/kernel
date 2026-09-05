@@ -74,7 +74,7 @@ fi
 users_ready=false
 users_json=""
 for _ in {1..300}; do
-  if users_json=$("$ADMIN" --root "$INSTANCE_ROOT" --json users.list 2>/dev/null); then
+  if users_json=$("$ADMIN" --root "$INSTANCE_ROOT" --json users.list 2>&1); then
     users_ready=true
     break
   fi
@@ -85,6 +85,8 @@ for _ in {1..300}; do
 done
 if [[ "$users_ready" != true ]]; then
   echo "the8020/users commands did not become available within 30 seconds" >&2
+  printf '%s\n' "$users_json" >&2
+  "$ADMIN" --root "$INSTANCE_ROOT" kernel.status >&2 || true
   exit 1
 fi
 users_json=${users_json//$'\n'/}

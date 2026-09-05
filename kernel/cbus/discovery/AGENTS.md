@@ -21,7 +21,8 @@ Parent DOX: [kernel/kernel/cbus DOX](../AGENTS.md).
 - `program` names one same-package ordinary program. Version, help, examples,
   mutation/restart metadata, and secure inputs keep their existing contracts.
   Declarations are strict, size-bounded TOML. Shared package declaration
-  discovery rejects nested directories, symlinks, and non-TOML files.
+  discovery rejects nested directories and symlinks; non-TOML regular files such
+  as `AGENTS.md` are ignored.
 - Opaque IDs use the declaring package, active commit, and explicit command
   name. Filename-only renames preserve identity. Duplicate names within a
   package or across packages invalidate the entire conflicting package

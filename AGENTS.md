@@ -137,7 +137,9 @@ relevant child AGENTS.md
   override those defaults. Enabled passwordless users do not suppress this
   bootstrap. Existing users are never changed. It prints `80|20 is ready` after
   first-user handling. The kernel control plane remains independent of users,
-  while Docker readiness requires this initial user to exist.
+  while Docker readiness requires this initial user to exist. Bootstrap failure
+  prints the last users-command error and kernel status so the underlying
+  runtime failure is visible in container output.
 
 - Interactive kernel shutdown must acknowledge `Ctrl-C` immediately and emit one
   ordinary line whenever the graceful-shutdown stage or completed-stage
@@ -512,6 +514,12 @@ below.
   application code contains services, screens, jobs etc
 
 ## Development Workflow
+
+- Verify the final release contents, including documentation added to discovery
+  folders, before tagging. Fresh-start verification must exercise the Docker
+  entrypoint's first-user path; a browser flow that creates its own test user
+  does not verify that path. Report Docker build/run coverage separately from
+  native runtime tests when Docker is unavailable.
 
 - `.vscode/` configures the Deno language server and linting for
   `defaults/config/runtime/deno/`, recommends the Go/Deno/TOML/shell development
