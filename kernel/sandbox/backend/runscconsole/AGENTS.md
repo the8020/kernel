@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel/sandbox/backend DOX](../AGENTS.md).
+
 # Purpose
 
 - Open one interactive PTY or byte-transparent attached process through runsc.
@@ -17,9 +19,9 @@
   console. `OpenConfigured` additionally applies one caller-owned process
   configurator immediately before runsc starts.
 - `OpenStream` runs the validated argument vector attached without a terminal,
-  preserving separate stdout/stderr bytes, real stdin half-close semantics,
-  and process exit status. `OpenStreamConfigured` provides the same narrow
-  pre-start process-configuration hook.
+  preserving separate stdout/stderr bytes, real stdin half-close semantics, and
+  process exit status. `OpenStreamConfigured` provides the same narrow pre-start
+  process-configuration hook.
 - Closing the PTY ends only the exec process and never signals the sandbox.
 
 # Work Guidance
@@ -33,3 +35,5 @@
   console against real runsc.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

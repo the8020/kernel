@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel/cbus/commands/system DOX](../AGENTS.md).
+
 # Purpose
 
 - Implement `kernel.events.emit` through the shared local event dispatcher.
@@ -17,3 +19,5 @@
   validate command metadata and examples.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

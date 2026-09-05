@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
+
 # Purpose
 
 - Adapt kernel-owned database primitives for package runtime operations.
@@ -19,3 +21,12 @@
 
 - Handler tests cover readiness, raw query/execute routing, parameters, table
   administration routing, and structured failures.
+
+# Child DOX Index
+
+- [check/AGENTS.md](check/AGENTS.md): Implement the read-only database
+  connectivity check.
+- [sql/AGENTS.md](sql/AGENTS.md): Implement the administrative SQL query/execute
+  command.
+- [table/AGENTS.md](table/AGENTS.md): Expose database-first table catalog
+  inspection and explicit synchronization.

@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel DOX](../AGENTS.md).
+
 # Purpose
 
 - Own package-service reconciliation, canonical HTTP/WebSocket routing, session
@@ -38,9 +40,9 @@
   outcomes and temporarily unavailable nodes stay transport failures; no replay
   or replacement execution is attempted.
 - The supervisor holds bindings through HTTP/stream/SSE/WebSocket lifetime and
-  disconnect keepalive, and releases them on expiry or explicit local completion.
-  Cached absolute occupancy drives kernel capacity, draining, and retirement;
-  there is no duplicate route lease or completion RPC back to Go.
+  disconnect keepalive, and releases them on expiry or explicit local
+  completion. Cached absolute occupancy drives kernel capacity, draining, and
+  retirement; there is no duplicate route lease or completion RPC back to Go.
 - Headers use lowercase `the8020-*` names in source. All private transport
   metadata uses `the8020-internal-`; stripping compares lowercase names even
   when net/http canonicalizes them. Worker responses cannot forge route headers
@@ -54,14 +56,15 @@
   execution principal and preserves credentials as ordinary unverified request
   data. Authenticated dispatch uses `kernel/auth` JWT verification before cold
   reconciliation, capacity, persistent binding, or Worker dispatch. An explicit
-  `the8020-authorization` header wins over `the8020_auth`, including when invalid.
-  Rejection uses the service's existing unauthenticated response and clears a
-  rejected selected browser cookie. Client-forged internal headers are stripped.
+  `the8020-authorization` header wins over `the8020_auth`, including when
+  invalid. Rejection uses the service's existing unauthenticated response and
+  clears a rejected selected browser cookie. Client-forged internal headers are
+  stripped.
 - Successful verification carries claims, the composition-selected package hook,
   and the existing unauthenticated response policy as trusted request metadata.
   It never marks application authentication complete. The target Worker approves
-  user/session policy before handler/upgrade; kernel routing and callbacks retain
-  the signed principal. Go never queries the users package tables.
+  user/session policy before handler/upgrade; kernel routing and callbacks
+  retain the signed principal. Go never queries the users package tables.
 - Warm routing uses one immutable definition lookup, one cache-only supervisor
   capacity read per candidate sandbox, a short reservation, and final dispatch.
   It performs no manifest read, Worker scan, live supervisor inspection, metrics
@@ -106,13 +109,12 @@
   the same rejected version; an explicit restart or a new version clears the
   rejection and attempts it once. Capacity and infrastructure failures remain
   retryable `PENDING_CAPACITY` behavior.
-- Startup consumes the accepted service runtime index. Periodic
-  maintenance consumes at most 256 deduplicated queued services with live
-  runtime sandboxes, draining pools, or pending capacity; it never scans the
-  service/package catalogs or every runtime pool. Failed retirement remains in
-  this same queue until stopped pools and observed records are removed.
-  Explicit service mutations, requests, and `ReconcileAll` reconcile
-  immediately.
+- Startup consumes the accepted service runtime index. Periodic maintenance
+  consumes at most 256 deduplicated queued services with live runtime sandboxes,
+  draining pools, or pending capacity; it never scans the service/package
+  catalogs or every runtime pool. Failed retirement remains in this same queue
+  until stopped pools and observed records are removed. Explicit service
+  mutations, requests, and `ReconcileAll` reconcile immediately.
 - Active request routing uses the immutable definition snapshot belonging to the
   loaded Worker version; it never reparses manifests or scans shared state on
   the hot path. Cold starts and reconciliation read the accepted runtime
@@ -120,8 +122,8 @@
 - Background capacity reconciliation is single-flight per service, owned by the
   manager lifecycle, cancelled during close, and joined before shutdown returns.
 - Service reconciliation uses the same per-service capacity lock and holds no
-  process-wide mutex across sandbox or supervisor I/O, so unrelated services
-  can start, stop, and recover concurrently.
+  process-wide mutex across sandbox or supervisor I/O, so unrelated services can
+  start, stop, and recover concurrently.
 - Repeated identical maintenance failures neither increment failure counters nor
   emit duplicate logs until the failure changes or clears.
 - Replacement capacity is validated before a version switch. HTTP, WebSocket,
@@ -158,9 +160,9 @@
 
 # Work Guidance
 
-- Read only accepted runtime specifications during routing/reconciliation.
-  Keep runtime snapshots limited to observed execution state and keep
-  reservations private to routing.
+- Read only accepted runtime specifications during routing/reconciliation. Keep
+  runtime snapshots limited to observed execution state and keep reservations
+  private to routing.
 
 # Verification
 
@@ -172,13 +174,15 @@
   sandbox packing and Worker-limit-triggered minimum spillover, per-service
   capacity locking, concurrent unrelated warm dispatch, strict/bounded-soft
   dispatch, failed-dispatch reservation release, abandoned-reservation expiry,
-  cache-only warm routing, failed cold-start rollback, idle sandbox scale-down, version
-  replacement, current-generation-only routing with prior-version draining,
-  degraded cold-start routing, in-place missing-capacity recovery, capacity
-  states, stale-pool cleanup, terminal pool-record removal, validation-pool
-  cleanup, stale persistent-Worker rejection, exact persistent completion,
-  accepted-index discovery, bounded background maintenance, stable
+  cache-only warm routing, failed cold-start rollback, idle sandbox scale-down,
+  version replacement, current-generation-only routing with prior-version
+  draining, degraded cold-start routing, in-place missing-capacity recovery,
+  capacity states, stale-pool cleanup, terminal pool-record removal,
+  validation-pool cleanup, stale persistent-Worker rejection, exact persistent
+  completion, accepted-index discovery, bounded background maintenance, stable
   rejected-version suppression with explicit retry, and duplicate failure
   suppression.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

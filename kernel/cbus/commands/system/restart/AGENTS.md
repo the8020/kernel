@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel/cbus/commands/system DOX](../AGENTS.md).
+
 # Purpose
 
 - Implement `kernel.restart` as declared by the adjacent authoritative TOML.
@@ -24,3 +26,5 @@
   process verification confirms replacement loads the current executable.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

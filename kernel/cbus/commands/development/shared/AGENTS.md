@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel/cbus/commands/development DOX](../AGENTS.md).
+
 # Purpose
 
 - Share thin command-bus conversion and result shaping across development
@@ -23,7 +25,9 @@
 # Verification
 
 - `handlers_test.go` invokes all 14 development command handlers, proves one
-  service delegation per operation, and checks structured activation
-  conversion; generated-handler compilation verifies every leaf binding.
+  service delegation per operation, and checks structured activation conversion;
+  generated-handler compilation verifies every leaf binding.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

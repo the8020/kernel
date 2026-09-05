@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel DOX](../AGENTS.md).
+
 # Purpose
 
 - Expose authenticated SSH terminal access to 80|20 sandboxes.
@@ -5,10 +7,10 @@
 # Ownership
 
 - Own the SSH listener, persistent node host key, password/public-key
-  authentication adapters, fixed remote selector grammar, SSH session-channel protocol, and PTY
-  byte/resize/signal relay.
-- Do not own users, authorization roles, development-sandbox lifecycle,
-  sandbox lifecycle, shell command interpretation, or PTY creation.
+  authentication adapters, fixed remote selector grammar, SSH session-channel
+  protocol, and PTY byte/resize/signal relay.
+- Do not own users, authorization roles, development-sandbox lifecycle, sandbox
+  lifecycle, shell command interpretation, or PTY creation.
 
 # Local Contracts
 
@@ -23,10 +25,11 @@
   enabled 80|20 user. Public-key lookup does not create or start a sandbox;
   password remains the fallback. Account/password eligibility is delegated to
   the users package through the ordinary program runner; Go owns only the SSH
-  proof/transport and receives a canonical principal. Presented password bytes are never persisted
-  or logged and are cleared after verification; key material and authorized-key
-  content are never logged. Connections, sessions, authentication attempts,
-  handshakes, key-file parsing, selector payloads, and terminal geometry are bounded.
+  proof/transport and receives a canonical principal. Presented password bytes
+  are never persisted or logged and are cleared after verification; key material
+  and authorized-key content are never logged. Connections, sessions,
+  authentication attempts, handshakes, key-file parsing, selector payloads, and
+  terminal geometry are bounded.
 - Session diagnostics log authenticated identity, request/stage, target, and
   command byte length, but never passwords or remote command contents.
 - Bounded standard `env` requests forward every valid client variable unchanged
@@ -38,12 +41,12 @@
 - A shell request opens the authenticated user's deterministic development
   sandbox, creating or starting it when needed.
 - An ordinary exec request runs through `[/bin/bash, -lc, <command>]` inside the
-  authenticated user's development sandbox. Commands beginning with
-  reserved `the8020` use the structured `the8020 [sandbox-id=<id>]` selector
-  grammar instead; its optional parameter accepts a canonical generated `sbx-`
-  ID or deterministic `dev-<username>` ID. The prefix selects the provider
-  directly: `dev-` is development and `sbx-` is runtime. Malformed parameters
-  are rejected.
+  authenticated user's development sandbox. Commands beginning with reserved
+  `the8020` use the structured `the8020 [sandbox-id=<id>]` selector grammar
+  instead; its optional parameter accepts a canonical generated `sbx-` ID or
+  deterministic `dev-<username>` ID. The prefix selects the provider directly:
+  `dev-` is development and `sbx-` is runtime. Malformed parameters are
+  rejected.
 - Only SSH `session` channels are accepted. Port, agent, X11, and socket
   forwarding and subsystems are unavailable.
 - Shell and selector sessions launch `[/bin/bash, -l]`; ordinary exec requests
@@ -81,3 +84,5 @@
   full-screen session.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
+
 # Purpose
 
 - Adapt named-secret primitives for package runtime operations.
@@ -26,3 +28,5 @@
   storage behavior.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

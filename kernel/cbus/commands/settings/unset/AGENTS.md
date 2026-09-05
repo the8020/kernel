@@ -1,10 +1,14 @@
+Parent DOX: [kernel/kernel/cbus/commands/settings DOX](../AGENTS.md).
+
 # Purpose
 
-- Implement `kernel.config.unset` as declared by the adjacent authoritative TOML.
+- Implement `kernel.config.unset` as declared by the adjacent authoritative
+  TOML.
 
 # Ownership
 
-- Own typed key extraction, unset transaction delegation, and shared mutation error mapping.
+- Own typed key extraction, unset transaction delegation, and shared mutation
+  error mapping.
 
 # Local Contracts
 
@@ -22,3 +26,5 @@
   default value.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

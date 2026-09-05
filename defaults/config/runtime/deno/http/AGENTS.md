@@ -1,3 +1,5 @@
+Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
+
 # Purpose
 
 - Provide the Phase 1C TypeScript HTTP service framework exposed as
@@ -57,3 +59,5 @@
   output.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

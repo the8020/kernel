@@ -1,10 +1,13 @@
+Parent DOX: [kernel/kernel/cbus DOX](../AGENTS.md).
+
 # Purpose
 
 - Expose the command registry over HTTP/JSON on the instance Unix socket.
 
 # Ownership
 
-- Own socket binding/mode, request decoding, response encoding, dispatch calls, shutdown rejection, and transport shutdown.
+- Own socket binding/mode, request decoding, response encoding, dispatch calls,
+  shutdown rejection, and transport shutdown.
 - Do not validate command semantics or execute domain services directly.
 
 # Local Contracts
@@ -34,3 +37,5 @@
   drain, and allowed status dispatch.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

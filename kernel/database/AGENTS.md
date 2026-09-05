@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel DOX](../AGENTS.md).
+
 # Purpose
 
 - Own the kernel system-database pool, built-in 80|20 catalog, physical schema
@@ -52,22 +54,22 @@
   bounded lifetime. Request cleanup rolls back its exact scope and Worker exit
   rolls back the scope prefix, with every connection/permit release idempotent.
   Optional transaction `timeoutMs` bounds acquisition and total lifetime,
-  including cancellation of an active statement;
-  `lockTimeoutMs` uses PostgreSQL transaction-local lock_timeout or SQLite
-  connection-local busy_timeout with restoration before pool reuse. Values
-  default to existing behavior; short application claims can fail promptly.
-  Mutations return an insert ID only when the caller
-  explicitly identifies an insert, preventing connection-local stale IDs from
-  leaking into updates or deletes. Values use explicit lossless tags for bigint,
-  decimal, datetime, bytes, and JSON.
+  including cancellation of an active statement; `lockTimeoutMs` uses PostgreSQL
+  transaction-local lock_timeout or SQLite connection-local busy_timeout with
+  restoration before pool reuse. Values default to existing behavior; short
+  application claims can fail promptly. Mutations return an insert ID only when
+  the caller explicitly identifies an insert, preventing connection-local stale
+  IDs from leaking into updates or deletes. Values use explicit lossless tags
+  for bigint, decimal, datetime, bytes, and JSON.
 - Kernel-owned repositories normalize engine-native stored values through this
   package's shared encoders and decoders. Sandboxed package CRUD uses the
-  descriptor-aware `/p/the8020/db/mod.ts` codec; deliberately raw SQL results remain
-  engine-native where their logical type cannot be inferred without parsing SQL.
+  descriptor-aware `/p/the8020/db/mod.ts` codec; deliberately raw SQL results
+  remain engine-native where their logical type cannot be inferred without
+  parsing SQL.
 - Backend SQL syntax, placeholder handling, execution transport, and physical
   value decoding are shared database concerns. Fix dialect discrepancies here or
-  in `/p/the8020/db/mod.ts`'s compiler/driver as their contract dictates; never make an
-  individual service, login flow, or repository compensate for them.
+  in `/p/the8020/db/mod.ts`'s compiler/driver as their contract dictates; never
+  make an individual service, login flow, or repository compensate for them.
 - Query results fail, rather than truncate, above the runtime-mutable per-node
   row/byte limits. Defaults are 10,000 rows and 10 MiB. Pool defaults are 32
   open and 8 idle connections; pools grow on demand. Application statements and
@@ -86,12 +88,12 @@
 # Verification
 
 - Tests cover catalog readiness/idempotence/failure, existing-catalog startup
-  alongside a held writer, SQLite WAL and schema
-  synchronization, naming and descriptors, safe/unsafe changes, drift,
-  retirement/trim, pending recovery, deployment outcome visibility, logical
-  references, exact values, deadline-bound transaction acquisition and cleanup,
-  application/kernel pool isolation, concurrent runtime read load, pool
-  pressure, and configurable result bounds.
+  alongside a held writer, SQLite WAL and schema synchronization, naming and
+  descriptors, safe/unsafe changes, drift, retirement/trim, pending recovery,
+  deployment outcome visibility, logical references, exact values,
+  deadline-bound transaction acquisition and cleanup, application/kernel pool
+  isolation, concurrent runtime read load, pool pressure, and configurable
+  result bounds.
 - PostgreSQL JSON parameters and short conditional claims have an optional live
   regression test. Set `THE8020_TEST_POSTGRES_LOCATION` and, if needed,
   `THE8020_TEST_POSTGRES_USERNAME` to a disposable PostgreSQL database; the test
@@ -100,4 +102,5 @@
 
 # Child DOX Index
 
-- `evaluator/AGENTS.md`: sandboxed activated-package definition evaluation.
+- [evaluator/AGENTS.md](evaluator/AGENTS.md): sandboxed activated-package
+  definition evaluation.

@@ -1,3 +1,5 @@
+Parent DOX: [kernel/defaults/config/runtime DOX](../AGENTS.md).
+
 # Purpose
 
 - Implement the package-neutral supervisor, Worker bootstrap, HTTP framework,
@@ -91,8 +93,13 @@
 
 # Child DOX Index
 
-- `http/AGENTS.md`: generic Hono/Zod HTTP and WebSocket service framework.
-- `context/AGENTS.md`: immutable package-facing execution context.
-- `kernel/AGENTS.md`: package-neutral Worker-to-kernel SDK and bridge.
-- `supervisor/AGENTS.md`: infrastructure control and Worker orchestration.
-- `worker/AGENTS.md`: common bootstrap and service/job contracts.
+- [context/AGENTS.md](context/AGENTS.md): immutable package-facing execution
+  context.
+- [http/AGENTS.md](http/AGENTS.md): generic Hono/Zod HTTP and WebSocket service
+  framework.
+- [kernel/AGENTS.md](kernel/AGENTS.md): package-neutral Worker-to-kernel SDK and
+  bridge.
+- [supervisor/AGENTS.md](supervisor/AGENTS.md): infrastructure control and
+  Worker orchestration.
+- [worker/AGENTS.md](worker/AGENTS.md): common bootstrap and service/job
+  contracts.

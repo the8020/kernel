@@ -1,3 +1,5 @@
+Parent DOX: [kernel DOX](../AGENTS.md).
+
 # Purpose
 
 - Hold source-owned inputs used to create a fresh 80|20 instance.
@@ -18,8 +20,9 @@
 
 # Local Contracts
 
-- `install.sh`, not kernel startup, atomically refreshes runtime definitions into
-  `node/kernel/runtime/definitions/` and the complete instance `scripts/` tree.
+- `install.sh`, not kernel startup, atomically refreshes runtime definitions
+  into `node/kernel/runtime/definitions/` and the complete instance `scripts/`
+  tree.
 - On a fresh fixed-layout instance, installation stages every bootstrap package
   under `packages/`. Local development sources become clean deterministic Git
   snapshots; remote sources retain their repository history. Release builds
@@ -48,5 +51,7 @@
 
 # Child DOX Index
 
-- `config/runtime/AGENTS.md`: canonical generic runtime source, image
-  definitions, materialization, and verification.
+- [config/runtime/AGENTS.md](config/runtime/AGENTS.md): canonical generic
+  runtime source, image definitions, materialization, and verification.
+- [scripts/AGENTS.md](scripts/AGENTS.md): Provide platform-owned helpers
+  installed into development sandboxes.

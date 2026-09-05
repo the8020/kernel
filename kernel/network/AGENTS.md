@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel DOX](../AGENTS.md).
+
 # Purpose
 
 - Own the main HTTP listener, live port replacement, health endpoints, and Phase
@@ -35,10 +37,11 @@
 # Verification
 
 - `network_test.go` covers the all-interface bind, root redirect
-  validation/query preservation, the independent health endpoint,
-  longest-prefix dynamic routing, route
-  removal/replacement survival, successful listener replacement, old-port
-  release, occupied-port rollback, no-op replacement, and cleared port status
-  after close.
+  validation/query preservation, the independent health endpoint, longest-prefix
+  dynamic routing, route removal/replacement survival, successful listener
+  replacement, old-port release, occupied-port rollback, no-op replacement, and
+  cleared port status after close.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

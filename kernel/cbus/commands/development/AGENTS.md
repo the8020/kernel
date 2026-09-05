@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
+
 # Purpose
 
 - Retain development implementation adapters for private runtime operations.
@@ -18,8 +20,8 @@
 
 # Work Guidance
 
-- Keep option conversion in the shared handler helper and domain
-  behavior in `kernel/development`.
+- Keep option conversion in the shared handler helper and domain behavior in
+  `kernel/development`.
 
 # Verification
 
@@ -28,7 +30,10 @@
 
 # Child DOX Index
 
-- `shared/`: shared thin-handler argument and result shaping.
-- `image/`: read-only development image status.
-- `sandbox/`: development sandbox lifecycle, shell, and reset commands.
-- `activate/`: activation preview and execution commands.
+- [activate/AGENTS.md](activate/AGENTS.md): activation preview and execution
+  commands.
+- [image/AGENTS.md](image/AGENTS.md): read-only development image status.
+- [sandbox/AGENTS.md](sandbox/AGENTS.md): development sandbox lifecycle, shell,
+  and reset commands.
+- [shared/AGENTS.md](shared/AGENTS.md): shared thin-handler argument and result
+  shaping.

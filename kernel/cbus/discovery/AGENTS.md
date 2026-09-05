@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel/cbus DOX](../AGENTS.md).
+
 # Purpose
 
 - Discover package-owned command manifests and atomically publish their live
@@ -11,18 +13,19 @@
   IDs rebuild all ready packages. Cached unselected fragments and diagnostics
   survive; selected deletions remove fragments. Full-catalog collision checks
   run against cached fragments before atomic publication.
-- Package commands are flat `cbus/commands/*.toml` declarations. Each requires
-  a `command` containing the complete public name, such as
+- Package commands are flat `cbus/commands/*.toml` declarations. Each requires a
+  `command` containing the complete public name, such as
   `packages.repository.checkout`. No package prefix is inferred; filenames,
   including dotfiles, do not select names. Names are dot-separated lowercase
   kebab-case segments; `kernel` and `kernel.*` remain reserved.
 - `program` names one same-package ordinary program. Version, help, examples,
   mutation/restart metadata, and secure inputs keep their existing contracts.
-  Declarations are strict, size-bounded TOML. Shared package declaration discovery
-  rejects nested directories, symlinks, and non-TOML files.
-- Opaque IDs use the declaring package, active commit, and explicit command name.
-  Filename-only renames preserve identity. Duplicate names within a package or
-  across packages invalidate the entire conflicting package fragments.
+  Declarations are strict, size-bounded TOML. Shared package declaration
+  discovery rejects nested directories, symlinks, and non-TOML files.
+- Opaque IDs use the declaring package, active commit, and explicit command
+  name. Filename-only renames preserve identity. Duplicate names within a
+  package or across packages invalidate the entire conflicting package
+  fragments.
 - Package fragments are validated independently. A broken fragment is omitted
   without hiding valid packages.
 - Candidate command manifests and their same-package programs are validated
@@ -41,3 +44,5 @@
   ordinary jobs with system identity and cross-package imports.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

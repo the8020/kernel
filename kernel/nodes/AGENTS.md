@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel DOX](../AGENTS.md).
+
 # Purpose
 
 - Own shared application-server topology, capacity advertisement,
@@ -39,8 +41,9 @@
   enabled node IDs. An unconfigured local node is the single-node default; an
   explicitly disabled local node owns no indexes.
 - Only authenticated recipient requests contribute forwarding history through
-  trusted request context. Proxying regenerates `the8020-internal-forwarded-nodes`;
-  public header values never control peer selection, regardless of casing.
+  trusted request context. Proxying regenerates
+  `the8020-internal-forwarded-nodes`; public header values never control peer
+  selection, regardless of casing.
 - Spillover excludes nodes already present in the forwarding path, queries
   remaining peers concurrently, ignores unreachable/non-accepting peers, and
   prefers the greatest advertised Worker then sandbox headroom.
@@ -58,3 +61,5 @@
   Worker invocation and bounds, status collection, and allocation partitioning.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

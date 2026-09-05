@@ -1,7 +1,9 @@
+Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
+
 # Purpose
 
-- Own low-level sandbox-local Deno service Worker pools, capacity reconciliation,
-  and supervisor dispatch.
+- Own low-level sandbox-local Deno service Worker pools, capacity
+  reconciliation, and supervisor dispatch.
 
 # Ownership
 
@@ -13,9 +15,10 @@
 
 # Local Contracts
 
-- Services inherit dependency and egress policy from the ordinary runtime profile.
-  Never add a hidden service-specific cache-only override or an authentication
-  dependency preload path; dynamic package imports use that same profile.
+- Services inherit dependency and egress policy from the ordinary runtime
+  profile. Never add a hidden service-specific cache-only override or an
+  authentication dependency preload path; dynamic package imports use that same
+  profile.
 
 - A typed terminal-runtime failure marks the affected pool `FAILED` and
   `runtime_unavailable` without probing or stopping vanished Workers. The next
@@ -23,9 +26,9 @@
   pool, so reconciliation heals explicit kills and terminal runtime failures
   without leaking stopped sandboxes.
 
-- Public API includes lifecycle/query methods plus `EnsureCapacity`,
-  cache-only `Capacity`, targeted `ListForService`, `ReconcileCapacity`,
-  exact-Worker dispatch, HTTP dispatch, and WebSocket proxy.
+- Public API includes lifecycle/query methods plus `EnsureCapacity`, cache-only
+  `Capacity`, targeted `ListForService`, `ReconcileCapacity`, exact-Worker
+  dispatch, HTTP dispatch, and WebSocket proxy.
 - A logical-service-to-pool index is rebuilt once from cached recovery records
   and updated with each pool write/removal. Version cleanup never scans every
   service pool.
@@ -33,10 +36,11 @@
   select least-in-flight eligible Workers and remain streaming across
   Go/supervisor/Worker boundaries.
 - Every service Worker starts with the configured execution principal and its
-  logical service origin. Validation checks canonical identity only, independently
-  of accounts and tables. Public requests retain the configured user; protected
-  requests carry the kernel-verified principal into the same Worker. Users-package
-  policy runs there before handler invocation, preserving per-request identity.
+  logical service origin. Validation checks canonical identity only,
+  independently of accounts and tables. Public requests retain the configured
+  user; protected requests carry the kernel-verified principal into the same
+  Worker. Users-package policy runs there before handler invocation, preserving
+  per-request identity.
 - Each sandbox-local pool records internal stateless/persistent execution mode,
   concurrency per Worker, Worker minimum/maximum, target utilization, and Worker
   keepalive. Concurrency one is strict; larger values are targets with one
@@ -64,9 +68,9 @@
   dispatch, reap pool-owned orphans, and replace lost capacity to the requested
   count.
 - Target-utilization growth is best-effort when an existing Worker still has a
-  permitted execution slot: a failed headroom start returns typed capacity evidence
-  so the kernel may try another sandbox and then safely use that slot. True hard
-  saturation never falls through to dispatch.
+  permitted execution slot: a failed headroom start returns typed capacity
+  evidence so the kernel may try another sandbox and then safely use that slot.
+  True hard saturation never falls through to dispatch.
 - Scale-down uses supervisor-reported idle timestamps and an injected clock,
   removes only expired idle excess while retaining the minimum and target-load
   headroom, excludes Workers from supervisor scheduling before graceful stop,
@@ -103,19 +107,20 @@
 # Work Guidance
 
 - Persist desired service and Worker-pool identity before/after mutations, keep
-  scaling deterministic by Worker ID, and keep capacity reconciliation scoped
-  to the selected pool.
+  scaling deterministic by Worker ID, and keep capacity reconciliation scoped to
+  the selected pool.
 
 # Verification
 
 - Unit tests cover start/minimum pool, shared pools, stateless/persistent mode,
   strict and bounded-soft capacity, cached reserved-demand/target scaling,
-  fake-clock Worker keepalive,
-  target-headroom scale-down and growth fallback, exclude-before-stop ordering,
-  failed-Worker repair, streamed dispatch, exact-Worker routing, resumable stop,
-  owner release, group failure, mixed valid/corrupt recovery, isolated
-  restoration, occupied-Worker draining, missing-group retirement,
-  terminal-record removal, rejected-definition cleanup, idempotent
-  already-absent group release, and rollback.
+  fake-clock Worker keepalive, target-headroom scale-down and growth fallback,
+  exclude-before-stop ordering, failed-Worker repair, streamed dispatch,
+  exact-Worker routing, resumable stop, owner release, group failure, mixed
+  valid/corrupt recovery, isolated restoration, occupied-Worker draining,
+  missing-group retirement, terminal-record removal, rejected-definition
+  cleanup, idempotent already-absent group release, and rollback.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

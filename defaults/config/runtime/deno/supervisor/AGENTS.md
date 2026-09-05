@@ -1,3 +1,5 @@
+Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
+
 # Purpose
 
 - Run one protocol-neutral infrastructure control plane inside each service/job
@@ -111,3 +113,5 @@
   isolation.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

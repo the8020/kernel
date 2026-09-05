@@ -1,3 +1,5 @@
+Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
+
 # Purpose
 
 - Provide the package-neutral `@the8020/kernel` SDK and its Worker-to-supervisor
@@ -105,3 +107,5 @@
   unavailable calls, bounds, and bridge cleanup.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

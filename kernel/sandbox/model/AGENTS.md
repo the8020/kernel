@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel/sandbox DOX](../AGENTS.md).
+
 # Purpose
 
 - Define immutable sandbox/runtime-profile inputs and observable sandbox state
@@ -68,3 +70,5 @@
   legal/illegal state transition.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

@@ -1,6 +1,9 @@
+Parent DOX: [kernel/kernel/cbus/commands/sandbox DOX](../AGENTS.md).
+
 # Purpose
 
-- Expose explicitly requested terminal sandbox history without mixing it into live sandbox inventory.
+- Expose explicitly requested terminal sandbox history without mixing it into
+  live sandbox inventory.
 
 # Ownership
 
@@ -10,17 +13,21 @@
 # Local Contracts
 
 - `sandbox history list` is bounded and cursor-paginated.
-- `sandbox history inspect` loads one immutable record and bounded archived log tails by history ID.
+- `sandbox history inspect` loads one immutable record and bounded archived log
+  tails by history ID.
 
 # Work Guidance
 
-- Keep history identity distinct from reusable live sandbox and runtime-group selectors.
+- Keep history identity distinct from reusable live sandbox and runtime-group
+  selectors.
 
 # Verification
 
 - Generated validation and handler tests cover both commands.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.
 
 - `list/` owns the bounded history inventory command.
 - `inspect/` owns direct metadata and log inspection.

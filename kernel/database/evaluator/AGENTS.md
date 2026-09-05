@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel/database DOX](../AGENTS.md).
+
 # Purpose
 
 - Discover activated package table modules and evaluate them through the normal
@@ -21,8 +23,8 @@
   index. Candidate activation evaluates its isolated staged root instead.
 - Depend only on the read-only package catalog. Database-backed desired package
   and service state is composed after initial table synchronization.
-- Evaluator Workers have no database access, no writes, imports,
-  external network, administration, or direct credentials.
+- Evaluator Workers have no database access, no writes, imports, external
+  network, administration, or direct credentials.
 - Initial and explicit full synchronization discovers all package tables.
   Ordinary deployment reevaluates only new/changed/deleted definitions and
   tables whose recorded Deno module dependency closure intersects Git's changed
@@ -36,7 +38,9 @@
 
 # Verification
 
-- Tests cover identity, collision rejection, batching, package fingerprints,
-  and malformed evaluator results.
+- Tests cover identity, collision rejection, batching, package fingerprints, and
+  malformed evaluator results.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

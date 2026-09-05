@@ -1,3 +1,5 @@
+Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
+
 # Purpose
 
 - Bootstrap every service/job Worker through one generic typed lifecycle.
@@ -119,3 +121,5 @@
   cancellation, crash reporting, compatible reuse, and inspector names.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

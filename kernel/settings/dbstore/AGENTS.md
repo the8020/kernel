@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel/settings DOX](../AGENTS.md).
+
 # Purpose
 
 - Persist explicit system-wide setting values and the settings revision in the
@@ -13,3 +15,7 @@
   configuration.
 - JSON parameters use the shared kernel database encoder; this repository does
   not embed engine-specific SQL syntax.
+
+# Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

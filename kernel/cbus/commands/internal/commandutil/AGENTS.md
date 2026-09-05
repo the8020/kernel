@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel/cbus/commands DOX](../../AGENTS.md).
+
 # Purpose
 
 - Share small typed extraction, JSON/CSV conversion, runtime-availability,
@@ -13,15 +15,15 @@
 # Local Contracts
 
 - Public API is internal to `kernel/cbus/commands`: `Runtime`, primitive
-  accessors, `JSON`, `CSV`, `Duration`, `Permissions`,
-  `AdministrativeExecution` and `OperationError`.
+  accessors, `JSON`, `CSV`, `Duration`, `Permissions`, `AdministrativeExecution`
+  and `OperationError`.
 - Administrative eval/run responses share one concise default shape; the
   explicit detail view preserves the complete artifact, execution, and resource
   record.
 - User-facing runtime errors retain stable command-bus codes. Structured
-  execution failures cross the supervisor boundary without transport text;
-  Deno application argument errors retain their code without parsing error
-  text, and no operation silently invokes a fallback runtime.
+  execution failures cross the supervisor boundary without transport text; Deno
+  application argument errors retain their code without parsing error text, and
+  no operation silently invokes a fallback runtime.
 
 # Work Guidance
 
@@ -33,3 +35,5 @@
   and generated-registry compilation cover result and argument helpers.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

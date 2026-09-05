@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel/settings DOX](../AGENTS.md).
+
 # Purpose
 
 - Store the authoritative modular TOML definitions compiled into the kernel.
@@ -5,16 +7,16 @@
 # Ownership
 
 - Own keys, types, required node/global storage, defaults, environment
-  variables, constraints, runtime/restart metadata, and descriptions for
-  80|20 settings.
+  variables, constraints, runtime/restart metadata, and descriptions for 80|20
+  settings.
 - `network/` owns node-local main/SSH ports and the global root alias;
   `logging/` owns kernel logging; `sandbox/` owns backend, network, resources,
   history, startup/shutdown, PID/tmpfs resources, and debugging; `runtime/` owns
   generic supervisor timing, node count/storage admission budgets, and the
-  kernel-wide sandbox Worker capacity; `execution/`, `service/`, `services/`, and `job/` own generic
-  grouping, reconciliation, and job policy;
-  `database/` owns node-local backend, location, credentials, connection-pool,
-  and result-limit settings required before shared state can be loaded.
+  kernel-wide sandbox Worker capacity; `execution/`, `service/`, `services/`,
+  and `job/` own generic grouping, reconciliation, and job policy; `database/`
+  owns node-local backend, location, credentials, connection-pool, and
+  result-limit settings required before shared state can be loaded.
 - No definition subtree or setting may describe an application protocol,
   application program, application state schema, or UUI behavior.
 
@@ -39,3 +41,5 @@
   storage, defaults, constraints, and runtime metadata.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

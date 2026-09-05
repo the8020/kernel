@@ -1,3 +1,5 @@
+Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
+
 # Purpose
 
 - Expose the immutable logical execution context available to package code as
@@ -25,3 +27,7 @@
 
 - Kernel bridge and RuntimeWorker tests cover isolation, immutability, service
   users, job users, and program origins.
+
+# Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

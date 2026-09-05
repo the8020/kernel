@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
+
 # Purpose
 
 - Expose live sandbox inventory, inspection, resources, lifecycle, and separate
@@ -5,16 +7,16 @@
 
 # Ownership
 
-- Own declarative sandbox list/inspect/refresh/metrics/stop/kill/delete and bounded
-  history list/inspect handlers and delegate to the sandbox manager.
+- Own declarative sandbox list/inspect/refresh/metrics/stop/kill/delete and
+  bounded history list/inspect handlers and delegate to the sandbox manager.
 
 # Local Contracts
 
 - `sandbox list` exposes only sandbox ID, workload type, observed state, concise
   reason, Worker count, warm status, runtime-group ID, and any failure;
   `sandbox inspect` owns the complete specification, status, Workers, resources,
-  leases, and correlated services. Application-owned logical state
-  is never discovered or duplicated in sandbox inspection.
+  leases, and correlated services. Application-owned logical state is never
+  discovered or duplicated in sandbox inspection.
 - Live list and ordinary inspect use the latest cached supervisor snapshot.
   `sandbox refresh` alone performs one targeted supervisor/resource observation
   and returns refreshed detail with snapshot revision and observation time.
@@ -40,6 +42,8 @@
 
 # Child DOX Index
 
-- `history/AGENTS.md`: bounded terminal sandbox history listing and inspection.
+- [history/AGENTS.md](history/AGENTS.md): bounded terminal sandbox history
+  listing and inspection.
+
 - This domain contract directly owns the remaining leaf lifecycle command
   folders.

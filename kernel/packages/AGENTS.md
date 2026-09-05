@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel DOX](../AGENTS.md).
+
 # Purpose
 
 - Own package source inspection, database-backed package identity, Git
@@ -5,14 +7,14 @@
 
 # Ownership
 
-- Discover native package, program, command, table, hook, and event definitions only beneath
-  validated `packages/<namespace>/<repository>/` roots.
+- Discover native package, program, command, table, hook, and event definitions
+  only beneath validated `packages/<namespace>/<repository>/` roots.
 - Own database adapters for `the8020/packages` desired/active package records,
   activation history, and hook phase checkpoints. Application service tables,
   declarations, defaults, and overrides belong exclusively to Deno services.
 - Own package Git source/ref inspection, clean worktree staging/replacement,
-  local repository initialization, pull/push/checkout, and transient named-secret
-  authentication.
+  local repository initialization, pull/push/checkout, and transient
+  named-secret authentication.
 - Coordinate candidate table evaluation/synchronization, pre/post activation
   hooks, source publication, durable recovery, and targeted service refresh.
 - Do not own physical SQL generation, evaluator execution, runtime Workers,
@@ -40,47 +42,47 @@
   evaluation and synchronization before publishing the package set. Normal
   activation evaluates only candidate package tables in one batch.
 - Activation is prepare schema → pre-activate hooks → atomically switch source →
-  publish package records → post-activate hooks → complete. Durable
-  activation, package, hook, and pending-deployment rows make retry/recovery
-  idempotent. PostgreSQL holds one database advisory deployment lock throughout;
-  SQLite uses local transactional serialization for its single-node role.
+  publish package records → post-activate hooks → complete. Durable activation,
+  package, hook, and pending-deployment rows make retry/recovery idempotent.
+  PostgreSQL holds one database advisory deployment lock throughout; SQLite uses
+  local transactional serialization for its single-node role.
 - Removed table/column definitions become retired metadata and retained physical
   data. Only explicit confirmed trim performs destructive deletion. Incompatible
   type, nullability, key, index, or constraint changes reject activation.
-- Handler folders are flat: `events/*.toml` requires `event`, `description`,
-  and `program`; `hooks/*.toml` requires `hook`, `description`, and `program`.
-  Hooks also accept integer `order`, defaulting to zero. Each trigger retains
-  all declarations sorted by ascending order and full declaration identity.
+- Handler folders are flat: `events/*.toml` requires `event`, `description`, and
+  `program`; `hooks/*.toml` requires `hook`, `description`, and `program`. Hooks
+  also accept integer `order`, defaulting to zero. Each trigger retains all
+  declarations sorted by ascending order and full declaration identity.
   Filenames never select triggers. Program IDs are full
   `namespace/package/program` identifiers; ordinary program manifests own
-  entrypoints. Unknown fields, missing/invalid triggers, descriptions or programs,
-  nested folders, symlinks, and executable declarations fail validation.
+  entrypoints. Unknown fields, missing/invalid triggers, descriptions or
+  programs, nested folders, symlinks, and executable declarations fail
+  validation.
 - `ReindexHandlers(ctx, packageIDs...)` atomically replaces both process-local
   handler indexes. Omission rebuilds all ready packages. A selection reads only
   selected declaration folders, removes deleted/inactive declarations, retains
   unselected fragments, and refreshes cached cross-package program references
-  when their target changes. Invalid input leaves both indexes unchanged.
-  Event lookup is memory-only and bounded to 2,048 listeners globally.
+  when their target changes. Invalid input leaves both indexes unchanged. Event
+  lookup is memory-only and bounded to 2,048 listeners globally.
 - Hooks accept `pre-activate`, `post-activate`, or `index-services`.
   `PackageHooks` selects one package's phase and `Hooks` selects an ordered
   trigger chain across packages; both consume only the published memory index.
   Activation phases use a validated candidate index before live publication.
-  Program references
-  resolve against all candidates before ready installed packages. Candidate
-  mounts are read-only. Recovery rebuilds its candidate index and retains durable
-  phase completion, never repeating successful phases.
+  Program references resolve against all candidates before ready installed
+  packages. Candidate mounts are read-only. Recovery rebuilds its candidate
+  index and retains durable phase completion, never repeating successful phases.
 - `RunHookChain` invokes `worker/hook_dispatch.ts` as one ordinary system job
   per package/phase. Its handlers receive the same mutable state and a separate
   frozen invocation scope. Activation scope contains the declaring package,
-  previous/candidate commits, first-activation flag, and activation ID.
-  Only initial input and final output cross the Worker boundary. Hook failures
-  stop the chain and identify the failing declaration. Normal job permissions,
+  previous/candidate commits, first-activation flag, and activation ID. Only
+  initial input and final output cross the Worker boundary. Hook failures stop
+  the chain and identify the failing declaration. Normal job permissions,
   mounts, grouping, and reuse apply; candidate mounts enter normal profile
-  compatibility. Never copy packages or force per-handler isolation.
-  Resolved chain versions and the published package revision participate in
-  ordinary job release compatibility, invalidating cached dependency imports.
-- The shared runtime reindex entry point invokes handler and command indexing
-  on boot, activation/recovery publication, and local source convergence to a
+  compatibility. Never copy packages or force per-handler isolation. Resolved
+  chain versions and the published package revision participate in ordinary job
+  release compatibility, invalidating cached dependency imports.
+- The shared runtime reindex entry point invokes handler and command indexing on
+  boot, activation/recovery publication, and local source convergence to a
   published revision, including commit switching. These boundaries pass only
   changed IDs; explicit `kernel.reindex` also supports a full rebuild.
 - `DeclarationFiles` supplies shared flat TOML discovery for hooks, events, and
@@ -94,12 +96,12 @@
   The optional boolean `uui` defaults to false and identifies interactive
   programs. Both flags are exposed in package inspection and ready-program
   metadata; neither changes generic invocation. UUI Home uses their conjunction,
-  while explicit program selectors retain all ready programs.
-  Package command candidates validate their referenced same-package program
-  before source publication.
-- Explicit program selectors use `ListPrograms`: ready package program
-  manifests only, including non-discoverable runnable programs, bounded to
-  2,000 entries. They do not inspect Git status, services, or recursive files.
+  while explicit program selectors retain all ready programs. Package command
+  candidates validate their referenced same-package program before source
+  publication.
+- Explicit program selectors use `ListPrograms`: ready package program manifests
+  only, including non-discoverable runnable programs, bounded to 2,000 entries.
+  They do not inspect Git status, services, or recursive files.
 - Synchronization clones into a hidden same-filesystem staging directory,
   validates the exact commit, and replaces source by rename. Dirty shared
   worktrees are preserved and rejected. One failed batch package has explicit
@@ -115,8 +117,8 @@
   attached branch; checkout selects one local/remote branch or hexadecimal
   commit. Changed operations use the same activation transaction.
 - Kernel repository SQL remains portable across SQLite and PostgreSQL. Bind
-  logical booleans as parameters or use boolean predicates; never encode them
-  as SQLite-only `0`/`1` literals.
+  logical booleans as parameters or use boolean predicates; never encode them as
+  SQLite-only `0`/`1` literals.
 
 # Work Guidance
 
@@ -130,10 +132,12 @@
 
 - Tests cover identity/path and program containment/symlink validation, ready
   metadata resolution without Git or filesystem artifacts, bounded inspection,
-  database package CRUD and generic index revisions, clean Git
-  synchronization and mutation, credentials, candidate-only schema activation,
-  hook ordering/idempotence, durable phase recovery, PostgreSQL lock ordering,
+  database package CRUD and generic index revisions, clean Git synchronization
+  and mutation, credentials, candidate-only schema activation, hook
+  ordering/idempotence, durable phase recovery, PostgreSQL lock ordering,
   retirement/trim behavior, targeted package refresh, and automatic cross-node
   index propagation without application-table scans.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

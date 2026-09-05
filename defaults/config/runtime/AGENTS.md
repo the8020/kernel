@@ -1,7 +1,9 @@
+Parent DOX: [kernel/defaults DOX](../../AGENTS.md).
+
 # Purpose
 
-- Define the canonical package-neutral Deno service/job runtime and the
-  separate development-sandbox image.
+- Define the canonical package-neutral Deno service/job runtime and the separate
+  development-sandbox image.
 
 # Ownership
 
@@ -26,16 +28,16 @@
   read-only and only temp/cache paths are writable. Both workloads have
   unrestricted outbound network and remote imports without using Deno
   `--allow-all`.
-- Stateless/persistent service pools, persistent execution bindings,
-  keep-alive, exact-Worker reuse, explicit persistent completion, physical
-  WebSocket relay, and registered JSON-in/JSON-out Worker functions are generic
-  capabilities. Function names and application payloads remain opaque.
+- Stateless/persistent service pools, persistent execution bindings, keep-alive,
+  exact-Worker reuse, explicit persistent completion, physical WebSocket relay,
+  and registered JSON-in/JSON-out Worker functions are generic capabilities.
+  Function names and application payloads remain opaque.
 - `versions.toml` and `protocol/schema.json` are authoritative. Generation
   writes `protocol/generated.ts`, build-only Go output, and the tracked Go
   mirror under `kernel/runtime/protocol/`; generated files are not hand-edited.
 - `install.sh` refreshes this tracked tree into each instance's
-  `node/kernel/runtime/definitions/`, hashes the complete generic image input set before build,
-  and publishes only verified artifacts under
+  `node/kernel/runtime/definitions/`, hashes the complete generic image input
+  set before build, and publishes only verified artifacts under
   `node/kernel/runtime/images/`. Unchanged verified digests are reused.
 - Deno dependency preparation and generic HTTP bundling execute inside the
   pinned isolated image build after a digest miss. Normal startup has no
@@ -45,30 +47,29 @@
   executables, libraries, package metadata, certificates, or terminal data.
   Declared packages install inside rootless gVisor on an ordinary host; during
   construction of the enclosing Docker image they install through `chroot`
-  inside that existing isolated build sandbox, avoiding a forbidden nested
-  user namespace. Full construction uses the same staged generic runtime and
-  pinned image definition through BuildKit when host authority exists.
+  inside that existing isolated build sandbox, avoiding a forbidden nested user
+  namespace. Full construction uses the same staged generic runtime and pinned
+  image definition through BuildKit when host authority exists.
 - Portable installation publishes the complete pinned gVisor execution payload:
   `runsc` and every release-provided `gvisor-bin/` companion remain adjacent
   under `node/kernel/bin/` so runtime startup never downloads missing helpers.
 - The service image runs non-root and includes only pinned Deno, generic runtime
   modules/protocol, the pinned Kysely dependency used by the database SDK, and
-  explicitly required administrator debugging tools.
-  `stage-service-runtime.sh` excludes tests, DOX files, examples, application
-  source, and unrelated files.
+  explicitly required administrator debugging tools. `stage-service-runtime.sh`
+  excludes tests, DOX files, examples, application source, and unrelated files.
 - The image import map exposes the activated read-only package tree through the
   single `/p/` prefix. Package imports include their namespace, package, file,
   and extension, for example `/p/the8020/db/mod.ts`. Never add package-specific
   runtime mappings.
 - Service and job supervisors may run only the pinned Deno binary for module
   validation; nested application Workers do not inherit subprocess permission.
-- The node-private runtime callback directory is bind-mounted at
-  `/run/the8020`; supervisors connect to `kernel.sock` afresh for every HTTP/JSON
-  call so kernel socket replacement is transparent. The canonical runsc
-  configuration permits opening existing host Unix sockets, but not creating
-  them; only explicitly mounted sockets are reachable. Deno receives read/write
-  permission for the exact socket path because its Unix connect API requires
-  both, while the mounted directory remains read-only.
+- The node-private runtime callback directory is bind-mounted at `/run/the8020`;
+  supervisors connect to `kernel.sock` afresh for every HTTP/JSON call so kernel
+  socket replacement is transparent. The canonical runsc configuration permits
+  opening existing host Unix sockets, but not creating them; only explicitly
+  mounted sockets are reachable. Deno receives read/write permission for the
+  exact socket path because its Unix connect API requires both, while the
+  mounted directory remains read-only.
 
 # Work Guidance
 
@@ -94,8 +95,10 @@
 
 # Child DOX Index
 
-- `cni/AGENTS.md`: canonical full-mode CNI template.
-- `protocol/AGENTS.md`: versioned generic control schema and generation.
-- `deno/AGENTS.md`: generic supervisor, Worker bootstrap, SDKs, examples, and
-  Deno verification.
-- `development/AGENTS.md`: separate development image and materialization.
+- [cni/AGENTS.md](cni/AGENTS.md): canonical full-mode CNI template.
+- [deno/AGENTS.md](deno/AGENTS.md): generic supervisor, Worker bootstrap, SDKs,
+  examples, and Deno verification.
+- [development/AGENTS.md](development/AGENTS.md): separate development image and
+  materialization.
+- [protocol/AGENTS.md](protocol/AGENTS.md): versioned generic control schema and
+  generation.

@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
+
 # Purpose
 
 - Expose live, non-durable job submission, inspection, and cancellation.
@@ -32,4 +34,7 @@
 
 # Child DOX Index
 
-- This domain contract owns its leaf command folders; they contain only one declarative command and thin handler each.
+No child DOX documents. This document owns the entire local scope.
+
+- This domain contract owns its leaf command folders; they contain only one
+  declarative command and thin handler each.

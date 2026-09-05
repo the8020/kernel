@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
+
 # Purpose
 
 - Expose node-local settings as `kernel.config.*` recovery commands.
@@ -5,7 +7,8 @@
 # Ownership
 
 - Own thin list/get/set/unset handlers and their authoritative TOML definitions.
-- Do not own setting conversion, validation, persistence, or owner-specific runtime changes.
+- Do not own setting conversion, validation, persistence, or owner-specific
+  runtime changes.
 
 # Local Contracts
 
@@ -23,11 +26,12 @@
 
 # Verification
 
-- Settings unit tests and application integration cover all four commands' domain paths.
+- Settings unit tests and application integration cover all four commands'
+  domain paths.
 
 # Child DOX Index
 
-- `list/AGENTS.md`: all-settings query.
-- `get/AGENTS.md`: one-setting query.
-- `set/AGENTS.md`: persisted set transaction and error mapping.
-- `unset/AGENTS.md`: persisted removal transaction.
+- [get/AGENTS.md](get/AGENTS.md): one-setting query.
+- [list/AGENTS.md](list/AGENTS.md): all-settings query.
+- [set/AGENTS.md](set/AGENTS.md): persisted set transaction and error mapping.
+- [unset/AGENTS.md](unset/AGENTS.md): persisted removal transaction.

@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel/cbus/commands/system DOX](../AGENTS.md).
+
 # Purpose
 
 - Implement `kernel.shutdown` as declared by the adjacent authoritative TOML.
@@ -11,8 +13,8 @@
 
 - Public API: handler constructor `New(*services.Services) core.Handler`.
 - There is no short alias. The idempotent command remains callable while the
-  command server drains; progress is read through `kernel.status`
-  until the administrative socket closes.
+  command server drains; progress is read through `kernel.status` until the
+  administrative socket closes.
 
 # Work Guidance
 
@@ -24,3 +26,5 @@
   cleanup, lock release, and continued interactive-console loop.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

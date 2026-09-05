@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel DOX](../AGENTS.md).
+
 # Purpose
 
 - Own each user's single persistent development sandbox, package-level Git
@@ -7,8 +9,9 @@
 
 - Own the record and every durable sandbox artifact beneath
   `users/<username>/dev-sandbox/`, disposable runsc metadata beneath
-  `node/kernel/runtime/development/`, mount-profile resolution, the authenticated
-  activation endpoint, and publication into shared package repositories.
+  `node/kernel/runtime/development/`, mount-profile resolution, the
+  authenticated activation endpoint, and publication into shared package
+  repositories.
 - Do not own service/job sandboxes, remote repository administration, package
   manifests, cross-package validation, activation history, or graphical
   programs.
@@ -16,12 +19,12 @@
 # Local Contracts
 
 - The authenticated lowercase alphanumeric `user_id` is the only control-plane
-  key. The shared kernel principal contract guarantees 3-32 characters. The runtime ID is exactly
-  `dev-<user_id>`; there are no workspace IDs, aliases, hashes, conversions, or
-  compatibility paths.
+  key. The shared kernel principal contract guarantees 3-32 characters. The
+  runtime ID is exactly `dev-<user_id>`; there are no workspace IDs, aliases,
+  hashes, conversions, or compatibility paths.
 - Durable state is confined to `users/<username>/dev-sandbox/`: `sandbox.toml`,
-  overlay checkpoints, and image-qualified writable system
-  roots. Unrelated files beneath `users/<username>/` are not sandbox state.
+  overlay checkpoints, and image-qualified writable system roots. Unrelated
+  files beneath `users/<username>/` are not sandbox state.
 - `/workspace/packages` is a gVisor-private writable overlay over the shared
   package tree. The live gVisor filestore is disposable; explicit lifecycle
   boundaries checkpoint private package deltas beneath `dev-sandbox/runtime/`
@@ -53,8 +56,8 @@
   checkpointing. Activation creates one commit per selected changed package,
   uses Git merge/cherry-pick machinery, never pushes, preserves unselected
   changes, and recreates the same deterministic sandbox with a clean overlay.
-  Local edits never affect the database. After candidate commits are staged,
-  the shared schema deployment hook validates and synchronizes affected tables
+  Local edits never affect the database. After candidate commits are staged, the
+  shared schema deployment hook validates and synchronizes affected tables
   before Git references/source are published; failure leaves shared code and
   unrelated private changes intact.
 - One kernel-owned non-login sandbox command scans all initialized package
@@ -64,8 +67,8 @@
   exact index produced by its scan instead of rebuilding the package tree. New
   untracked files excluded by the repository's standard Git ignore rules are
   never previewed, checkpointed, or activated; already tracked paths retain
-  normal Git modification and deletion behavior even if later ignore rules
-  match them. Preview computes detailed raw and line statistics; activation and
+  normal Git modification and deletion behavior even if later ignore rules match
+  them. Preview computes detailed raw and line statistics; activation and
   lifecycle capture use a cheap changed/not-changed comparison before exporting
   patches because those paths do not return file statistics.
 - Preview always returns an array, including `packages = []` after reset. It
@@ -79,9 +82,9 @@
 - Repository locking is independent of the per-user lifecycle lock. Never hold
   the lifecycle lock merely to inspect a shared repository.
 - Source reset discards overlay changes and recorded bases while preserving the
-  recorded system root and image provenance. Factory reset is the sole path
-  that removes exactly `users/<user>/dev-sandbox/` and initializes a replacement
-  root from the current development image, preserving unrelated user data. Both
+  recorded system root and image provenance. Factory reset is the sole path that
+  removes exactly `users/<user>/dev-sandbox/` and initializes a replacement root
+  from the current development image, preserving unrelated user data. Both
   require confirmation.
 - The helper endpoint authenticates the sandbox token, fixes helper client
   metadata, and re-enters registered activation commands; it is not a second
@@ -109,14 +112,17 @@
 # Verification
 
 - Unit tests cover deterministic IDs, direct ensure/reuse/restart, bounded and
-  confined authorized-key reads without lifecycle mutation, user
-  isolation, overlay checkpoint/restore, explicit batched Git scans,
-  ignored-artifact exclusion, disposable-index recovery, schema-before-source
-  activation and rollback, activation/reset boundaries,
-  repository-lock separation, inherited-cleanup races,
-  bounded diagnostics, and OCI mount policy.
+  confined authorized-key reads without lifecycle mutation, user isolation,
+  overlay checkpoint/restore, explicit batched Git scans, ignored-artifact
+  exclusion, disposable-index recovery, schema-before-source activation and
+  rollback, activation/reset boundaries, repository-lock separation,
+  inherited-cleanup races, bounded diagnostics, and OCI mount policy.
 - The real gVisor E2E covers SSH/PTY behavior, APT/dpkg persistence across
   restart, temporary `/run`, directfs package isolation, ignored-artifact
   exclusion, read-only helper mounting, repeated helper activation and clean
   overlay resets, source and factory reset, root identity, and absence of a
   developer account.
+
+# Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel DOX](../AGENTS.md).
+
 # Purpose
 
 - Own global named secrets used by kernel-authoritative operations.
@@ -11,8 +13,8 @@
 
 # Local Contracts
 
-- Secret names use the platform-safe name grammar. Values are nonempty,
-  bounded, and never included in list or set results.
+- Secret names use the platform-safe name grammar. Values are nonempty, bounded,
+  and never included in list or set results.
 - Database upserts serialize shared mutations across kernels. The database
   connection and credentials remain private to the kernel.
 - Secret values are intentionally retrievable only by the explicit get method
@@ -25,7 +27,8 @@
 # Verification
 
 - `store_test.go` covers empty stores, validation, overwrite behavior,
-  concurrent serialization, durable reopening, and non-disclosing
-  summaries.
+  concurrent serialization, durable reopening, and non-disclosing summaries.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

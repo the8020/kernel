@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel/cbus DOX](../AGENTS.md).
+
 # Purpose
 
 - Define the transport-independent version-2 command contract and immutable
@@ -15,8 +17,8 @@
 - Public API is the exported protocol/catalog types, `NewError`, `NewRegistry`,
   registry methods, `NewRequestID`, and `PathString`.
 - Core registration and complete package replacement publish new immutable
-  snapshots atomically. Execution loads one snapshot and releases registry
-  locks before invoking a handler.
+  snapshots atomically. Execution loads one snapshot and releases registry locks
+  before invoking a handler.
 - Package commands use raw argv and separate declared secure-input maps. Kernel
   commands support string/integer/boolean positionals and long options and are
   converted in the core adapter before typed handlers run.
@@ -25,7 +27,8 @@
 - Unknown secure inputs and missing required secure inputs fail before dispatch.
   Unexpected errors become safe internal errors and are logged with request ID,
   never secure values.
-- Extend protocol metadata only when command TOML generation and both clients can consume it generically.
+- Extend protocol metadata only when command TOML generation and both clients
+  can consume it generically.
 
 # Work Guidance
 
@@ -37,3 +40,5 @@
   reserved names, unknown commands, dispatch, and concurrent atomic swaps.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

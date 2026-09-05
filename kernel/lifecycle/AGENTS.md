@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel DOX](../AGENTS.md).
+
 # Purpose
 
 - Decouple graceful shutdown requests from application composition.
@@ -16,9 +18,9 @@
 - Closing `Done` happens exactly once and is safe from concurrent callers.
 - The first shutdown or restart request selects the terminal action; repeated or
   competing requests cannot change it.
-- Completion accounting is idempotent and bounded by the configured stage
-  total. When parallel work completes, the latest still-active step remains
-  visible instead of being hidden by a completed branch.
+- Completion accounting is idempotent and bounded by the configured stage total.
+  When parallel work completes, the latest still-active step remains visible
+  instead of being hidden by a completed branch.
 - Extend only when process-wide lifecycle state is currently required.
 
 # Work Guidance
@@ -32,3 +34,5 @@
   integration tests exercise lifecycle notification.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

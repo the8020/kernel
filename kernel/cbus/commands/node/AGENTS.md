@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
+
 # Purpose
 
 - Adapt shared topology primitives for package runtime operations.
@@ -21,6 +23,9 @@
 
 # Verification
 
-- Command generation and aggregate command tests verify the catalog and delegation.
+- Command generation and aggregate command tests verify the catalog and
+  delegation.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

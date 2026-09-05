@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel/cbus/commands/package DOX](../AGENTS.md).
+
 # Purpose
 
 - Expose independent package Git-repository administration.
@@ -28,3 +30,5 @@
   transient authentication, and targeted service refresh.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

@@ -1,14 +1,18 @@
+Parent DOX: [kernel/kernel/cbus/commands/settings DOX](../AGENTS.md).
+
 # Purpose
 
 - Implement `kernel.config.set` as declared by the adjacent authoritative TOML.
 
 # Ownership
 
-- Own typed argument extraction, settings transaction delegation, result wrapping, and domain-to-command error mapping shared with unset.
+- Own typed argument extraction, settings transaction delegation, result
+  wrapping, and domain-to-command error mapping shared with unset.
 
 # Local Contracts
 
-- Public API: handler constructor `New(*services.Services) core.Handler` and `MapError` for the sibling unset handler.
+- Public API: handler constructor `New(*services.Services) core.Handler` and
+  `MapError` for the sibling unset handler.
 - Accept only node-local setting definitions. Network binding, logging
   preparation, validation, and persistence remain in their owners.
 
@@ -18,7 +22,9 @@
 
 # Verification
 
-- Application integration covers successful node-local writes, HTTP/SSH
-  listener and logging mutation, and occupied-port rollback.
+- Application integration covers successful node-local writes, HTTP/SSH listener
+  and logging mutation, and occupied-port rollback.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

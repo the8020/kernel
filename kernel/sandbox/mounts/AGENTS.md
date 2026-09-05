@@ -1,10 +1,14 @@
+Parent DOX: [kernel/kernel/sandbox DOX](../AGENTS.md).
+
 # Purpose
 
-- Turn requested sandbox mounts into canonical policy-approved host/container paths.
+- Turn requested sandbox mounts into canonical policy-approved host/container
+  paths.
 
 # Ownership
 
-- Own allowed host roots, symlink/traversal detection, protected-source/target rejection, mount metadata validation, and grouped-owner scope requirements.
+- Own allowed host roots, symlink/traversal detection, protected-source/target
+  rejection, mount metadata validation, and grouped-owner scope requirements.
 
 # Local Contracts
 
@@ -15,15 +19,20 @@
 - Relative sources resolve beneath the first configured root; a source is also
   rejected when mounting it would contain `node/kernel` or the containerd
   socket.
-- Targets are canonical absolute paths under `/artifacts`, `/workspace`, `/runtime-cache`, or `/tmp`; `/opt/runtime` and kernel-controlled files cannot be overmounted.
+- Targets are canonical absolute paths under `/artifacts`, `/workspace`,
+  `/runtime-cache`, or `/tmp`; `/opt/runtime` and kernel-controlled files cannot
+  be overmounted.
 
 # Lifecycle
 
-- Validate after artifact/workspace creation and before profile hashing, state persistence, CNI, or container creation.
+- Validate after artifact/workspace creation and before profile hashing, state
+  persistence, CNI, or container creation.
 
 # Failure Behavior
 
-- Missing paths, traversal, symlink escape, protected paths, invalid write/persistence policy, or owner-scope violations fail without host mutation.
+- Missing paths, traversal, symlink escape, protected paths, invalid
+  write/persistence policy, or owner-scope violations fail without host
+  mutation.
 
 # Concurrency
 
@@ -35,7 +44,8 @@
 
 # Non-Responsibilities
 
-- No OCI mount application, artifact copying, final distributed filesystem, or Worker permission decisions.
+- No OCI mount application, artifact copying, final distributed filesystem, or
+  Worker permission decisions.
 
 # Verification
 
@@ -44,3 +54,5 @@
   socket, and `node/kernel` rejection.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

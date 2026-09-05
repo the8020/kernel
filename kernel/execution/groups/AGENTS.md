@@ -1,16 +1,24 @@
+Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
+
 # Purpose
 
-- Select compatible runtime groups generically and account for clean warm groups by runtime-profile hash.
+- Select compatible runtime groups generically and account for clean warm groups
+  by runtime-profile hash.
 
 # Ownership
 
-- Own grouping strategies, explicit overrides, stable logical group keys, compatibility matching, no-cross-type enforcement, warm reservation/assignment/destruction accounting, and replenishment demand.
+- Own grouping strategies, explicit overrides, stable logical group keys,
+  compatibility matching, no-cross-type enforcement, warm
+  reservation/assignment/destruction accounting, and replenishment demand.
 
 # Local Contracts
 
-- Public API: `Request`, `Group`, `Selection`, `Select`, `WarmPool`, `NewWarmPool`, and pool mutation/restoration/snapshot methods.
-- `isolated`, `owner`, `namespace`, and `shared` strategies apply identically to user/service/job workloads; defaults are supplied from settings.
-- Joining requires workload type, group key, and complete runtime-profile hash compatibility.
+- Public API: `Request`, `Group`, `Selection`, `Select`, `WarmPool`,
+  `NewWarmPool`, and pool mutation/restoration/snapshot methods.
+- `isolated`, `owner`, `namespace`, and `shared` strategies apply identically to
+  user/service/job workloads; defaults are supplied from settings.
+- Joining requires workload type, group key, and complete runtime-profile hash
+  compatibility.
 - Service groups additionally require the same exact placement-group value and
   reject candidates already containing the logical service. Empty placement
   group is the ordinary shared default; there is no dedicated flag or tag list.
@@ -20,19 +28,24 @@
 - Candidate snapshots carry observed Worker count. Selection excludes candidates
   at the kernel-wide Worker limit so the coordinator can provision compatible
   capacity; CPU and RAM are not selection inputs.
-- Used warm supervisors are destroyed on release and never returned to the clean pool.
+- Used warm supervisors are destroyed on release and never returned to the clean
+  pool.
 
 # Lifecycle
 
-- Select existing compatible group or create/assign a clean warm group; reserve atomically, verify health externally, assign, then replenish asynchronously.
+- Select existing compatible group or create/assign a clean warm group; reserve
+  atomically, verify health externally, assign, then replenish asynchronously.
 
 # Failure Behavior
 
-- Missing owner/namespace/execution/profile, invalid strategy, cross-type candidate, or invalid pool transition returns a descriptive error without assignment.
+- Missing owner/namespace/execution/profile, invalid strategy, cross-type
+  candidate, or invalid pool transition returns a descriptive error without
+  assignment.
 
 # Concurrency
 
-- Selection operates on immutable snapshots; `WarmPool` serializes all accounting and reservations with one mutex.
+- Selection operates on immutable snapshots; `WarmPool` serializes all
+  accounting and reservations with one mutex.
 
 # Dependencies
 
@@ -40,7 +53,8 @@
 
 # Non-Responsibilities
 
-- No sandbox creation, health checks, Worker lifecycle, service/job/session policy, or persistent state.
+- No sandbox creation, health checks, Worker lifecycle, service/job/session
+  policy, or persistent state.
 
 # Verification
 
@@ -50,3 +64,5 @@
   restoration, failure, assignment, destruction, and replenishment counts.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

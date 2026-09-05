@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
+
 # Purpose
 
 - Own non-durable job execution on job Workers in generic runtime groups.
@@ -24,8 +26,8 @@
   secret-free failures retain their original Go cause.
 - One started execution maps to one Worker unless explicit compatible reuse is
   enabled. Sandbox selection requests capacity for that one Worker. Each Worker
-  owns one sandbox allocation claim. Non-reusable Workers stop and release
-  that claim after one call; reusable Workers retain it until idle retirement.
+  owns one sandbox allocation claim. Non-reusable Workers stop and release that
+  claim after one call; reusable Workers retain it until idle retirement.
   Package commands follow this same policy without caller-specific overrides.
 - An explicit instance-root-bounded development workspace becomes an
   owner-scoped runtime-profile mount at `/workspace`; writable access is opt-in.
@@ -34,10 +36,11 @@
 - Jobs use the same runtime image, package/runtime read access, kernel API,
   writable temp/cache paths, and network/import access as services.
 - A job requires an explicit canonical principal or inherits its synchronous
-  runtime caller. Account rows, enabled state, passwords, and sessions are outside
-  admission. System and other principals follow the same structural validation.
-  Queued and reused jobs retain their principal independently of account changes.
-  The immutable origin is the job ID or the resolved package program ID.
+  runtime caller. Account rows, enabled state, passwords, and sessions are
+  outside admission. System and other principals follow the same structural
+  validation. Queued and reused jobs retain their principal independently of
+  account changes. The immutable origin is the job ID or the resolved package
+  program ID.
 - Compatible Worker reuse includes user and origin identity; work from different
   users or origins never shares a reusable Worker.
 - `Options.CheckModules` asks the supervisor to type-check a bounded module list
@@ -66,3 +69,5 @@
   retirement, no persistence/replay, and group failure.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

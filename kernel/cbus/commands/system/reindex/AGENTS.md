@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel/cbus/commands/system DOX](../AGENTS.md).
+
 # Purpose
 
 - Implement `kernel.reindex` as declared by the adjacent authoritative TOML.
@@ -5,7 +7,8 @@
 # Ownership
 
 - Delegate explicit refresh of the process-local command, event-handler, and
-  hook-handler indexes plus package-scoped service fragments to runtime composition.
+  hook-handler indexes plus package-scoped service fragments to runtime
+  composition.
 
 # Local Contracts
 
@@ -17,11 +20,15 @@
   `indexed_packages` lists accepted service fragments and `service_diagnostics`
   explains publication/runtime failures. Failed calls preserve this result in
   structured error details and expose the full publication message, including
-  which updates were not applied, instead of an internal-kernel-error placeholder.
+  which updates were not applied, instead of an internal-kernel-error
+  placeholder.
 
 # Verification
 
 - Discovery, package, composition, and command tests cover full/scoped refresh,
-  deleted declarations, target-commit changes, diagnostics, and lifecycle wiring.
+  deleted declarations, target-commit changes, diagnostics, and lifecycle
+  wiring.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

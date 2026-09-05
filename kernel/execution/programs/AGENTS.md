@@ -1,14 +1,17 @@
+Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
+
 # Purpose
 
-- Resolve ready package programs and submit them through the ordinary job system.
+- Resolve ready package programs and submit them through the ordinary job
+  system.
 
 # Local Contracts
 
 - A program is a package artifact; a job is one invocation of that artifact.
 - `Run` submits package CBus commands as `system`, retaining the caller context
-  for synchronous child-job admission. `RunWithOptions` forwards the runtime caller's
-  execution user, optional sandbox placement group, and timeout. Both use the
-  same job path and own no durable scheduling or history.
+  for synchronous child-job admission. `RunWithOptions` forwards the runtime
+  caller's execution user, optional sandbox placement group, and timeout. Both
+  use the same job path and own no durable scheduling or history.
 - Use the ordinary job runtime profile, complete shared read-only packages
   mount, permissions, grouping, capacity, and configured Worker reuse policy.
   Commands may import and call other packages just like services and jobs.
@@ -29,9 +32,12 @@
 # Verification
 
 - Tests cover system command identity, preserved caller context, default job
-  policy, runtime execution options, stale/resolution failures, and job error identity.
+  policy, runtime execution options, stale/resolution failures, and job error
+  identity.
 - The rootless backend E2E test dispatches a CBus command through the real job
   and Worker managers into Deno, verifies static/dynamic cross-package imports,
   system identity, normal mounts, no package artifacts, and Worker cleanup.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel/cbus/commands/system DOX](../AGENTS.md).
+
 # Purpose
 
 - Implement `kernel.status` as declared by the adjacent authoritative TOML.
@@ -16,7 +18,9 @@
 - Result field names remain aligned with `command.toml`.
 - `instance_root` is the initialized node directory; source-installation paths
   are not part of process status.
-- Status reads one synchronized runtime snapshot; while asynchronous runtime composition is incomplete it reports `runtime_ready=false` and the initialization-progress message without delaying the command.
+- Status reads one synchronized runtime snapshot; while asynchronous runtime
+  composition is incomplete it reports `runtime_ready=false` and the
+  initialization-progress message without delaying the command.
 - Database status is the cached result of the kernel startup or explicit
   connectivity check. Its pool limits and open/in-use/idle/wait counters come
   from local `database/sql` state; reading kernel status performs no database
@@ -28,10 +32,13 @@
 
 # Work Guidance
 
-- Add fields only when the Phase status contract requires them and update TOML first.
+- Add fields only when the Phase status contract requires them and update TOML
+  first.
 
 # Verification
 
 - Application integration validates live status identity and values.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

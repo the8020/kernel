@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
+
 # Purpose
 
 - Own the generic kernel-side Worker registry facade shared by services and
@@ -44,7 +46,8 @@
   snapshots plus concurrent starts. The supervisor start occurs after releasing
   that lock. A successful start remains provisionally counted until a newer
   snapshot observes it or proves it absent. CPU and RAM observations never
-  reject Worker creation; admission never rejects dispatch to an existing Worker.
+  reject Worker creation; admission never rejects dispatch to an existing
+  Worker.
 - Worker startup injects the configured non-secret database backend so module
   imports can construct the correct SQL compiler without a kernel callback. It
   also validates the required canonical execution user and workload-compatible
@@ -62,8 +65,10 @@
 
 - Unit tests cover permission/entrypoint rejection, service/job start, exact
   sandbox and node Worker-count admission under concurrent starts, provisional
-  snapshot reconciliation, cache-only aggregation/filtering, inspect, global
-  and known-group stop, local/cross-node invocation, target mismatch and bounds,
-  and delegated workload operations.
+  snapshot reconciliation, cache-only aggregation/filtering, inspect, global and
+  known-group stop, local/cross-node invocation, target mismatch and bounds, and
+  delegated workload operations.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

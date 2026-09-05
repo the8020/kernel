@@ -1,3 +1,5 @@
+Parent DOX: [kernel/defaults/config/runtime DOX](../AGENTS.md).
+
 # Purpose
 
 - Define the one small versioned JSON control protocol shared by the Go kernel,
@@ -57,3 +59,5 @@
   complete message coverage, and rejection of malformed schema.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

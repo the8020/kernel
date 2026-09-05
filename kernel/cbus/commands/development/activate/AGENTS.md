@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel/cbus/commands/development DOX](../AGENTS.md).
+
 # Purpose
 
 - Expose typed development activation preview and execution.
@@ -23,7 +25,9 @@
 # Verification
 
 - Unit and real gVisor tests cover preview, helper/external activation,
-  selection, messages, valid TOML metadata, conflicts, repeated publication,
-  and overlay reset.
+  selection, messages, valid TOML metadata, conflicts, repeated publication, and
+  overlay reset.
 
 # Child DOX Index
+
+No child DOX documents. This document owns the entire local scope.

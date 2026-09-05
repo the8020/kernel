@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel/sandbox DOX](../AGENTS.md).
+
 # Purpose
 
 - Define the host-authoritative sandbox backend boundary and contain concrete
@@ -50,9 +52,9 @@
 
 # Child DOX Index
 
-- `containerd/AGENTS.md`: official containerd Go-client backend selecting
-  `io.containerd.runsc.v1`.
-- `rootless/AGENTS.md`: direct node-local runsc backend selecting rootless
-  systrap.
-- `runscconsole/AGENTS.md`: shared attached stream and detached console-socket
-  runsc exec ownership.
+- [containerd/AGENTS.md](containerd/AGENTS.md): official containerd Go-client
+  backend selecting `io.containerd.runsc.v1`.
+- [rootless/AGENTS.md](rootless/AGENTS.md): direct node-local runsc backend
+  selecting rootless systrap.
+- [runscconsole/AGENTS.md](runscconsole/AGENTS.md): shared attached stream and
+  detached console-socket runsc exec ownership.

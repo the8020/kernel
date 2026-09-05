@@ -1,3 +1,5 @@
+Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
+
 # Purpose
 
 - Expose Phase 1B Deno inspector targets and temporary loopback debug leases.
@@ -8,8 +10,11 @@
 
 # Local Contracts
 
-- `debug targets` exposes concise target identity, type, title, execution identity, and description; connection URLs are returned only when opening a debug lease.
-- Debug leases are explicit, bounded, token-ready loopback exposure; target discovery delegates to the debugging manager.
+- `debug targets` exposes concise target identity, type, title, execution
+  identity, and description; connection URLs are returned only when opening a
+  debug lease.
+- Debug leases are explicit, bounded, token-ready loopback exposure; target
+  discovery delegates to the debugging manager.
 
 # Work Guidance
 
@@ -21,4 +26,7 @@
 
 # Child DOX Index
 
-- This domain contract owns its leaf command folders; they contain only one declarative command and thin handler each.
+No child DOX documents. This document owns the entire local scope.
+
+- This domain contract owns its leaf command folders; they contain only one
+  declarative command and thin handler each.
