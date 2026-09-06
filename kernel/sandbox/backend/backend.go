@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -14,22 +15,22 @@ import (
 
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
+	"the8020/kernel/logging/records"
 	"the8020/kernel/sandbox/model"
 )
 
 const RootlessRuntimeName = "runsc-rootless-systrap"
 
 type Observation struct {
-	ContainerID    string            `json:"container_id"`
-	Runtime        string            `json:"runtime"`
-	RuntimeGroupID string            `json:"runtime_group_id"`
-	TaskStatus     string            `json:"task_status"`
-	TaskPID        uint32            `json:"task_pid"`
-	Labels         map[string]string `json:"labels"`
+	Runtime    string            `json:"runtime"`
+	SandboxID  string            `json:"sandbox_id"`
+	TaskStatus string            `json:"task_status"`
+	TaskPID    uint32            `json:"task_pid"`
+	Labels     map[string]string `json:"labels"`
 }
 
 type Backend interface {
-	Create(context.Context, model.SandboxSpec) (Observation, error)
+	Create(context.Context, model.SandboxSpec, records.RawPaths) (Observation, error)
 	UpdateLabels(context.Context, string, map[string]string) error
 	Observe(context.Context, string) (Observation, error)
 	ListOwned(context.Context) ([]Observation, error)
@@ -37,6 +38,27 @@ type Backend interface {
 	Stop(context.Context, string, time.Duration) error
 	Kill(context.Context, string) error
 	Delete(context.Context, string) error
+}
+
+// ValidateRawPaths checks the ingress endpoints supplied by the logging owner.
+// Backends consume these FIFOs; only that owner creates or removes them.
+func ValidateRawPaths(paths records.RawPaths) error {
+	if paths.Stdout == paths.Stderr {
+		return errors.New("distinct sandbox stdout and stderr FIFOs are required")
+	}
+	for _, path := range []string{paths.Stdout, paths.Stderr} {
+		if !filepath.IsAbs(path) {
+			return errors.New("absolute sandbox output FIFO paths are required")
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			return fmt.Errorf("inspect sandbox output FIFO: %w", err)
+		}
+		if info.Mode()&os.ModeNamedPipe == 0 {
+			return errors.New("sandbox output endpoint must be a FIFO")
+		}
+	}
+	return nil
 }
 
 type MetricsProvider interface {
@@ -129,8 +151,8 @@ func RuntimeEnvironment(existing []string, sandbox model.SandboxSpec, config Pro
 		}
 	}
 	additions := map[string]string{
-		"NODE_ID":    config.NodeID,
-		"SANDBOX_ID": sandbox.SandboxID, "RUNTIME_GROUP_ID": sandbox.RuntimeGroupID,
+		"NODE_ID":       config.NodeID,
+		"SANDBOX_ID":    sandbox.SandboxID,
 		"WORKLOAD_TYPE": string(sandbox.WorkloadType), "IMAGE_DIGEST": sandbox.ImageDigest,
 		"DEPENDENCY_MODE":    string(sandbox.DependencyMode),
 		"INTERNAL_API_TOKEN": sandbox.InternalToken, "SUPERVISOR_HOST": config.SupervisorHost,
@@ -167,12 +189,15 @@ func DenoProcessArguments(args []string, sandbox model.SandboxSpec, config Proce
 		}
 		result = append(result, argument)
 	}
-	readPaths := append([]string{"/opt/runtime", "/artifacts", config.KernelSocketPath}, sandbox.Permissions.ReadPaths...)
+	readPaths := append([]string{"/opt/runtime", "/artifacts", config.KernelSocketPath, "/run/the8020/logs.sock"}, sandbox.Permissions.ReadPaths...)
 	// Deno models Unix-socket connect as write access to the socket path. This
 	// grants only the mounted callback socket; it does not make its read-only
 	// parent mount writable.
-	writePaths := append([]string{"/tmp", "/runtime-cache", config.KernelSocketPath}, sandbox.Permissions.WritePaths...)
-	networkHosts := append([]string{config.SupervisorHost + ":" + strconv.Itoa(config.SupervisorPort)}, sandbox.Permissions.NetworkHosts...)
+	writePaths := append([]string{"/tmp", "/runtime-cache", config.KernelSocketPath, "/run/the8020/logs.sock"}, sandbox.Permissions.WritePaths...)
+	networkHosts := append([]string{config.SupervisorHost + ":" + strconv.Itoa(config.SupervisorPort), "unix:/run/the8020/logs.sock"}, sandbox.Permissions.NetworkHosts...)
+	if config.KernelSocketPath != "" {
+		networkHosts = append(networkHosts, "unix:"+config.KernelSocketPath)
+	}
 	result = replaceArgument(result, "--allow-read=", readPaths)
 	result = replaceArgument(result, "--allow-write=", writePaths)
 	result = replaceArgument(result, "--allow-net=", networkHosts)
@@ -182,7 +207,7 @@ func DenoProcessArguments(args []string, sandbox model.SandboxSpec, config Proce
 		result = unrestrictedPermission(result, "--allow-import")
 	}
 	result = replaceArgument(result, "--allow-env=", append([]string{
-		"NODE_ID", "SANDBOX_ID", "RUNTIME_GROUP_ID", "WORKLOAD_TYPE", "IMAGE_DIGEST", "DEPENDENCY_MODE", "INTERNAL_API_TOKEN", "KERNEL_SOCKET_PATH",
+		"NODE_ID", "SANDBOX_ID", "WORKLOAD_TYPE", "IMAGE_DIGEST", "DEPENDENCY_MODE", "INTERNAL_API_TOKEN", "KERNEL_SOCKET_PATH",
 		"SUPERVISOR_HOST", "SUPERVISOR_PORT", "INSPECTOR_PORT", "RUNTIME_PROFILE_HASH", "HEARTBEAT_INTERVAL_MS", "WORKER_STOP_GRACE_MS",
 	}, sandbox.Permissions.Environment...))
 	if sandbox.Permissions.SystemInfo {

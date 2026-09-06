@@ -1,8 +1,10 @@
+import { newId } from "../identity/mod.ts";
 import { assertEquals, assertRejects } from "../test/assert.ts";
 import { type MessageType, PROTOCOL_VERSION } from "@the8020/protocol";
 import { serviceCheckArguments, Supervisor } from "./supervisor.ts";
 import type { ExecutionMetadata } from "../worker/contracts.ts";
 import { kernelCallbackRequest } from "./callback_request.ts";
+import { TestLogSink } from "../test/logs.ts";
 
 const token = "0123456789abcdef0123456789abcdef";
 const examples = new URL("../examples", import.meta.url).pathname;
@@ -10,20 +12,20 @@ const examples = new URL("../examples", import.meta.url).pathname;
 Deno.test("kernel callback payloads contain only operation-owned fields", () => {
   const base = {
     arguments: {},
-    requestId: "request-test",
+    contextId: "ctx-0000000001",
     serviceId: "example/persistent",
-    executionId: "execution-test",
-    workerId: "wrk-source01",
-    persistentExecutionId: "persistent-test",
+
+    workerId: "wrk-0000000025",
+    persistentExecutionId: "pex-0000000010",
   };
   const invocation = kernelCallbackRequest({
     ...base,
     operation: "worker.invoke",
     arguments: {
-      nodeId: "node-target",
-      sandboxId: "sbx-target01",
-      workerId: "wrk-target01",
-      persistentExecutionId: "persistent-target",
+      nodeId: "nod-0000000002",
+      sandboxId: "sbx-0000000015",
+      workerId: "wrk-0000000026",
+      persistentExecutionId: "pex-0000000011",
       function: "example.inspect",
       input: { value: 1 },
     },
@@ -33,15 +35,14 @@ Deno.test("kernel callback payloads contain only operation-owned fields", () => 
     messageType: "worker_invoke",
     responseMessageType: "worker_result",
     payload: {
-      target_node_id: "node-target",
-      target_sandbox_id: "sbx-target01",
-      target_worker_id: "wrk-target01",
-      target_persistent_execution_id: "persistent-target",
+      target_node_id: "nod-0000000002",
+      target_sandbox_id: "sbx-0000000015",
+      target_worker_id: "wrk-0000000026",
+      target_persistent_execution_id: "pex-0000000011",
       function: "example.inspect",
       input: { value: 1 },
-      execution_id: "execution-test",
-      worker_id: "wrk-source01",
-      request_id: "request-test",
+      worker_id: "wrk-0000000025",
+      context_id: "ctx-0000000001",
     },
   });
   assertEquals(
@@ -58,9 +59,8 @@ Deno.test("kernel callback payloads contain only operation-owned fields", () => 
         statement: "SELECT $1",
         parameters: [1],
         return_rows: true,
-        execution_id: "execution-test",
-        worker_id: "wrk-source01",
-        request_id: "request-test",
+        worker_id: "wrk-0000000025",
+        context_id: "ctx-0000000001",
       },
     },
   );
@@ -94,8 +94,9 @@ Deno.test("service type checking uses supported dependency-mode arguments", () =
 Deno.test("closing a Worker requests transaction cleanup for its scope", async () => {
   const calls: Array<Record<string, unknown>> = [];
   const supervisor = new Supervisor({
-    runtimeGroupId: "group-test",
-    sandboxId: "sandbox-test",
+    nodeId: "nod-0000000001",
+
+    sandboxId: "sbx-0000000013",
     workloadType: "service",
     token,
     supervisorVersion: "test",
@@ -107,15 +108,15 @@ Deno.test("closing a Worker requests transaction cleanup for its scope", async (
     },
   });
   const worker = await supervisor.startWorker({
-    metadata: metadata("wrk-cleanup"),
+    metadata: metadata("wrk-0000000023"),
     permissions: { read: [examples] },
   });
   await supervisor.stopWorker(worker.metadata.workerId, true);
   assertEquals(
     calls.some((call) =>
       call.operation === "database.scope.close" &&
-      call.executionId === "execution-wrk-cleanup" &&
-      call.workerId === "wrk-cleanup" && call.serviceId === undefined
+      call.contextId === undefined &&
+      call.workerId === "wrk-0000000023" && call.serviceId === undefined
     ),
     true,
   );
@@ -123,8 +124,9 @@ Deno.test("closing a Worker requests transaction cleanup for its scope", async (
 
 Deno.test("database-disabled Workers cannot execute SQL", async () => {
   const supervisor = new Supervisor({
-    runtimeGroupId: "group-test",
-    sandboxId: "sandbox-test",
+    nodeId: "nod-0000000001",
+
+    sandboxId: "sbx-0000000013",
     workloadType: "service",
     token,
     supervisorVersion: "test",
@@ -132,7 +134,7 @@ Deno.test("database-disabled Workers cannot execute SQL", async () => {
     workerStopGraceMilliseconds: 25,
     kernelCall: () => Promise.resolve({ columns: [], rows: [] }),
   });
-  const restricted = metadata("wrk-no-database");
+  const restricted = metadata("wrk-0000000024");
   restricted.entrypoint = new URL(
     "../examples/service_kernel.ts",
     import.meta.url,
@@ -155,11 +157,11 @@ Deno.test("database-disabled Workers cannot execute SQL", async () => {
 
 function metadata(id: string): ExecutionMetadata {
   return {
-    nodeId: "node-test",
-    runtimeGroupId: "group-test",
-    sandboxId: "sandbox-test",
+    nodeId: "nod-0000000001",
+
+    sandboxId: "sbx-0000000013",
     workerId: id,
-    executionId: `execution-${id}`,
+
     workloadType: "service",
     ownerId: "owner",
     workloadId: "service-a",
@@ -180,16 +182,17 @@ function controlEnvelope(
   return JSON.stringify({
     protocol_version: protocolVersion,
     message_type: messageType,
-    runtime_group_id: "group-job",
-    correlation_id: "correlation-test",
+    sandbox_id: "sbx-0000000004",
+    correlation_id: "cor-0000000001",
     payload,
   });
 }
 
 Deno.test("supervisor authenticates health/status and rejects cross-type Workers", async () => {
   const supervisor = new Supervisor({
-    runtimeGroupId: "group",
-    sandboxId: "sandbox",
+    nodeId: "nod-0000000001",
+
+    sandboxId: "sbx-0000000001",
     workloadType: "service",
     token,
     supervisorVersion: "test",
@@ -208,7 +211,7 @@ Deno.test("supervisor authenticates health/status and rejects cross-type Workers
   );
   assertEquals(health.status, 200);
   assertEquals((await health.json()).protocol_version, PROTOCOL_VERSION);
-  const wrong = metadata("wrong");
+  const wrong = metadata("wrk-0000000027");
   wrong.workloadType = "job";
   await assertRejects(
     () =>
@@ -219,7 +222,7 @@ Deno.test("supervisor authenticates health/status and rejects cross-type Workers
     Error,
     "does not match",
   );
-  const invalidUser = metadata("invalid-user");
+  const invalidUser = metadata("wrk-0000000006");
   invalidUser.user = { userId: "user:alice", username: "bob" };
   await assertRejects(
     () =>
@@ -230,7 +233,7 @@ Deno.test("supervisor authenticates health/status and rejects cross-type Workers
     TypeError,
     "execution user is invalid",
   );
-  const invalidOrigin = metadata("invalid-origin");
+  const invalidOrigin = metadata("wrk-0000000005");
   invalidOrigin.origin = { type: "job", id: "job" };
   await assertRejects(
     () =>
@@ -264,18 +267,19 @@ Deno.test("supervisor authenticates health/status and rejects cross-type Workers
 
 Deno.test("supervisor tracks Workers, service pools, and drain", async () => {
   const supervisor = new Supervisor({
-    runtimeGroupId: "group",
-    sandboxId: "sandbox",
+    nodeId: "nod-0000000001",
+
+    sandboxId: "sbx-0000000001",
     workloadType: "service",
     token,
     supervisorVersion: "test",
   });
   const first = await supervisor.startWorker({
-    metadata: metadata("worker-b"),
+    metadata: metadata("wrk-0000000016"),
     permissions: { read: [examples] },
   });
   const second = await supervisor.startWorker({
-    metadata: metadata("worker-a"),
+    metadata: metadata("wrk-0000000015"),
     permissions: { read: [examples] },
   });
   const readySnapshot = supervisor.snapshot() as {
@@ -288,8 +292,8 @@ Deno.test("supervisor tracks Workers, service pools, and drain", async () => {
   assertEquals(readySnapshot.worker_count, 2);
   assertEquals(readySnapshot.ready_worker_count, 2);
   assertEquals(readySnapshot.workers.map((worker) => worker.worker_id), [
-    "worker-a",
-    "worker-b",
+    "wrk-0000000015",
+    "wrk-0000000016",
   ]);
   assertEquals(
     readySnapshot.workers.some((worker) => "logs" in worker),
@@ -300,14 +304,14 @@ Deno.test("supervisor tracks Workers, service pools, and drain", async () => {
     true,
   );
   const retried = await supervisor.startWorker({
-    metadata: metadata("worker-a"),
+    metadata: metadata("wrk-0000000015"),
     permissions: { read: [examples] },
   });
   assertEquals(retried, second);
   await assertRejects(
     () =>
       supervisor.startWorker({
-        metadata: metadata("worker-a"),
+        metadata: metadata("wrk-0000000015"),
         permissions: { read: [] },
       }),
     Error,
@@ -315,7 +319,7 @@ Deno.test("supervisor tracks Workers, service pools, and drain", async () => {
   );
   assertEquals(
     second.metadata.debuggerName,
-    "service:owner:execution-worker-a:worker-a",
+    `service:owner:execution-${second.metadata.workerId}:${second.metadata.workerId}`,
   );
   supervisor.configureService("service-a", [
     first.metadata.workerId,
@@ -323,7 +327,7 @@ Deno.test("supervisor tracks Workers, service pools, and drain", async () => {
   ], 32);
   assertEquals(
     supervisor.selectServiceWorker("service-a").metadata.workerId,
-    "worker-a",
+    "wrk-0000000015",
   );
   const request = first.dispatchService(new Request("http://service/slow"));
   await Promise.resolve();
@@ -335,7 +339,7 @@ Deno.test("supervisor tracks Workers, service pools, and drain", async () => {
   assertEquals(activeSnapshot.revision > readySnapshot.revision, true);
   assertEquals(
     supervisor.selectServiceWorker("service-a").metadata.workerId,
-    "worker-a",
+    "wrk-0000000015",
   );
   assertEquals(await (await request).text(), "GET:/slow:streamed:");
   const idleSnapshot = supervisor.snapshot() as {
@@ -372,31 +376,33 @@ Deno.test("supervisor tracks Workers, service pools, and drain", async () => {
         authorization: `Bearer ${token}`,
         "the8020-internal-method": "POST",
         "the8020-internal-url": "http://service/routed",
+        "the8020-internal-context-id": newId("ctx"),
       },
       body: "body",
     }),
   );
   assertEquals(
     routed.headers.get("the8020-internal-selected-worker-id"),
-    "worker-a",
+    "wrk-0000000015",
   );
   assertEquals(await routed.text(), "POST:/routed:streamed:body");
   assertEquals(supervisor.status().worker_count, 1);
   await supervisor.drain();
-  await supervisor.stopWorker("already-absent");
+  await supervisor.stopWorker("wrk-0000000001");
   assertEquals(supervisor.status().worker_count, 0);
   assertEquals(supervisor.status().draining, true);
 });
 
 Deno.test("higher concurrency has one bounded temporary slot per Worker", async () => {
   const supervisor = new Supervisor({
-    runtimeGroupId: "group-soft-limit",
-    sandboxId: "sandbox-soft-limit",
+    nodeId: "nod-0000000001",
+
+    sandboxId: "sbx-0000000011",
     workloadType: "service",
     token,
     supervisorVersion: "test",
   });
-  const workerMetadata = metadata("worker-soft-limit");
+  const workerMetadata = metadata("wrk-0000000021");
   const worker = await supervisor.startWorker({
     metadata: workerMetadata,
     permissions: { read: [examples] },
@@ -410,6 +416,7 @@ Deno.test("higher concurrency has one bounded temporary slot per Worker", async 
           authorization: `Bearer ${token}`,
           "the8020-internal-method": "GET",
           "the8020-internal-url": "http://service/stream",
+          "the8020-internal-context-id": newId("ctx"),
         },
       }),
     );
@@ -440,8 +447,9 @@ Deno.test("concurrent Worker lifecycle retries remain idempotent", async () => {
   });
   let validationCalls = 0;
   const supervisor = new Supervisor({
-    runtimeGroupId: "group-retry",
-    sandboxId: "sandbox-retry",
+    nodeId: "nod-0000000001",
+
+    sandboxId: "sbx-0000000009",
     workloadType: "service",
     token,
     supervisorVersion: "test",
@@ -450,7 +458,7 @@ Deno.test("concurrent Worker lifecycle retries remain idempotent", async () => {
       await validationGate;
     },
   });
-  const validated = metadata("worker-retry");
+  const validated = metadata("wrk-0000000020");
   validated.validateEntrypoint = true;
   const options = {
     metadata: validated,
@@ -483,14 +491,18 @@ Deno.test("concurrent Worker lifecycle retries remain idempotent", async () => {
 Deno.test("persistent executions reserve hard slots and return to the same Worker", async () => {
   const now = 1_000;
   const supervisor = new Supervisor({
-    runtimeGroupId: "group-persistent",
-    sandboxId: "sandbox-persistent",
+    nodeId: "nod-0000000001",
+
+    sandboxId: "sbx-0000000006",
     workloadType: "service",
     token,
     supervisorVersion: "test",
     now: () => now,
   });
-  const workerMetadata = [metadata("persistent-a"), metadata("persistent-b")];
+  const workerMetadata = [
+    metadata("wrk-0000000009"),
+    metadata("wrk-0000000010"),
+  ];
   for (const item of workerMetadata) {
     item.workloadId = "service-version-a";
     item.service = {
@@ -518,6 +530,7 @@ Deno.test("persistent executions reserve hard slots and return to the same Worke
     executionId: string,
     keepAlive = 30,
     targetWorkerId?: string,
+    existing = false,
   ) =>
     supervisor.handler(
       new Request("http://runtime/v1/services/service-version-a/dispatch", {
@@ -526,27 +539,31 @@ Deno.test("persistent executions reserve hard slots and return to the same Worke
           authorization: `Bearer ${token}`,
           "the8020-internal-method": "GET",
           "the8020-internal-url": "http://service/persistent",
+          "the8020-internal-context-id": newId("ctx"),
           "the8020-internal-persistent-execution-id": executionId,
           "the8020-internal-persistent-keep-alive-ms": String(keepAlive),
           ...(targetWorkerId === undefined ? {} : {
             "the8020-internal-target-worker-id": targetWorkerId,
           }),
+          ...(existing
+            ? { "the8020-internal-persistent-existing": "true" }
+            : {}),
         },
       }),
     );
   try {
-    const first = await dispatch("execution-one");
+    const first = await dispatch("pex-0000000001");
     const firstWorker = first.headers.get(
       "the8020-internal-selected-worker-id",
     );
     await first.body?.cancel();
-    const resumed = await dispatch("execution-one");
+    const resumed = await dispatch("pex-0000000001", 30, firstWorker!, true);
     assertEquals(
       resumed.headers.get("the8020-internal-selected-worker-id"),
       firstWorker,
     );
     await resumed.body?.cancel();
-    const second = await dispatch("execution-two");
+    const second = await dispatch("pex-0000000002");
     const secondWorker = second.headers.get(
       "the8020-internal-selected-worker-id",
     );
@@ -558,15 +575,15 @@ Deno.test("persistent executions reserve hard slots and return to the same Worke
     ]);
     supervisor.completePersistentExecution(
       "service-version-a",
-      "execution-one",
+      "pex-0000000001",
       firstWorker!,
     );
     supervisor.completePersistentExecution(
       "service-version-a",
-      "execution-one",
+      "pex-0000000001",
       firstWorker!,
     );
-    const targeted = await dispatch("execution-three", 30, firstWorker!);
+    const targeted = await dispatch("pex-0000000003", 30, firstWorker!);
     assertEquals(targeted.status, 201);
     assertEquals(
       targeted.headers.get("the8020-internal-selected-worker-id"),
@@ -577,7 +594,7 @@ Deno.test("persistent executions reserve hard slots and return to the same Worke
     try {
       supervisor.completePersistentExecution(
         "service-version-a",
-        "execution-three",
+        "pex-0000000003",
         secondWorker!,
       );
     } catch (error) {
@@ -596,13 +613,14 @@ Deno.test("persistent executions reserve hard slots and return to the same Worke
 
 Deno.test("persistent follow-up requests obey strict single-request concurrency", async () => {
   const supervisor = new Supervisor({
-    runtimeGroupId: "group-persistent-strict",
-    sandboxId: "sandbox-persistent-strict",
+    nodeId: "nod-0000000001",
+
+    sandboxId: "sbx-0000000008",
     workloadType: "service",
     token,
     supervisorVersion: "test",
   });
-  const workerMetadata = metadata("persistent-strict");
+  const workerMetadata = metadata("wrk-0000000012");
   workerMetadata.workloadId = "service-version-a";
   workerMetadata.service = {
     serviceId: "service-a",
@@ -619,7 +637,7 @@ Deno.test("persistent follow-up requests obey strict single-request concurrency"
     [worker.metadata.workerId],
     1,
   );
-  const dispatch = () =>
+  const dispatch = (existing = false) =>
     supervisor.handler(
       new Request("http://runtime/v1/services/service-version-a/dispatch", {
         method: "POST",
@@ -627,16 +645,20 @@ Deno.test("persistent follow-up requests obey strict single-request concurrency"
           authorization: `Bearer ${token}`,
           "the8020-internal-method": "GET",
           "the8020-internal-url": "http://service/stream",
-          "the8020-internal-persistent-execution-id": "session-one",
+          "the8020-internal-context-id": newId("ctx"),
+          "the8020-internal-persistent-execution-id": "pex-0000000004",
           "the8020-internal-persistent-keep-alive-ms": "100",
           "the8020-internal-target-worker-id": worker.metadata.workerId,
+          ...(existing
+            ? { "the8020-internal-persistent-existing": "true" }
+            : {}),
         },
       }),
     );
   let second: Response | undefined;
   try {
     const first = await dispatch();
-    const pending = dispatch().then((response) => second = response);
+    const pending = dispatch(true).then((response) => second = response);
     await new Promise((resolve) => setTimeout(resolve, 10));
     assertEquals(second, undefined);
     await first.body?.cancel();
@@ -657,10 +679,11 @@ Deno.test("concurrent persistent database requests retain isolated request IDs",
   );
   let releaseQueries!: () => void;
   const queryGate = new Promise<void>((resolve) => releaseQueries = resolve);
-  const requestIds: string[] = [];
+  const contextIds: string[] = [];
   const supervisor = new Supervisor({
-    runtimeGroupId: "group-persistent-database",
-    sandboxId: "sandbox-persistent-database",
+    nodeId: "nod-0000000001",
+
+    sandboxId: "sbx-0000000007",
     workloadType: "service",
     token,
     supervisorVersion: "test",
@@ -669,14 +692,14 @@ Deno.test("concurrent persistent database requests retain isolated request IDs",
       if (call.operation !== "database.execute") {
         throw new Error(`unexpected kernel operation ${call.operation}`);
       }
-      requestIds.push(call.requestId ?? "");
+      contextIds.push(call.contextId ?? "");
       enteredCount++;
       if (enteredCount === requestCount) allEnteredResolve();
       await queryGate;
       return { columns: ["value"], rows: [[7]] };
     },
   });
-  const workerMetadata = metadata("persistent-database");
+  const workerMetadata = metadata("wrk-0000000011");
   workerMetadata.workloadId = "service-version-a";
   workerMetadata.entrypoint = new URL(
     "../examples/service_kernel.ts",
@@ -700,9 +723,11 @@ Deno.test("concurrent persistent database requests retain isolated request IDs",
   );
   const expectedIds = Array.from(
     { length: requestCount },
-    (_, index) => `request-${index}`,
+    () => newId("ctx"),
   );
-  const requests = expectedIds.map((requestId) =>
+  // The first dispatch synchronously reserves the binding before yielding;
+  // subsequent requests reuse it while all database operations overlap.
+  const requests = expectedIds.map((contextId, index) =>
     supervisor.handler(
       new Request("http://runtime/v1/services/service-version-a/dispatch", {
         method: "POST",
@@ -710,9 +735,13 @@ Deno.test("concurrent persistent database requests retain isolated request IDs",
           authorization: `Bearer ${token}`,
           "the8020-internal-method": "GET",
           "the8020-internal-url": "http://service/database-query",
-          "the8020-internal-request-id": requestId,
-          "the8020-internal-persistent-execution-id": "session-one",
+          "the8020-internal-context-id": contextId,
+          "the8020-internal-persistent-execution-id": "pex-0000000004",
           "the8020-internal-persistent-keep-alive-ms": "100",
+          ...(index === 0 ? {} : {
+            "the8020-internal-persistent-existing": "true",
+            "the8020-internal-target-worker-id": worker.metadata.workerId,
+          }),
         },
       }),
     )
@@ -727,7 +756,7 @@ Deno.test("concurrent persistent database requests retain isolated request IDs",
         )
       ),
     ]);
-    assertEquals([...new Set(requestIds)].sort(), expectedIds.sort());
+    assertEquals([...new Set(contextIds)].sort(), expectedIds.sort());
     releaseQueries();
     const responses = await Promise.all(requests);
     assertEquals(responses.every((response) => response.status === 200), true);
@@ -742,14 +771,15 @@ Deno.test("concurrent persistent database requests retain isolated request IDs",
 Deno.test("session reservation expiry starts an independent Worker idle clock", async () => {
   let now = 1_000;
   const supervisor = new Supervisor({
-    runtimeGroupId: "group-keepalive",
-    sandboxId: "sandbox-keepalive",
+    nodeId: "nod-0000000001",
+
+    sandboxId: "sbx-0000000005",
     workloadType: "service",
     token,
     supervisorVersion: "test",
     now: () => now,
   });
-  const workerMetadata = metadata("keepalive-worker");
+  const workerMetadata = metadata("wrk-0000000007");
   workerMetadata.workloadId = "service-version-a";
   workerMetadata.service = {
     serviceId: "service-a",
@@ -775,7 +805,8 @@ Deno.test("session reservation expiry starts an independent Worker idle clock", 
           authorization: `Bearer ${token}`,
           "the8020-internal-method": "GET",
           "the8020-internal-url": "http://service/persistent",
-          "the8020-internal-persistent-execution-id": "session-one",
+          "the8020-internal-context-id": newId("ctx"),
+          "the8020-internal-persistent-execution-id": "pex-0000000004",
           "the8020-internal-persistent-keep-alive-ms": "100",
         },
       }),
@@ -789,8 +820,9 @@ Deno.test("session reservation expiry starts an independent Worker idle clock", 
       "example.missing",
       null,
       new AbortController().signal,
-      "session-other",
+      "pex-0000000005",
       { userId: "user:system", username: "system" },
+      testInvocation(),
     );
     assertEquals(mismatch.error?.code, "target_mismatch");
     const exact = await supervisor.invokeWorker(
@@ -798,8 +830,9 @@ Deno.test("session reservation expiry starts an independent Worker idle clock", 
       "example.missing",
       null,
       new AbortController().signal,
-      "session-one",
+      "pex-0000000004",
       { userId: "user:system", username: "system" },
+      testInvocation(),
     );
     assertEquals(exact.error?.code, "function_not_found");
 
@@ -818,13 +851,14 @@ Deno.test({
   sanitizeResources: false,
   fn: async () => {
     const supervisor = new Supervisor({
-      runtimeGroupId: "group-websocket",
-      sandboxId: "sandbox-websocket",
+      nodeId: "nod-0000000001",
+
+      sandboxId: "sbx-0000000014",
       workloadType: "service",
       token,
       supervisorVersion: "test",
     });
-    const workerMetadata = metadata("worker-websocket");
+    const workerMetadata = metadata("wrk-0000000022");
     workerMetadata.entrypoint = new URL(
       "../examples/service_websocket.ts",
       import.meta.url,
@@ -868,7 +902,7 @@ Sec-WebSocket-Version: 13\r
 Sec-WebSocket-Protocol: the8020.echo\r
 Authorization: Bearer ${token}\r
 the8020-internal-url: http://service/echo/main\r
-the8020-internal-request-id: request-websocket-supervisor\r
+the8020-internal-context-id: ctx-0000000002\r
 the8020-internal-service-id: example/websocket/service\r
 the8020-internal-service-generation: 2\r
 the8020-internal-canonical-base-path: /example/websocket/service\r
@@ -883,7 +917,7 @@ the8020-internal-auth-authenticated: false\r
       assertEquals(response.startsWith("HTTP/1.1 101 "), true);
       assertEquals(
         await readWebSocketText(stream),
-        "ready:main:request-websocket-supervisor:the8020.echo",
+        "ready:main:ctx-0000000002:the8020.echo",
       );
       await connection.write(clientWebSocketFrame(0x1, "hello"));
       assertEquals(await readWebSocketText(stream), "echo:hello");
@@ -901,17 +935,18 @@ the8020-internal-auth-authenticated: false\r
 
 Deno.test("one Worker startup crash does not terminate healthy siblings", async () => {
   const supervisor = new Supervisor({
-    runtimeGroupId: "group",
-    sandboxId: "sandbox",
+    nodeId: "nod-0000000001",
+
+    sandboxId: "sbx-0000000001",
     workloadType: "service",
     token,
     supervisorVersion: "test",
   });
   const healthy = await supervisor.startWorker({
-    metadata: metadata("healthy"),
+    metadata: metadata("wrk-0000000004"),
     permissions: { read: [examples] },
   });
-  const crashing = metadata("crashing");
+  const crashing = metadata("wrk-0000000003");
   crashing.entrypoint = new URL("../examples/crash.ts", import.meta.url).href;
   await assertRejects(
     () =>
@@ -928,7 +963,7 @@ Deno.test("one Worker startup crash does not terminate healthy siblings", async 
   };
   assertEquals(status.worker_count, 1);
   assertEquals(status.recent_failures.length, 1);
-  assertEquals(status.recent_failures[0]?.worker_id, "crashing");
+  assertEquals(status.recent_failures[0]?.worker_id, "wrk-0000000003");
   assertEquals(
     status.recent_failures[0]?.reason.includes("startup crash"),
     true,
@@ -943,13 +978,14 @@ Deno.test("one Worker startup crash does not terminate healthy siblings", async 
 
 Deno.test("supervisor converts only trusted internal authentication metadata", async () => {
   const supervisor = new Supervisor({
-    runtimeGroupId: "group-auth",
-    sandboxId: "sandbox-auth",
+    nodeId: "nod-0000000001",
+
+    sandboxId: "sbx-0000000002",
     workloadType: "service",
     token,
     supervisorVersion: "test",
   });
-  const authMetadata = metadata("auth");
+  const authMetadata = metadata("wrk-0000000002");
   authMetadata.entrypoint = new URL(
     "../examples/service_auth.ts",
     import.meta.url,
@@ -967,6 +1003,7 @@ Deno.test("supervisor converts only trusted internal authentication metadata", a
       headers: {
         authorization: `Bearer ${token}`,
         "the8020-internal-url": "http://service/auth",
+        "the8020-internal-context-id": newId("ctx"),
         "the8020-internal-authentication": btoa(
           JSON.stringify({
             module:
@@ -993,11 +1030,10 @@ Deno.test("supervisor converts only trusted internal authentication metadata", a
     },
     user: { userId: "user:admin", username: "admin" },
     execution: {
-      nodeId: "group-auth",
-      runtimeGroupId: "group-auth",
-      sandboxId: "sandbox-auth",
+      nodeId: "nod-0000000001",
+
+      sandboxId: "sbx-0000000002",
       workerId: worker.metadata.workerId,
-      workerExecutionId: worker.metadata.executionId,
     },
     internalHeaderVisible: false,
   });
@@ -1006,13 +1042,14 @@ Deno.test("supervisor converts only trusted internal authentication metadata", a
 
 Deno.test("exact Worker control invokes only explicitly registered functions", async () => {
   const supervisor = new Supervisor({
-    runtimeGroupId: "group-control",
-    sandboxId: "sandbox-control",
+    nodeId: "nod-0000000001",
+
+    sandboxId: "sbx-0000000003",
     workloadType: "service",
     token,
     supervisorVersion: "test",
   });
-  const controlMetadata = metadata("worker-control");
+  const controlMetadata = metadata("wrk-0000000017");
   controlMetadata.entrypoint = new URL(
     "../examples/service_control.ts",
     import.meta.url,
@@ -1022,33 +1059,38 @@ Deno.test("exact Worker control invokes only explicitly registered functions", a
     permissions: { read: [examples] },
   });
   const invoked = await supervisor.handler(
-    new Request("http://runtime/v1/workers/worker-control/invoke", {
-      method: "POST",
-      headers: { authorization: `Bearer ${token}` },
-      body: controlEnvelope("worker_invoke", {
-        function: "example.echo",
-        input: { value: "ok" },
-        user: { userId: "user:system", username: "system" },
-      }).replace(
-        '"runtime_group_id":"group-job"',
-        '"runtime_group_id":"group-control"',
-      ),
-    }),
+    new Request(
+      `http://runtime/v1/workers/${controlMetadata.workerId}/invoke`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: controlEnvelope("worker_invoke", {
+          invocation: testInvocation(),
+          function: "example.echo",
+          input: { value: "ok" },
+          user: { userId: "user:system", username: "system" },
+        }).replace(
+          '"sandbox_id":"sbx-0000000004"',
+          '"sandbox_id":"sbx-0000000003"',
+        ),
+      },
+    ),
   );
   const envelope = await invoked.json();
   assertEquals(envelope.payload, { ok: true, output: { value: "ok" } });
 
   const wrongWorker = await supervisor.handler(
-    new Request("http://runtime/v1/workers/worker-other/invoke", {
+    new Request("http://runtime/v1/workers/wrk-9999999999/invoke", {
       method: "POST",
       headers: { authorization: `Bearer ${token}` },
       body: controlEnvelope("worker_invoke", {
+        invocation: testInvocation(),
         function: "example.echo",
         input: { value: "wrong target" },
         user: { userId: "user:system", username: "system" },
       }).replace(
-        '"runtime_group_id":"group-job"',
-        '"runtime_group_id":"group-control"',
+        '"sandbox_id":"sbx-0000000004"',
+        '"sandbox_id":"sbx-0000000003"',
       ),
     }),
   );
@@ -1056,23 +1098,27 @@ Deno.test("exact Worker control invokes only explicitly registered functions", a
     ok: false,
     error: {
       code: "target_not_found",
-      message: "Worker worker-other is unavailable",
+      message: "Worker wrk-9999999999 is unavailable",
     },
   });
 
   const unregistered = await supervisor.handler(
-    new Request("http://runtime/v1/workers/worker-control/invoke", {
-      method: "POST",
-      headers: { authorization: `Bearer ${token}` },
-      body: controlEnvelope("worker_invoke", {
-        function: "default",
-        input: null,
-        user: { userId: "user:system", username: "system" },
-      }).replace(
-        '"runtime_group_id":"group-job"',
-        '"runtime_group_id":"group-control"',
-      ),
-    }),
+    new Request(
+      `http://runtime/v1/workers/${controlMetadata.workerId}/invoke`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: controlEnvelope("worker_invoke", {
+          invocation: testInvocation(),
+          function: "default",
+          input: null,
+          user: { userId: "user:system", username: "system" },
+        }).replace(
+          '"sandbox_id":"sbx-0000000004"',
+          '"sandbox_id":"sbx-0000000003"',
+        ),
+      },
+    ),
   );
   assertEquals((await unregistered.json()).payload, {
     ok: false,
@@ -1084,12 +1130,15 @@ Deno.test("exact Worker control invokes only explicitly registered functions", a
   await supervisor.drain();
 });
 
-Deno.test("job dispatch returns bounded structured and console logs", async () => {
+Deno.test("job dispatch forwards console logs and returns execution metadata without log copies", async () => {
+  const logs = new TestLogSink();
   const checked: string[][] = [];
   const analyzed: string[][] = [];
   const supervisor = new Supervisor({
-    runtimeGroupId: "group-job",
-    sandboxId: "sandbox-job",
+    logSink: logs,
+    nodeId: "nod-0000000001",
+
+    sandboxId: "sbx-0000000004",
     workloadType: "job",
     token,
     supervisorVersion: "test",
@@ -1105,7 +1154,7 @@ Deno.test("job dispatch returns bounded structured and console logs", async () =
       ])));
     },
   });
-  const job = metadata("worker-job");
+  const job = metadata("wrk-0000000018");
   job.workloadType = "job";
   job.workloadId = "job-a";
   job.origin = { type: "job", id: "job-a" };
@@ -1115,13 +1164,14 @@ Deno.test("job dispatch returns bounded structured and console logs", async () =
     permissions: { read: [examples] },
   });
   const response = await supervisor.handler(
-    new Request("http://runtime/v1/jobs/worker-job/run", {
+    new Request(`http://runtime/v1/jobs/${job.workerId}/run`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${token}`,
         "content-type": "application/json",
       },
       body: controlEnvelope("job_start", {
+        invocation: testInvocation(),
         arguments: [{ value: 1 }],
         secrets: {},
         check_modules: [job.entrypoint],
@@ -1131,7 +1181,7 @@ Deno.test("job dispatch returns bounded structured and console logs", async () =
   const body = await response.json();
   assertEquals(response.status, 200);
   assertEquals(body.message_type, "job_result");
-  assertEquals(body.correlation_id, "correlation-test");
+  assertEquals(body.correlation_id, "cor-0000000001");
   assertEquals(body.payload.result, {
     input: { value: 1 },
   });
@@ -1144,27 +1194,29 @@ Deno.test("job dispatch returns bounded structured and console logs", async () =
     ],
   });
   assertEquals(
-    body.payload.logs.map((event: { message: string }) => event.message),
+    logs.records.filter((event) => event.component === "worker").map((event) =>
+      event.message
+    ),
     ['job input {"value":1}'],
   );
   const status = supervisor.workers().find((worker) =>
     worker.worker_id === job.workerId
   );
-  assertEquals(status?.logs?.map((event) => event.message), [
-    'job input {"value":1}',
-  ]);
+  assertEquals(Object.hasOwn(body.payload, "logs"), false);
+  assertEquals(Object.hasOwn(status!, "logs"), false);
   await supervisor.drain();
 });
 
 Deno.test("job dispatch preserves structured command failures", async () => {
   const supervisor = new Supervisor({
-    runtimeGroupId: "group-job",
-    sandboxId: "sandbox-job-error",
+    nodeId: "nod-0000000001",
+
+    sandboxId: "sbx-0000000004",
     workloadType: "job",
     token,
     supervisorVersion: "test",
   });
-  const job = metadata("worker-job-error");
+  const job = metadata("wrk-0000000019");
   job.workloadType = "job";
   job.workloadId = "job-error";
   job.origin = { type: "job", id: "job-error" };
@@ -1174,13 +1226,17 @@ Deno.test("job dispatch preserves structured command failures", async () => {
     permissions: { read: [examples] },
   });
   const response = await supervisor.handler(
-    new Request("http://runtime/v1/jobs/worker-job-error/run", {
+    new Request(`http://runtime/v1/jobs/${job.workerId}/run`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${token}`,
         "content-type": "application/json",
       },
-      body: controlEnvelope("job_start", { arguments: [], secrets: {} }),
+      body: controlEnvelope("job_start", {
+        invocation: testInvocation(),
+        arguments: [],
+        secrets: {},
+      }),
     }),
   );
   const body = await response.json();
@@ -1292,8 +1348,9 @@ function encodeBase64(value: Uint8Array): string {
 Deno.test("persistent follow-ups reject wrong owners and cannot revive completed or expired bindings", async () => {
   let now = 1_000;
   const supervisor = new Supervisor({
-    runtimeGroupId: "group-route",
-    sandboxId: "sandbox-route",
+    nodeId: "nod-0000000001",
+
+    sandboxId: "sbx-0000000010",
     workloadType: "service",
     token,
     supervisorVersion: "test",
@@ -1302,7 +1359,7 @@ Deno.test("persistent follow-ups reject wrong owners and cannot revive completed
       throw new Error("completion must stay in its owning supervisor");
     },
   });
-  const target = metadata("route-worker");
+  const target = metadata("wrk-0000000013");
   target.workloadId = "route-service";
   target.entrypoint =
     new URL("../examples/service_control.ts", import.meta.url).href;
@@ -1322,7 +1379,7 @@ Deno.test("persistent follow-ups reject wrong owners and cannot revive completed
     executionId: string,
     existing: boolean,
     user = "alice",
-    workerId = target.workerId,
+    workerId: string | null = target.workerId,
     service = target.workloadId,
   ) =>
     supervisor.handler(
@@ -1331,9 +1388,12 @@ Deno.test("persistent follow-ups reject wrong owners and cannot revive completed
         headers: {
           authorization: `Bearer ${token}`,
           "the8020-internal-url": "http://service/",
+          "the8020-internal-context-id": newId("ctx"),
           "the8020-internal-persistent-execution-id": executionId,
           "the8020-internal-persistent-keep-alive-ms": "100",
-          "the8020-internal-target-worker-id": workerId,
+          ...(workerId === null ? {} : {
+            "the8020-internal-target-worker-id": workerId,
+          }),
           "the8020-internal-user-id": `user:${user}`,
           "the8020-internal-username": user,
           ...(existing
@@ -1348,35 +1408,49 @@ Deno.test("persistent follow-ups reject wrong owners and cannot revive completed
     await value.body?.cancel();
   };
   try {
-    await expect(dispatch("first", false), 204);
-    await expect(dispatch("first", true), 204);
-    await expect(dispatch("first", true, "bob"), 409);
-    await expect(dispatch("first", true, "alice", "other-worker"), 409);
+    await expect(dispatch("pex-0000000020", false), 204);
+    await expect(dispatch("pex-0000000020", false), 409);
+    await expect(dispatch("pex-0000000020", false, "bob"), 409);
+    assertEquals(supervisor.workers()[0]?.persistent_executions, 1);
+    await expect(dispatch("pex-0000000020", true), 204);
+    await expect(dispatch("pex-0000000020", true, "alice", null), 409);
+    await expect(dispatch("pex-0000000020", true, "bob"), 409);
     await expect(
-      dispatch("first", true, "alice", target.workerId, "other-service"),
+      dispatch("pex-0000000020", true, "alice", "wrk-0000000008"),
       409,
     );
-    await expect(dispatch("missing", true), 409);
+    await expect(
+      dispatch(
+        "pex-0000000020",
+        true,
+        "alice",
+        target.workerId,
+        "other-service",
+      ),
+      409,
+    );
+    await expect(dispatch("pex-0000000023", true), 409);
     assertEquals(supervisor.workers()[0]?.persistent_executions, 1);
     const completed = await supervisor.invokeWorker(
       worker.metadata.workerId,
       "example.complete-persistent",
       null,
       new AbortController().signal,
-      "first",
+      "pex-0000000020",
       { userId: "user:alice", username: "alice" },
+      testInvocation(),
     );
     assertEquals(completed.ok, true);
-    await expect(dispatch("first", true), 409);
+    await expect(dispatch("pex-0000000020", true), 409);
     assertEquals(supervisor.workers()[0]?.persistent_executions, 0);
-    await expect(dispatch("second", false), 204);
+    await expect(dispatch("pex-0000000021", false), 204);
     now += 100;
-    await expect(dispatch("second", true), 409);
+    await expect(dispatch("pex-0000000021", true), 409);
     assertEquals(supervisor.workers()[0]?.persistent_executions, 0);
-    await expect(dispatch("third", false), 204);
-    await expect(dispatch("first", true), 409);
-    await expect(dispatch("second", true), 409);
-    await expect(dispatch("third", true), 204);
+    await expect(dispatch("pex-0000000022", false), 204);
+    await expect(dispatch("pex-0000000020", true), 409);
+    await expect(dispatch("pex-0000000021", true), 409);
+    await expect(dispatch("pex-0000000022", true), 204);
     assertEquals(supervisor.workers()[0]?.persistent_executions, 1);
   } finally {
     await supervisor.stopWorker(target.workerId, true);
@@ -1386,14 +1460,15 @@ Deno.test("persistent follow-ups reject wrong owners and cannot revive completed
 Deno.test("persistent HTTP response streams retain their binding through consumption", async () => {
   let now = 1_000;
   const supervisor = new Supervisor({
-    runtimeGroupId: "group-stream",
-    sandboxId: "sandbox-stream",
+    nodeId: "nod-0000000001",
+
+    sandboxId: "sbx-0000000012",
     workloadType: "service",
     token,
     supervisorVersion: "test",
     now: () => now,
   });
-  const target = metadata("stream-worker");
+  const target = metadata("wrk-0000000014");
   target.service = {
     serviceId: target.workloadId,
     generation: 1,
@@ -1412,7 +1487,8 @@ Deno.test("persistent HTTP response streams retain their binding through consump
         headers: {
           authorization: `Bearer ${token}`,
           "the8020-internal-url": "http://service/sse",
-          "the8020-internal-persistent-execution-id": "stream",
+          "the8020-internal-context-id": newId("ctx"),
+          "the8020-internal-persistent-execution-id": "pex-0000000024",
           "the8020-internal-persistent-keep-alive-ms": "100",
           ...(existing
             ? {
@@ -1440,5 +1516,155 @@ Deno.test("persistent HTTP response streams retain their binding through consump
     assertEquals(supervisor.workers()[0]?.persistent_executions, 0);
   } finally {
     await supervisor.stopWorker(target.workerId, true);
+  }
+});
+
+function testInvocation() {
+  return { contextId: newId("ctx"), jobRunId: newId("job") };
+}
+
+Deno.test("supervisor validates operational identities before registration", async () => {
+  const options = {
+    nodeId: newId("nod"),
+    sandboxId: newId("sbx"),
+    workloadType: "service" as const,
+    token,
+    supervisorVersion: "test",
+  };
+  for (
+    const invalid of [
+      { nodeId: "node-test" },
+      { sandboxId: "sbx-short" },
+      { sandboxId: newId("wrk") },
+    ]
+  ) {
+    await assertRejects(
+      () => Promise.resolve(new Supervisor({ ...options, ...invalid })),
+      TypeError,
+      "canonical node/sandbox IDs",
+    );
+  }
+  const supervisor = new Supervisor(options);
+  await assertRejects(
+    () =>
+      supervisor.startWorker({
+        metadata: metadata("wrk-short"),
+        permissions: { read: [examples] },
+      }),
+    TypeError,
+    "canonical Worker ID",
+  );
+  assertEquals(supervisor.status().worker_count, 0);
+  await supervisor.drain();
+});
+
+Deno.test("service HTTP and WebSocket ingress validate contexts and preserve log parents", async () => {
+  const logs = new TestLogSink();
+  const supervisor = new Supervisor({
+    logSink: logs,
+    nodeId: newId("nod"),
+    sandboxId: newId("sbx"),
+    workloadType: "service",
+    token,
+    supervisorVersion: "test",
+  });
+  const target = metadata(newId("wrk"));
+  target.entrypoint =
+    new URL("../worker/testdata/logging_service.ts", import.meta.url).href;
+  await supervisor.startWorker({
+    metadata: target,
+    permissions: { read: [new URL("../worker", import.meta.url).pathname] },
+  });
+  supervisor.configureService(target.workloadId, [target.workerId], 8);
+  const dispatch = (
+    identifiers: Record<string, string>,
+    username = "alice",
+    websocket = false,
+  ) =>
+    supervisor.handler(
+      new Request(
+        `http://runtime/v1/services/${target.workloadId}/${
+          websocket ? "websocket" : "dispatch"
+        }`,
+        {
+          method: websocket ? "GET" : "POST",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "the8020-internal-url": "http://service/?delay=20",
+            "the8020-internal-user-id": `user:${username}`,
+            "the8020-internal-username": username,
+            ...identifiers,
+          },
+        },
+      ),
+    );
+  try {
+    const invalid: Record<string, string>[] = [
+      {},
+      { "the8020-internal-context-id": "" },
+      { "the8020-internal-context-id": "ctx-short" },
+      { "the8020-internal-context-id": newId("job") },
+      {
+        "the8020-internal-context-id": newId("ctx"),
+        "the8020-internal-parent-context-id": "ctx-short",
+      },
+      {
+        "the8020-internal-context-id": newId("ctx"),
+        "the8020-internal-persistent-execution-id": "pex-short",
+      },
+    ];
+    for (const headers of invalid) {
+      for (const websocket of [false, true]) {
+        const response = await dispatch(headers, "alice", websocket);
+        assertEquals(response.status, 400);
+        await response.body?.cancel();
+      }
+    }
+    assertEquals(
+      logs.records.filter((record) => record.component === "worker").length,
+      0,
+    );
+    assertEquals(supervisor.snapshot().active_requests, 0);
+
+    const invocations = ["alice", "bobby"].map((username) => ({
+      username,
+      contextId: newId("ctx"),
+      parentContextId: newId("ctx"),
+    }));
+    const responses = await Promise.all(
+      invocations.map((invocation) =>
+        dispatch({
+          "the8020-internal-context-id": invocation.contextId,
+          "the8020-internal-parent-context-id": invocation.parentContextId,
+        }, invocation.username)
+      ),
+    );
+    for (const [index, response] of responses.entries()) {
+      const invocation = invocations[index]!;
+      assertEquals(response.status, 200);
+      assertEquals(await response.json(), {
+        username: invocation.username,
+        contextId: invocation.contextId,
+      });
+      const records = logs.records.filter((record) =>
+        record.context_id === invocation.contextId
+      );
+      assertEquals(records.map((record) => record.message), [
+        `begin ${invocation.username}`,
+        `end ${invocation.username}`,
+      ]);
+      assertEquals(
+        records.every((record) =>
+          record.parent_context_id === invocation.parentContextId &&
+          record.username === invocation.username &&
+          record.worker_id === target.workerId &&
+          record.sandbox_id === supervisor.options.sandboxId &&
+          record.node_id === supervisor.options.nodeId
+        ),
+        true,
+      );
+    }
+  } finally {
+    await supervisor.drain();
   }
 });

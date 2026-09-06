@@ -52,7 +52,7 @@ func ForWorkerWithWorkspace(base model.RuntimeProfile, requested *supervisor.Wor
 }
 
 var reservedEnvironment = map[string]bool{
-	"SANDBOX_ID": true, "RUNTIME_GROUP_ID": true, "WORKLOAD_TYPE": true,
+	"SANDBOX_ID": true, "WORKLOAD_TYPE": true,
 	"IMAGE_DIGEST": true, "INTERNAL_API_TOKEN": true, "KERNEL_SOCKET_PATH": true,
 	"DEPENDENCY_MODE": true,
 	"SUPERVISOR_HOST": true, "SUPERVISOR_PORT": true, "INSPECTOR_PORT": true, "RUNTIME_PROFILE_HASH": true, "HEARTBEAT_INTERVAL_MS": true,

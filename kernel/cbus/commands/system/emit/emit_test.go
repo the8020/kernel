@@ -47,7 +47,7 @@ func TestCommandEmitsDataWithoutWaitingAndRetainsCallerIdentity(t *testing.T) {
 			ctx, user := context.Background(), execution.SystemUser()
 			if nested {
 				user, _ = execution.UserForUsername("alice")
-				ctx = execution.WithCaller(ctx, execution.Caller{ExecutionID: "caller", Workload: model.WorkloadJob, User: user})
+				ctx = execution.WithCaller(ctx, execution.Caller{ContextID: "ctx-aaaaaaaaaa", JobRunID: "job-bbbbbbbbbb", Workload: model.WorkloadJob, User: user})
 			}
 			finished := make(chan core.Result, 1)
 			go func() {

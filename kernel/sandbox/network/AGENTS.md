@@ -12,7 +12,7 @@ Parent DOX: [kernel/kernel/sandbox DOX](../AGENTS.md).
   mode persists distinct supervisor/inspector loopback ports without claiming a
   namespace or firewall.
 - Do not expose host ports, proxy service traffic, create containerd tasks,
-  resolve runtime groups, or grant Deno network permissions.
+  resolve sandboxes, or grant Deno network permissions.
 
 # Local Contracts
 
@@ -20,7 +20,7 @@ Parent DOX: [kernel/kernel/sandbox DOX](../AGENTS.md).
   methods, `NewNFTFirewall`, `NFTFirewallConfig`, and allocation/config types.
 - Allocation is transactional: failures remove firewall/CNI/netns state; release
   is idempotent and uses persisted records so restart cleanup remains possible.
-- Network namespace and firewall names derive from validated runtime-group IDs
+- Network namespace and firewall names derive from validated sandbox IDs
   and instance UUIDs; commands never interpolate shell text.
 - Runtime callbacks use a bind-mounted Unix socket and need no network firewall
   exception. Kernel-to-supervisor traffic and established responses are allowed

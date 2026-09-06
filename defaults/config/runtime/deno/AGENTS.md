@@ -40,13 +40,16 @@ Parent DOX: [kernel/defaults/config/runtime DOX](../AGENTS.md).
 - `@the8020/context` exposes a frozen invocation-local snapshot of the validated
   user, outer service/job/program origin, node, sandbox, Worker, execution, and
   request identities. Package-local identities remain package-owned.
-- Current service metadata exposes package-neutral node, runtime-group, sandbox,
-  Worker, and execution identity plus the kernel-observed client IP address and
-  network scope. No application settings map is transported.
+- Current service metadata exposes package-neutral node, sandbox, Worker, and
+  execution identity plus the kernel-observed client IP address and network
+  scope. No application settings map is transported.
 - Physical WebSockets are upgraded and relayed by the supervisor; application
   Workers own all logical message parsing and connection behavior.
-- Logs and control request/response bodies are bounded and identity-associated;
-  the Go job boundary scrubs declared secure values from output and failures.
+- Console records capture the active invocation and username before their
+  credited MessagePort hop and flow through one bounded supervisor producer to
+  logd. Supervisors and execution results retain no log arrays. Worker capture
+  scrubs execution-local secure values before forwarding; the Go job boundary
+  separately scrubs returned output and failures.
 - The bridge uses asynchronous execution-local context, so concurrent requests
   in one Worker keep independent kernel/database identity. Only credential-free
   database metadata is callable outside an active request/job.
@@ -97,8 +100,12 @@ Parent DOX: [kernel/defaults/config/runtime DOX](../AGENTS.md).
   context.
 - [http/AGENTS.md](http/AGENTS.md): generic Hono/Zod HTTP and WebSocket service
   framework.
+- [identity/AGENTS.md](identity/AGENTS.md): shared operational ID encoding,
+  generation, and validation.
 - [kernel/AGENTS.md](kernel/AGENTS.md): package-neutral Worker-to-kernel SDK and
   bridge.
+- [logging/AGENTS.md](logging/AGENTS.md): bounded context-aware capture and
+  direct logd producer transport.
 - [supervisor/AGENTS.md](supervisor/AGENTS.md): infrastructure control and
   Worker orchestration.
 - [worker/AGENTS.md](worker/AGENTS.md): common bootstrap and service/job

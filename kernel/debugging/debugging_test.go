@@ -36,7 +36,7 @@ func TestTargetsMapDebuggerNames(t *testing.T) {
 			http.NotFound(writer, request)
 			return
 		}
-		_, _ = io.WriteString(writer, `[{"id":"target-1","type":"node","title":"service:owner:execution-42:worker-1","description":"Worker","url":"file:///app.ts","webSocketDebuggerUrl":"ws://runtime/target-1"}]`)
+		_, _ = io.WriteString(writer, `[{"id":"target-1","type":"node","title":"service:owner:wrk-aaaaaaaaaa","description":"Worker","url":"file:///app.ts","webSocketDebuggerUrl":"ws://runtime/target-1"}]`)
 	}))
 	defer server.Close()
 	portManager := &fakePorts{}
@@ -45,7 +45,7 @@ func TestTargetsMapDebuggerNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	targets, err := manager.Targets(context.Background(), model.SandboxSpec{})
-	if err != nil || len(targets) != 1 || targets[0].ExecutionID != "execution-42" || targets[0].WebSocketDebugger == "" {
+	if err != nil || len(targets) != 1 || targets[0].WorkerID != "wrk-aaaaaaaaaa" || targets[0].WebSocketDebugger == "" {
 		t.Fatalf("targets=%#v err=%v", targets, err)
 	}
 }

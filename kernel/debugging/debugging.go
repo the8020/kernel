@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"the8020/kernel/identity"
 	"the8020/kernel/ports"
 	"the8020/kernel/sandbox/model"
 )
@@ -57,7 +58,7 @@ type Target struct {
 	Description       string `json:"description,omitempty"`
 	URL               string `json:"url,omitempty"`
 	WebSocketDebugger string `json:"websocket_debugger_url,omitempty"`
-	ExecutionID       string `json:"execution_id,omitempty"`
+	WorkerID          string `json:"worker_id,omitempty"`
 }
 
 type Lease struct {
@@ -139,7 +140,7 @@ func (m *Manager) Targets(ctx context.Context, spec model.SandboxSpec) ([]Target
 		if item.ID == "" || item.Title == "" {
 			return nil, errors.New("inspector target identity and title are required")
 		}
-		result = append(result, Target{ID: item.ID, Type: item.Type, Title: item.Title, Description: item.Description, URL: item.URL, WebSocketDebugger: item.WebSocketDebugger, ExecutionID: executionID(item.Title)})
+		result = append(result, Target{ID: item.ID, Type: item.Type, Title: item.Title, Description: item.Description, URL: item.URL, WebSocketDebugger: item.WebSocketDebugger, WorkerID: workerID(item.Title)})
 	}
 	return result, nil
 }
@@ -182,7 +183,7 @@ func (m *Manager) Open(ctx context.Context, spec model.SandboxSpec, duration tim
 		request.Header.Del("Authorization")
 		proxy.ServeHTTP(writer, request)
 	})
-	portLease, err := m.ports.ExposeHTTP(ctx, ports.Request{SandboxID: spec.SandboxID, OwnerID: spec.RuntimeGroupID, SandboxIP: spec.Network.SandboxIP, InternalPort: InspectorPort, TargetPort: spec.Network.InspectorEndpointPort(), BindAddress: m.bindAddress, Purpose: "debug", ExpiresAt: time.Now().UTC().Add(duration)}, handler)
+	portLease, err := m.ports.ExposeHTTP(ctx, ports.Request{SandboxID: spec.SandboxID, OwnerID: spec.SandboxID, SandboxIP: spec.Network.SandboxIP, InternalPort: InspectorPort, TargetPort: spec.Network.InspectorEndpointPort(), BindAddress: m.bindAddress, Purpose: "debug", ExpiresAt: time.Now().UTC().Add(duration)}, handler)
 	if err != nil {
 		return Lease{}, err
 	}
@@ -216,10 +217,10 @@ func (m *Manager) List() []ports.Lease {
 }
 func (m *Manager) Close(leaseID string) error { return m.ports.Close(leaseID) }
 
-func executionID(title string) string {
+func workerID(title string) string {
 	parts := strings.Split(title, ":")
-	if len(parts) >= 4 {
-		return parts[len(parts)-2]
+	if len(parts) >= 3 && identity.Is(parts[len(parts)-1], "wrk") {
+		return parts[len(parts)-1]
 	}
 	return ""
 }

@@ -131,7 +131,7 @@ export type SchemaOutput<Value> = Value extends Schema<infer Output> ? Output
   : never;
 
 export interface RequestMetadata {
-  requestId: string;
+  contextId: string;
   serviceId: string;
   serviceGeneration: number;
   canonicalBasePath: string;
@@ -156,10 +156,10 @@ export interface ClientConnectionMetadata {
 
 export interface CurrentExecutionMetadata {
   nodeId: string;
-  runtimeGroupId: string;
+
   sandboxId: string;
   workerId: string;
-  workerExecutionId: string;
+
   persistentExecutionId?: string;
 }
 

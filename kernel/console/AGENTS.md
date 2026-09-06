@@ -28,6 +28,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - `OpenConsole` is the shared kernel transport boundary used by WebSocket and
   SSH. Every returned PTY or direct process stream is registered until close,
   and broker/provider shutdown closes it regardless of transport.
+- `ResolveTarget` resolves canonical `sbx-` IDs against providers' current
+  `HasSandbox` ownership. Unknown and conflicting owners fail closed; a prefix
+  never distinguishes development from runtime, and process creation is never a
+  lookup probe.
 - Broker leases preserve an attached backend process's real exit status for
   transports such as SSH and preserve its separate stderr stream.
 - The first frame selects a bounded target, direct argument vector, environment,

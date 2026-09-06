@@ -28,6 +28,9 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
 - Return job errors unchanged, including structured supervisor failures and Go
   error causes. The Worker uses job mechanics with `program` origin and the
   logical program ID.
+- Return allocated node/sandbox/Worker/job/context IDs, the saved log position,
+  and invocation times on success and execution failure. Results contain no
+  captured console messages; logd owns those records and their retention.
 
 # Verification
 

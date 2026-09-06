@@ -24,6 +24,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Canonical service lifecycle is `stateless` or `session`; the latter translates
   once to the supervisor's generic internal `persistent` execution mode. HTTP,
   streaming, SSE, and WebSocket routing use the same boundary in either mode.
+- Composition supplies the persistent canonical node ID; service routing never
+  substitutes a local alias when that identity is absent.
 - Initial HTTP or WebSocket responses sign `the8020-route+jwt` only after the
   exact Worker is known, using the existing deployment signer. The descriptor
   contains node, sandbox, Worker, and persistent execution IDs. Routing and
@@ -60,6 +62,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   invalid. Rejection uses the service's existing unauthenticated response and
   clears a rejected selected browser cookie. Client-forged internal headers are
   stripped.
+- HTTP and WebSocket request contexts are fresh `ctx-` IDs. Public internal
+  context and parent-context headers are stripped even with mixed casing; only
+  explicit trusted kernel-call forwarding carries a parent execution context.
 - Successful verification carries claims, the composition-selected package hook,
   and the existing unauthenticated response policy as trusted request metadata.
   It never marks application authentication complete. The target Worker approves
@@ -94,6 +99,12 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   retired, while minimum sandboxes remain warm independently of minimum Workers
   and active session routes prevent retirement. Releasing the final sandbox
   owner destroys that sandbox.
+- Each actual service allocation/Worker pool receives an opaque `srv-` ID,
+  including temporary validation pools. Cold reconciliation recovers by explicit
+  declared service, release, generation, and placement index in the selected
+  service's indexed records; multiple matching allocations fail closed. Ready
+  allocations are reused directly, failed/stopped allocations may be restored,
+  and draining allocations are never revived. IDs never encode placement slots.
 - Minimum-sandbox allocation indexes are partitioned deterministically across
   enabled nodes and same-version reconciliation moves allocations when that
   assignment changes. Sandbox and Worker counts in service status remain

@@ -38,15 +38,14 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   default `PATH` includes the standard administrative `sbin` directories.
   Development targets default to the sandbox's real root identity and `/root`;
   the authenticated 80|20 username still selects and authorizes its sandbox.
-- A shell request opens the authenticated user's deterministic development
+- A shell request opens the authenticated user's persistent development
   sandbox, creating or starting it when needed.
 - An ordinary exec request runs through `[/bin/bash, -lc, <command>]` inside the
   authenticated user's development sandbox. Commands beginning with reserved
   `the8020` use the structured `the8020 [sandbox-id=<id>]` selector grammar
-  instead; its optional parameter accepts a canonical generated `sbx-` ID or
-  deterministic `dev-<username>` ID. The prefix selects the provider directly:
-  `dev-` is development and `sbx-` is runtime. Malformed parameters are
-  rejected.
+  instead; its optional parameter accepts a canonical `sbx-` ID. The shared
+  console broker resolves its registered owner; unavailable or conflicting
+  claims fail before opening a process. Malformed parameters are rejected.
 - Only SSH `session` channels are accepted. Port, agent, X11, and socket
   forwarding and subsystems are unavailable.
 - Shell and selector sessions launch `[/bin/bash, -l]`; ordinary exec requests

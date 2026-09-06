@@ -17,7 +17,7 @@ import (
 
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
-	"the8020/kernel/execution"
+	"the8020/kernel/identity"
 	"the8020/kernel/sandbox/backend"
 	"the8020/kernel/sandbox/backend/runscconsole"
 )
@@ -147,7 +147,7 @@ func (d *RunscDriver) Start(ctx context.Context, start SandboxStart) error {
 		mount.HostSource = canonical
 	}
 	if !validDevelopmentSandboxID(start.SandboxID) {
-		return errors.New("development sandbox ID must use the dev-<user> resource format")
+		return errors.New("development sandbox ID must use the canonical sbx- format")
 	}
 	path := filepath.Join(d.config.SandboxRoot, start.SandboxID)
 	if _, err := os.Lstat(path); err == nil {
@@ -470,6 +470,5 @@ func safeRuntimeID(value string) bool {
 }
 
 func validDevelopmentSandboxID(value string) bool {
-	username, found := strings.CutPrefix(value, "dev-")
-	return found && execution.ValidateUsername(username) == nil
+	return identity.Is(value, "sbx")
 }

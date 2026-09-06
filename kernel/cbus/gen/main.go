@@ -154,7 +154,7 @@ func readRuntimeProtocol(root string) (runtimeProtocolSchema, error) {
 	for _, field := range schema.RequiredEnvelopeFields {
 		required[field] = true
 	}
-	for _, field := range []string{"protocol_version", "message_type", "runtime_group_id"} {
+	for _, field := range []string{"protocol_version", "message_type", "sandbox_id"} {
 		if !required[field] {
 			return schema, fmt.Errorf("runtime protocol envelope must require %s", field)
 		}
@@ -188,8 +188,8 @@ func generateRuntimeProtocolGo(schema runtimeProtocolSchema) []byte {
 		fmt.Fprintf(&output, "\tMessage%s: true,\n", exportedName(message))
 	}
 	output.WriteString("}\n\n")
-	output.WriteString("type Envelope struct {\n\tProtocolVersion int `json:\"protocol_version\"`\n\tMessageType MessageType `json:\"message_type\"`\n\tRuntimeGroupID string `json:\"runtime_group_id\"`\n\tCorrelationID string `json:\"correlation_id,omitempty\"`\n\tPayload json.RawMessage `json:\"payload,omitempty\"`\n}\n\n")
-	output.WriteString("func (e Envelope) Validate() error {\n\tif e.ProtocolVersion != ProtocolVersion { return fmt.Errorf(\"unsupported runtime protocol version %d\", e.ProtocolVersion) }\n\tif !validMessageTypes[e.MessageType] { return fmt.Errorf(\"unknown runtime message type %q\", e.MessageType) }\n\tif e.RuntimeGroupID == \"\" { return fmt.Errorf(\"runtime_group_id is required\") }\n\treturn nil\n}\n")
+	output.WriteString("type Envelope struct {\n\tProtocolVersion int `json:\"protocol_version\"`\n\tMessageType MessageType `json:\"message_type\"`\n\tSandboxID string `json:\"sandbox_id\"`\n\tCorrelationID string `json:\"correlation_id,omitempty\"`\n\tPayload json.RawMessage `json:\"payload,omitempty\"`\n}\n\n")
+	output.WriteString("func (e Envelope) Validate() error {\n\tif e.ProtocolVersion != ProtocolVersion { return fmt.Errorf(\"unsupported runtime protocol version %d\", e.ProtocolVersion) }\n\tif !validMessageTypes[e.MessageType] { return fmt.Errorf(\"unknown runtime message type %q\", e.MessageType) }\n\tif e.SandboxID == \"\" { return fmt.Errorf(\"sandbox_id is required\") }\n\treturn nil\n}\n")
 	return []byte(output.String())
 }
 
@@ -202,7 +202,7 @@ func generateRuntimeProtocolTypeScript(schema runtimeProtocolSchema) []byte {
 		fmt.Fprintf(&output, "  %q,\n", message)
 	}
 	output.WriteString("] as const;\n\nexport type MessageType = (typeof MESSAGE_TYPES)[number];\n\n")
-	output.WriteString("export interface Envelope<T = Record<string, unknown>> {\n  protocol_version: typeof PROTOCOL_VERSION;\n  message_type: MessageType;\n  runtime_group_id: string;\n  correlation_id?: string;\n  payload?: T;\n}\n\n")
+	output.WriteString("export interface Envelope<T = Record<string, unknown>> {\n  protocol_version: typeof PROTOCOL_VERSION;\n  message_type: MessageType;\n  sandbox_id: string;\n  correlation_id?: string;\n  payload?: T;\n}\n\n")
 	output.WriteString(`export function assertEnvelope(value: unknown): asserts value is Envelope {
   if (typeof value !== "object" || value === null) {
     throw new TypeError("runtime message must be an object");
@@ -217,9 +217,9 @@ func generateRuntimeProtocolTypeScript(schema runtimeProtocolSchema) []byte {
     throw new TypeError(` + "`unknown runtime message type ${message.message_type}`" + `);
   }
   if (
-    typeof message.runtime_group_id !== "string" ||
-    message.runtime_group_id.length === 0
-  ) throw new TypeError("runtime_group_id is required");
+    typeof message.sandbox_id !== "string" ||
+    message.sandbox_id.length === 0
+  ) throw new TypeError("sandbox_id is required");
 }
 `)
 	return []byte(output.String())
@@ -698,6 +698,8 @@ func settingValueLiteral(value any) string {
 		return fmt.Sprintf("int64(%d)", typed)
 	case settings.ByteSize:
 		return fmt.Sprintf("settings.ByteSize(%d)", typed)
+	case settings.Duration:
+		return fmt.Sprintf("settings.Duration(%d)", typed)
 	default:
 		panic(fmt.Sprintf("unsupported setting literal %T", value))
 	}

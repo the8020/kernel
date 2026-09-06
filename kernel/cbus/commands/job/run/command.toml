@@ -2,7 +2,7 @@ version = 1
 id = "job.run"
 path = ["job", "run"]
 summary = "Run a Deno job"
-description = "Selects a compatible job runtime group, starts or reuses a Worker, and returns the invocation result without retaining execution history."
+description = "Selects a compatible job sandbox, starts or reuses a Worker, and returns the invocation result without retaining execution history."
 mutates_state = true
 restart_behavior = "none"
 [handler]
@@ -43,7 +43,7 @@ name = "group_key"
 type = "string"
 option = "group-key"
 required = false
-description = "Explicit job runtime-group key."
+description = "Explicit job sandbox sharing key."
 [[parameters]]
 name = "namespace"
 type = "string"

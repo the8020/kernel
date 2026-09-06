@@ -19,20 +19,29 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - The runtime may register a local exact-Worker invoker; this package forwards
   bounded JSON control only to the explicitly named node over the same private
   authenticated recipient transport.
+- Runtime composition registers the local log reader through `SetLogReader`.
+  `QueryLogs` selects one exact node and uses the same authenticated recipient
+  listener. The target delegates to logd and never reads files in the kernel.
 
 # Local Contracts
 
-- Every node has one stable ID, public URL, recipient address and port, and
-  enabled state.
+- Every node has one stable canonical `nod-` ID, public URL, recipient address
+  and port, and enabled state. Local construction and catalog writes use the
+  shared identity validator.
 - End-user `the8020-authorization` and `the8020_auth` cookies survive every
   forwarding hop unchanged; peer `Authorization` is verified and stripped before
   service routing. The deployment signing key is separate from peer credentials.
 - Recipient listeners accept only the shared authenticated kernel transport and
   proxy both HTTP and WebSocket traffic without interpreting service protocols.
 - Exact Worker forwarding validates the target node and bounded envelope,
-  including its canonical effective user and an optional persistent-execution
-  target, dispatches directly to the registered local invoker, and returns
-  structured opaque results without scanning nodes, sandboxes, or Workers.
+  including its canonical effective user, parent context, and optional
+  persistent-execution target, dispatches directly to the registered local
+  invoker, and returns structured opaque results without scanning nodes,
+  sandboxes, or Workers.
+- `WorkerInvocationRequest.Validate` owns canonical `nod-`/`sbx-`/`wrk-`,
+  optional `ctx-`/`pex-`, function-name and principal validation. Both sending
+  and receiving node transports, callbacks, and local Worker dispatch use it
+  before execution. Transports separately bound encoded payloads.
 - The internal capacity endpoint reports temporary-storage reservations, sandbox
   and Worker limits/counts, service sandboxes and health, and available versus
   occupied execution slots. Capacity queries are bounded and happen for
@@ -48,6 +57,16 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   remaining peers concurrently, ignores unreachable/non-accepting peers, and
   prefers the greatest advertised Worker then sandbox headroom.
 - Listener-address changes take effect after kernel restart.
+- Log reads retain the file owner's filters, starting positions, continuation
+  cursors and expired/unavailable states. Requests are at most 16 KiB; responses
+  use the shared log control-frame bound and strict record limits. Validate the
+  responding node and preserve caller cancellation. There is no fan-out or
+  alternate-node retry for missing history. Private node control never follows
+  HTTP redirects with its credentials.
+- The log-control route bounds body reads to two seconds, its delegated query to
+  2.5 seconds and response writes to five seconds. These deadlines do not apply
+  to forwarded application streams. A stalled request cannot retain a reader or
+  response indefinitely.
 
 # Work Guidance
 

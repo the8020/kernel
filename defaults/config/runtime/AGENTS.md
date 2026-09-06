@@ -57,6 +57,8 @@ Parent DOX: [kernel/defaults DOX](../../AGENTS.md).
   modules/protocol, the pinned Kysely dependency used by the database SDK, and
   explicitly required administrator debugging tools. `stage-service-runtime.sh`
   excludes tests, DOX files, examples, application source, and unrelated files.
+- Service image staging and both build-input hashes include the shared identity
+  and logging modules. Changes to those modules invalidate existing images.
 - The image import map exposes the activated read-only package tree through the
   single `/p/` prefix. Package imports include their namespace, package, file,
   and extension, for example `/p/the8020/db/mod.ts`. Never add package-specific
@@ -70,8 +72,16 @@ Parent DOX: [kernel/defaults DOX](../../AGENTS.md).
   mounted sockets are reachable. Deno receives read/write permission for the
   exact socket path because its Unix connect API requires both, while the
   mounted directory remains read-only.
+- The same mount exposes logs.sock. Ordinary logs use a separate persistent
+  framed connection directly to logd, authenticated once with the sandbox token.
+  Supervisors hold exact socket permissions; application Workers have only their
+  private MessagePort and receive neither socket access nor credentials.
 
 # Work Guidance
+
+- Deno 2.9 Unix connect requires read/write and unix:<absolute-path> network
+  permission. The shared process argument owner supplies all three exact grants
+  for kernel.sock and logs.sock, including under restricted egress profiles.
 
 - Keep modules small, strict, generic, and free of application branching. Use
   Web Workers, transferable streams, explicit permissions, structured control

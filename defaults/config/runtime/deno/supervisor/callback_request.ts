@@ -12,9 +12,9 @@ export function kernelCallbackRequest(
   call: KernelCallRequest,
 ): KernelCallbackRequest {
   const identity = {
-    execution_id: call.executionId,
+    job_run_id: call.jobRunId,
     worker_id: call.workerId,
-    request_id: call.requestId,
+    context_id: call.contextId,
   };
   switch (call.operation) {
     case "database.info":

@@ -15,8 +15,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 # Local Contracts
 
 - Public API includes `Definition`, `Storage`, `PersistencePaths`,
-  `GlobalStore`, `ByteSize`, `ValidateDefinition`, `Values`, `Prepared`,
-  `Applier`, `Info`, `OperationError`, and `Manager`
+  `GlobalStore`, `ByteSize`, `Duration`, `ValidateDefinition`, `Values`,
+  `Prepared`, `Applier`, `Info`, `OperationError`, and `Manager`
   construction/query/mutation/registration.
 - Precedence is default < environment < startup argument < persisted override.
 - Every setting definition declares one external environment variable beginning
@@ -31,6 +31,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   global value against its current definition before publication.
 - Runtime mutation is prepare → persist → commit → publish; failure discards
   preparation and preserves configured and active state.
+- Node-only runtime owners may start before global database settings attach.
+  Initial attachment validates a complete candidate before publishing globals,
+  preserves active node policy and node restart-pending values, and precedes
+  global runtime owners. Later global changes use revision refresh.
 - Restart-required settings persist configured values without changing active
   values and report restart pending until the next kernel start.
 - Global settings refresh from the shared revision and remain restart-required
@@ -49,6 +53,12 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   `minimum = 0` may use `0B` as an owner-documented automatic-detection
   sentinel.
 - `github.com/pelletier/go-toml/v2` is used only for node-local TOML.
+- Byte sizes accept decimal B/KB/MB/GB and binary KiB/MiB/GiB. Duration settings
+  require units: whole days use `d`, otherwise Go syntax such as `1h30m`
+  applies. Durations are positive and use nanoseconds internally, including
+  definition minimum/maximum bounds; node TOML and command values preserve
+  readable units. Global storage preserves the numeric duration type and
+  validates on load.
 - Add settings only through a definition TOML plus an actual owning applier when
   runtime mutable.
 - Application configuration, including every UUI protocol/timing/program

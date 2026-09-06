@@ -10,13 +10,14 @@ Parent DOX: [kernel/kernel/settings DOX](../AGENTS.md).
   variables, constraints, runtime/restart metadata, and descriptions for 80|20
   settings.
 - `network/` owns node-local main/SSH ports and the global root alias;
-  `logging/` owns kernel logging; `sandbox/` owns backend, network, resources,
-  history, startup/shutdown, PID/tmpfs resources, and debugging; `runtime/` owns
-  generic supervisor timing, node count/storage admission budgets, and the
-  kernel-wide sandbox Worker capacity; `execution/`, `service/`, `services/`,
-  and `job/` own generic grouping, reconciliation, and job policy; `database/`
-  owns node-local backend, location, credentials, connection-pool, and
-  result-limit settings required before shared state can be loaded.
+  `logging/` owns unified kernel/Deno persistence; `sandbox/` owns backend,
+  network, resources, history, startup/shutdown, PID/tmpfs resources, and
+  debugging; `runtime/` owns generic supervisor timing, node count/storage
+  admission budgets, and the kernel-wide sandbox Worker capacity; `execution/`,
+  `service/`, `services/`, and `job/` own generic grouping, reconciliation, and
+  job policy; `database/` owns node-local backend, location, credentials,
+  connection-pool, and result-limit settings required before shared state can be
+  loaded.
 - No definition subtree or setting may describe an application protocol,
   application program, application state schema, or UUI behavior.
 
@@ -30,6 +31,10 @@ Parent DOX: [kernel/kernel/settings DOX](../AGENTS.md).
 - Keys and environment variables are unique; every setting environment variable
   starts with `THE8020_`, and values must pass generated-catalog validation.
 - Files are data, not executable hooks.
+- Logging has seven node-local runtime settings: enabled, minimum level,
+  unified/source split, UTC period, maximum segment size, global byte cap, and
+  maximum segment age. Batching/record/queue/sync limits are implementation
+  constants. There are no HTTP-specific logging settings or per-identity files.
 
 # Work Guidance
 

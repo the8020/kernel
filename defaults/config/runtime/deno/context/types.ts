@@ -7,10 +7,12 @@ export interface ExecutionContext {
   readonly username: string;
   readonly authenticated: boolean;
   readonly nodeId: string;
-  readonly runtimeGroupId: string;
+
   readonly sandboxId: string;
   readonly workerId: string;
-  readonly executionId: string;
-  readonly requestId: string;
+  readonly contextId: string;
+  readonly parentContextId?: string;
+  readonly jobRunId?: string;
+  readonly serviceInstanceId?: string;
   readonly persistentExecutionId?: string;
 }

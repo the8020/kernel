@@ -19,6 +19,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   `CloseForSandbox`, `CloseAll`, `Restore`, `RestoreFor`, and lease/request
   types carrying owner, declared internal port, optional selected-backend target
   port, and active-state metadata.
+- Generated lease IDs use `prt-` and ten random lowercase alphanumeric
+  characters. Registration rejects collisions with both active and retained
+  records before replacing any listener or file.
 - Public binds require explicit manager policy; automatic ports bind through Go
   `net.Listen`; occupied ports fail without changing lease state.
 - Debug leases are intentionally discarded on restart because their

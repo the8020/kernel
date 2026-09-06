@@ -46,6 +46,8 @@ Parent DOX: [kernel/kernel/cbus DOX](../AGENTS.md).
 - [internal/commandutil/AGENTS.md](internal/commandutil/AGENTS.md): shared
   internal Phase 1B handler conversions and errors.
 - [job/AGENTS.md](job/AGENTS.md): live non-durable jobs and cancellation.
+- [logs/AGENTS.md](logs/AGENTS.md): bounded managed log queries and cursor
+  polling.
 - [node/AGENTS.md](node/AGENTS.md): private topology implementation adapters.
 - [package/AGENTS.md](package/AGENTS.md): built-in package recovery plus private
   package operations.

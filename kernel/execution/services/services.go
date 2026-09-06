@@ -20,6 +20,7 @@ import (
 	"the8020/kernel/execution/records"
 	"the8020/kernel/execution/supervisor"
 	"the8020/kernel/execution/workers"
+	"the8020/kernel/identity"
 	"the8020/kernel/sandbox/manager"
 	"the8020/kernel/sandbox/model"
 )
@@ -31,7 +32,7 @@ type GroupCoordinator interface {
 type WorkerManager interface {
 	Start(context.Context, string, supervisor.StartWorkerRequest) (workers.Record, error)
 	List(context.Context, string) ([]workers.Record, error)
-	StopInGroup(context.Context, string, string, bool) error
+	StopInSandbox(context.Context, string, string, bool) error
 	ConfigureService(context.Context, string, string, []string, int) error
 	ServiceOpenAPI(context.Context, string, string) (map[string]any, error)
 	DispatchService(context.Context, string, string, *http.Request) (*http.Response, error)
@@ -68,10 +69,10 @@ type Options struct {
 	PlacementWorkers     int
 }
 type Record struct {
-	User                 execution.User               `json:"user"`
-	ServiceID            string                       `json:"service_id"`
-	Entrypoint           string                       `json:"entrypoint"`
-	RuntimeGroupID       string                       `json:"runtime_group_id,omitempty"`
+	User       execution.User `json:"user"`
+	ServiceID  string         `json:"service_id"`
+	Entrypoint string         `json:"entrypoint"`
+
 	SandboxID            string                       `json:"sandbox_id,omitempty"`
 	SandboxIP            string                       `json:"sandbox_ip,omitempty"`
 	WorkerIDs            []string                     `json:"worker_ids"`
@@ -179,12 +180,23 @@ func (m *Manager) Start(ctx context.Context, serviceID, entrypoint string, optio
 		return Record{}, err
 	}
 	existing, loadErr := m.inspect(serviceID)
+	logicalServiceID := options.LogicalServiceID
+	if logicalServiceID == "" {
+		logicalServiceID = serviceID
+	}
+	releaseID := options.ReleaseID
+	if releaseID == "" {
+		releaseID = "development"
+	}
+	if loadErr == nil && (existing.LogicalServiceID != logicalServiceID || existing.ReleaseID != releaseID || existing.Generation != options.Generation || existing.SandboxIndex != options.SandboxIndex) {
+		return Record{}, errors.New("service instance identity is already owned by another allocation")
+	}
 	if loadErr == nil && existing.State != "STOPPED" && existing.State != "FAILED" {
 		return Record{}, fmt.Errorf("service %s is already started", serviceID)
 	}
 	if loadErr == nil && existing.State == "FAILED" && existing.RuntimeUnavailable {
 		if err := m.releaseSandbox(ctx, existing); err != nil {
-			return existing, fmt.Errorf("release unavailable runtime group: %w", err)
+			return existing, fmt.Errorf("release unavailable sandbox: %w", err)
 		}
 	}
 	if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
@@ -211,16 +223,13 @@ func (m *Manager) Start(ctx context.Context, serviceID, entrypoint string, optio
 	if err := m.save(record); err != nil {
 		return Record{}, err
 	}
-	executionID, err := model.NewID("execution")
-	if err != nil {
-		return m.failUnowned(record, err)
-	}
+	m.logEvent(record, slog.LevelInfo, "service_starting", "service starting")
 	placementGroup := options.GroupKey
-	group, err := m.coordinator.Ensure(ctx, coordinator.Request{WorkloadType: model.WorkloadService, OwnerID: serviceID, ExecutionID: executionID, Namespace: options.Namespace, PlacementGroup: &placementGroup, LogicalServiceID: record.LogicalServiceID, RequestedWorkers: placementWorkers, Strategy: m.policy.Strategy, Profile: profile, ResourceLimits: m.policy.Resources, Lifecycle: m.policy.Lifecycle})
+	group, err := m.coordinator.Ensure(ctx, coordinator.Request{WorkloadType: model.WorkloadService, OwnerID: serviceID, ExecutionID: record.ServiceID, Namespace: options.Namespace, PlacementGroup: &placementGroup, LogicalServiceID: record.LogicalServiceID, RequestedWorkers: placementWorkers, Strategy: m.policy.Strategy, Profile: profile, ResourceLimits: m.policy.Resources, Lifecycle: m.policy.Lifecycle})
 	if err != nil {
 		return m.failUnowned(record, err)
 	}
-	record.RuntimeGroupID, record.SandboxID, record.SandboxIP = group.Spec.RuntimeGroupID, group.Spec.SandboxID, group.Spec.Network.SandboxIP
+	record.SandboxID, record.SandboxIP = group.Spec.SandboxID, group.Spec.Network.SandboxIP
 	permissions := permissionsFor(group.Spec.Permissions)
 	if options.Permissions != nil {
 		permissions = *options.Permissions
@@ -233,7 +242,7 @@ func (m *Manager) Start(ctx context.Context, serviceID, entrypoint string, optio
 		}
 		record.WorkerIDs = append(record.WorkerIDs, workerID)
 	}
-	configureErr := m.workers.ConfigureService(ctx, record.RuntimeGroupID, serviceID, record.WorkerIDs, record.ConcurrencyPerWorker)
+	configureErr := m.workers.ConfigureService(ctx, record.SandboxID, serviceID, record.WorkerIDs, record.ConcurrencyPerWorker)
 	if configureErr != nil {
 		return m.failStart(record, configureErr)
 	}
@@ -241,6 +250,7 @@ func (m *Manager) Start(ctx context.Context, serviceID, entrypoint string, optio
 	if err := m.save(record); err != nil {
 		return m.failStart(record, err)
 	}
+	m.logEvent(record, slog.LevelInfo, "service_started", "service started")
 	return record, nil
 }
 
@@ -258,7 +268,7 @@ func (m *Manager) scaleLocked(ctx context.Context, serviceID string, count int) 
 	if count < 0 || count > record.MaximumWorkers {
 		return record, fmt.Errorf("Worker count must be between 0 and %d", record.MaximumWorkers)
 	}
-	live, err := m.workers.List(ctx, record.RuntimeGroupID)
+	live, err := m.workers.List(ctx, record.SandboxID)
 	if err != nil {
 		return m.failUnavailableLocked(record, err)
 	}
@@ -283,7 +293,7 @@ func (m *Manager) scaleRecordLocked(ctx context.Context, record Record, count in
 		workerID, startErr := m.startWorker(ctx, record, permissions)
 		if startErr != nil {
 			for _, id := range record.WorkerIDs[len(previousWorkerIDs):] {
-				_ = m.workers.StopInGroup(context.Background(), record.RuntimeGroupID, id, true)
+				_ = m.workers.StopInSandbox(context.Background(), record.SandboxID, id, true)
 			}
 			return record, errors.Join(cleanupErr, startErr)
 		}
@@ -316,10 +326,10 @@ func (m *Manager) scaleRecordLocked(ctx context.Context, record Record, count in
 			}
 		}
 	}
-	if err := m.workers.ConfigureService(ctx, record.RuntimeGroupID, record.ServiceID, desiredWorkerIDs, record.ConcurrencyPerWorker); err != nil {
+	if err := m.workers.ConfigureService(ctx, record.SandboxID, record.ServiceID, desiredWorkerIDs, record.ConcurrencyPerWorker); err != nil {
 		for _, id := range record.WorkerIDs {
 			if !contains(previousWorkerIDs, id) {
-				_ = m.workers.StopInGroup(context.Background(), record.RuntimeGroupID, id, true)
+				_ = m.workers.StopInSandbox(context.Background(), record.SandboxID, id, true)
 			}
 		}
 		return record, errors.Join(cleanupErr, err)
@@ -328,16 +338,16 @@ func (m *Manager) scaleRecordLocked(ctx context.Context, record Record, count in
 	record.State = desiredState
 	record.Failure = ""
 	if err := m.save(record); err != nil {
-		_ = m.workers.ConfigureService(context.Background(), record.RuntimeGroupID, record.ServiceID, previousWorkerIDs, record.ConcurrencyPerWorker)
+		_ = m.workers.ConfigureService(context.Background(), record.SandboxID, record.ServiceID, previousWorkerIDs, record.ConcurrencyPerWorker)
 		for _, id := range desiredWorkerIDs {
 			if !contains(previousWorkerIDs, id) {
-				_ = m.workers.StopInGroup(context.Background(), record.RuntimeGroupID, id, true)
+				_ = m.workers.StopInSandbox(context.Background(), record.SandboxID, id, true)
 			}
 		}
 		return record, errors.Join(cleanupErr, err)
 	}
 	for _, id := range removed {
-		if err := m.workers.StopInGroup(ctx, record.RuntimeGroupID, id, false); err != nil {
+		if err := m.workers.StopInSandbox(ctx, record.SandboxID, id, false); err != nil {
 			return record, errors.Join(cleanupErr, err)
 		}
 	}
@@ -378,7 +388,7 @@ func (m *Manager) reconcileWorkerSetLocked(ctx context.Context, record Record, l
 	}
 	sort.Strings(ready)
 	if len(ready) != len(record.WorkerIDs) {
-		if err := m.workers.ConfigureService(ctx, record.RuntimeGroupID, record.ServiceID, ready, record.ConcurrencyPerWorker); err != nil {
+		if err := m.workers.ConfigureService(ctx, record.SandboxID, record.ServiceID, ready, record.ConcurrencyPerWorker); err != nil {
 			return record, nil, fmt.Errorf("exclude unavailable service Workers: %w", err)
 		}
 		record.WorkerIDs = ready
@@ -395,7 +405,7 @@ func (m *Manager) reconcileWorkerSetLocked(ctx context.Context, record Record, l
 	for _, workerID := range stopIDs {
 		item := toStop[workerID]
 		immediate := item.Worker.State == "failed"
-		if err := m.workers.StopInGroup(ctx, record.RuntimeGroupID, workerID, immediate); err != nil {
+		if err := m.workers.StopInSandbox(ctx, record.SandboxID, workerID, immediate); err != nil {
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("reap unavailable Worker %s: %w", workerID, err))
 		}
 	}
@@ -432,17 +442,22 @@ func (m *Manager) Stop(ctx context.Context, serviceID string) (bool, error) {
 		if err := m.save(record); err != nil {
 			return false, err
 		}
+		m.logEvent(record, slog.LevelInfo, "service_stopped", "service stopped")
 		if err := m.releaseSandbox(ctx, record); err != nil {
 			return false, err
 		}
 		return true, nil
 	}
+	wasDraining := record.State == "DRAINING"
 	record.State = "DRAINING"
 	record.Failure = ""
 	if err := m.save(record); err != nil {
 		return false, err
 	}
-	if err := m.workers.ConfigureService(ctx, record.RuntimeGroupID, serviceID, nil, record.ConcurrencyPerWorker); err != nil {
+	if !wasDraining {
+		m.logEvent(record, slog.LevelInfo, "service_draining", "service draining")
+	}
+	if err := m.workers.ConfigureService(ctx, record.SandboxID, serviceID, nil, record.ConcurrencyPerWorker); err != nil {
 		if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, workers.ErrRuntimeUnavailable) {
 			record.Failure = err.Error()
 			_ = m.save(record)
@@ -454,12 +469,13 @@ func (m *Manager) Stop(ctx context.Context, serviceID string) (bool, error) {
 		if err := m.save(record); err != nil {
 			return false, err
 		}
+		m.logEvent(record, slog.LevelInfo, "service_stopped", "service stopped")
 		if err := m.releaseSandbox(ctx, record); err != nil {
 			return false, err
 		}
 		return true, nil
 	}
-	live, err := m.workers.List(ctx, record.RuntimeGroupID)
+	live, err := m.workers.List(ctx, record.SandboxID)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, workers.ErrRuntimeUnavailable) {
 			return false, err
@@ -473,6 +489,7 @@ func (m *Manager) Stop(ctx context.Context, serviceID string) (bool, error) {
 		if err := m.save(record); err != nil {
 			return false, err
 		}
+		m.logEvent(record, slog.LevelInfo, "service_stopped", "service stopped")
 		if err := m.releaseSandbox(ctx, record); err != nil {
 			return false, err
 		}
@@ -498,7 +515,7 @@ func (m *Manager) Stop(ctx context.Context, serviceID string) (bool, error) {
 		if liveByID[id].Worker.InFlight > 0 {
 			continue
 		}
-		if stopErr := m.workers.StopInGroup(ctx, record.RuntimeGroupID, id, false); stopErr != nil {
+		if stopErr := m.workers.StopInSandbox(ctx, record.SandboxID, id, false); stopErr != nil {
 			joined = errors.Join(joined, fmt.Errorf("stop Worker %s: %w", id, stopErr))
 			continue
 		}
@@ -523,6 +540,7 @@ func (m *Manager) Stop(ctx context.Context, serviceID string) (bool, error) {
 	if err := m.save(record); err != nil {
 		return false, err
 	}
+	m.logEvent(record, slog.LevelInfo, "service_stopped", "service stopped")
 	if err := m.releaseSandbox(ctx, record); err != nil {
 		return false, err
 	}
@@ -542,14 +560,18 @@ func (m *Manager) RemoveStopped(serviceID string) error {
 	if record.State != "STOPPED" || len(record.WorkerIDs) != 0 {
 		return fmt.Errorf("service %s is not fully stopped", serviceID)
 	}
-	return m.delete(serviceID)
+	if err := m.delete(serviceID); err != nil {
+		return err
+	}
+	m.logEvent(record, slog.LevelInfo, "service_removed", "service removed")
+	return nil
 }
 
 func (m *Manager) releaseSandbox(ctx context.Context, record Record) error {
-	if record.RuntimeGroupID == "" {
+	if record.SandboxID == "" {
 		return nil
 	}
-	err := m.coordinator.Release(ctx, record.RuntimeGroupID, record.ServiceID, record.LogicalServiceID)
+	err := m.coordinator.Release(ctx, record.SandboxID, record.ServiceID, record.LogicalServiceID)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -667,11 +689,11 @@ func (m *Manager) OpenAPI(ctx context.Context, serviceID string) (map[string]any
 	if record.State != "READY" || len(record.WorkerIDs) == 0 {
 		return nil, fmt.Errorf("service %s has no ready Worker", serviceID)
 	}
-	document, err := m.workers.ServiceOpenAPI(ctx, record.RuntimeGroupID, record.ServiceID)
+	document, err := m.workers.ServiceOpenAPI(ctx, record.SandboxID, record.ServiceID)
 	if errors.Is(err, workers.ErrRuntimeUnavailable) {
 		unlock = m.lock(serviceID)
 		current, inspectErr := m.inspect(serviceID)
-		if inspectErr == nil && current.RuntimeGroupID == record.RuntimeGroupID && current.Generation == record.Generation && current.ReleaseID == record.ReleaseID && current.State != "STOPPED" {
+		if inspectErr == nil && current.SandboxID == record.SandboxID && current.Generation == record.Generation && current.ReleaseID == record.ReleaseID && current.State != "STOPPED" {
 			_, err = m.failUnavailableLocked(current, err)
 		}
 		unlock()
@@ -679,9 +701,9 @@ func (m *Manager) OpenAPI(ctx context.Context, serviceID string) (map[string]any
 	return document, err
 }
 
-// FailGroup marks every live service pool in a failed runtime group without
+// FailSandbox marks every live service pool in a failed sandbox without
 // attempting Worker operations against the terminated sandbox.
-func (m *Manager) FailGroup(runtimeGroupID, reason string) error {
+func (m *Manager) FailSandbox(sandboxID, reason string) error {
 	ids, err := m.store.IDs()
 	if err != nil {
 		return err
@@ -694,7 +716,7 @@ func (m *Manager) FailGroup(runtimeGroupID, reason string) error {
 			unlock()
 			continue
 		}
-		if record.RuntimeGroupID != runtimeGroupID || (record.State != "STARTING" && record.State != "READY" && record.State != "IDLE") {
+		if record.SandboxID != sandboxID || (record.State != "STARTING" && record.State != "READY" && record.State != "IDLE") {
 			unlock()
 			continue
 		}
@@ -702,6 +724,7 @@ func (m *Manager) FailGroup(runtimeGroupID, reason string) error {
 		record.Failure = reason
 		record.RuntimeUnavailable = true
 		joined = errors.Join(joined, m.save(record))
+		m.logEvent(record, slog.LevelError, "service_failed", "service sandbox failed", slog.String("reason", reason))
 		unlock()
 	}
 	return joined
@@ -724,7 +747,11 @@ func (m *Manager) RetireUnavailable(serviceID, reason string) error {
 	record.State = "STOPPED"
 	record.Failure = reason
 	record.RuntimeUnavailable = true
-	return m.save(record)
+	if err := m.save(record); err != nil {
+		return err
+	}
+	m.logEvent(record, slog.LevelInfo, "service_stopped", "service retired after sandbox loss", slog.String("reason", reason))
+	return nil
 }
 
 // Restore verifies that persisted pools still refer to ready supervisor Workers.
@@ -744,18 +771,19 @@ func (m *Manager) Restore(ctx context.Context) error {
 			unlock()
 			continue
 		}
-		listed, listErr := m.workers.List(ctx, record.RuntimeGroupID)
+		listed, listErr := m.workers.List(ctx, record.SandboxID)
 		if listErr != nil || !containsEveryWorker(record.WorkerIDs, listed) {
 			record.State = "FAILED"
 			if listErr != nil {
-				record.Failure = "restore runtime group: " + listErr.Error()
+				record.Failure = "restore sandbox: " + listErr.Error()
 			} else {
-				record.Failure = "restore runtime group: persisted Workers are unavailable"
+				record.Failure = "restore sandbox: persisted Workers are unavailable"
 			}
 			m.persistRestoreFailure(record, nil)
 			unlock()
 			continue
 		}
+		m.logEvent(record, slog.LevelInfo, "service_restored", "service restored")
 		unlock()
 	}
 	return nil
@@ -814,10 +842,10 @@ func (m *Manager) quarantineInvalidRecord(serviceID string, cause error) {
 		return
 	}
 	if err != nil {
-		m.logger.Error("skip invalid service-pool record; quarantine failed", "service_pool_id", serviceID, "error", cause, "quarantine_error", err)
+		m.logEvent(Record{ServiceID: serviceID}, slog.LevelError, "service_quarantine_failed", "skip invalid service-pool record; quarantine failed", slog.Any("error", cause), slog.Any("quarantine_error", err))
 		return
 	}
-	m.logger.Error("quarantined invalid service-pool record", "service_pool_id", serviceID, "path", path, "error", cause)
+	m.logEvent(Record{ServiceID: serviceID}, slog.LevelError, "service_quarantined", "quarantined invalid service-pool record", slog.String("path", path), slog.Any("error", cause))
 }
 
 func (m *Manager) persistRestoreFailure(record Record, cause error) {
@@ -826,25 +854,17 @@ func (m *Manager) persistRestoreFailure(record Record, cause error) {
 		record.Failure = cause.Error()
 	}
 	if err := m.save(record); err != nil {
-		if m.logger != nil {
-			m.logger.Error("persist isolated service restore failure", "service_pool_id", record.ServiceID, "error", err)
-		}
+		m.logEvent(record, slog.LevelError, "service_restore_persist_failed", "persist isolated service restore failure", slog.Any("error", err))
 		return
 	}
-	if m.logger != nil {
-		m.logger.Error("isolated service restore failure", "service_pool_id", record.ServiceID, "error", record.Failure)
-	}
+	m.logEvent(record, slog.LevelError, "service_failed", "isolated service restore failure", slog.String("error", record.Failure))
 }
 func (m *Manager) startWorker(ctx context.Context, record Record, permissions supervisor.WorkerPermissions) (string, error) {
-	workerID, err := model.NewWorkerID()
+	workerID, err := identity.New("wrk")
 	if err != nil {
 		return "", err
 	}
-	executionID, err := model.NewID("execution")
-	if err != nil {
-		return "", err
-	}
-	started, err := m.workers.Start(ctx, record.RuntimeGroupID, supervisor.StartWorkerRequest{Metadata: supervisor.ExecutionMetadata{WorkerID: workerID, ExecutionID: executionID, WorkloadType: model.WorkloadService, OwnerID: record.LogicalServiceID, WorkloadID: record.ServiceID, ReleaseID: record.ReleaseID, Entrypoint: record.Entrypoint, DebuggerName: "service:" + record.LogicalServiceID + ":" + executionID + ":" + workerID, ValidateEntrypoint: record.ValidateEntrypoint, User: record.User, Origin: execution.Origin{Type: execution.OriginService, ID: record.LogicalServiceID}, Service: &supervisor.ServiceExecutionMetadata{ServiceID: record.LogicalServiceID, Generation: record.Generation, CanonicalBasePath: record.CanonicalBasePath, OpenAPI: record.OpenAPI, ExecutionMode: record.ExecutionMode}}, Permissions: permissions})
+	started, err := m.workers.Start(ctx, record.SandboxID, supervisor.StartWorkerRequest{Metadata: supervisor.ExecutionMetadata{WorkerID: workerID, WorkloadType: model.WorkloadService, OwnerID: record.LogicalServiceID, WorkloadID: record.ServiceID, ReleaseID: record.ReleaseID, Entrypoint: record.Entrypoint, DebuggerName: "service:" + record.LogicalServiceID + ":" + workerID, ValidateEntrypoint: record.ValidateEntrypoint, User: record.User, Origin: execution.Origin{Type: execution.OriginService, ID: record.LogicalServiceID}, Service: &supervisor.ServiceExecutionMetadata{ServiceID: record.LogicalServiceID, Generation: record.Generation, CanonicalBasePath: record.CanonicalBasePath, OpenAPI: record.OpenAPI, ExecutionMode: record.ExecutionMode}}, Permissions: permissions})
 	if err != nil {
 		if supervisor.IsRequestRejected(err) {
 			return "", &invalidServiceDefinitionError{cause: err}
@@ -860,7 +880,7 @@ func (m *Manager) Dispatch(ctx context.Context, serviceID string, request *http.
 	if err != nil {
 		return nil, err
 	}
-	response, err := m.workers.DispatchService(ctx, current.RuntimeGroupID, current.ServiceID, request)
+	response, err := m.workers.DispatchService(ctx, current.SandboxID, current.ServiceID, request)
 	if err != nil {
 		return nil, err
 	}
@@ -874,7 +894,7 @@ func (m *Manager) Capacity(ctx context.Context, serviceID string) (Record, error
 	if err != nil {
 		return record, err
 	}
-	live, err := m.workers.List(ctx, record.RuntimeGroupID)
+	live, err := m.workers.List(ctx, record.SandboxID)
 	if err != nil {
 		return record, err
 	}
@@ -902,7 +922,7 @@ func (m *Manager) ProxyWebSocket(ctx context.Context, serviceID string, writer h
 	if record.State != "READY" {
 		return errors.New("service sandbox pool is unavailable")
 	}
-	return m.workers.ProxyServiceWebSocket(ctx, record.RuntimeGroupID, record.ServiceID, writer, request, modifyResponse)
+	return m.workers.ProxyServiceWebSocket(ctx, record.SandboxID, record.ServiceID, writer, request, modifyResponse)
 }
 
 // EnsureCapacity grows one sandbox-local pool up to the supplied allowance and
@@ -918,7 +938,7 @@ func (m *Manager) EnsureCapacity(ctx context.Context, serviceID string, growthLi
 		return record, errors.New("service sandbox growth limit and occupied-slot floor cannot be negative")
 	}
 	allowedMaximum := min(record.MaximumWorkers, max(growthLimit, len(record.WorkerIDs)))
-	live, err := m.workers.List(ctx, record.RuntimeGroupID)
+	live, err := m.workers.List(ctx, record.SandboxID)
 	if err != nil {
 		return m.failUnavailableLocked(record, err)
 	}
@@ -928,7 +948,7 @@ func (m *Manager) EnsureCapacity(ctx context.Context, serviceID string, growthLi
 		if err != nil {
 			return record, err
 		}
-		live, err = m.workers.List(ctx, record.RuntimeGroupID)
+		live, err = m.workers.List(ctx, record.SandboxID)
 		if err != nil {
 			return m.failUnavailableLocked(record, err)
 		}
@@ -1005,7 +1025,7 @@ func (m *Manager) ReconcileCapacity(ctx context.Context, serviceID string, minim
 			return record, err
 		}
 	}
-	live, err := m.workers.List(ctx, record.RuntimeGroupID)
+	live, err := m.workers.List(ctx, record.SandboxID)
 	if err != nil {
 		return m.failUnavailableLocked(record, err)
 	}
@@ -1014,7 +1034,7 @@ func (m *Manager) ReconcileCapacity(ctx context.Context, serviceID string, minim
 		if err != nil {
 			return record, err
 		}
-		live, err = m.workers.List(ctx, record.RuntimeGroupID)
+		live, err = m.workers.List(ctx, record.SandboxID)
 		if err != nil {
 			return m.failUnavailableLocked(record, err)
 		}
@@ -1084,18 +1104,18 @@ func (m *Manager) removeIdleWorkersLocked(ctx context.Context, record Record, re
 			desired = append(desired, workerID)
 		}
 	}
-	if err := m.workers.ConfigureService(ctx, record.RuntimeGroupID, record.ServiceID, desired, record.ConcurrencyPerWorker); err != nil {
+	if err := m.workers.ConfigureService(ctx, record.SandboxID, record.ServiceID, desired, record.ConcurrencyPerWorker); err != nil {
 		return record, err
 	}
 	record.WorkerIDs = desired
 	record.State = workerState(len(desired))
 	if err := m.save(record); err != nil {
-		_ = m.workers.ConfigureService(context.Background(), record.RuntimeGroupID, record.ServiceID, previous, record.ConcurrencyPerWorker)
+		_ = m.workers.ConfigureService(context.Background(), record.SandboxID, record.ServiceID, previous, record.ConcurrencyPerWorker)
 		return record, err
 	}
 	var joined error
 	for _, workerID := range removeIDs {
-		if err := m.workers.StopInGroup(ctx, record.RuntimeGroupID, workerID, false); err != nil {
+		if err := m.workers.StopInSandbox(ctx, record.SandboxID, workerID, false); err != nil {
 			joined = errors.Join(joined, fmt.Errorf("stop idle Worker %s: %w", workerID, err))
 		}
 	}
@@ -1136,29 +1156,27 @@ func workerSetNeedsReconciliation(record Record, live []workers.Record) bool {
 	return false
 }
 
-func (m *Manager) fail(record Record, cause error) (Record, error) {
-	record.State = "FAILED"
-	record.Failure = cause.Error()
-	record.RuntimeUnavailable = false
-	_ = m.save(record)
-	return record, cause
-}
-
 func (m *Manager) failUnavailableLocked(record Record, cause error) (Record, error) {
 	if !errors.Is(cause, workers.ErrRuntimeUnavailable) {
 		return record, cause
 	}
+	wasUnavailable := record.State == "FAILED" && record.RuntimeUnavailable
 	record.State = "FAILED"
 	record.Failure = cause.Error()
 	record.RuntimeUnavailable = true
+	if !wasUnavailable {
+		m.logEvent(record, slog.LevelError, "service_failed", "service runtime unavailable")
+	}
 	return record, errors.Join(cause, m.save(record))
 }
 
 func (m *Manager) failStart(record Record, cause error) (Record, error) {
+	record.State = "FAILED"
+	m.logEvent(record, slog.LevelError, "service_failed", "service startup failed")
 	remaining := make([]string, 0, len(record.WorkerIDs))
 	var cleanupErr error
 	for _, workerID := range record.WorkerIDs {
-		if err := m.workers.StopInGroup(context.Background(), record.RuntimeGroupID, workerID, true); err != nil {
+		if err := m.workers.StopInSandbox(context.Background(), record.SandboxID, workerID, true); err != nil {
 			remaining = append(remaining, workerID)
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("stop failed-start Worker %s: %w", workerID, err))
 		}
@@ -1172,7 +1190,6 @@ func (m *Manager) failStart(record Record, cause error) (Record, error) {
 	record.Failure = joined.Error()
 	record.RuntimeUnavailable = false
 	if cleanupErr == nil {
-		record.RuntimeGroupID = ""
 		record.SandboxID = ""
 		record.SandboxIP = ""
 		if err := m.delete(record.ServiceID); err == nil || errors.Is(err, os.ErrNotExist) {
@@ -1189,8 +1206,35 @@ func (m *Manager) failStart(record Record, cause error) (Record, error) {
 func (m *Manager) failUnowned(record Record, cause error) (Record, error) {
 	record.State = "FAILED"
 	record.Failure = cause.Error()
+	m.logEvent(record, slog.LevelError, "service_failed", "service sandbox allocation failed")
 	return record, errors.Join(cause, m.delete(record.ServiceID))
 }
+
+// Pool lifecycle has a configured principal, but no single request or Worker.
+// Request error details stay with their invocation-scoped runtime diagnostics.
+func (m *Manager) logEvent(record Record, level slog.Level, event, message string, extra ...slog.Attr) {
+	ctx := context.Background()
+	if m.logger == nil || !m.logger.Enabled(ctx, level) {
+		return
+	}
+	entry := slog.NewRecord(m.now(), level, message, 0)
+	entry.AddAttrs(slog.String("component", "services"), slog.String("event", event))
+	for _, field := range []struct{ key, value string }{
+		{"service_id", record.ServiceID}, {"sandbox_id", record.SandboxID},
+		{"logical_service_id", record.LogicalServiceID}, {"username", record.User.Username},
+		{"state", record.State},
+	} {
+		if field.value != "" {
+			entry.AddAttrs(slog.String(field.key, field.value))
+		}
+	}
+	if record.State != "" {
+		entry.AddAttrs(slog.Int("workers", len(record.WorkerIDs)), slog.Bool("runtime_unavailable", record.RuntimeUnavailable))
+	}
+	entry.AddAttrs(extra...)
+	_ = m.logger.Handler().Handle(ctx, entry)
+}
+
 func permissionsFor(value model.Permissions) supervisor.WorkerPermissions {
 	sys := []string(nil)
 	if value.SystemInfo {

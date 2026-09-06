@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"the8020/kernel/identity"
 	"time"
 
 	"the8020/kernel/sandbox/manager"
@@ -19,7 +20,7 @@ type fakeSandboxes struct {
 	deleted  []string
 }
 
-func (f *fakeSandboxes) NewSandboxID() (string, error) { return model.NewSandboxID() }
+func (f *fakeSandboxes) NewSandboxID() (string, error) { return identity.New("sbx") }
 func (f *fakeSandboxes) ReleaseSandboxID(string)       {}
 
 func (f *fakeSandboxes) List() ([]manager.Inspection, error) {
@@ -37,12 +38,12 @@ func (f *fakeSandboxes) Create(_ context.Context, spec model.SandboxSpec) (manag
 	return item, nil
 }
 
-func TestControllerRestoresReadyAssignedAndFailedGroupsBeforeReplenishing(t *testing.T) {
+func TestControllerRestoresReadyAssignedAndFailedSandboxesBeforeReplenishing(t *testing.T) {
 	profile, resources := testTemplate(t)
 	hash, _ := profile.Hash()
-	ready := model.SandboxSpec{RuntimeGroupID: "group-ready", SandboxID: "sandbox-ready", ProfileHash: hash, Lifecycle: model.LifecyclePolicy{Warm: true}}
-	assigned := model.SandboxSpec{RuntimeGroupID: "group-assigned", SandboxID: "sandbox-assigned", ProfileHash: hash, Labels: map[string]string{"the8020.assigned_at": "now"}}
-	failed := model.SandboxSpec{RuntimeGroupID: "group-failed", SandboxID: "sandbox-failed", ProfileHash: hash, Lifecycle: model.LifecyclePolicy{Warm: true}}
+	ready := model.SandboxSpec{SandboxID: "sandbox-ready", ProfileHash: hash, Lifecycle: model.LifecyclePolicy{Warm: true}}
+	assigned := model.SandboxSpec{SandboxID: "sandbox-assigned", ProfileHash: hash, Labels: map[string]string{"the8020.assigned_at": "now"}}
+	failed := model.SandboxSpec{SandboxID: "sandbox-failed", ProfileHash: hash, Lifecycle: model.LifecyclePolicy{Warm: true}}
 	sandboxes := &fakeSandboxes{items: []manager.Inspection{
 		{Spec: ready, Status: model.SandboxStatus{ObservedState: model.StateReady, SupervisorHealthy: true}},
 		{Spec: assigned, Status: model.SandboxStatus{ObservedState: model.StateActive, SupervisorHealthy: true, WorkerCount: 1}},
@@ -65,7 +66,7 @@ func (f *fakeSandboxes) AssignWarm(_ context.Context, id, groupKey, owner string
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, spec := range f.created {
-		if spec.RuntimeGroupID == id {
+		if spec.SandboxID == id {
 			spec.GroupKey, spec.OwnerIDs, spec.Lifecycle.Warm = groupKey, []string{owner}, false
 			f.assigned = append(f.assigned, id)
 			return manager.Inspection{Spec: spec, Status: model.SandboxStatus{ObservedState: model.StateReady, SupervisorHealthy: true}}, nil

@@ -2,6 +2,7 @@ package nodes
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -49,53 +50,53 @@ func (i *recordingWorkerInvoker) InvokeLocalWorker(_ context.Context, input Work
 
 func TestTopologyPersistsAndReloadsSharedNodes(t *testing.T) {
 	root := t.TempDir()
-	manager, err := New(newTestNodeDatabase(t, root), "node-a", testSharedSecret)
+	manager, err := New(newTestNodeDatabase(t, root), "nod-aaaaaaaaaa", testSharedSecret)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer manager.Close()
-	observer, err := New(newTestNodeDatabase(t, root), "node-c", testSharedSecret)
+	observer, err := New(newTestNodeDatabase(t, root), "nod-cccccccccc", testSharedSecret)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer observer.Close()
-	node := Node{ID: "node-b", URL: "https://node-b.example", RecipientAddress: "10.0.0.2", RecipientPort: 9443, Enabled: true}
+	node := Node{ID: "nod-bbbbbbbbbb", URL: "https://node-b.example", RecipientAddress: "10.0.0.2", RecipientPort: 9443, Enabled: true}
 	if _, err := manager.Set(context.Background(), node); err != nil {
 		t.Fatal(err)
 	}
 	if err := observer.Refresh(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := observer.Inspect("node-b"); err != nil || got != node {
+	if got, err := observer.Inspect("nod-bbbbbbbbbb"); err != nil || got != node {
 		t.Fatalf("running peer node=%#v err=%v", got, err)
 	}
-	reloaded, err := New(newTestNodeDatabase(t, root), "node-a", testSharedSecret)
+	reloaded, err := New(newTestNodeDatabase(t, root), "nod-aaaaaaaaaa", testSharedSecret)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer reloaded.Close()
-	if got, err := reloaded.Inspect("node-b"); err != nil || got != node {
+	if got, err := reloaded.Inspect("nod-bbbbbbbbbb"); err != nil || got != node {
 		t.Fatalf("node=%#v err=%v", got, err)
 	}
 }
 
 func TestTopologyReadsUseTheRefreshedSnapshot(t *testing.T) {
 	db := newTestNodeDatabase(t, t.TempDir())
-	manager, err := New(db, "node-a", testSharedSecret)
+	manager, err := New(db, "nod-aaaaaaaaaa", testSharedSecret)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer manager.Close()
-	if _, err := manager.Set(context.Background(), Node{ID: "node-b", URL: "https://node-b.example", RecipientAddress: "10.0.0.2", RecipientPort: 9443, Enabled: true}); err != nil {
+	if _, err := manager.Set(context.Background(), Node{ID: "nod-bbbbbbbbbb", URL: "https://node-b.example", RecipientAddress: "10.0.0.2", RecipientPort: 9443, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(context.Background(), `DROP TABLE "the8020__system__nodes"`); err != nil {
 		t.Fatal(err)
 	}
-	if nodes := manager.List(); len(nodes) != 1 || nodes[0].ID != "node-b" {
+	if nodes := manager.List(); len(nodes) != 1 || nodes[0].ID != "nod-bbbbbbbbbb" {
 		t.Fatalf("cached nodes=%#v", nodes)
 	}
-	if _, err := manager.Inspect("node-b"); err != nil {
+	if _, err := manager.Inspect("nod-bbbbbbbbbb"); err != nil {
 		t.Fatalf("cached inspect: %v", err)
 	}
 	if err := manager.Refresh(context.Background()); err == nil {
@@ -104,12 +105,12 @@ func TestTopologyReadsUseTheRefreshedSnapshot(t *testing.T) {
 }
 
 func TestIndexesArePartitionedAcrossEnabledNodes(t *testing.T) {
-	manager, err := New(newTestNodeDatabase(t, t.TempDir()), "node-b", testSharedSecret)
+	manager, err := New(newTestNodeDatabase(t, t.TempDir()), "nod-bbbbbbbbbb", testSharedSecret)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer manager.Close()
-	for index, id := range []string{"node-a", "node-b", "node-c"} {
+	for index, id := range []string{"nod-aaaaaaaaaa", "nod-bbbbbbbbbb", "nod-cccccccccc"} {
 		if _, err := manager.Set(context.Background(), Node{ID: id, URL: "https://" + id + ".example", RecipientAddress: "10.0.0." + strconv.Itoa(index+1), RecipientPort: 9443, Enabled: true}); err != nil {
 			t.Fatal(err)
 		}
@@ -118,7 +119,7 @@ func TestIndexesArePartitionedAcrossEnabledNodes(t *testing.T) {
 	if len(indexes) != 3 || indexes[0] != 1 || indexes[1] != 4 || indexes[2] != 7 {
 		t.Fatalf("indexes=%#v", indexes)
 	}
-	configured, _ := manager.Inspect("node-b")
+	configured, _ := manager.Inspect("nod-bbbbbbbbbb")
 	configured.Enabled = false
 	if _, err := manager.Set(context.Background(), configured); err != nil {
 		t.Fatal(err)
@@ -131,13 +132,13 @@ func TestIndexesArePartitionedAcrossEnabledNodes(t *testing.T) {
 func TestForwardingRecipientRequiresSharedAuthentication(t *testing.T) {
 	root := t.TempDir()
 	db := newTestNodeDatabase(t, root)
-	manager, err := New(db, "node-a", testSharedSecret)
+	manager, err := New(db, "nod-aaaaaaaaaa", testSharedSecret)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer manager.Close()
 	port := freePort(t)
-	if _, err := manager.Set(context.Background(), Node{ID: "node-a", URL: "http://127.0.0.1", RecipientAddress: "127.0.0.1", RecipientPort: port, Enabled: true}); err != nil {
+	if _, err := manager.Set(context.Background(), Node{ID: "nod-aaaaaaaaaa", URL: "http://127.0.0.1", RecipientAddress: "127.0.0.1", RecipientPort: port, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
 	if err := manager.Start(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -164,19 +165,19 @@ func TestForwardingRecipientRequiresSharedAuthentication(t *testing.T) {
 		t.Fatalf("status=%d", unauthorized.StatusCode)
 	}
 
-	peer, err := New(db, "node-b", testSharedSecret)
+	peer, err := New(db, "nod-bbbbbbbbbb", testSharedSecret)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer peer.Close()
-	if _, err := peer.Set(context.Background(), Node{ID: "node-a", URL: "http://127.0.0.1", RecipientAddress: "127.0.0.1", RecipientPort: port, Enabled: true}); err != nil {
+	if _, err := peer.Set(context.Background(), Node{ID: "nod-aaaaaaaaaa", URL: "http://127.0.0.1", RecipientAddress: "127.0.0.1", RecipientPort: port, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "http://the8020/service", nil)
 	request.Header.Set("the8020-authorization", "Bearer end-user-token")
 	request.Header.Set("Cookie", "the8020_auth=end-user-cookie")
-	if err := peer.Proxy("node-a", recorder, request); err != nil {
+	if err := peer.Proxy("nod-aaaaaaaaaa", recorder, request); err != nil {
 		t.Fatal(err)
 	}
 	response := recorder.Result()
@@ -186,7 +187,7 @@ func TestForwardingRecipientRequiresSharedAuthentication(t *testing.T) {
 		t.Fatalf("status=%d body=%q", response.StatusCode, body)
 	}
 	front := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if err := peer.Proxy("node-a", writer, request); err != nil {
+		if err := peer.Proxy("nod-aaaaaaaaaa", writer, request); err != nil {
 			http.Error(writer, err.Error(), http.StatusBadGateway)
 		}
 	}))
@@ -211,20 +212,20 @@ func TestForwardingRecipientRequiresSharedAuthentication(t *testing.T) {
 func TestAvailableForwardingUsesAdvertisedCapacity(t *testing.T) {
 	root := t.TempDir()
 	db := newTestNodeDatabase(t, root)
-	owner, err := New(db, "node-a", testSharedSecret)
+	owner, err := New(db, "nod-aaaaaaaaaa", testSharedSecret)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer owner.Close()
 	port := freePort(t)
-	configured := Node{ID: "node-a", URL: "http://127.0.0.1", RecipientAddress: "127.0.0.1", RecipientPort: port, Enabled: true}
+	configured := Node{ID: "nod-aaaaaaaaaa", URL: "http://127.0.0.1", RecipientAddress: "127.0.0.1", RecipientPort: port, Enabled: true}
 	if _, err := owner.Set(context.Background(), configured); err != nil {
 		t.Fatal(err)
 	}
 	owner.SetCapacityProvider(staticCapacityProvider{capacity: Capacity{Accepting: true, AvailableWorkers: 8, AvailableSandboxes: 2, UpdatedAt: time.Now().UTC()}})
 	if err := owner.Start(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		path, _ := request.Context().Value(forwardingPathKey{}).([]string)
-		if strings.Join(path, ",") != "node-b" {
+		if strings.Join(path, ",") != "nod-bbbbbbbbbb" {
 			http.Error(writer, "untrusted forwarding history", 400)
 			return
 		}
@@ -232,14 +233,14 @@ func TestAvailableForwardingUsesAdvertisedCapacity(t *testing.T) {
 	})); err != nil {
 		t.Fatal(err)
 	}
-	peer, err := New(db, "node-b", testSharedSecret)
+	peer, err := New(db, "nod-bbbbbbbbbb", testSharedSecret)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer peer.Close()
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "http://the8020/core/service/path", nil)
-	request.Header.Set("ThE8020-InTeRnAl-FoRwArDeD-NoDeS", "node-a,node-b,forged")
+	request.Header.Set("ThE8020-InTeRnAl-FoRwArDeD-NoDeS", "nod-aaaaaaaaaa,nod-bbbbbbbbbb,forged")
 	forwarded, err := peer.ProxyAvailable(recorder, request)
 	if err != nil || !forwarded {
 		t.Fatalf("forwarded=%v err=%v", forwarded, err)
@@ -251,20 +252,20 @@ func TestAvailableForwardingUsesAdvertisedCapacity(t *testing.T) {
 		t.Fatalf("status=%d body=%q", response.StatusCode, body)
 	}
 	statuses := peer.Statuses(context.Background())
-	if len(statuses) != 2 || !statuses[0].Reachable || statuses[0].Capacity == nil || statuses[0].Capacity.NodeID != "node-a" {
+	if len(statuses) != 2 || !statuses[0].Reachable || statuses[0].Capacity == nil || statuses[0].Capacity.NodeID != "nod-aaaaaaaaaa" {
 		t.Fatalf("statuses=%#v", statuses)
 	}
 }
 
 func TestExactWorkerInvocationForwardsAcrossNodes(t *testing.T) {
 	db := newTestNodeDatabase(t, t.TempDir())
-	owner, err := New(db, "node-a", testSharedSecret)
+	owner, err := New(db, "nod-aaaaaaaaaa", testSharedSecret)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer owner.Close()
 	port := freePort(t)
-	if _, err := owner.Set(context.Background(), Node{ID: "node-a", URL: "http://127.0.0.1", RecipientAddress: "127.0.0.1", RecipientPort: port, Enabled: true}); err != nil {
+	if _, err := owner.Set(context.Background(), Node{ID: "nod-aaaaaaaaaa", URL: "http://127.0.0.1", RecipientAddress: "127.0.0.1", RecipientPort: port, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
 	invoker := &recordingWorkerInvoker{}
@@ -273,34 +274,95 @@ func TestExactWorkerInvocationForwardsAcrossNodes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	peer, err := New(db, "node-b", testSharedSecret)
+	peer, err := New(db, "nod-bbbbbbbbbb", testSharedSecret)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer peer.Close()
-	input := WorkerInvocationRequest{NodeID: "node-a", SandboxID: "sandbox-a", WorkerID: "worker-a", Function: "example.inspect", Input: map[string]any{"id": "value"}, User: execution.SystemUser()}
+	input := WorkerInvocationRequest{NodeID: "nod-aaaaaaaaaa", SandboxID: "sbx-aaaaaaaaaa", WorkerID: "wrk-aaaaaaaaaa", ParentContextID: "ctx-pppppppppp", PersistentExecutionID: "pex-1111111111", Function: "example.inspect", Input: map[string]any{"id": "value"}, User: execution.SystemUser()}
 	result := peer.InvokeWorker(context.Background(), input)
-	if !result.OK || result.Output != "exact-worker-output" || len(invoker.calls) != 1 || invoker.calls[0].NodeID != "node-a" || invoker.calls[0].SandboxID != "sandbox-a" || invoker.calls[0].WorkerID != "worker-a" || invoker.calls[0].Function != "example.inspect" || invoker.calls[0].User != execution.SystemUser() {
+	if !result.OK || result.Output != "exact-worker-output" || len(invoker.calls) != 1 || invoker.calls[0].NodeID != "nod-aaaaaaaaaa" || invoker.calls[0].SandboxID != "sbx-aaaaaaaaaa" || invoker.calls[0].WorkerID != "wrk-aaaaaaaaaa" || invoker.calls[0].Function != "example.inspect" || invoker.calls[0].User != execution.SystemUser() {
 		t.Fatalf("result=%#v calls=%#v", result, invoker.calls)
 	}
 	if value, ok := invoker.calls[0].Input.(map[string]any)["id"]; !ok || value != "value" {
 		t.Fatalf("opaque input=%#v", invoker.calls[0].Input)
 	}
+	if invoker.calls[0].ParentContextID != input.ParentContextID || invoker.calls[0].PersistentExecutionID != input.PersistentExecutionID {
+		t.Fatalf("forwarding lost execution identity: %#v", invoker.calls[0])
+	}
+}
+
+func TestWorkerInvocationRejectsMalformedIdentityAtBothNodeBoundaries(t *testing.T) {
+	m, err := New(newTestNodeDatabase(t, t.TempDir()), "nod-aaaaaaaaaa", testSharedSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+	invoker := &recordingWorkerInvoker{}
+	m.SetWorkerInvoker(invoker)
+	base := WorkerInvocationRequest{NodeID: m.localID, SandboxID: "sbx-aaaaaaaaaa", WorkerID: "wrk-aaaaaaaaaa", Function: "example.inspect", User: execution.SystemUser()}
+	for name, mutate := range map[string]func(*WorkerInvocationRequest){
+		"node":       func(r *WorkerInvocationRequest) { r.NodeID = "node-a" },
+		"sandbox":    func(r *WorkerInvocationRequest) { r.SandboxID = "wrk-aaaaaaaaaa" },
+		"worker":     func(r *WorkerInvocationRequest) { r.WorkerID = "wrk-short" },
+		"parent":     func(r *WorkerInvocationRequest) { r.ParentContextID = "job-aaaaaaaaaa" },
+		"persistent": func(r *WorkerInvocationRequest) { r.PersistentExecutionID = "pex-UPPERCASE1" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			input := base
+			mutate(&input)
+			result := m.InvokeWorker(context.Background(), input)
+			if result.Error == nil || result.Error.Code != "invalid_request" {
+				t.Fatalf("sender accepted malformed identity: %#v", result)
+			}
+			body, err := json.Marshal(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodPost, workerInvokePath, strings.NewReader(string(body)))
+			request.Header.Set("Authorization", "Bearer "+testSharedSecret)
+			response := httptest.NewRecorder()
+			m.recipientHandler(http.NotFoundHandler()).ServeHTTP(response, request)
+			if response.Code != http.StatusBadRequest || len(invoker.calls) != 0 {
+				t.Fatalf("recipient accepted malformed identity: status=%d calls=%d", response.Code, len(invoker.calls))
+			}
+		})
+	}
+}
+
+func TestTopologyRequiresCanonicalNodeIdentity(t *testing.T) {
+	db := newTestNodeDatabase(t, t.TempDir())
+	if _, err := New(db, "node-a", testSharedSecret); err == nil {
+		t.Fatal("accepted an arbitrary local node ID")
+	}
+	m, err := New(db, "nod-aaaaaaaaaa", testSharedSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+	for _, id := range []string{"node-b", "sbx-bbbbbbbbbb", "nod-short", "nod-BBBBBBBBBB"} {
+		if _, err := m.Set(context.Background(), Node{ID: id, URL: "https://node.example", RecipientAddress: "127.0.0.1", RecipientPort: 9443, Enabled: true}); err == nil {
+			t.Fatalf("persisted malformed node ID %q", id)
+		}
+	}
+	if len(m.List()) != 0 {
+		t.Fatal("malformed nodes entered topology")
+	}
 }
 
 func TestWorkerInvocationRejectsInvalidAndOversizedInputBeforeDispatch(t *testing.T) {
-	manager, err := New(newTestNodeDatabase(t, t.TempDir()), "node-a", testSharedSecret)
+	manager, err := New(newTestNodeDatabase(t, t.TempDir()), "nod-aaaaaaaaaa", testSharedSecret)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer manager.Close()
 	invoker := &recordingWorkerInvoker{}
 	manager.SetWorkerInvoker(invoker)
-	invalid := WorkerInvocationRequest{NodeID: "node-a", SandboxID: "sandbox-a", Function: "example.inspect"}
+	invalid := WorkerInvocationRequest{NodeID: "nod-aaaaaaaaaa", SandboxID: "sbx-aaaaaaaaaa", Function: "example.inspect"}
 	if result := manager.InvokeWorker(context.Background(), invalid); result.Error == nil || result.Error.Code != "invalid_request" {
 		t.Fatalf("invalid result=%#v", result)
 	}
-	oversized := WorkerInvocationRequest{NodeID: "node-a", SandboxID: "sandbox-a", WorkerID: "worker-a", Function: "example.inspect", Input: strings.Repeat("x", maximumWorkerInvocationBytes), User: execution.SystemUser()}
+	oversized := WorkerInvocationRequest{NodeID: "nod-aaaaaaaaaa", SandboxID: "sbx-aaaaaaaaaa", WorkerID: "wrk-aaaaaaaaaa", Function: "example.inspect", Input: strings.Repeat("x", maximumWorkerInvocationBytes), User: execution.SystemUser()}
 	if result := manager.InvokeWorker(context.Background(), oversized); result.Error == nil || result.Error.Code != "invalid_request" {
 		t.Fatalf("oversized result=%#v", result)
 	}

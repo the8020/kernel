@@ -16,6 +16,11 @@ Parent DOX: [kernel/kernel/cbus/commands/system DOX](../AGENTS.md).
 
 - Public API: handler constructor `New(*services.Services) core.Handler`.
 - Result field names remain aligned with `command.toml`.
+- `logging` is the logging owner's cached bounded snapshot: writer/process and
+  storage state, active files, current policy and pending convergence, restart
+  count, writer incarnation, byte/record budgets and loss/error counts. It
+  remains available during writer/storage outages; status never queries log
+  files or the logging process synchronously.
 - `instance_root` is the initialized node directory; source-installation paths
   are not part of process status.
 - Status reads one synchronized runtime snapshot; while asynchronous runtime

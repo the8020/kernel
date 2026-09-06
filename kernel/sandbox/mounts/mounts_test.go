@@ -27,7 +27,7 @@ func TestMountPolicyAllowsControlledArtifactsWorkspacesAndTmpfs(t *testing.T) {
 	if err != nil || artifact.Source != artifacts {
 		t.Fatalf("artifact = %#v, error = %v", artifact, err)
 	}
-	if _, err := policy.Validate(model.Mount{Source: workspace, Target: "/workspace/dev", Purpose: "workspace", Persistence: "runtime_group"}); err != nil {
+	if _, err := policy.Validate(model.Mount{Source: workspace, Target: "/workspace/dev", Purpose: "workspace", Persistence: "sandbox"}); err != nil {
 		t.Fatalf("workspace: %v", err)
 	}
 	if _, err := policy.Validate(model.Mount{Target: "/tmp/execution", MaximumSize: 1024, Purpose: "temporary", Persistence: "execution"}); err != nil {
@@ -77,7 +77,7 @@ func TestGroupedMountRequiresOwnerScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = policy.Validate(model.Mount{Source: allowed, Target: "/workspace/user", Purpose: "workspace", Persistence: "runtime_group"})
+	_, err = policy.Validate(model.Mount{Source: allowed, Target: "/workspace/user", Purpose: "workspace", Persistence: "sandbox"})
 	if err == nil || !strings.Contains(err.Error(), "owner scope") {
 		t.Fatalf("error = %v", err)
 	}

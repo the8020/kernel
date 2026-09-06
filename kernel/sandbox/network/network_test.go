@@ -73,30 +73,30 @@ func TestAllocateCheckReleaseAndPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 	policy := model.NetworkConfiguration{Mode: "netstack", EgressEnabled: false}
-	allocation, err := manager.Allocate(context.Background(), "group-one", "sandbox-one", policy)
+	allocation, err := manager.Allocate(context.Background(), "sandbox-one", policy)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(allocation.IPs) != 1 || allocation.IPs[0] != "10.88.0.4" || allocation.NetworkName != "custom-network" || cni.adds != 1 || cni.configuration == nil || !strings.Contains(string(cni.configuration.Bytes), `"bridge":"custom0"`) || !strings.Contains(string(cni.configuration.Bytes), `"subnet":"10.99.0.0/24"`) || firewall.applies != 1 || len(commands.calls) != 1 {
 		t.Fatalf("allocation=%#v cni=%#v firewall=%#v commands=%#v", allocation, cni, firewall, commands.calls)
 	}
-	second, err := manager.Allocate(context.Background(), "group-one", "sandbox-one", policy)
+	second, err := manager.Allocate(context.Background(), "sandbox-one", policy)
 	if err != nil || second.NamespaceName != allocation.NamespaceName || cni.adds != 1 {
 		t.Fatalf("idempotent allocation=%#v err=%v adds=%d", second, err, cni.adds)
 	}
-	if err := manager.Check(context.Background(), "group-one"); err != nil || cni.checks != 1 {
+	if err := manager.Check(context.Background(), "sandbox-one"); err != nil || cni.checks != 1 {
 		t.Fatalf("check: %v count=%d", err, cni.checks)
 	}
-	if err := manager.Release(context.Background(), "group-one"); err != nil {
+	if err := manager.Release(context.Background(), "sandbox-one"); err != nil {
 		t.Fatal(err)
 	}
 	if cni.deletes != 1 || firewall.removes != 1 || len(commands.calls) != 2 || commands.calls[1].args[2] != allocation.NamespaceName {
 		t.Fatalf("release cni=%#v firewall=%#v commands=%#v", cni, firewall, commands.calls)
 	}
-	if _, err := os.Stat(filepath.Join(root, "state", "group-one.json")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(root, "state", "sandbox-one.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("state remains: %v", err)
 	}
-	if err := manager.Release(context.Background(), "group-one"); err != nil {
+	if err := manager.Release(context.Background(), "sandbox-one"); err != nil {
 		t.Fatalf("idempotent release: %v", err)
 	}
 }
@@ -110,7 +110,7 @@ func TestAllocateRollsBackCNIAndNamespace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.Allocate(context.Background(), "group", "sandbox", model.NetworkConfiguration{Mode: "netstack"}); err == nil || !strings.Contains(err.Error(), "firewall") {
+	if _, err := manager.Allocate(context.Background(), "sandbox", model.NetworkConfiguration{Mode: "netstack"}); err == nil || !strings.Contains(err.Error(), "firewall") {
 		t.Fatalf("allocation error = %v", err)
 	}
 	if cni.deletes != 1 || len(commands.calls) != 2 || commands.calls[1].args[1] != "delete" {
@@ -141,13 +141,13 @@ func TestNFTFirewallBuildsRestrictedAndDeniedPolicies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	allocation := Allocation{RuntimeGroupID: "group-one", IPs: []string{"10.88.0.3"}}
+	allocation := Allocation{SandboxID: "sandbox-one", IPs: []string{"10.88.0.3"}}
 	policy := model.NetworkConfiguration{EgressEnabled: true, AllowedHosts: []string{"192.0.2.5", "198.51.100.0/24"}}
 	if err := firewall.Apply(context.Background(), allocation, policy); err != nil {
 		t.Fatal(err)
 	}
 	script := string(runner.input)
-	for _, expected := range []string{"table inet pl_instanceone_groupone", "ip daddr 10.88.0.3 ct state established,related", "ip saddr 10.88.0.1 ip daddr 10.88.0.3", "ip daddr 10.88.0.3 counter drop", "ip saddr 10.88.0.3 ip daddr 192.0.2.5", "ip daddr 198.51.100.0/24", "ip saddr 10.88.0.3 counter drop"} {
+	for _, expected := range []string{"table inet pl_instanceone_sandboxone", "ip daddr 10.88.0.3 ct state established,related", "ip saddr 10.88.0.1 ip daddr 10.88.0.3", "ip daddr 10.88.0.3 counter drop", "ip saddr 10.88.0.3 ip daddr 192.0.2.5", "ip daddr 198.51.100.0/24", "ip saddr 10.88.0.3 counter drop"} {
 		if !strings.Contains(script, expected) {
 			t.Errorf("script missing %q:\n%s", expected, script)
 		}
@@ -180,7 +180,7 @@ func TestNFTFirewallBuildsRestrictedAndDeniedPolicies(t *testing.T) {
 	if err := firewall.Remove(context.Background(), allocation); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(runner.arguments, " ") != "delete table inet pl_instanceone_groupone" {
+	if strings.Join(runner.arguments, " ") != "delete table inet pl_instanceone_sandboxone" {
 		t.Fatalf("remove arguments: %#v", runner.arguments)
 	}
 }

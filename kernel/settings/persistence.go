@@ -106,6 +106,8 @@ func tomlValue(definition Definition, value any) string {
 		return strconv.FormatInt(value.(int64), 10)
 	case TypeByteSize:
 		return strconv.Quote(formatByteSize(value.(ByteSize)))
+	case TypeDuration:
+		return strconv.Quote(value.(Duration).String())
 	default:
 		return strconv.Quote(value.(string))
 	}

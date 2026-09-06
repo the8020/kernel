@@ -49,7 +49,7 @@ func fixture(t *testing.T) string {
 	writeFile(t, root, "kernel/cbus/commands/deep/run/command.toml", commandTOML("deep.run", "run", "kernel/cbus/commands/deep/run/run.go", "New", "string"))
 	writeFile(t, root, "kernel/settings/definitions/deep/value.toml", settingTOML("deep.value"))
 	writeFile(t, root, "defaults/config/runtime/versions.toml", "runtime_protocol_version = 1\n")
-	writeFile(t, root, "defaults/config/runtime/protocol/schema.json", `{"protocol_version":1,"messages":["heartbeat","runtime_shutdown"],"required_envelope_fields":["protocol_version","message_type","runtime_group_id"]}`)
+	writeFile(t, root, "defaults/config/runtime/protocol/schema.json", `{"protocol_version":1,"messages":["heartbeat","runtime_shutdown"],"required_envelope_fields":["protocol_version","message_type","sandbox_id"]}`)
 	return root
 }
 
@@ -258,7 +258,7 @@ func TestRepositoryCatalogContainsOnlyKernelAndDeferredCommands(t *testing.T) {
 		"debug.close", "debug.open", "debug.targets",
 		"job.cancel", "job.inspect", "job.list", "job.run",
 		"kernel.config.get", "kernel.config.list", "kernel.config.set", "kernel.config.unset",
-		"kernel.events.emit",
+		"kernel.events.emit", "kernel.logs",
 		"kernel.packages.inspect", "kernel.packages.list", "kernel.packages.set", "kernel.packages.synchronize",
 		"kernel.reindex", "kernel.restart", "kernel.shutdown", "kernel.signing.replace", "kernel.signing.status", "kernel.status",
 		"pool.resize", "pool.status", "port.close", "port.expose", "port.list",
@@ -344,8 +344,8 @@ func TestEveryKernelRecoveryCommandExampleTraversesBothCLIModes(t *testing.T) {
 		}
 		count++
 	}
-	if count != 15 {
-		t.Fatalf("kernel recovery CLI command count = %d, want 15", count)
+	if count != 16 {
+		t.Fatalf("kernel recovery CLI command count = %d, want 16", count)
 	}
 }
 

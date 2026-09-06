@@ -216,18 +216,24 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		runtimeServices.Failure = "sandbox runtime is disabled or its settings are unavailable"
 		return runtimeServices, closeRuntime
 	}
+	heartbeatInterval := activeDuration(settingManager, "runtime.supervisor.heartbeat_interval", 5*time.Second)
+	workerStopGrace := activeDuration(settingManager, "runtime.worker.stop_grace_period", time.Second)
+	fullConfig := containerdbackend.Config{
+		Socket: socket, InstanceUUID: instanceUUID, KernelSocketPath: sandboxKernelSocketPath,
+		RunscConfigPath:             filepath.Join(paths.RuntimeDefinitions, "runsc.toml"),
+		SupervisorHeartbeatInterval: heartbeatInterval, WorkerStopGrace: workerStopGrace, Logger: logger,
+	}
 	fullReport := doctor.Inspect(ctx)
 	if fullReport.Ready {
-		probeBackend, probeErr := containerdbackend.Connect(ctx, containerdbackend.Config{Socket: socket, InstanceUUID: instanceUUID})
+		probeBackend, probeErr := containerdbackend.Connect(ctx, fullConfig)
 		if probeErr != nil {
 			fullReport.Ready = false
 			fullReport.Failures = append(fullReport.Failures, "containerd API probe failed: "+probeErr.Error())
 		} else {
 			doctorConfig.Probe = probeBackend
-			doctor = runtimehost.NewDoctor(doctorConfig)
-			runtimeServices.Doctor = doctor
-			fullReport = doctor.Inspect(ctx)
+			fullReport = runtimehost.NewDoctor(doctorConfig).Inspect(ctx)
 			_ = probeBackend.Close()
+			doctorConfig.Probe = nil
 		}
 	}
 	rootlessReport := rootlessDoctor.Inspect(ctx)
@@ -255,7 +261,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
 	}
-	stateStore, err := state.New(paths.RuntimeGroups)
+	stateStore, err := state.New(paths.RuntimeSandboxes)
 	if err != nil {
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
@@ -271,7 +277,6 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		return runtimeServices, closeRuntime
 	}
 	cleanup.callback = callbackServer
-	heartbeatInterval := activeDuration(settingManager, "runtime.supervisor.heartbeat_interval", 5*time.Second)
 	heartbeatTimeout := activeDuration(settingManager, "runtime.supervisor.heartbeat_timeout", 15*time.Second)
 	if heartbeatTimeout <= heartbeatInterval {
 		runtimeServices.Failure = "runtime supervisor heartbeat timeout must exceed its interval"
@@ -283,23 +288,17 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		return runtimeServices, closeRuntime
 	}
 	cleanup.ports, runtimeServices.Ports = portManager, portManager
-	workerStopGrace := activeDuration(settingManager, "runtime.worker.stop_grace_period", time.Second)
 	var sandboxBackend backend.Backend
 	var networkManager manager.Network
-	var sandboxLogPath func(string) string
 	if selectedMode == runtimehost.ModeFull {
-		logRoot := filepath.Join(paths.Runtime, "logs")
-		fullBackend, connectErr := containerdbackend.Connect(ctx, containerdbackend.Config{
-			Socket: socket, InstanceUUID: instanceUUID, LogRoot: logRoot, KernelSocketPath: sandboxKernelSocketPath,
-			RunscConfigPath:             filepath.Join(paths.RuntimeDefinitions, "runsc.toml"),
-			SupervisorHeartbeatInterval: heartbeatInterval, WorkerStopGrace: workerStopGrace, Logger: logger,
-		})
+		fullBackend, connectErr := containerdbackend.Connect(ctx, fullConfig)
 		if connectErr != nil {
 			runtimeServices.Failure = connectErr.Error()
 			return runtimeServices, closeRuntime
 		}
 		sandboxBackend, cleanup.backend = fullBackend, fullBackend
-		sandboxLogPath = func(sandboxID string) string { return filepath.Join(logRoot, sandboxID+".log") }
+		doctorConfig.Probe = fullBackend
+		runtimeServices.Doctor = runtimehost.NewDoctor(doctorConfig)
 		firewall, firewallErr := sandboxnetwork.NewNFTFirewall(sandboxnetwork.NFTFirewallConfig{InstanceUUID: instanceUUID, SandboxSubnet: subnet})
 		if firewallErr != nil {
 			runtimeServices.Failure = firewallErr.Error()
@@ -314,11 +313,10 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 			CacheDir: filepath.Join(paths.Runtime, "cni-cache"), StateRoot: filepath.Join(paths.Runtime, "network"), Firewall: firewall,
 		})
 	} else {
-		logRoot := filepath.Join(paths.Runtime, "logs", "rootless")
 		rootlessBackend, backendErr := rootlessbackend.New(rootlessbackend.Config{
 			RunscPath: rootlessReport.RunscPath, RootFS: rootlessReport.RootFS,
 			StateRoot: filepath.Join(paths.Runtime, "rootless", "sandboxes"), RuntimeRoot: filepath.Join(paths.Runtime, "rootless", "runsc"),
-			LogRoot: logRoot, InstanceUUID: instanceUUID, KernelSocketPath: sandboxKernelSocketPath,
+			InstanceUUID: instanceUUID, KernelSocketPath: sandboxKernelSocketPath,
 			SupervisorHeartbeatInterval: heartbeatInterval, WorkerStopGrace: workerStopGrace,
 			StartTimeout: activeDuration(settingManager, "runtime.sandbox.startup_timeout", 30*time.Second), Logger: logger,
 		})
@@ -327,14 +325,13 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 			return runtimeServices, closeRuntime
 		}
 		sandboxBackend, cleanup.backend = rootlessBackend, rootlessBackend
-		sandboxLogPath = func(sandboxID string) string { return filepath.Join(logRoot, sandboxID) }
 		networkManager, err = sandboxnetwork.NewLoopback(filepath.Join(paths.Runtime, "rootless", "network"))
 	}
 	if err != nil {
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
 	}
-	historyStore, err := sandboxhistory.New(sandboxhistory.Config{Root: paths.RuntimeSandboxHistory, LogPath: sandboxLogPath})
+	historyStore, err := sandboxhistory.New(sandboxhistory.Config{Root: paths.RuntimeSandboxHistory})
 	if err != nil {
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
@@ -350,7 +347,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	sandboxManager, err := manager.New(manager.Config{
 		InstanceUUID: instanceUUID, StartupTimeout: activeDuration(settingManager, "runtime.sandbox.startup_timeout", 30*time.Second),
 		StopGrace: activeDuration(settingManager, "runtime.sandbox.stop_grace_period", 10*time.Second), Store: stateStore,
-		Backend: sandboxBackend, Network: networkManager, Supervisor: supervisorClient, Ports: portManager,
+		Backend: sandboxBackend, Network: networkManager, Supervisor: supervisorClient, Ports: portManager, Logs: serviceSet.Logging,
 		History: historyStore, HistoryRetention: historyRetention, NodeLimits: nodeLimits,
 	})
 	if err != nil {
@@ -433,6 +430,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		return runtimeServices, closeRuntime
 	}
 	jobManager, err := jobs.New(groupCoordinator, workerManager, jobs.Policy{
+		NodeID: instanceUUID, LogPosition: serviceSet.Logging.ReadPosition,
 		Strategy: grouping(settingManager, "execution.grouping.job"), Profile: jobProfile, Resources: jobResources, Lifecycle: lifecycle,
 		MaximumParallel: activeInt(settingManager, "job.default.maximum_parallel_workers", 4), QueuedExecutionLimit: activeInt(settingManager, "job.default.queued_execution_limit", 1024),
 		ExecutionTimeout: activeDuration(settingManager, "job.default.execution_timeout", 5*time.Minute),
@@ -471,10 +469,6 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	}
 	if err := settingManager.AttachGlobal(ctx, globalSettings); err != nil {
 		runtimeServices.Failure = "load global settings: " + err.Error()
-		return runtimeServices, closeRuntime
-	}
-	if err := settingManager.RegisterApplier([]string{"logging.enabled", "logging.split_period", "logging.max_file_size", "logging.max_total_size"}, serviceSet.Logging); err != nil {
-		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
 	}
 	if err := settingManager.RegisterApplier([]string{
@@ -615,6 +609,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	}
 	workerManager.SetNodeRouter(nodeManager)
 	nodeManager.SetWorkerInvoker(workerManager)
+	nodeManager.SetLogReader(serviceSet.Logging)
 	cleanup.nodes = nodeManager
 	developmentRunsc := developmentRunscConfig(ctx, root, paths, settingManager)
 	developmentManager, err := development.New(development.Config{
@@ -838,7 +833,7 @@ func validateConfiguredRuntimeIdentity(runtimeName, imageReference, imageDigest 
 }
 
 type runtimeFailureSink interface {
-	FailGroup(string, string) error
+	FailSandbox(string, string) error
 }
 
 type unavailableServiceSink interface {
@@ -848,14 +843,14 @@ type unavailableServiceSink interface {
 func restoreRuntimeWorkloads(ctx context.Context, sandboxManager *manager.Manager, serviceManager *executionservices.Manager, jobManager *jobs.Manager, portManager *ports.Manager, terminated []manager.HealthFailure, logger *slog.Logger) error {
 	var terminationErr error
 	for _, failure := range terminated {
-		terminationErr = errors.Join(terminationErr, serviceManager.FailGroup(failure.RuntimeGroupID, failure.Reason), jobManager.FailGroup(failure.RuntimeGroupID, failure.Reason))
+		terminationErr = errors.Join(terminationErr, serviceManager.FailSandbox(failure.SandboxID, failure.Reason), jobManager.FailSandbox(failure.SandboxID, failure.Reason))
 	}
 	if terminationErr != nil {
 		logRuntimeRecoveryError(logger, "propagate startup sandbox terminations", terminationErr)
 	}
 	items, err := sandboxManager.List()
 	if err != nil {
-		return fmt.Errorf("inspect reconciled runtime groups: %w", err)
+		return fmt.Errorf("inspect reconciled sandboxes: %w", err)
 	}
 	healthySandboxes, err := propagateReconciledFailures(items, serviceManager, jobManager)
 	if err != nil {
@@ -867,7 +862,7 @@ func restoreRuntimeWorkloads(ctx context.Context, sandboxManager *manager.Manage
 		serviceRecords = nil
 	}
 	if err := failUnavailableServicePools(serviceRecords, healthySandboxes, serviceManager); err != nil {
-		logRuntimeRecoveryError(logger, "fail services with unavailable runtime groups", err)
+		logRuntimeRecoveryError(logger, "fail services with unavailable sandboxes", err)
 	}
 	if _, err := portManager.RestoreFor(ctx, func(lease ports.Lease) bool {
 		return healthySandboxes[lease.SandboxID]
@@ -892,7 +887,7 @@ func failUnavailableServicePools(records []executionservices.Record, healthySand
 		if healthySandboxes[record.SandboxID] || (record.State == "STOPPED" && len(record.WorkerIDs) == 0) {
 			continue
 		}
-		reason := fmt.Sprintf("runtime group is unavailable after startup reconciliation: sandbox %s is not healthy", record.SandboxID)
+		reason := fmt.Sprintf("sandbox is unavailable after startup reconciliation: sandbox %s is not healthy", record.SandboxID)
 		joined = errors.Join(joined, sink.RetireUnavailable(record.ServiceID, reason))
 	}
 	return joined
@@ -909,10 +904,10 @@ func propagateReconciledFailures(items []manager.Inspection, sinks ...runtimeFai
 		}
 		reason := item.Status.FailureReason
 		if reason == "" {
-			reason = fmt.Sprintf("runtime group is unavailable after startup reconciliation: state=%s supervisor_healthy=%t", state, item.Status.SupervisorHealthy)
+			reason = fmt.Sprintf("sandbox is unavailable after startup reconciliation: state=%s supervisor_healthy=%t", state, item.Status.SupervisorHealthy)
 		}
 		for _, sink := range sinks {
-			joined = errors.Join(joined, sink.FailGroup(item.Spec.RuntimeGroupID, reason))
+			joined = errors.Join(joined, sink.FailSandbox(item.Spec.SandboxID, reason))
 		}
 	}
 	return healthySandboxes, joined
@@ -1082,9 +1077,9 @@ func startRuntimeMonitor(cleanup *runtimeCleanup, sandboxes *manager.Manager, se
 					continue
 				}
 				for _, failure := range report.Failures {
-					propagationErr := errors.Join(serviceManager.FailGroup(failure.RuntimeGroupID, failure.Reason), jobManager.FailGroup(failure.RuntimeGroupID, failure.Reason))
+					propagationErr := errors.Join(serviceManager.FailSandbox(failure.SandboxID, failure.Reason), jobManager.FailSandbox(failure.SandboxID, failure.Reason))
 					if logger != nil {
-						logger.Error("runtime group failed health monitoring", "runtime_group_id", failure.RuntimeGroupID, "sandbox_id", failure.SandboxID, "oom", failure.OOM, "reason", failure.Reason, "propagation_error", propagationErr)
+						logger.Error("sandbox failed health monitoring", "sandbox_id", failure.SandboxID, "oom", failure.OOM, "reason", failure.Reason, "propagation_error", propagationErr)
 					}
 				}
 			}

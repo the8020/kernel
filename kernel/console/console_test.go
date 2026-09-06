@@ -29,6 +29,7 @@ func (testAuthentication) AuthenticateToken(_ context.Context, value string) (ex
 
 type testProvider struct {
 	opened chan testOpen
+	ids    map[string]bool
 }
 
 type testOpen struct {
@@ -37,6 +38,8 @@ type testOpen struct {
 	console   *testConsole
 	peer      net.Conn
 }
+
+func (p *testProvider) HasSandbox(id string) bool { return p.ids[id] }
 
 func (p *testProvider) OpenConsole(_ context.Context, sandboxID string, options backend.ConsoleOptions) (backend.Console, error) {
 	broker, peer := net.Pipe()
@@ -99,7 +102,7 @@ func TestConsoleWebSocketStreamsAndResizes(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	socket := dialTestConsole(t, server, server.URL, Subprotocol, "the8020_auth=valid")
-	if err := websocket.Message.Send(socket, `{"type":"open","target":{"kind":"development","sandboxId":"sandbox-1"},"arguments":["/bin/bash","-l"],"environment":["TERM=xterm-256color"],"workingDirectory":"/workspace","columns":90,"rows":27}`); err != nil {
+	if err := websocket.Message.Send(socket, `{"type":"open","target":{"kind":"development","sandboxId":"sbx-aaaaaaaaaa"},"arguments":["/bin/bash","-l"],"environment":["TERM=xterm-256color"],"workingDirectory":"/workspace","columns":90,"rows":27}`); err != nil {
 		t.Fatal(err)
 	}
 	var opened testOpen
@@ -109,7 +112,7 @@ func TestConsoleWebSocketStreamsAndResizes(t *testing.T) {
 		t.Fatal("console provider was not opened")
 	}
 	t.Cleanup(func() { _ = opened.peer.Close() })
-	if opened.sandboxID != "sandbox-1" || len(opened.options.Arguments) != 2 || opened.options.WorkingDir != "/workspace" || opened.options.Size != (backend.ConsoleSize{Columns: 90, Rows: 27}) {
+	if opened.sandboxID != "sbx-aaaaaaaaaa" || len(opened.options.Arguments) != 2 || opened.options.WorkingDir != "/workspace" || opened.options.Size != (backend.ConsoleSize{Columns: 90, Rows: 27}) {
 		t.Fatalf("open = %#v", opened)
 	}
 
@@ -203,7 +206,7 @@ func TestRemovingRuntimeProviderClosesItsConsoles(t *testing.T) {
 	})
 
 	socket := dialTestConsole(t, server, server.URL, Subprotocol, "the8020_auth=valid")
-	if err := websocket.Message.Send(socket, `{"type":"open","target":{"kind":"runtime","sandboxId":"sandbox-2"},"arguments":["/bin/bash","-l"],"environment":["HOME=/tmp"],"workingDirectory":"/","columns":80,"rows":24}`); err != nil {
+	if err := websocket.Message.Send(socket, `{"type":"open","target":{"kind":"runtime","sandboxId":"sbx-bbbbbbbbbb"},"arguments":["/bin/bash","-l"],"environment":["HOME=/tmp"],"workingDirectory":"/","columns":80,"rows":24}`); err != nil {
 		t.Fatal(err)
 	}
 	var opened testOpen
@@ -222,7 +225,7 @@ func TestRemovingRuntimeProviderClosesItsConsoles(t *testing.T) {
 
 	unavailable := dialTestConsole(t, server, server.URL, Subprotocol, "the8020_auth=valid")
 	defer unavailable.Close()
-	if err := websocket.Message.Send(unavailable, `{"type":"open","target":{"kind":"runtime","sandboxId":"sandbox-2"},"arguments":["/bin/bash"],"environment":["HOME=/tmp"],"workingDirectory":"/","columns":80,"rows":24}`); err != nil {
+	if err := websocket.Message.Send(unavailable, `{"type":"open","target":{"kind":"runtime","sandboxId":"sbx-bbbbbbbbbb"},"arguments":["/bin/bash"],"environment":["HOME=/tmp"],"workingDirectory":"/","columns":80,"rows":24}`); err != nil {
 		t.Fatal(err)
 	}
 	var control string
@@ -240,7 +243,7 @@ func TestTransportNeutralConsoleLeaseIsTracked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lease, err := manager.OpenConsole(context.Background(), "development", "sbx-abc12345", backend.ConsoleOptions{
+	lease, err := manager.OpenConsole(context.Background(), "development", "sbx-abc1234500", backend.ConsoleOptions{
 		Arguments: []string{"/bin/bash", "-l"}, Environment: []string{"HOME=/root"},
 		WorkingDir: "/workspace", Size: backend.ConsoleSize{Columns: 80, Rows: 24},
 	})
@@ -330,5 +333,31 @@ func assertDialFails(t *testing.T, server *httptest.Server, origin, protocol, co
 	}
 	if err == nil {
 		t.Fatal("WebSocket dial unexpectedly succeeded")
+	}
+}
+
+func TestResolveOpaqueSandboxOwner(t *testing.T) {
+	development := &testProvider{ids: map[string]bool{"sbx-aaaaaaaaaa": true}}
+	runtime := &testProvider{ids: map[string]bool{"sbx-bbbbbbbbbb": true}}
+	manager, err := New(Config{Authentication: testAuthentication{}, Development: development})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.SetRuntime(runtime)
+	for id, expected := range map[string]string{"sbx-aaaaaaaaaa": "development", "sbx-bbbbbbbbbb": "runtime"} {
+		if kind, err := manager.ResolveTarget(id); err != nil || kind != expected {
+			t.Fatalf("resolve %s: %s %v", id, kind, err)
+		}
+	}
+	if _, err := manager.ResolveTarget("sbx-cccccccccc"); err == nil {
+		t.Fatal("unknown sandbox accepted")
+	}
+	runtime.ids["sbx-aaaaaaaaaa"] = true
+	if _, err := manager.ResolveTarget("sbx-aaaaaaaaaa"); err == nil {
+		t.Fatal("ambiguous owner accepted")
+	}
+	manager.SetRuntime(nil)
+	if _, err := manager.ResolveTarget("sbx-bbbbbbbbbb"); err == nil {
+		t.Fatal("withdrawn runtime accepted")
 	}
 }

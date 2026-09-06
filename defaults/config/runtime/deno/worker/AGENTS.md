@@ -13,8 +13,9 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 
 # Local Contracts
 
-- Entrypoints load only here; Worker names include workload, owner, execution,
-  and Worker identity.
+- Entrypoints load only here; Worker names include declared origin and Worker
+  identity. RuntimeWorker validates canonical node, sandbox and Worker IDs
+  before allocating the Worker or MessagePort.
 - Workload types are exactly `service` and `job`. Worker permissions are
   explicit and no broader than the sandbox envelope.
 - Jobs require a function default export and call it as
@@ -48,9 +49,9 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   execution identity plus the kernel-observed client IP address and network
   scope, without cookies, route tokens, or application settings.
 - Application code sends only the kernel operation and arguments. RuntimeWorker
-  attaches immutable Worker execution identity and the current request ID;
-  sandbox and workload identity come from the authenticated supervisor envelope
-  rather than duplicated application fields.
+  attaches immutable Worker identity and the current invocation context; sandbox
+  and workload identity come from the authenticated supervisor envelope rather
+  than duplicated application fields.
 - The kernel bridge uses `AsyncLocalStorage` to retain an exact request/job
   context for every asynchronous continuation. Each transport request uses a
   separate frozen context even when it belongs to the same persistent execution;
@@ -68,17 +69,40 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   lifecycle completion remains bound to that execution. Kernel calls from
   service controls retain the service's canonical ID rather than its internal
   pool/workload ID; arbitrary exports and `eval` are never callable.
-- Job logs, execution context, and state reset between compatible reused
-  invocations. Secure-input maps are execution-local and cleared in `finally`,
-  including failures. Finalization closes the request/job database scope; Worker
-  shutdown also requests prefix cleanup as a leak-safe fallback. A Worker with
-  database access set to `none` never opens or closes a database scope, keeping
-  schema evaluation independent of the database being initialized.
+- `InvocationMetadata` carries `contextId`, optional `parentContextId`, and
+  optional `jobRunId`. Jobs require the kernel-allocated invocation for both
+  imports and calls. Reuse receives new IDs; exact Worker control receives a new
+  child context. Active context claims reject collisions and remain owned
+  through streamed bodies/WebSocket lifetime. Claims are released on completion,
+  cancellation, and termination; no historical context registry is retained.
+- HTTP and WebSocket dispatch use the same invocation validator as jobs and
+  exact control before claiming their context. Both context and optional parent
+  must be canonical `ctx-*` IDs; malformed metadata cannot enter the Worker.
+- Execution context and state reset between compatible reused invocations.
+  Console capture sends bounded records with capture-time context and username
+  through a byte/slot-credited MessagePort. RuntimeWorker stamps trusted fixed
+  identities, forwards to the supervisor log sink and keeps no log array. Policy
+  messages coalesce with one outstanding acknowledgment. Secure-input maps are
+  execution-local and cleared in `finally`, including failures. Finalization
+  closes the request/job database scope; Worker shutdown also requests prefix
+  cleanup as a leak-safe fallback. A Worker with database access set to `none`
+  never opens or closes a database scope, keeping schema evaluation independent
+  of the database being initialized.
 - Jobs and service requests share this execution-scoped database path; every job
-  invocation has a distinct request ID and closes only its own scope.
+  invocation has a distinct `ctx-` ID and closes only its own scope.
 - Structured command errors raised by the kernel SDK retain their code, message,
   and details across the Worker boundary; ordinary application failures remain
   bounded messages.
+- Import/job/control and service transport failures emit bounded Error
+  diagnostics while their invocation and secure-input scope are still active.
+  Import code without an invocation retains fixed Worker/object attribution; it
+  receives no invented execution context or username.
+- RuntimeWorker emits start, readiness and exactly one exit event directly into
+  the supervisor sink, with fixed Worker/object identities and observed active
+  request count. Exit distinguishes graceful stop, forced termination, drain
+  timeout and failure. These Worker-wide events omit invocation and username;
+  detailed application errors remain owned by the active redacting Worker scope.
+  Failure and explicit termination share cleanup of calls, contexts and streams.
 
 # Lifecycle
 

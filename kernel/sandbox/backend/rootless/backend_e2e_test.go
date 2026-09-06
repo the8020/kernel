@@ -5,13 +5,17 @@ package rootless
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -24,29 +28,18 @@ import (
 	"the8020/kernel/execution/programs"
 	"the8020/kernel/execution/supervisor"
 	"the8020/kernel/execution/workers"
+	"the8020/kernel/identity"
+	"the8020/kernel/logging"
+	"the8020/kernel/logging/records"
 	workspacepackages "the8020/kernel/packages"
+	"the8020/kernel/ports"
 	"the8020/kernel/runtime/protocol"
+	"the8020/kernel/sandbox/history"
 	"the8020/kernel/sandbox/manager"
 	"the8020/kernel/sandbox/model"
+	sandboxnetwork "the8020/kernel/sandbox/network"
+	"the8020/kernel/sandbox/state"
 )
-
-type capturingRunscRunner struct {
-	output string
-}
-
-func (r capturingRunscRunner) Run(ctx context.Context, name string, arguments ...string) ([]byte, error) {
-	command := exec.CommandContext(ctx, name, arguments...)
-	if rootlessCommand(arguments) != "run" {
-		return command.CombinedOutput()
-	}
-	output, err := os.OpenFile(r.output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	defer output.Close()
-	command.Stdout, command.Stderr = output, output
-	return nil, command.Run()
-}
 
 func TestRealRunscSupervisorUsesMountedKernelSocket(t *testing.T) {
 	if os.Getenv("THE8020_RUNSC_E2E") != "1" {
@@ -58,25 +51,54 @@ func TestRealRunscSupervisorUsesMountedKernelSocket(t *testing.T) {
 		t.Fatal("absolute THE8020_RUNSC_PATH and THE8020_RUNTIME_ROOTFS are required")
 	}
 
-	callbackRoot := t.TempDir()
+	runtimeRoot, err := os.MkdirTemp("", "8020-runsc-logs-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(runtimeRoot) })
+	callbackRoot := filepath.Join(runtimeRoot, "api")
+	if err := os.Mkdir(callbackRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	logd := filepath.Join(runtimeRoot, "logd")
+	build := exec.Command(filepath.Join(runtime.GOROOT(), "bin", "go"), "build", "-o", logd, "../../../logd")
+	build.Stdout, build.Stderr = os.Stdout, os.Stderr
+	if err := build.Run(); err != nil {
+		t.Fatal(err)
+	}
+	logManager, err := logging.New(logging.Config{
+		Directory: filepath.Join(runtimeRoot, "logs"), Socket: filepath.Join(callbackRoot, "logs.sock"),
+		Executable: logd, NodeID: "nod-0123456789", MaxProducers: 4,
+		Policy: records.Policy{Enabled: true, Level: "info", SplitBy: "none", SplitPeriod: "day", MaxFileSize: 1 << 20, MaxTotalSize: 8 << 20, MaxAge: time.Hour},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = logManager.Close() })
+	for deadline := time.Now().Add(5 * time.Second); !logManager.Status().Available; {
+		if time.Now().After(deadline) {
+			t.Fatalf("logd unavailable: %#v", logManager.Status())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	callbackPath := filepath.Join(callbackRoot, "kernel.sock")
 	listener, err := net.Listen("unix", callbackPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	callbackServer := &http.Server{Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path == "/v1/runtime/database/scope" {
-			var envelope map[string]any
-			if err := json.NewDecoder(request.Body).Decode(&envelope); err != nil {
-				http.Error(writer, err.Error(), http.StatusBadRequest)
-				return
-			}
-			envelope["message_type"], envelope["payload"] = "database_result", map[string]any{}
-			writer.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(writer).Encode(envelope)
+		var envelope map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&envelope); err != nil {
+			http.Error(writer, err.Error(), http.StatusBadRequest)
 			return
 		}
-		writer.WriteHeader(http.StatusNoContent)
+		if request.URL.Path == "/v1/runtime/database/scope" {
+			envelope["message_type"], envelope["payload"] = "database_result", map[string]any{}
+		}
+		// Production callbacks acknowledge with a JSON envelope. Keep that same
+		// framing here so registration and heartbeat completion are exercised.
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(envelope)
 	})}
 	go func() { _ = callbackServer.Serve(listener) }()
 	t.Cleanup(func() {
@@ -89,14 +111,12 @@ func TestRealRunscSupervisorUsesMountedKernelSocket(t *testing.T) {
 	for inspectorPort == supervisorPort {
 		inspectorPort = freeTCPPort(t)
 	}
-	runtimeRoot := t.TempDir()
-	outputPath := filepath.Join(runtimeRoot, "workload.log")
 	backend, err := New(Config{
 		RunscPath: runscPath, RootFS: rootFS,
 		StateRoot: filepath.Join(runtimeRoot, "sandboxes"), RuntimeRoot: filepath.Join(runtimeRoot, "runsc"),
-		LogRoot: filepath.Join(runtimeRoot, "logs"), InstanceUUID: "rootless-e2e", KernelSocketPath: "/run/the8020/kernel.sock",
+		InstanceUUID: "nod-0123456789", KernelSocketPath: "/run/the8020/kernel.sock",
 		SupervisorHeartbeatInterval: 100 * time.Millisecond, WorkerStopGrace: time.Second, StartTimeout: 15 * time.Second,
-		Runner: capturingRunscRunner{output: outputPath},
+		Logger: logManager.Logger(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -121,7 +141,7 @@ func TestRealRunscSupervisorUsesMountedKernelSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	sandbox := model.SandboxSpec{
-		SandboxID: "sandbox-e2e", RuntimeGroupID: "group-e2e", WorkloadType: model.WorkloadJob, GroupKey: "job:e2e", OwnerIDs: []string{"e2e"},
+		SandboxID: "sbx-0123456789", WorkloadType: model.WorkloadJob, GroupKey: "job:e2e", OwnerIDs: []string{"e2e"},
 		ImageDigest: profile.ImageDigest, RuntimeProfile: profile, ProfileHash: profileHash,
 		ResourceLimits: model.ResourceLimits{PIDMaximum: 64, TmpfsMaximum: 64 << 20},
 		Network:        model.NetworkConfiguration{Mode: "netstack", NetworkName: "rootless-host", SandboxIP: "127.0.0.1", SupervisorPort: supervisorPort, InspectorPort: inspectorPort, EgressEnabled: true},
@@ -129,12 +149,17 @@ func TestRealRunscSupervisorUsesMountedKernelSocket(t *testing.T) {
 		Lifecycle:     model.LifecyclePolicy{DestroyWhenIdle: true, StopGracePeriod: time.Second},
 		InternalToken: strings.Repeat("a", 64),
 	}
-	if _, err := backend.Create(context.Background(), sandbox); err != nil {
-		t.Fatalf("create sandbox: %v\n%s", err, readDiagnostic(outputPath))
+	output, err := logManager.RegisterSandbox(context.Background(), sandbox.SandboxID, sandbox.InternalToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.Create(context.Background(), sandbox, output); err != nil {
+		t.Fatalf("create sandbox: %v\n%s", err, readDiagnostic(logManager))
 	}
 	t.Cleanup(func() {
 		_ = backend.Kill(context.Background(), sandbox.SandboxID)
 		_ = backend.Delete(context.Background(), sandbox.SandboxID)
+		_ = logManager.UnregisterSandbox(context.Background(), sandbox.SandboxID)
 	})
 
 	client := &http.Client{Timeout: 500 * time.Millisecond}
@@ -153,11 +178,18 @@ func TestRealRunscSupervisorUsesMountedKernelSocket(t *testing.T) {
 				t.Run("package command uses ordinary job and cross-package imports", func(t *testing.T) {
 					t.Cleanup(func() {
 						if t.Failed() {
-							t.Log(readDiagnostic(outputPath))
+							t.Log(readDiagnostic(logManager))
 						}
 					})
-					verifyCommandJob(t, sandbox, packageSource)
-					verifyHookJob(t, sandbox, packageSource)
+					verifyCommandJob(t, sandbox, packageSource, logManager)
+					verifyHookJob(t, sandbox, packageSource, logManager)
+					verifyPersistedRuntimeLogs(t, logManager, sandbox.SandboxID)
+				})
+				t.Run("sandbox history keeps log references through assignment recovery and cleanup", func(t *testing.T) {
+					verifySandboxHistoryLifecycle(t, runscPath, rootFS, filepath.Join(runtimeRoot, "history-check"), sandbox, logManager)
+				})
+				t.Run("concurrent service Workers preserve users parents and persistent bindings", func(t *testing.T) {
+					verifyConcurrentServiceLogs(t, backend, sandbox, logManager)
 				})
 				return
 			}
@@ -167,7 +199,354 @@ func TestRealRunscSupervisorUsesMountedKernelSocket(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Fatalf("supervisor did not become ready: %v\n%s", lastErr, readDiagnostic(outputPath))
+	t.Fatalf("supervisor did not become ready: %v\n%s", lastErr, readDiagnostic(logManager))
+}
+
+func verifyConcurrentServiceLogs(t *testing.T, native *Backend, spec model.SandboxSpec, logs *logging.Manager) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	newID := func(prefix string) string {
+		id, err := identity.New(prefix)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	spec.SandboxID = newID("sbx")
+	spec.WorkloadType, spec.RuntimeProfile.WorkloadType = model.WorkloadService, model.WorkloadService
+	spec.GroupKey, spec.RuntimeProfile.ResourceClass = "service:e2e", "service:e2e"
+	spec.Network.SupervisorPort, spec.Network.InspectorPort = freeTCPPort(t), freeTCPPort(t)
+	for spec.Network.SupervisorPort == spec.Network.InspectorPort {
+		spec.Network.InspectorPort = freeTCPPort(t)
+	}
+	var err error
+	spec.InternalToken, err = identity.NewToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.ProfileHash, err = spec.RuntimeProfile.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := logs.RegisterSandbox(ctx, spec.SandboxID, spec.InternalToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cleanup, stop := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stop()
+		_ = native.Kill(cleanup, spec.SandboxID)
+		_ = native.Delete(cleanup, spec.SandboxID)
+		_ = logs.UnregisterSandbox(cleanup, spec.SandboxID)
+	})
+	if _, err := native.Create(ctx, spec, output); err != nil {
+		t.Fatalf("create service sandbox: %v\n%s", err, readDiagnostic(logs))
+	}
+	client, err := supervisor.New(supervisor.Config{ProtocolVersion: protocol.ProtocolVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := client.Status(ctx, spec); err == nil {
+			break
+		} else if ctx.Err() != nil {
+			t.Fatalf("service readiness: %v\n%s", err, readDiagnostic(logs))
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	const declared = "acme/commands/logs"
+	serviceID := newID("srv")
+	workerIDs := []string{newID("wrk"), newID("wrk")}
+	for _, workerID := range workerIDs {
+		_, err := client.StartWorker(ctx, spec, supervisor.StartWorkerRequest{
+			Metadata: supervisor.ExecutionMetadata{
+				WorkerID: workerID, WorkloadType: model.WorkloadService, OwnerID: declared, WorkloadID: serviceID,
+				ReleaseID: "active", Entrypoint: "file:///workspace/packages/acme/commands/services/logs/service.ts",
+				DebuggerName: "service:" + declared + ":" + workerID, DatabaseBackend: "sqlite", DatabaseAccess: "none",
+				User: execution.SystemUser(), Origin: execution.Origin{Type: "service", ID: declared},
+				Service: &supervisor.ServiceExecutionMetadata{ServiceID: declared, Generation: 1, CanonicalBasePath: "/acme/commands/logs", ExecutionMode: "persistent"},
+			},
+			Permissions: supervisor.WorkerPermissions{Read: spec.Permissions.ReadPaths},
+		})
+		if err != nil {
+			t.Fatalf("start service Worker: %v\n%s", err, readDiagnostic(logs))
+		}
+	}
+	if err := client.ConfigureService(ctx, spec, serviceID, workerIDs, 2); err != nil {
+		t.Fatal(err)
+	}
+	type invocation struct {
+		worker, username, context, parent, persistent string
+	}
+	position, started := logs.ReadPosition(), time.Now()
+	var invocations []invocation
+	for _, workerID := range workerIDs {
+		for _, username := range []string{"alice", "bobby"} {
+			invocations = append(invocations, invocation{workerID, username, newID("ctx"), newID("ctx"), newID("pex")})
+		}
+	}
+	type result struct {
+		value invocation
+		err   error
+	}
+	dispatch := func(value invocation, existing bool) error {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://service/hold", nil)
+		if err != nil {
+			return err
+		}
+		for name, value := range map[string]string{
+			"context-id": value.context, "parent-context-id": value.parent, "target-worker-id": value.worker,
+			"persistent-execution-id": value.persistent, "persistent-keep-alive-ms": "30000",
+			"user-id": "user:" + value.username, "username": value.username,
+		} {
+			request.Header.Set("the8020-internal-"+name, value)
+		}
+		if existing {
+			request.Header.Set("the8020-internal-persistent-existing", "true")
+		}
+		response, err := client.DispatchService(ctx, spec, serviceID, request)
+		if err != nil {
+			return err
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			return &supervisor.ResponseError{StatusCode: response.StatusCode, Status: response.Status}
+		}
+		var actual struct{ Username, ContextID, ParentContextID, WorkerID string }
+		if err := json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&actual); err != nil {
+			return err
+		}
+		if actual.Username != value.username || actual.ContextID != value.context || actual.ParentContextID != value.parent || actual.WorkerID != value.worker {
+			return fmt.Errorf("service invocation changed: %#v", actual)
+		}
+		return nil
+	}
+	finished := make(chan result, len(invocations))
+	for _, value := range invocations {
+		go func() { finished <- result{value, dispatch(value, false)} }()
+	}
+	query := records.Query{Position: position, Limit: 100, Filter: records.Filter{SandboxID: spec.SandboxID, ServiceID: serviceID, From: started}}
+	waitForLogs := func(want int, completed bool) {
+		t.Helper()
+		for {
+			page, err := logs.Query(ctx, query)
+			if err != nil || page.State != "ok" {
+				t.Fatalf("service log query: state=%s error=%v", page.State, err)
+			}
+			count := 0
+			for _, value := range invocations {
+				var messages []string
+				for _, item := range page.Records {
+					if item.ContextID != value.context {
+						continue
+					}
+					if item.WorkerID != value.worker || item.ParentContextID != value.parent || item.Username != value.username || item.NodeID != logs.NodeID() || item.Object != "service:"+declared || item.ServiceID != serviceID || item.PersistentID != value.persistent {
+						t.Fatalf("service log attribution changed: %#v", item.Record)
+					}
+					messages = append(messages, item.Message)
+				}
+				expected := []string{"service begin"}
+				if completed {
+					expected = append(expected, "service end")
+				}
+				if slices.Equal(messages, expected) {
+					count++
+				}
+			}
+			if count == want {
+				return
+			}
+			if ctx.Err() != nil {
+				t.Fatalf("service log count %d want %d:\n%s", count, want, readDiagnostic(logs))
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+	}
+	// Both users are suspended inside both Workers before any can finish.
+	waitForLogs(len(invocations), false)
+	for _, username := range []string{"alice", "bobby"} {
+		duplicate := invocations[0]
+		duplicate.username, duplicate.context = username, newID("ctx")
+		var rejected *supervisor.ResponseError
+		if err := dispatch(duplicate, false); !errors.As(err, &rejected) || rejected.StatusCode != http.StatusConflict {
+			t.Fatalf("initial persistent identity collision was not rejected: %v", err)
+		}
+	}
+	for _, workerID := range workerIDs {
+		invocation, err := execution.NewInvocation("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := client.InvokeWorker(execution.WithInvocation(ctx, invocation), spec, workerID, "", "fixture.release", nil, execution.SystemUser())
+		if err != nil || !result.OK {
+			t.Fatalf("release suspended service requests: %#v, %v", result, err)
+		}
+	}
+	for range invocations {
+		result := <-finished
+		if result.err != nil {
+			t.Fatalf("concurrent service request %s failed: %v", result.value.context, result.err)
+		}
+	}
+	followup := invocations[0]
+	followup.context, followup.parent = newID("ctx"), followup.context
+	if err := dispatch(followup, true); err != nil {
+		t.Fatalf("explicit follow-up lost its original binding: %v", err)
+	}
+	invocations = append(invocations, followup)
+	for _, workerID := range workerIDs {
+		if err := client.StopWorker(ctx, spec, workerID, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The saved reference still retrieves each invocation after Worker cleanup.
+	waitForLogs(len(invocations), true)
+}
+
+func verifySandboxHistoryLifecycle(t *testing.T, runscPath, rootFS, root string, spec model.SandboxSpec, logs *logging.Manager) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	native, err := New(Config{
+		RunscPath: runscPath, RootFS: rootFS, StateRoot: filepath.Join(root, "native"), RuntimeRoot: filepath.Join(root, "runsc"),
+		InstanceUUID: logs.NodeID(), KernelSocketPath: "/run/the8020/kernel.sock",
+		SupervisorHeartbeatInterval: 100 * time.Millisecond, WorkerStopGrace: time.Second, StartTimeout: 15 * time.Second,
+		Logger: logs.Logger(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = native.Close() })
+	network, err := sandboxnetwork.NewLoopback(filepath.Join(root, "network"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, err := state.New(filepath.Join(root, "live"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, err := history.New(history.Config{Root: filepath.Join(root, "history")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := supervisor.New(supervisor.Config{ProtocolVersion: protocol.ProtocolVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	leases, err := ports.New(filepath.Join(root, "ports"), false, logs.Logger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = leases.CloseAll() })
+	config := manager.Config{
+		InstanceUUID: logs.NodeID(), Store: live, History: archive, Logs: logs,
+		Backend: native, Network: network, Supervisor: client, Ports: leases,
+		StartupTimeout: 15 * time.Second, StopGrace: time.Second, ProbeInterval: 25 * time.Millisecond,
+	}
+	owner, err := manager.New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.SandboxID, err = owner.NewSandboxID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.InternalToken = strings.Repeat("b", 64)
+	spec.GroupKey, spec.OwnerIDs, spec.Lifecycle.Warm = "", nil, true
+	t.Cleanup(func() {
+		cleanup, stop := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stop()
+		_ = owner.Delete(cleanup, spec.SandboxID)
+	})
+	created, err := owner.Create(ctx, spec)
+	if err != nil {
+		t.Fatalf("managed creation: %v\n%s", err, readDiagnostic(logs))
+	}
+	if created.Status.NodeID != logs.NodeID() || created.Status.CreatedAt.IsZero() || created.Status.LogPosition == "" {
+		t.Fatalf("creation lost its log reference: %#v", created.Status)
+	}
+	assigned, err := owner.AssignWarm(ctx, spec.SandboxID, "job:history-check", "history-owner-one")
+	if err != nil || assigned.Spec.SandboxID != spec.SandboxID {
+		t.Fatalf("warm assignment: %#v, %v", assigned, err)
+	}
+	if _, err := owner.AddOwner(ctx, spec.SandboxID, "history-owner-two"); err != nil {
+		t.Fatal(err)
+	}
+	// Reconstruct the authoritative state and lifecycle owner without changing
+	// the native sandbox, its callback token, or its saved log boundary.
+	config.Store, err = state.New(filepath.Join(root, "live"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, err = manager.New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := owner.Reconcile(ctx)
+	if err != nil || report.Restored != 1 || len(report.Failed)+len(report.Missing)+len(report.OrphansDeleted) != 0 {
+		t.Fatalf("reconstruct managed sandbox: %#v, %v", report, err)
+	}
+	restored, err := owner.Inspect(ctx, spec.SandboxID)
+	if err != nil || restored.Spec.InternalToken != spec.InternalToken || restored.Status.LogPosition != created.Status.LogPosition || !restored.Status.CreatedAt.Equal(created.Status.CreatedAt) {
+		t.Fatalf("reconstruction changed sandbox log identity: %#v, %v", restored.Status, err)
+	}
+	if destroyed, err := owner.RemoveOwner(ctx, spec.SandboxID, "history-owner-one", ""); err != nil || destroyed {
+		t.Fatalf("independent owner release: %t, %v", destroyed, err)
+	}
+	if observation, err := native.Observe(ctx, spec.SandboxID); err != nil || observation.TaskStatus != "running" {
+		t.Fatalf("remaining owner lost its sandbox: %#v, %v", observation, err)
+	}
+	if destroyed, err := owner.RemoveOwner(ctx, spec.SandboxID, "history-owner-two", ""); err != nil || !destroyed {
+		t.Fatalf("final owner cleanup: %t, %v", destroyed, err)
+	}
+	if rows, err := owner.List(); err != nil || len(rows) != 0 {
+		t.Fatalf("live state remains: %#v, %v", rows, err)
+	}
+	if objects, err := native.ListOwned(ctx); err != nil || len(objects) != 0 {
+		t.Fatalf("native state remains: %#v, %v", objects, err)
+	}
+	if err := network.Check(ctx, spec.SandboxID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("network allocation remains: %v", err)
+	}
+	page, err := owner.ListHistory(10, "")
+	if err != nil || len(page.Sandboxes) != 1 {
+		t.Fatalf("terminal metadata missing: %#v, %v", page, err)
+	}
+	retired, err := owner.InspectHistory(page.Sandboxes[0].HistoryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := retired.Record
+	if record.Spec.InternalToken != "" || record.Status.NodeID != created.Status.NodeID || record.Status.LogPosition != created.Status.LogPosition || !record.Status.CreatedAt.Equal(created.Status.CreatedAt) {
+		t.Fatalf("archive changed its log reference: %#v", record.Status)
+	}
+	query := records.Query{Position: record.Status.LogPosition, Limit: 100, Filter: records.Filter{
+		NodeID: record.Status.NodeID, SandboxID: record.Spec.SandboxID, From: record.Status.CreatedAt, Until: record.ArchivedAt,
+	}}
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); {
+		kernelBoot, denoBoot := false, false
+		read := query
+		for range 8 {
+			page, err := logs.Query(ctx, read)
+			if err != nil || page.State != "ok" {
+				t.Fatalf("archived log query: %#v, %v", page, err)
+			}
+			for _, item := range page.Records {
+				kernelBoot = kernelBoot || item.Source == "kernel" && item.Message == "rootless sandbox started"
+				denoBoot = denoBoot || item.Source == "deno" && strings.Contains(item.Message, "Supervisor ready")
+			}
+			if kernelBoot && denoBoot {
+				return
+			}
+			if !page.More {
+				break
+			}
+			read.Position, read.Cursor = "", page.Cursor
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("retired sandbox reference could not retrieve kernel and Deno startup logs:\n%s", readDiagnostic(logs))
 }
 
 func freeTCPPort(t *testing.T) int {
@@ -180,12 +559,16 @@ func freeTCPPort(t *testing.T) int {
 	return listener.Addr().(*net.TCPAddr).Port
 }
 
-func readDiagnostic(path string) string {
-	value, err := os.ReadFile(path)
+func readDiagnostic(logs *logging.Manager) string {
+	page, err := logs.Query(context.Background(), records.Query{Limit: 100, Tail: true})
 	if err != nil {
 		return err.Error()
 	}
-	return string(value)
+	var text strings.Builder
+	for _, record := range page.Records {
+		_, _ = fmt.Fprintf(&text, "%s %s %s\n", record.Level, record.SandboxID, record.Message)
+	}
+	return text.String()
 }
 
 // This adapter connects the real job manager to the already-running test
@@ -215,11 +598,11 @@ func (r *commandRuntime) Inspect(ctx context.Context, _ string) (manager.Inspect
 }
 
 func (r *commandRuntime) List() ([]manager.Inspection, error) {
-	inspection, err := r.Inspect(context.Background(), r.spec.RuntimeGroupID)
+	inspection, err := r.Inspect(context.Background(), r.spec.SandboxID)
 	return []manager.Inspection{inspection}, err
 }
 
-func (r *commandRuntime) ResolveRuntimeGroup(string) (model.SandboxSpec, error) {
+func (r *commandRuntime) ResolveSandbox(string) (model.SandboxSpec, error) {
 	return r.spec, nil
 }
 
@@ -259,7 +642,12 @@ func commandPackages(t *testing.T) commandPackageSource {
 import { context } from "@the8020/context";
 import { answer } from "/p/acme/dependency/mod.ts";
 export default async (...args: unknown[]) => {
+  console.log("job console before await");
+  if (args[0] === "fail") throw new Error("deliberate failure from command");
   const dynamic = await import("/p/acme/dependency/dynamic.ts");
+  console.log("job console after await");
+  await Deno.stdout.write(new TextEncoder().encode("native job stdout 💡\n"));
+  await Deno.stderr.write(new TextEncoder().encode("native job stderr\n"));
   await Deno.writeTextFile("/tmp/command-check", "normal temp access");
   await Deno.writeTextFile("/runtime-cache/command-check", "normal cache access");
   const packages = [];
@@ -267,8 +655,24 @@ export default async (...args: unknown[]) => {
   return { answer: answer() + dynamic.default(), args, user: context.username, type: context.type, packages };
 };
 `,
-		"acme/dependency/mod.ts":     "export const answer = () => 40;\n",
-		"acme/dependency/dynamic.ts": "export default () => 2;\n",
+		"acme/dependency/mod.ts":                   "export const answer = () => 40;\n",
+		"acme/dependency/dynamic.ts":               "export default () => 2;\n",
+		"acme/commands/programs/native/program.ts": "export default () => 42;\n",
+		"acme/commands/modules/valid.ts":           "import { answer } from '/p/acme/dependency/mod.ts'; export const result: number = answer();\n",
+		"acme/commands/modules/invalid.ts":         "export const result: number = 'deliberate native type failure';\n",
+		"acme/commands/services/logs/service.ts": `
+import { context } from "@the8020/context";
+let release: () => void;
+const gate = new Promise<void>((resolve) => release = resolve);
+export async function fetch() {
+  console.log("service begin");
+  await gate;
+  console.warn("service end");
+  return Response.json({ username: context.username, contextId: context.contextId,
+    parentContextId: context.parentContextId, workerId: context.workerId });
+}
+export const workerFunctions = { "fixture.release": () => { release(); return true; } };
+`,
 	} {
 		fullPath := filepath.Join(root, filepath.FromSlash(path))
 		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
@@ -281,7 +685,87 @@ export default async (...args: unknown[]) => {
 	return commandPackageSource{root: root}
 }
 
-func verifyCommandJob(t *testing.T, spec model.SandboxSpec, source commandPackageSource) {
+func verifyPersistedRuntimeLogs(t *testing.T, logs *logging.Manager, sandboxID string) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		page, err := logs.Query(context.Background(), records.Query{Filter: records.Filter{SandboxID: sandboxID}, Limit: 500, Tail: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := map[string]records.Record{}
+		beforeByContext := map[string]records.Record{}
+		for _, located := range page.Records {
+			r := located.Record
+			switch r.Message {
+			case "job console before await", "job console after await":
+				if r.Username != "system" || r.Object != "program:acme/commands/check" || !identity.Is(r.WorkerID, "wrk") || !identity.Is(r.ContextID, "ctx") || !identity.Is(r.JobID, "job") || r.NodeID != "nod-0123456789" {
+					t.Fatalf("incorrect managed job attribution: %#v", r)
+				}
+				if r.Message == "job console before await" {
+					beforeByContext[r.ContextID] = r
+				} else if before, ok := beforeByContext[r.ContextID]; ok {
+					found[before.Message], found[r.Message] = before, r
+				}
+			case "native job stdout 💡", "native job stderr":
+				if r.Source != "deno" || r.Stream == "" || r.WorkerID != "" || r.ContextID != "" || r.Username != "" {
+					t.Fatalf("anonymous native output attribution: %#v", r)
+				}
+				found[r.Message] = r
+			case "rootless sandbox started":
+				if r.Source == "kernel" {
+					found[r.Message] = r
+				}
+			default:
+				if strings.Contains(r.Message, "deliberate failure") && strings.Contains(r.Message, "program.ts") && r.Username == "system" && identity.Is(r.ContextID, "ctx") && identity.Is(r.JobID, "job") {
+					found["failed job stack"] = r
+				}
+
+			}
+		}
+		if len(found) == 6 {
+			before, after := found["job console before await"], found["job console after await"]
+			if before.ContextID != after.ContextID || before.JobID != after.JobID || before.WorkerID != after.WorkerID {
+				t.Fatal("managed job lost invocation identity across await")
+			}
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("expected kernel, console, native and failed-job records were not persisted:\n%s", readDiagnostic(logs))
+}
+
+func verifyFailedJobLogReference(t *testing.T, logs *logging.Manager, job jobs.Record) {
+	t.Helper()
+	query := records.Query{Position: job.LogPosition, Limit: 20, Filter: records.Filter{
+		NodeID: job.NodeID, SandboxID: job.SandboxID, WorkerID: job.WorkerID,
+		ContextID: job.ContextID, JobID: job.ExecutionID, From: job.QueuedAt,
+	}}
+	verifyFailedExecutionLogReference(t, logs, query)
+}
+
+func verifyFailedExecutionLogReference(t *testing.T, logs *logging.Manager, query records.Query) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	for ctx.Err() == nil {
+		page, err := logs.Query(ctx, query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, item := range page.Records {
+			if strings.Contains(item.Record.Message, "deliberate failure") && item.Record.Username == "system" {
+				return
+			}
+		}
+		if page.State != "ok" {
+			t.Fatalf("failed job log reference is %s: %s", page.State, page.Reason)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatal("failed job reference could not retrieve its persisted diagnostics")
+}
+
+func verifyCommandJob(t *testing.T, spec model.SandboxSpec, source commandPackageSource, logs *logging.Manager) {
 	t.Helper()
 	client, err := supervisor.New(supervisor.Config{ProtocolVersion: protocol.ProtocolVersion})
 	if err != nil {
@@ -293,6 +777,8 @@ func verifyCommandJob(t *testing.T, spec model.SandboxSpec, source commandPackag
 		t.Fatal(err)
 	}
 	jobManager, err := jobs.New(runtime, workerManager, jobs.Policy{
+		NodeID: "nod-0123456789", LogPosition: logs.ReadPosition,
+		Logger:  logs.Logger(),
 		Profile: spec.RuntimeProfile, ExecutionTimeout: 10 * time.Second,
 	})
 	if err != nil {
@@ -312,7 +798,7 @@ func verifyCommandJob(t *testing.T, spec model.SandboxSpec, source commandPackag
 		t.Fatalf("command catalog=%#v error=%v", report, err)
 	}
 	user, _ := execution.UserForUsername("alice")
-	ctx := execution.WithCaller(context.Background(), execution.Caller{User: user, ExecutionID: "parent", Workload: model.WorkloadService})
+	ctx := execution.WithCaller(context.Background(), execution.Caller{User: user, ContextID: "ctx-aaaaaaaaaa", Workload: model.WorkloadService})
 	response := registry.Execute(ctx, core.Request{
 		ProtocolVersion: core.ProtocolVersion, CommandID: registry.Catalog().Commands[0].ID,
 		Argv: []string{"two words", "--literal"},
@@ -327,10 +813,73 @@ func verifyCommandJob(t *testing.T, spec model.SandboxSpec, source commandPackag
 	if !reflect.DeepEqual(response.Result, want) {
 		t.Fatalf("command result=%#v want=%#v", response.Result, want)
 	}
+	if response.Execution == nil || !identity.Is(response.Execution.ExecutionID, "job") || response.Execution.SandboxID != spec.SandboxID || response.Execution.LogPosition == "" {
+		t.Fatalf("real command lost log reference: %#v", response.Execution)
+	}
 	remaining, err := client.Workers(ctx, spec)
 	if err != nil || len(remaining) != 0 {
 		t.Fatalf("job Worker cleanup: remaining=%#v error=%v", remaining, err)
 	}
+	failed := registry.Execute(ctx, core.Request{
+		ProtocolVersion: core.ProtocolVersion, CommandID: registry.Catalog().Commands[0].ID, Argv: []string{"fail"},
+	})
+	if failed.Success || failed.Error == nil || failed.Execution == nil {
+		t.Fatalf("failed command lost result identity: %#v", failed)
+	}
+	reference := failed.Execution
+	if remaining, err := client.Workers(ctx, spec); err != nil || len(remaining) != 0 {
+		t.Fatalf("failed command Worker cleanup: remaining=%#v error=%v", remaining, err)
+	}
+	verifyFailedExecutionLogReference(t, logs, records.Query{Position: reference.LogPosition, Limit: 20, Filter: records.Filter{
+		NodeID: reference.NodeID, SandboxID: reference.SandboxID, WorkerID: reference.WorkerID,
+		ContextID: reference.ContextID, JobID: reference.ExecutionID, From: reference.QueuedAt,
+	}})
+	t.Run("native Deno validation and graph helpers", func(t *testing.T) {
+		options := jobs.Options{User: user, CheckModules: []string{"/workspace/packages/acme/commands/modules/valid.ts"}}
+		record, err := jobManager.Run(ctx, "acme/commands/native", "file:///workspace/packages/acme/commands/programs/native/program.ts", options)
+		if err != nil || fmt.Sprint(record.Result) != "42" {
+			t.Fatalf("native validation/graph: %v %#v\n%s", err, record, readDiagnostic(logs))
+		}
+		dependencies := record.ModuleDependencies[options.CheckModules[0]]
+		if !slices.Contains(dependencies, "/workspace/packages/acme/dependency/mod.ts") {
+			t.Fatalf("native graph lost imported module: %v", dependencies)
+		}
+		options.CheckModules[0] = "/workspace/packages/acme/commands/modules/invalid.ts"
+		failed, err := jobManager.Run(ctx, "acme/commands/native", "file:///workspace/packages/acme/commands/programs/native/program.ts", options)
+		if err == nil || !strings.Contains(err.Error(), "module type check failed") || !strings.Contains(err.Error(), "TS2322") || failed.State != "FAILED" {
+			t.Fatalf("native type error lost diagnostics: %#v %v", failed, err)
+		}
+		if remaining, err := client.Workers(ctx, spec); err != nil || len(remaining) != 0 {
+			t.Fatalf("native validation Worker cleanup: %#v %v", remaining, err)
+		}
+		foundRaw, foundJob := false, false
+		for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); {
+			page, err := logs.Query(ctx, records.Query{Position: failed.LogPosition, Limit: 100, Filter: records.Filter{SandboxID: spec.SandboxID, From: failed.QueuedAt, Until: failed.FinishedAt}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, item := range page.Records {
+				if item.Record.Stream == "stderr" && strings.Contains(item.Record.Message, "TS2322") {
+					foundRaw = true
+				}
+			}
+			jobPage, err := logs.Query(ctx, records.Query{Position: failed.LogPosition, Limit: 100, Filter: records.Filter{JobID: failed.ExecutionID, ContextID: failed.ContextID, From: failed.QueuedAt}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, item := range jobPage.Records {
+				r := item.Record
+				if r.Attributes["event"] == "job_failed" && r.Username == user.Username && r.Time.Equal(failed.FinishedAt) && strings.Contains(r.Message, "TS2322") {
+					foundJob = true
+				}
+			}
+			if foundRaw && foundJob {
+				return
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+		t.Fatalf("native type checker diagnostics missing: raw=%t job=%t", foundRaw, foundJob)
+	})
 }
 
 // The source index is a fixture; discovery, dispatcher admission, package
@@ -354,7 +903,7 @@ func (s *hookPackageIndex) Get(_ context.Context, id string) (workspacepackages.
 }
 func (s *hookPackageIndex) Revision(context.Context) (uint64, error) { return s.revision, nil }
 
-func verifyHookJob(t *testing.T, spec model.SandboxSpec, source commandPackageSource) {
+func verifyHookJob(t *testing.T, spec model.SandboxSpec, source commandPackageSource, logs *logging.Manager) {
 	t.Helper()
 	write := func(name, content string) {
 		t.Helper()
@@ -410,7 +959,7 @@ export default (state) => {
 	if err != nil {
 		t.Fatal(err)
 	}
-	jobManager, err := jobs.New(runtime, workerManager, jobs.Policy{Profile: spec.RuntimeProfile, ExecutionTimeout: 10 * time.Second})
+	jobManager, err := jobs.New(runtime, workerManager, jobs.Policy{NodeID: "nod-0123456789", LogPosition: logs.ReadPosition, Profile: spec.RuntimeProfile, ExecutionTimeout: 10 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -426,6 +975,12 @@ export default (state) => {
 		}
 		if len(expectFailure) > 0 && (err == nil || !strings.Contains(err.Error(), "deliberate failure")) {
 			t.Fatalf("expected propagated hook failure, got %v", err)
+		}
+		if record.NodeID != "nod-0123456789" || record.SandboxID != spec.SandboxID || !identity.Is(record.WorkerID, "wrk") || !identity.Is(record.ContextID, "ctx") || !identity.Is(record.ExecutionID, "job") || record.LogPosition == "" {
+			t.Fatalf("managed job lost allocated log reference: %#v", record)
+		}
+		if len(expectFailure) > 0 {
+			verifyFailedJobLogReference(t, logs, record)
 		}
 		return record
 	}

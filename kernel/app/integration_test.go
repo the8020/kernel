@@ -18,6 +18,7 @@ import (
 
 	"the8020/kernel/admin"
 	"the8020/kernel/cbus/client"
+	logscommand "the8020/kernel/cbus/commands/logs"
 	getcommand "the8020/kernel/cbus/commands/settings/get"
 	listcommand "the8020/kernel/cbus/commands/settings/list"
 	setcommand "the8020/kernel/cbus/commands/settings/set"
@@ -37,13 +38,16 @@ import (
 func pointer(value int64) *int64 { return &value }
 func definitions() []settings.Definition {
 	return []settings.Definition{
-		{Key: "node.id", Type: settings.TypeString, Storage: settings.StorageNode, Default: "00000000-0000-0000-0000-000000000000", Environment: "THE8020_NODE_ID", Pattern: `^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`, Description: "Stable node identity."},
+		{Key: "node.id", Type: settings.TypeString, Storage: settings.StorageNode, Default: "nod-0000000000", Environment: "THE8020_NODE_ID", Pattern: `^nod-[a-z0-9]{10}$`, Description: "Stable node identity."},
 		{Key: "network.main_port", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(8080), Environment: "THE8020_NETWORK_MAIN_PORT", Minimum: pointer(1), Maximum: pointer(65535), RuntimeMutable: true, Description: "Main HTTP listener port."},
 		{Key: "network.ssh_port", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(2222), Environment: "THE8020_NETWORK_SSH_PORT", Minimum: pointer(1), Maximum: pointer(65535), RuntimeMutable: true, Description: "SSH port."},
 		{Key: "logging.enabled", Type: settings.TypeBoolean, Storage: settings.StorageNode, Default: true, Environment: "THE8020_LOGGING_ENABLED", RuntimeMutable: true, Description: "Logging enabled."},
+		{Key: "logging.level", Type: settings.TypeEnum, Storage: settings.StorageNode, Default: "info", Environment: "THE8020_LOGGING_LEVEL", Allowed: []string{"debug", "info", "warn", "error"}, RuntimeMutable: true, Description: "Log severity."},
+		{Key: "logging.split_by", Type: settings.TypeEnum, Storage: settings.StorageNode, Default: "none", Environment: "THE8020_LOGGING_SPLIT_BY", Allowed: []string{"none", "source"}, RuntimeMutable: true, Description: "Log streams."},
+		{Key: "logging.max_age", Type: settings.TypeDuration, Storage: settings.StorageNode, Default: "7d", Environment: "THE8020_LOGGING_MAX_AGE", RuntimeMutable: true, Description: "Log age."},
 		{Key: "logging.split_period", Type: settings.TypeEnum, Storage: settings.StorageNode, Default: "day", Environment: "THE8020_LOGGING_SPLIT_PERIOD", Allowed: []string{"none", "minute", "hour", "day", "week", "month", "year"}, RuntimeMutable: true, Description: "Split period."},
-		{Key: "logging.max_file_size", Type: settings.TypeByteSize, Storage: settings.StorageNode, Default: "1GB", Environment: "THE8020_LOGGING_MAX_FILE_SIZE", RuntimeMutable: true, Description: "File size."},
-		{Key: "logging.max_total_size", Type: settings.TypeByteSize, Storage: settings.StorageNode, Default: "10GB", Environment: "THE8020_LOGGING_MAX_TOTAL_SIZE", RuntimeMutable: true, Description: "Total size."},
+		{Key: "logging.max_file_size", Type: settings.TypeByteSize, Storage: settings.StorageNode, Default: "128MiB", Environment: "THE8020_LOGGING_MAX_FILE_SIZE", RuntimeMutable: true, Description: "File size."},
+		{Key: "logging.max_total_size", Type: settings.TypeByteSize, Storage: settings.StorageNode, Default: "10GiB", Environment: "THE8020_LOGGING_MAX_TOTAL_SIZE", RuntimeMutable: true, Description: "Total size."},
 		{Key: "database.maximum_open_connections", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(32), Environment: "THE8020_DATABASE_MAXIMUM_OPEN_CONNECTIONS", Minimum: pointer(1), RuntimeMutable: true, Description: "Maximum open database connections."},
 		{Key: "database.maximum_idle_connections", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(8), Environment: "THE8020_DATABASE_MAXIMUM_IDLE_CONNECTIONS", Minimum: pointer(0), RuntimeMutable: true, Description: "Maximum idle database connections."},
 		{Key: "database.maximum_result_rows", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(10_000), Environment: "THE8020_DATABASE_MAXIMUM_RESULT_ROWS", Minimum: pointer(1), RuntimeMutable: true, Description: "Maximum database result rows."},
@@ -60,11 +64,16 @@ func catalog() []core.Command {
 		{Version: 1, ID: "kernel.restart", Path: []string{"kernel.restart"}, RestartBehavior: "restarts_kernel"},
 		{Version: 1, ID: "kernel.shutdown", Path: []string{"kernel.shutdown"}, RestartBehavior: "stops_kernel"},
 		{Version: 1, ID: "kernel.status", Path: []string{"kernel.status"}},
+		{Version: 1, ID: "kernel.logs", Path: []string{"kernel.logs"}, Parameters: []core.Parameter{
+			{Name: "limit", Type: "integer", Option: "limit"}, {Name: "tail", Type: "boolean", Option: "tail"},
+			{Name: "cursor", Type: "string", Option: "cursor"}, {Name: "source", Type: "string", Option: "source"},
+			{Name: "username", Type: "string", Option: "user"},
+		}},
 	}
 }
 func register(registry *core.Registry, serviceSet *services.Services) error {
 	commands := catalog()
-	handlers := []core.Handler{getcommand.New(serviceSet), listcommand.New(serviceSet), setcommand.New(serviceSet), unsetcommand.New(serviceSet), restartcommand.New(serviceSet), shutdowncommand.New(serviceSet), statuscommand.New(serviceSet)}
+	handlers := []core.Handler{getcommand.New(serviceSet), listcommand.New(serviceSet), setcommand.New(serviceSet), unsetcommand.New(serviceSet), restartcommand.New(serviceSet), shutdowncommand.New(serviceSet), statuscommand.New(serviceSet), logscommand.New(serviceSet)}
 	for index := range commands {
 		if err := registry.Register(commands[index], handlers[index]); err != nil {
 			return err
@@ -95,21 +104,35 @@ func startKernel(t *testing.T, root string, startupPort int) <-chan error {
 		t.Fatal(err)
 	}
 	errorsChannel := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-errorsChannel:
+		case <-time.After(4 * time.Second):
+			t.Error("test kernel did not stop during cleanup")
+		}
+	})
 	sshPort := availablePort(t)
 	go func() {
-		errorsChannel <- Run(context.Background(), Config{
+		defer close(errorsChannel)
+		errorsChannel <- Run(ctx, Config{
 			Root: root, Startup: map[string]string{"network.main_port": stringInt(startupPort), "network.ssh_port": stringInt(sshPort)},
-			Definitions: definitions(), Register: register, BuildID: "integration-test", initialize: initializeIntegrationRuntime,
+			Definitions: definitions(), Register: register, BuildID: "integration-test", initialize: initializeIntegrationRuntime, logdExecutable: appTestLogd,
 		})
 	}()
 	paths := instance.NewPaths(root)
+	var lastStatus core.Response
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		commandClient := client.New(paths.Socket)
 		response, err := commandClient.Execute(context.Background(), core.Request{CommandID: "kernel.status"})
+		lastStatus = response
 		commandClient.Close()
 		if err == nil && response.Success && resultObject(response)["runtime_ready"] == true {
-			return errorsChannel
+			if logging, ok := resultObject(response)["logging"].(map[string]any); ok && logging["running"] == true {
+				return errorsChannel
+			}
 		}
 		select {
 		case err := <-errorsChannel:
@@ -118,7 +141,7 @@ func startKernel(t *testing.T, root string, startupPort int) <-chan error {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("kernel did not become ready")
+	t.Fatalf("kernel did not become ready: %#v", resultObject(lastStatus))
 	return nil
 }
 
@@ -143,9 +166,6 @@ func initializeIntegrationRuntime(ctx context.Context, settingManager *settings.
 		return fail(err)
 	}
 	if err := settingManager.AttachGlobal(ctx, global); err != nil {
-		return fail(err)
-	}
-	if err := settingManager.RegisterApplier([]string{"logging.enabled", "logging.split_period", "logging.max_file_size", "logging.max_total_size"}, serviceSet.Logging); err != nil {
 		return fail(err)
 	}
 	if err := settingManager.RegisterApplier([]string{
@@ -293,7 +313,7 @@ func shutdownAndWait(t *testing.T, commandClient *client.Client, done <-chan err
 }
 
 func TestKernelRestartCommandSelectsSelfReplacement(t *testing.T) {
-	root := t.TempDir()
+	root := testInstanceRoot(t)
 	done := startKernel(t, root, availablePort(t))
 	var output bytes.Buffer
 	if code := admin.Main([]string{"--root", root, "kernel.restart"}, strings.NewReader(""), &output, &output); code != 0 || !strings.Contains(output.String(), "requested: true") {
@@ -316,7 +336,7 @@ func TestKernelRestartCommandSelectsSelfReplacement(t *testing.T) {
 }
 
 func TestFullCommandBusLifecycleAndAdministrativeModes(t *testing.T) {
-	root := t.TempDir()
+	root := testInstanceRoot(t)
 	environmentPort, startupPort, runtimePort, restartStartupPort, runtimeSSHPort := availablePort(t), availablePort(t), availablePort(t), availablePort(t), availablePort(t)
 	t.Setenv("THE8020_NETWORK_MAIN_PORT", stringInt(environmentPort))
 	done := startKernel(t, root, startupPort)
@@ -333,6 +353,30 @@ func TestFullCommandBusLifecycleAndAdministrativeModes(t *testing.T) {
 	}
 	if _, exists := statusResult["database_result_maximum_bytes"]; exists {
 		t.Fatalf("system status exposes database result limits: %#v", status.Result)
+	}
+	var logPage map[string]any
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		response := execute(t, commandClient, "kernel.logs", map[string]any{"source": "kernel", "limit": int64(1)})
+		if !response.Success {
+			t.Fatal("log query failed", response.Error)
+		}
+		logPage = resultObject(response)["page"].(map[string]any)
+		if len(logPage["records"].([]any)) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(logPage["records"].([]any)) != 1 || logPage["cursor"] == "" {
+		t.Fatal("log query did not return a bounded continuation", logPage)
+	}
+	continued := execute(t, commandClient, "kernel.logs", map[string]any{"source": "kernel", "limit": int64(1), "cursor": logPage["cursor"]})
+	if !continued.Success {
+		t.Fatal("log continuation failed", continued.Error)
+	}
+	invalidLogs := execute(t, commandClient, "kernel.logs", map[string]any{"limit": int64(501)})
+	if invalidLogs.Success || invalidLogs.Error.Code != core.CodeInvalidArguments {
+		t.Fatal("unbounded log query accepted", invalidLogs)
 	}
 	get := execute(t, commandClient, "kernel.config.get", map[string]any{"key": "network.main_port"})
 	setting := resultObject(get)["setting"].(map[string]any)
@@ -453,7 +497,7 @@ func TestFullCommandBusLifecycleAndAdministrativeModes(t *testing.T) {
 	if !loggingChange.Success {
 		t.Fatalf("disable logging: %#v", loggingChange)
 	}
-	for key, value := range map[string]string{"logging.split_period": "hour", "logging.max_file_size": "2GB", "logging.max_total_size": "3GB", "logging.enabled": "true"} {
+	for key, value := range map[string]string{"logging.split_period": "hour", "logging.split_by": "source", "logging.level": "warn", "logging.max_age": "3d", "logging.max_file_size": "256MiB", "logging.max_total_size": "3GiB", "logging.enabled": "true"} {
 		change := execute(t, commandClient, "kernel.config.set", map[string]any{"key": key, "value": value})
 		if !change.Success {
 			t.Fatalf("change %s: %#v", key, change)

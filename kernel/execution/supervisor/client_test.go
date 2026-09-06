@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"the8020/kernel/execution"
@@ -16,6 +17,31 @@ import (
 )
 
 const testToken = "0123456789abcdef0123456789abcdef"
+
+func TestMalformedWorkerIdentityDoesNotReachSupervisor(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(server.Close)
+	client := testClient(t, server.URL)
+	for _, id := range []string{"worker", "sbx-aaaaaaaaaa", "wrk-short", "wrk-AAAAAAAAAA"} {
+		request := StartWorkerRequest{Metadata: ExecutionMetadata{WorkerID: id, WorkloadType: model.WorkloadJob, User: execution.SystemUser(), Origin: execution.Origin{Type: execution.OriginJob, ID: "example/job"}}}
+		if _, err := client.StartWorker(context.Background(), testSpec(), request); err == nil {
+			t.Fatalf("start accepted %q", id)
+		}
+		if _, err := client.InvokeWorker(context.Background(), testSpec(), id, "", "example.inspect", nil, execution.SystemUser()); err == nil {
+			t.Fatalf("invoke accepted %q", id)
+		}
+	}
+	if _, err := client.InvokeWorker(context.Background(), testSpec(), "wrk-aaaaaaaaaa", "ctx-aaaaaaaaaa", "example.inspect", nil, execution.SystemUser()); err == nil {
+		t.Fatal("accepted an invalid persistent target")
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("malformed identity contacted supervisor %d times", calls.Load())
+	}
+}
 
 func TestStatusWorkersAndControlRoutes(t *testing.T) {
 	var paths []string
@@ -39,26 +65,27 @@ func TestStatusWorkersAndControlRoutes(t *testing.T) {
 		}
 		switch request.URL.Path {
 		case "/v1/status":
-			_, _ = io.WriteString(writer, `{"protocol_version":3,"supervisor_version":"test","deno_version":"2.9.4","runtime_group_id":"group","sandbox_id":"sandbox","workload_type":"job","worker_count":2,"ready_worker_count":1,"failed_worker_count":1,"active_requests":1,"active_execution_count":1,"recent_failures":[{"worker_id":"failed-worker","execution_id":"failed-execution","reason":"boom"}]}`)
+			_, _ = io.WriteString(writer, `{"protocol_version":4,"supervisor_version":"test","deno_version":"2.9.4","sandbox_id":"sandbox","workload_type":"job","worker_count":2,"ready_worker_count":1,"failed_worker_count":1,"active_requests":1,"active_execution_count":1,"recent_failures":[{"worker_id":"failed-worker","reason":"boom"}]}`)
 		case "/v1/workers":
-			_, _ = io.WriteString(writer, `{"workers":[{"worker_id":"worker","execution_id":"execution","workload_id":"job","owner_id":"owner","debugger_name":"job:execution","in_flight":0,"idle_since_ms":1700000000000,"state":"failed","failure":"boom"}]}`)
+			_, _ = io.WriteString(writer, `{"workers":[{"worker_id":"wrk-aaaaaaaaaa","workload_id":"job","owner_id":"owner","debugger_name":"job:execution","in_flight":0,"idle_since_ms":1700000000000,"state":"failed","failure":"boom"}]}`)
 		case "/v1/workers/start":
 			var body StartWorkerRequest
-			if err := json.Unmarshal(control.Payload, &body); err != nil || body.Metadata.WorkerID != "worker" {
+			if err := json.Unmarshal(control.Payload, &body); err != nil || body.Metadata.WorkerID != "wrk-aaaaaaaaaa" {
 				http.Error(writer, "bad body", http.StatusBadRequest)
 				return
 			}
-			writeControlResponse(writer, control, protocol.MessageWorkerStateChange, map[string]any{"worker": map[string]any{"worker_id": "worker", "execution_id": "execution", "state": "ready"}}, http.StatusCreated)
-		case "/v1/jobs/worker/run":
+			writeControlResponse(writer, control, protocol.MessageWorkerStateChange, map[string]any{"worker": map[string]any{"worker_id": "wrk-aaaaaaaaaa", "state": "ready"}}, http.StatusCreated)
+		case "/v1/jobs/wrk-aaaaaaaaaa/run":
 			var body struct {
-				Arguments []any `json:"arguments"`
+				Arguments  []any                `json:"arguments"`
+				Invocation execution.Invocation `json:"invocation"`
 			}
-			if err := json.Unmarshal(control.Payload, &body); err != nil || body.Arguments == nil || len(body.Arguments) != 0 {
+			if err := json.Unmarshal(control.Payload, &body); err != nil || body.Arguments == nil || len(body.Arguments) != 0 || !body.Invocation.Valid() || body.Invocation.JobRunID != "job-bbbbbbbbbb" {
 				http.Error(writer, "bad job arguments", http.StatusBadRequest)
 				return
 			}
-			writeControlResponse(writer, control, protocol.MessageJobResult, map[string]any{"result": map[string]any{"ok": true}, "logs": []map[string]any{{"level": "info", "message": "ran"}}}, http.StatusOK)
-		case "/v1/workers/worker/invoke":
+			writeControlResponse(writer, control, protocol.MessageJobResult, map[string]any{"result": map[string]any{"ok": true}}, http.StatusOK)
+		case "/v1/workers/wrk-aaaaaaaaaa/invoke":
 			writeControlResponse(writer, control, protocol.MessageWorkerResult, map[string]any{"ok": true, "output": "reply"}, http.StatusOK)
 		case "/v1/services/service-a/configure":
 			var body struct {
@@ -84,21 +111,21 @@ func TestStatusWorkersAndControlRoutes(t *testing.T) {
 		t.Fatalf("status=%#v err=%v", status, err)
 	}
 	workers, err := client.Workers(context.Background(), spec)
-	if err != nil || len(workers) != 1 || workers[0].WorkerID != "worker" || workers[0].IdleSinceMS != 1700000000000 || workers[0].State != "failed" || workers[0].Failure != "boom" {
+	if err != nil || len(workers) != 1 || workers[0].WorkerID != "wrk-aaaaaaaaaa" || workers[0].IdleSinceMS != 1700000000000 || workers[0].State != "failed" || workers[0].Failure != "boom" {
 		t.Fatalf("workers=%#v err=%v", workers, err)
 	}
-	request := StartWorkerRequest{Metadata: ExecutionMetadata{WorkerID: "worker", ExecutionID: "execution", WorkloadType: model.WorkloadJob, OwnerID: "owner", WorkloadID: "job", Entrypoint: "file:///artifacts/job.ts", DebuggerName: "job:execution", User: execution.SystemUser(), Origin: execution.Origin{Type: execution.OriginJob, ID: "job"}}}
-	if worker, err := client.StartWorker(context.Background(), spec, request); err != nil || worker.WorkerID != "worker" {
+	request := StartWorkerRequest{Metadata: ExecutionMetadata{WorkerID: "wrk-aaaaaaaaaa", WorkloadType: model.WorkloadJob, OwnerID: "owner", WorkloadID: "job", Entrypoint: "file:///artifacts/job.ts", DebuggerName: "job:execution", User: execution.SystemUser(), Origin: execution.Origin{Type: execution.OriginJob, ID: "job"}}}
+	if worker, err := client.StartWorker(context.Background(), spec, request); err != nil || worker.WorkerID != "wrk-aaaaaaaaaa" {
 		t.Fatalf("start=%#v err=%v", worker, err)
 	}
-	result, err := client.RunJob(context.Background(), spec, "worker", nil, nil, nil)
-	if err != nil || result.Result.(map[string]any)["ok"] != true || len(result.Logs) != 1 || result.Logs[0].Message != "ran" {
+	result, err := client.RunJob(execution.WithInvocation(context.Background(), execution.Invocation{ContextID: "ctx-aaaaaaaaaa", JobRunID: "job-bbbbbbbbbb"}), spec, "wrk-aaaaaaaaaa", nil, nil, nil)
+	if err != nil || result.Result.(map[string]any)["ok"] != true {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
-	if err := client.StopWorker(context.Background(), spec, "worker", true); err != nil {
+	if err := client.StopWorker(context.Background(), spec, "wrk-aaaaaaaaaa", true); err != nil {
 		t.Fatal(err)
 	}
-	if output, err := client.InvokeWorker(context.Background(), spec, "worker", "persistent-1", "example.inspect", map[string]any{"id": 1}, execution.SystemUser()); err != nil || !output.OK || output.Output != "reply" {
+	if output, err := client.InvokeWorker(context.Background(), spec, "wrk-aaaaaaaaaa", "pex-1111111111", "example.inspect", map[string]any{"id": 1}, execution.SystemUser()); err != nil || !output.OK || output.Output != "reply" {
 		t.Fatalf("Worker invocation=%#v err=%v", output, err)
 	}
 	if err := client.ConfigureService(context.Background(), spec, "service-a", nil, 2); err != nil {
@@ -107,7 +134,7 @@ func TestStatusWorkersAndControlRoutes(t *testing.T) {
 	if err := client.Drain(context.Background(), spec); err != nil {
 		t.Fatal(err)
 	}
-	if !containsPath(paths, "/v1/workers/worker/stop?immediate=true") {
+	if !containsPath(paths, "/v1/workers/wrk-aaaaaaaaaa/stop?immediate=true") {
 		t.Fatalf("paths=%#v", paths)
 	}
 	wantTypes := []protocol.MessageType{protocol.MessageStartWorker, protocol.MessageJobStart, protocol.MessageStopWorker, protocol.MessageWorkerInvoke, protocol.MessageServicePoolConfiguration, protocol.MessageRuntimeDrain}
@@ -131,7 +158,7 @@ func TestControlResponsePreservesStructuredExecutionError(t *testing.T) {
 	}))
 	defer server.Close()
 	client := testClient(t, server.URL)
-	err := client.StopWorker(context.Background(), testSpec(), "worker", false)
+	err := client.StopWorker(context.Background(), testSpec(), "wrk-aaaaaaaaaa", false)
 	var response *ResponseError
 	if !errors.As(err, &response) || response.Code != "invalid_arguments" || response.Message != "invalid scale" || response.Details["field"] != "maximum_workers" {
 		t.Fatalf("response error = %#v, %v", response, err)
@@ -155,13 +182,13 @@ func readControlRequest(request *http.Request) (protocol.Envelope, error) {
 func writeControlResponse(writer http.ResponseWriter, request protocol.Envelope, messageType protocol.MessageType, payload any, status int) {
 	payloadData, _ := json.Marshal(payload)
 	writer.WriteHeader(status)
-	_ = json.NewEncoder(writer).Encode(protocol.Envelope{ProtocolVersion: protocol.ProtocolVersion, MessageType: messageType, RuntimeGroupID: request.RuntimeGroupID, CorrelationID: request.CorrelationID, Payload: payloadData})
+	_ = json.NewEncoder(writer).Encode(protocol.Envelope{ProtocolVersion: protocol.ProtocolVersion, MessageType: messageType, SandboxID: request.SandboxID, CorrelationID: request.CorrelationID, Payload: payloadData})
 }
 
 func TestStatusRejectsProtocolAndIdentityMismatch(t *testing.T) {
 	tests := []string{
-		`{"protocol_version":99,"runtime_group_id":"group","sandbox_id":"sandbox","workload_type":"job"}`,
-		`{"protocol_version":3,"runtime_group_id":"other","sandbox_id":"sandbox","workload_type":"job"}`,
+		`{"protocol_version":99,"sandbox_id":"sandbox","workload_type":"job"}`,
+		`{"protocol_version":4,"sandbox_id":"other","workload_type":"job"}`,
 	}
 	for _, response := range tests {
 		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(writer, response) }))
@@ -282,7 +309,7 @@ func testClient(t *testing.T, endpoint string) *Client {
 }
 
 func testSpec() model.SandboxSpec {
-	return model.SandboxSpec{SandboxID: "sandbox", RuntimeGroupID: "group", WorkloadType: model.WorkloadJob, Network: model.NetworkConfiguration{SandboxIP: "10.88.0.2"}, InternalToken: testToken}
+	return model.SandboxSpec{SandboxID: "sandbox", WorkloadType: model.WorkloadJob, Network: model.NetworkConfiguration{SandboxIP: "10.88.0.2"}, InternalToken: testToken}
 }
 
 func containsPath(paths []string, target string) bool {

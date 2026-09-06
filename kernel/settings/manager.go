@@ -165,16 +165,23 @@ func New(definitions []Definition, files PersistencePaths, startup map[string]st
 }
 
 // AttachGlobal initializes missing defaults and replaces provisional global
-// defaults with the database-authoritative values. It must run before runtime
-// appliers and the public service plane are started.
+// defaults with database-authoritative values before global runtime owners and
+// the public service plane start. Node-only owners can already be active.
 func (m *Manager) AttachGlobal(ctx context.Context, store GlobalStore) error {
 	if store == nil {
 		return errors.New("global settings store is required")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if len(m.appliers) != 0 {
-		return errors.New("global settings must attach before runtime appliers")
+	if m.global != nil {
+		return errors.New("global settings are already attached")
+	}
+	for _, binding := range m.appliers {
+		for key := range binding.keys {
+			if m.definitions[key].Storage == StorageGlobal {
+				return errors.New("global settings must attach before global runtime appliers")
+			}
+		}
 	}
 	definitions := make([]Definition, 0)
 	for _, key := range m.ordered {
@@ -186,6 +193,7 @@ func (m *Manager) AttachGlobal(ctx context.Context, store GlobalStore) error {
 	if err != nil {
 		return err
 	}
+	sources, candidate := cloneSources(m.sources), cloneValues(m.configured)
 	for _, definition := range definitions {
 		raw, exists := values[definition.Key]
 		if !exists {
@@ -195,16 +203,17 @@ func (m *Manager) AttachGlobal(ctx context.Context, store GlobalStore) error {
 		if err != nil {
 			return &OperationError{Kind: ErrorInvalid, Key: definition.Key, Err: fmt.Errorf("invalid database setting %s: %w", definition.Key, err)}
 		}
-		source := m.sources[definition.Key]
+		source := sources[definition.Key]
 		source.persisted, source.hasPersisted = value, true
-		m.sources[definition.Key] = source
+		sources[definition.Key] = source
+		candidate[definition.Key], _ = configuredValue(definition, source)
 	}
-	for _, key := range m.ordered {
-		value, _ := configuredValue(m.definitions[key], m.sources[key])
-		m.configured[key], m.active[key] = value, value
-	}
-	if err := validateSnapshot(m.configured); err != nil {
+	if err := validateSnapshot(candidate); err != nil {
 		return err
+	}
+	m.sources, m.configured = sources, candidate
+	for _, definition := range definitions {
+		m.active[definition.Key] = candidate[definition.Key]
 	}
 	m.global, m.revision = store, revision
 	return nil

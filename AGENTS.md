@@ -361,7 +361,7 @@ relevant child AGENTS.md
   filesystem scanner. Package content is scanned only by Git at an explicit
   lifecycle checkpoint, activation preview, or activation run. Publication
   creates package-level commits without pushing remotes, then recreates the
-  process under the same deterministic sandbox identity to clear its private
+  process under the same persisted opaque sandbox identity to clear its private
   overlay.
 - Development images keep Deno installed for developer commands but run no
   background runtime or filesystem scanner. Their `sandbox.sh` initializes the
@@ -387,21 +387,21 @@ relevant child AGENTS.md
   `/root/.ssh/authorized_keys` directly from its confined durable system root
   without creating or starting the sandbox. Ordinary remote commands execute
   through that sandbox's Bash login environment; commands beginning with the
-  reserved `the8020 [sandbox-id=<dev-or-runtime-sandbox>]` grammar select a
-  terminal target instead of executing. SSH uses the generic direct sandbox PTY
-  path when requested and a byte-transparent process stream for non-PTY exec,
-  forwarding all client behavior representable by that process/TTY boundary,
-  including environment, commands, raw control/function-key bytes, resize,
-  cancellation, distinct non-PTY stdout/stderr, real exit status, and canonical
-  PTY EOF for half-closed streamed exec input. SSH-only forwarding channels and
-  subsystems remain unavailable. SSH follows the same temporary
-  all-authenticated-users administrator policy as the browser console.
-- Runtime resource IDs must use a type prefix plus eight random lowercase
-  alphanumeric characters: `sbx-` for sandboxes, `uis-` for UUI sessions, `rgp-`
-  for runtime groups, and `wrk-` for Workers. Cleaned terminal sandboxes leave
-  the live catalog immediately; metadata and bounded logs move to separately
-  indexed history with node-local retention defaulting to seven days, and UUI
-  presents that history separately.
+  reserved `the8020 [sandbox-id=<sbx-id>]` grammar select a terminal target
+  instead of executing. SSH uses the generic direct sandbox PTY path when
+  requested and a byte-transparent process stream for non-PTY exec, forwarding
+  all client behavior representable by that process/TTY boundary, including
+  environment, commands, raw control/function-key bytes, resize, cancellation,
+  distinct non-PTY stdout/stderr, real exit status, and canonical PTY EOF for
+  half-closed streamed exec input. SSH-only forwarding channels and subsystems
+  remain unavailable. SSH follows the same temporary all-authenticated-users
+  administrator policy as the browser console.
+- Runtime resource IDs must use a type prefix plus ten random lowercase
+  alphanumeric characters: `sbx-` for sandboxes, `uis-` for UUI sessions, `wrk-`
+  for Workers. Cleaned terminal sandboxes leave the live catalog immediately;
+  metadata and log references move to separately indexed history with node-local
+  retention defaulting to seven days. UUI presents that history separately and
+  queries bounded log pages from logd, whose retention is independent.
 - Keep opaque identities recognizable by a three-letter type prefix throughout
   APIs and diagnostics. When standardizing execution-context and node identity,
   use `ctx-` and `nod-`; reserve `job-` and `srv-` for actual job and service
@@ -524,6 +524,11 @@ below.
   code in Deno, kernel manages file access, network, processes, sandboxing and
   application code contains services, screens, jobs etc
 
+- Keep unified logging limited to kernel and Deno output, bounded transport,
+  file writing, retention and queries. Use upstream runtimes unchanged. Do not
+  add runtime source patches, host-daemon logging utilities, profiling systems
+  or benchmark infrastructure to complete logging edge cases.
+
 ## Development Workflow
 
 - Verify the final release contents, including documentation added to discovery
@@ -541,10 +546,10 @@ below.
   configuration.
 - `install.sh` owns platform build and runtime-image freshness. It provisions a
   checksum-verified project-local Go toolchain and node-local gVisor, generates
-  the generic protocol, builds exactly `kernel` and `admin`, initializes the
-  selected instance layout when absent, atomically refreshes platform-owned
-  `node/kernel/runtime/definitions/` and read-only development helper scripts,
-  and materializes verified service and development images under
+  the generic protocol, builds `kernel`, `admin`, and the dedicated `logd`,
+  initializes the selected instance layout when absent, atomically refreshes
+  platform-owned `node/kernel/runtime/definitions/` and read-only development
+  helper scripts, and materializes verified service and development images under
   `node/kernel/runtime/images/`. Complete generic image-input digests make
   unchanged installs fast; required packages and Deno bundling execute inside
   the pinned gVisor image build. The default verification gate runs Go and
@@ -559,7 +564,7 @@ below.
   every bootstrap package from its compatible resolved Git tag.
 - `run.sh` may be invoked from any directory. It treats that current directory
   as the instance root and runs `install.sh --skip-verification`, which
-  refreshes both binaries, initializes the default layout when absent, and
+  refreshes all three binaries, initializes the default layout when absent, and
   refreshes only changed generic images before the kernel starts. The kernel
   never builds an image or executes Deno during startup. When a kernel is
   already running, `run.sh` gracefully restarts it after the rebuild, waits for
@@ -653,10 +658,10 @@ below.
   state. Materialized images, build caches, downloads, smoke records, and
   temporary construction output live under `node/kernel/runtime/`, with images
   beneath `node/kernel/runtime/images/`.
-- Live sandbox state belongs under `node/kernel/runtime/groups/`; terminal
-  metadata, log tails, retained-ID markers, and time-partitioned indexes belong
-  under the separate `node/kernel/runtime/sandbox-history/` root and never enter
-  live scans.
+- Live sandbox state belongs under `node/kernel/runtime/sandboxes/`; terminal
+  metadata, log references, retained-ID markers, and time-partitioned indexes
+  belong under the separate `node/kernel/runtime/sandbox-history/` root and
+  never enter live scans.
 - Kernel restart is control-plane-first: administration must become available
   before sandbox cleanup or provisioning, inherited sandboxes are destroyed
   without health restoration by default, and replacement capacity is created

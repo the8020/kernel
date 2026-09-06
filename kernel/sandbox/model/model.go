@@ -1,8 +1,7 @@
-// Package model defines side-effect-free sandbox and runtime-group contracts.
+// Package model defines side-effect-free sandbox contracts.
 package model
 
 import (
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -221,7 +220,6 @@ type LifecyclePolicy struct {
 
 type SandboxSpec struct {
 	SandboxID      string               `json:"sandbox_id"`
-	RuntimeGroupID string               `json:"runtime_group_id"`
 	WorkloadType   WorkloadType         `json:"workload_type"`
 	GroupKey       string               `json:"group_key,omitempty"`
 	PlacementGroup string               `json:"placement_group,omitempty"`
@@ -243,8 +241,8 @@ type SandboxSpec struct {
 }
 
 func (s SandboxSpec) Validate() error {
-	if s.SandboxID == "" || s.RuntimeGroupID == "" {
-		return errors.New("sandbox ID and runtime-group ID are required")
+	if s.SandboxID == "" {
+		return errors.New("sandbox ID is required")
 	}
 	if !s.WorkloadType.Valid() {
 		return fmt.Errorf("invalid workload type %q", s.WorkloadType)
@@ -355,9 +353,12 @@ type ResourceMetrics struct {
 }
 
 type SandboxStatus struct {
-	DesiredState      SandboxState      `json:"desired_state"`
-	ObservedState     SandboxState      `json:"observed_state"`
-	ContainerID       string            `json:"containerd_container_id,omitempty"`
+	DesiredState  SandboxState `json:"desired_state"`
+	ObservedState SandboxState `json:"observed_state"`
+	NodeID        string       `json:"node_id"`
+	CreatedAt     time.Time    `json:"created_at"`
+	LogPosition   string       `json:"log_position,omitempty"`
+
 	TaskPID           uint32            `json:"containerd_task_pid,omitempty"`
 	SandboxIP         string            `json:"sandbox_ip,omitempty"`
 	SupervisorHealthy bool              `json:"supervisor_health"`
@@ -374,11 +375,9 @@ type SandboxStatus struct {
 }
 
 // RuntimeWorkerStatus is the supervisor's current observation of one Worker.
-// Logs are intentionally excluded: frequent snapshots stay small, while an
-// explicit live inspection may fetch diagnostic logs from the supervisor.
+// Logs are queried separately from logd; supervisors retain no log history.
 type RuntimeWorkerStatus struct {
 	WorkerID             string `json:"worker_id"`
-	ExecutionID          string `json:"execution_id"`
 	WorkloadID           string `json:"workload_id"`
 	OwnerID              string `json:"owner_id"`
 	DebuggerName         string `json:"debugger_name"`
@@ -392,9 +391,8 @@ type RuntimeWorkerStatus struct {
 }
 
 type RuntimeFailure struct {
-	WorkerID    string `json:"worker_id"`
-	ExecutionID string `json:"execution_id"`
-	Reason      string `json:"reason"`
+	WorkerID string `json:"worker_id"`
+	Reason   string `json:"reason"`
 }
 
 // RuntimeSnapshot is an absolute supervisor observation. Revision increases
@@ -406,7 +404,6 @@ type RuntimeSnapshot struct {
 	ProtocolVersion       int                   `json:"protocol_version"`
 	SupervisorVersion     string                `json:"supervisor_version"`
 	DenoVersion           string                `json:"deno_version"`
-	RuntimeGroupID        string                `json:"runtime_group_id"`
 	SandboxID             string                `json:"sandbox_id"`
 	WorkloadType          WorkloadType          `json:"workload_type"`
 	WorkerCount           int                   `json:"worker_count"`
@@ -419,76 +416,6 @@ type RuntimeSnapshot struct {
 	RecentFailures        []RuntimeFailure      `json:"recent_failures,omitempty"`
 	Workers               []RuntimeWorkerStatus `json:"workers"`
 	ObservedAt            time.Time             `json:"observed_at,omitempty"`
-}
-
-func NewID(prefix string) (string, error) {
-	if prefix == "" {
-		return "", errors.New("ID prefix is required")
-	}
-	var bytes [16]byte
-	if _, err := rand.Read(bytes[:]); err != nil {
-		return "", fmt.Errorf("generate ID: %w", err)
-	}
-	return prefix + "-" + hex.EncodeToString(bytes[:]), nil
-}
-
-// NewSandboxID returns the compact public sandbox identifier.
-func NewSandboxID() (string, error) {
-	return newCompactID("sbx")
-}
-
-// IsSandboxID reports whether value is a public sandbox identifier.
-func IsSandboxID(value string) bool {
-	return validCompactID(value, "sbx")
-}
-
-// NewRuntimeGroupID returns the compact public runtime-group identifier.
-func NewRuntimeGroupID() (string, error) {
-	return newCompactID("rgp")
-}
-
-// NewWorkerID returns the compact public Worker identifier.
-func NewWorkerID() (string, error) {
-	return newCompactID("wrk")
-}
-
-// newCompactID uses rejection sampling so every lowercase alphanumeric
-// character is uniformly distributed.
-func newCompactID(prefix string) (string, error) {
-	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
-	const randomLength = 8
-	result := make([]byte, 0, len(prefix)+1+randomLength)
-	result = append(result, prefix...)
-	result = append(result, '-')
-	buffer := make([]byte, randomLength*2)
-	for len(result) < len(prefix)+1+randomLength {
-		if _, err := rand.Read(buffer); err != nil {
-			return "", fmt.Errorf("generate %s ID: %w", prefix, err)
-		}
-		for _, value := range buffer {
-			// 252 is the largest multiple of 36 that fits in one byte.
-			if value >= 252 {
-				continue
-			}
-			result = append(result, alphabet[int(value)%len(alphabet)])
-			if len(result) == len(prefix)+1+randomLength {
-				break
-			}
-		}
-	}
-	return string(result), nil
-}
-
-func validCompactID(value, prefix string) bool {
-	if len(value) != len(prefix)+1+8 || !strings.HasPrefix(value, prefix+"-") {
-		return false
-	}
-	for _, character := range value[len(prefix)+1:] {
-		if (character < 'a' || character > 'z') && (character < '0' || character > '9') {
-			return false
-		}
-	}
-	return true
 }
 
 func validDigest(value string) bool {

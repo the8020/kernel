@@ -7,12 +7,12 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"the8020/kernel/identity"
 	"time"
 
 	"the8020/kernel/execution"
 	"the8020/kernel/execution/programs"
 	"the8020/kernel/packages"
-	"the8020/kernel/sandbox/model"
 )
 
 const maximumPending = 4096
@@ -70,7 +70,7 @@ func (m *Manager) emit(name string, data any, user execution.User, at time.Time)
 	if err != nil || len(encoded) > 64<<10 {
 		return Receipt{}, errors.New("event data must be JSON no larger than 64 KiB")
 	}
-	id, err := model.NewID("event")
+	id, err := identity.New("evt")
 	if err != nil {
 		return Receipt{}, err
 	}

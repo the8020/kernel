@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -15,6 +16,7 @@ const (
 	TypeBoolean  = "boolean"
 	TypeEnum     = "enum"
 	TypeByteSize = "byte_size"
+	TypeDuration = "duration"
 
 	environmentPrefix = "THE8020_"
 )
@@ -29,6 +31,17 @@ const (
 
 // ByteSize is a validated count of bytes.
 type ByteSize int64
+
+// Duration is a validated duration in nanoseconds. Text inputs require a unit;
+// whole days use d, otherwise Go duration syntax applies (for example 1h30m).
+type Duration int64
+
+func (d Duration) String() string {
+	if d != 0 && time.Duration(d)%(24*time.Hour) == 0 {
+		return fmt.Sprintf("%dd", time.Duration(d)/(24*time.Hour))
+	}
+	return time.Duration(d).String()
+}
 
 // Definition is generated from one modular setting TOML file.
 type Definition struct {
@@ -114,7 +127,7 @@ func validEnvironment(name string) bool {
 
 func parse(definition Definition, raw string) (any, error) {
 	switch definition.Type {
-	case TypeString, TypeEnum:
+	case TypeString, TypeEnum, TypeDuration:
 		return normalizeValue(definition, raw)
 	case TypeInteger:
 		value, err := strconv.ParseInt(raw, 10, 64)
@@ -154,6 +167,30 @@ func normalizeValue(definition Definition, raw any) (any, error) {
 			if !matched {
 				return nil, errors.New("does not match the required format")
 			}
+		}
+		return value, nil
+	case TypeDuration:
+		var value Duration
+		switch typed := raw.(type) {
+		case Duration:
+			value = typed
+		case string:
+			parsed, err := parseDuration(typed)
+			if err != nil {
+				return nil, err
+			}
+			value = parsed
+		default:
+			return nil, errors.New("must be a duration with a unit, such as 1h or 7d")
+		}
+		if value <= 0 {
+			return nil, errors.New("duration must be greater than zero")
+		}
+		if definition.Minimum != nil && int64(value) < *definition.Minimum {
+			return nil, fmt.Errorf("must be at least %s", Duration(*definition.Minimum))
+		}
+		if definition.Maximum != nil && int64(value) > *definition.Maximum {
+			return nil, fmt.Errorf("must be at most %s", Duration(*definition.Maximum))
 		}
 		return value, nil
 	case TypeInteger:
@@ -236,18 +273,35 @@ func integerValue(raw any) (int64, bool) {
 	}
 }
 
+func parseDuration(raw string) (Duration, error) {
+	text := strings.TrimSpace(raw)
+	if strings.HasSuffix(text, "d") {
+		days, err := strconv.ParseInt(strings.TrimSuffix(text, "d"), 10, 64)
+		if err != nil || days <= 0 || days > (1<<63-1)/int64(24*time.Hour) {
+			return 0, errors.New("duration days must be a positive whole number within range")
+		}
+		return Duration(days * int64(24*time.Hour)), nil
+	}
+	value, err := time.ParseDuration(text)
+	if err != nil {
+		return 0, errors.New("must be a duration with a unit, such as 1h30m or 7d")
+	}
+	return Duration(value), nil
+}
+
+var byteUnits = []struct {
+	name       string
+	multiplier int64
+}{{"GiB", 1 << 30}, {"GB", 1_000_000_000}, {"MiB", 1 << 20}, {"MB", 1_000_000}, {"KiB", 1 << 10}, {"KB", 1_000}, {"B", 1}}
+
 func parseByteSize(raw string) (ByteSize, error) {
 	value := strings.ToUpper(strings.TrimSpace(raw))
-	units := []struct {
-		name       string
-		multiplier int64
-	}{{"GB", 1_000_000_000}, {"MB", 1_000_000}, {"KB", 1_000}, {"B", 1}}
-	for _, unit := range units {
-		if strings.HasSuffix(value, unit.name) {
-			number := strings.TrimSpace(strings.TrimSuffix(value, unit.name))
+	for _, unit := range byteUnits {
+		if strings.HasSuffix(value, strings.ToUpper(unit.name)) {
+			number := strings.TrimSpace(strings.TrimSuffix(value, strings.ToUpper(unit.name)))
 			parsed, err := strconv.ParseInt(number, 10, 64)
 			if err != nil || parsed < 0 {
-				return 0, errors.New("must be a non-negative byte size such as 0B, 1KB, 10MB, or 1GB")
+				return 0, errors.New("must be a non-negative byte size such as 0B, 1KB, 128MiB, or 10GiB")
 			}
 			if parsed > (1<<63-1)/unit.multiplier {
 				return 0, errors.New("byte size is too large")
@@ -255,15 +309,15 @@ func parseByteSize(raw string) (ByteSize, error) {
 			return ByteSize(parsed * unit.multiplier), nil
 		}
 	}
-	return 0, errors.New("must include B, KB, MB, or GB")
+	return 0, errors.New("must include B, KB, MB, GB, KiB, MiB, or GiB")
 }
 
 func formatByteSize(value ByteSize) string {
 	bytes := int64(value)
-	for _, unit := range []struct {
-		name       string
-		multiplier int64
-	}{{"GB", 1_000_000_000}, {"MB", 1_000_000}, {"KB", 1_000}} {
+	if bytes == 0 {
+		return "0B"
+	}
+	for _, unit := range byteUnits {
 		if bytes%unit.multiplier == 0 {
 			return fmt.Sprintf("%d%s", bytes/unit.multiplier, unit.name)
 		}
@@ -274,6 +328,9 @@ func formatByteSize(value ByteSize) string {
 func externalValue(value any) any {
 	if bytes, ok := value.(ByteSize); ok {
 		return formatByteSize(bytes)
+	}
+	if duration, ok := value.(Duration); ok {
+		return duration.String()
 	}
 	return value
 }

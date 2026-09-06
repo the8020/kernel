@@ -18,8 +18,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 # Local Contracts
 
-- One sandbox is one managed OCI runtime, one gVisor boundary, one runtime
-  group, one workload type, and one Deno supervisor.
+- One sandbox is one managed OCI runtime, one gVisor boundary, one workload
+  type, and one Deno supervisor. Its sbx-* ID is its sole runtime identity.
 - Every service sandbox has exactly one free-text placement-group value. It may
   contain compatible allocations of different services but never two allocations
   of the same logical service.
@@ -55,8 +55,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 - [backend/AGENTS.md](backend/AGENTS.md): sandbox backend contract and concrete
   full/rootless gVisor implementations.
-- [history/AGENTS.md](history/AGENTS.md): separate terminal metadata/log
-  archives, bounded indexes, direct lookup, and retention cleanup.
+- [history/AGENTS.md](history/AGENTS.md): terminal metadata and log references,
+  bounded indexes, direct lookup, and independent metadata retention.
 - [manager/AGENTS.md](manager/AGENTS.md): transactional lifecycle, readiness,
   inspection, metrics, reconciliation, and shutdown.
 - [model/AGENTS.md](model/AGENTS.md): typed specifications, profiles, statuses,

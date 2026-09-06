@@ -3,14 +3,14 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
 # Purpose
 
 - Convert generic workload requests into compatible existing or newly created
-  runtime groups.
+  sandboxes.
 
 # Ownership
 
 - Apply the shared grouping selector, enumerate healthy groups, reserve
-  compatible clean warm capacity when available, generate secure
-  sandbox/runtime-group identities and tokens, construct one typed sandbox
-  specification, and invoke cold sandbox creation when needed.
+  compatible clean warm capacity when available, generate secure sandbox
+  identities and tokens, construct one typed sandbox specification, and invoke
+  cold sandbox creation when needed.
 - Do not schedule Workers, maintain workload registries, provision warm-pool
   processes, or implement backend/network details.
 
@@ -25,8 +25,9 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
   one identity for both, while every job Worker uses its own claim so concurrent
   same-owner jobs can release independently.
 - Cold construction requests its compact collision-checked sandbox ID from the
-  sandbox manager, creates a compact `rgp-` runtime-group ID, and retains a
-  generic opaque security token.
+  sandbox manager and retains a generic opaque security token.
+- Creation failures preserve the sandbox manager's allocated inspection while
+  wrapping its error; workload owners can retain the identity after rollback.
 - Supplied profiles, mounts, permissions, dependency mode, global egress policy,
   resource limits, and lifecycle policy remain the authoritative compatibility
   and boundary inputs.

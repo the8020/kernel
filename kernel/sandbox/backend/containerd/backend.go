@@ -3,8 +3,6 @@ package containerd
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +24,8 @@ import (
 	"github.com/containerd/errdefs"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
+	"the8020/kernel/identity"
+	"the8020/kernel/logging/records"
 	"the8020/kernel/sandbox/backend"
 	"the8020/kernel/sandbox/model"
 	"the8020/kernel/sandbox/resources"
@@ -34,9 +34,9 @@ import (
 const RuntimeName = "io.containerd.runsc.v1"
 
 const (
-	labelManaged          = "the8020.runtime.managed"
-	labelInstance         = "the8020.runtime.instance_uuid"
-	labelRuntimeGroup     = "the8020.runtime.group_id"
+	labelManaged  = "the8020.runtime.managed"
+	labelInstance = "the8020.runtime.instance_uuid"
+
 	labelWorkloadType     = "the8020.runtime.workload_type"
 	labelProfileHash      = "the8020.runtime.profile_hash"
 	labelImageDigest      = "the8020.runtime.image_digest"
@@ -53,7 +53,6 @@ type Config struct {
 	Socket                      string
 	InstanceUUID                string
 	Snapshotter                 string
-	LogRoot                     string
 	KernelSocketPath            string
 	RunscConfigPath             string
 	SupervisorPort              int
@@ -67,7 +66,6 @@ type Backend struct {
 	namespace                   string
 	instanceUUID                string
 	snapshotter                 string
-	logRoot                     string
 	kernelSocketPath            string
 	runscConfigPath             string
 	supervisorPort              int
@@ -113,7 +111,7 @@ func Connect(ctx context.Context, config Config) (*Backend, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connect containerd: %w", err)
 	}
-	backend := &Backend{client: client, namespace: NamespaceForInstance(config.InstanceUUID), instanceUUID: config.InstanceUUID, snapshotter: config.Snapshotter, logRoot: config.LogRoot, kernelSocketPath: config.KernelSocketPath, runscConfigPath: config.RunscConfigPath, supervisorPort: config.SupervisorPort, supervisorHeartbeatInterval: config.SupervisorHeartbeatInterval, workerStopGrace: config.WorkerStopGrace, logger: config.Logger}
+	backend := &Backend{client: client, namespace: NamespaceForInstance(config.InstanceUUID), instanceUUID: config.InstanceUUID, snapshotter: config.Snapshotter, kernelSocketPath: config.KernelSocketPath, runscConfigPath: config.RunscConfigPath, supervisorPort: config.SupervisorPort, supervisorHeartbeatInterval: config.SupervisorHeartbeatInterval, workerStopGrace: config.WorkerStopGrace, logger: config.Logger}
 	probeContext, cancel := context.WithTimeout(backend.withNamespace(ctx), 5*time.Second)
 	defer cancel()
 	if _, err := client.Version(probeContext); err != nil {
@@ -261,13 +259,7 @@ func (b *Backend) OpenConsole(ctx context.Context, sandboxID string, options bac
 	return value, nil
 }
 
-func consoleProcessID() (string, error) {
-	data := make([]byte, 16)
-	if _, err := rand.Read(data); err != nil {
-		return "", err
-	}
-	return "console-" + hex.EncodeToString(data), nil
-}
+func consoleProcessID() (string, error) { return identity.New("con") }
 
 func (c *containerConsole) Read(data []byte) (int, error) { return c.output.Read(data) }
 
@@ -319,8 +311,11 @@ func (b *Backend) ImagePresent(ctx context.Context, digest string) (bool, string
 	return true, image.Name(), nil
 }
 
-func (b *Backend) Create(ctx context.Context, sandbox model.SandboxSpec) (observation Observation, returnError error) {
+func (b *Backend) Create(ctx context.Context, sandbox model.SandboxSpec, output records.RawPaths) (observation Observation, returnError error) {
 	if err := sandbox.Validate(); err != nil {
+		return observation, err
+	}
+	if err := backend.ValidateRawPaths(output); err != nil {
 		return observation, err
 	}
 	if sandbox.InternalToken == "" {
@@ -347,7 +342,16 @@ func (b *Backend) Create(ctx context.Context, sandbox model.SandboxSpec) (observ
 			return observation, fmt.Errorf("unpack runtime image: %w", err)
 		}
 	}
-	container, err := b.client.NewContainer(ctx, sandbox.SandboxID,
+	var container containerdclient.Container
+	var task containerdclient.Task
+	defer func() {
+		if returnError != nil {
+			cleanupContext, cancel := context.WithTimeout(b.withNamespace(context.Background()), 5*time.Second)
+			defer cancel()
+			returnError = errors.Join(returnError, b.cleanupCreate(cleanupContext, container, task))
+		}
+	}()
+	container, err = b.client.NewContainer(ctx, sandbox.SandboxID,
 		containerdclient.WithImage(image),
 		containerdclient.WithNewSnapshotView(sandbox.SandboxID+"-rootfs", image),
 		containerdclient.WithNewSpec(oci.WithImageConfig(image), sandboxSpecOption(sandbox, b.instanceUUID, b.kernelSocketPath, b.supervisorPort, b.supervisorHeartbeatInterval, b.workerStopGrace)),
@@ -357,34 +361,39 @@ func (b *Backend) Create(ctx context.Context, sandbox model.SandboxSpec) (observ
 	if err != nil {
 		return observation, fmt.Errorf("create gVisor container: %w", err)
 	}
-	defer func() {
-		if returnError != nil {
-			_ = container.Delete(b.withNamespace(context.Background()), containerdclient.WithSnapshotCleanup)
-		}
-	}()
-	creator := cio.NullIO
-	if b.logRoot != "" {
-		if err := os.MkdirAll(b.logRoot, 0o700); err != nil {
-			return observation, fmt.Errorf("create sandbox log directory: %w", err)
-		}
-		creator = cio.LogFile(filepath.Join(b.logRoot, sandbox.SandboxID+".log"))
-	}
-	task, err := container.NewTask(ctx, creator)
+	task, err = container.NewTask(ctx, rawTaskIO(output))
 	if err != nil {
 		return observation, fmt.Errorf("create gVisor task: %w", err)
 	}
-	defer func() {
-		if returnError != nil {
-			_, _ = task.Delete(b.withNamespace(context.Background()), containerdclient.WithProcessKill)
-		}
-	}()
 	if err := task.Start(ctx); err != nil {
 		return observation, fmt.Errorf("start gVisor task: %w", err)
 	}
 	if b.logger != nil {
-		b.logger.Info("sandbox task started", "sandbox_id", sandbox.SandboxID, "runtime_group_id", sandbox.RuntimeGroupID, "runtime", RuntimeName, "pid", task.Pid())
+		b.logger.Info("sandbox task started", "sandbox_id", sandbox.SandboxID, "runtime", RuntimeName, "pid", task.Pid())
 	}
-	return Observation{ContainerID: container.ID(), Runtime: RuntimeName, RuntimeGroupID: sandbox.RuntimeGroupID, TaskStatus: string(containerdclient.Running), TaskPID: task.Pid(), Labels: labels}, nil
+	return Observation{Runtime: RuntimeName, SandboxID: sandbox.SandboxID, TaskStatus: string(containerdclient.Running), TaskPID: task.Pid(), Labels: labels}, nil
+}
+
+func (b *Backend) cleanupCreate(ctx context.Context, container containerdclient.Container, task containerdclient.Task) error {
+	if task != nil {
+		if _, err := task.Delete(ctx, containerdclient.WithProcessKill); err != nil && !errdefs.IsNotFound(err) {
+			return fmt.Errorf("clean failed-start sandbox task: %w", err)
+		}
+	}
+	if container != nil {
+		if err := container.Delete(ctx, containerdclient.WithSnapshotCleanup); err != nil && !errdefs.IsNotFound(err) {
+			return fmt.Errorf("clean failed-start sandbox container: %w", err)
+		}
+	}
+	return nil
+}
+
+// The shim opens these FIFOs directly. Load starts no kernel copy goroutines,
+// and a nil FIFO closer leaves unlinking to logging after native task deletion.
+func rawTaskIO(output records.RawPaths) cio.Creator {
+	return func(string) (cio.IO, error) {
+		return cio.Load(cio.NewFIFOSet(cio.Config{Stdout: output.Stdout, Stderr: output.Stderr}, nil))
+	}
 }
 
 func (b *Backend) Observe(ctx context.Context, sandboxID string) (Observation, error) {
@@ -397,7 +406,7 @@ func (b *Backend) Observe(ctx context.Context, sandboxID string) (Observation, e
 	if err != nil {
 		return Observation{}, err
 	}
-	result := Observation{ContainerID: container.ID(), Runtime: info.Runtime.Name, RuntimeGroupID: info.Labels[labelRuntimeGroup], Labels: cloneMap(info.Labels), TaskStatus: "absent"}
+	result := Observation{Runtime: info.Runtime.Name, SandboxID: container.ID(), Labels: cloneMap(info.Labels), TaskStatus: "absent"}
 	task, err := container.Task(ctx, nil)
 	if err != nil {
 		if errdefs.IsNotFound(err) {
@@ -446,13 +455,13 @@ func (b *Backend) List(ctx context.Context) ([]Observation, error) {
 	}
 	result := make([]Observation, 0, len(owned))
 	for _, ownedSandbox := range owned {
-		observation, observeErr := b.Observe(ctx, ownedSandbox.ContainerID)
+		observation, observeErr := b.Observe(ctx, ownedSandbox.SandboxID)
 		if observeErr != nil {
 			return nil, observeErr
 		}
 		result = append(result, observation)
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].ContainerID < result[j].ContainerID })
+	sort.Slice(result, func(i, j int) bool { return result[i].SandboxID < result[j].SandboxID })
 	return result, nil
 }
 
@@ -473,9 +482,9 @@ func (b *Backend) ListOwned(ctx context.Context) ([]Observation, error) {
 		if !b.owns(labels) {
 			continue
 		}
-		result = append(result, Observation{ContainerID: container.ID(), Runtime: RuntimeName, RuntimeGroupID: labels[labelRuntimeGroup], Labels: labels})
+		result = append(result, Observation{Runtime: RuntimeName, SandboxID: container.ID(), Labels: labels})
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].ContainerID < result[j].ContainerID })
+	sort.Slice(result, func(i, j int) bool { return result[i].SandboxID < result[j].SandboxID })
 	return result, nil
 }
 
@@ -594,7 +603,7 @@ func (b *Backend) owns(labels map[string]string) bool {
 
 func (b *Backend) labels(sandbox model.SandboxSpec) (map[string]string, error) {
 	labels := map[string]string{
-		labelManaged: "true", labelInstance: b.instanceUUID, labelRuntimeGroup: sandbox.RuntimeGroupID,
+		labelManaged: "true", labelInstance: b.instanceUUID,
 		labelWorkloadType: string(sandbox.WorkloadType), labelProfileHash: sandbox.ProfileHash, labelImageDigest: sandbox.ImageDigest,
 	}
 	for key, value := range sandbox.Labels {

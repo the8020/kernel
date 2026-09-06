@@ -8,7 +8,7 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 # Ownership
 
 - Query each sandbox's allocated internal Deno inspector endpoint, map
-  debugger-visible names to executions, open authenticated expiring loopback
+  debugger-visible names to Workers, open authenticated expiring loopback
   HTTP/WebSocket reverse-proxy leases, rewrite local target URLs, list leases,
   and close them.
 - Do not implement a debugger UI, expose inspector publicly, create Workers, or
@@ -28,7 +28,7 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 # Work Guidance
 
-- Preserve Deno target IDs and debugger names verbatim while deriving execution
+- Preserve Deno target IDs and debugger names verbatim while deriving canonical `wrk-`
   IDs only from the 80|20 naming convention.
 
 # Verification

@@ -14,7 +14,7 @@ import {
 } from "./mod.ts";
 
 const metadata: ServiceRequestMetadata = {
-  requestId: "request-1",
+  contextId: "request-1",
   serviceId: "example/auth/login",
   serviceGeneration: 1,
   canonicalBasePath: "/example/auth/login",
@@ -22,10 +22,9 @@ const metadata: ServiceRequestMetadata = {
   client: { ipAddress: "203.0.113.4", networkScope: "public" },
   execution: {
     nodeId: "node-1",
-    runtimeGroupId: "rgp-test0001",
+
     sandboxId: "sbx-test0001",
     workerId: "wrk-test0001",
-    workerExecutionId: "execution-1",
   },
   user: { userId: "user:system", username: "system" },
   auth: { authenticated: false },
@@ -33,10 +32,10 @@ const metadata: ServiceRequestMetadata = {
 
 const workerMetadata: ExecutionMetadata = {
   nodeId: "node-1",
-  runtimeGroupId: "rgp-test0001",
+
   sandboxId: "sbx-test0001",
   workerId: "wrk-test0001",
-  executionId: "execution-1",
+
   workloadType: "service",
   ownerId: "example/auth/login",
   workloadId: "example/auth/login",
@@ -298,6 +297,16 @@ Deno.test("typed kernel admin bridge returns results and command errors", async 
         }),
     );
     const missingCall = await calls.next();
+    const executionReference = {
+      program_id: "acme/tools/inspect",
+      execution_id: "job-abcdefghij",
+      node_id: "nod-abcdefghij",
+      sandbox_id: "sbx-abcdefghij",
+      context_id: "ctx-abcdefghij",
+      log_position: "before-command",
+      queued_at: "2026-09-06T10:00:00Z",
+      finished_at: "2026-09-06T10:00:01Z",
+    };
     bridge.handle({
       type: "kernel_result",
       correlationId: missingCall.correlationId as string,
@@ -306,6 +315,7 @@ Deno.test("typed kernel admin bridge returns results and command errors", async 
         success: false,
         request_id: "command-2",
         error: { code: "not_found", message: "service not found" },
+        execution: executionReference,
       },
     });
     try {
@@ -315,6 +325,7 @@ Deno.test("typed kernel admin bridge returns results and command errors", async 
       if (!(error instanceof AdminCommandError)) throw error;
       assertEquals(error.code, "not_found");
       assertEquals(error.requestId, "command-2");
+      assertEquals(error.execution, executionReference);
     }
   } finally {
     bridge.close();
@@ -426,8 +437,8 @@ Deno.test("interleaved asynchronous calls retain their exact request", async () 
   let releaseSecond!: () => void;
   const firstGate = new Promise<void>((resolve) => releaseFirst = resolve);
   const secondGate = new Promise<void>((resolve) => releaseSecond = resolve);
-  const firstMetadata = { ...metadata, requestId: "request-first" };
-  const secondMetadata = { ...metadata, requestId: "request-second" };
+  const firstMetadata = { ...metadata, contextId: "request-first" };
+  const secondMetadata = { ...metadata, contextId: "request-second" };
   try {
     const first = bridge.withRequest(firstMetadata, async () => {
       await firstGate;
@@ -447,13 +458,13 @@ Deno.test("interleaved asynchronous calls retain their exact request", async () 
     releaseFirst();
     const firstCall = await calls.next();
     assertEquals(
-      (secondCall.payload as { request: { requestId: string } }).request
-        .requestId,
+      (secondCall.payload as { request: { contextId: string } }).request
+        .contextId,
       "request-second",
     );
     assertEquals(
-      (firstCall.payload as { request: { requestId: string } }).request
-        .requestId,
+      (firstCall.payload as { request: { contextId: string } }).request
+        .contextId,
       "request-first",
     );
     for (const call of [secondCall, firstCall]) {
@@ -479,7 +490,7 @@ Deno.test("overlapping persistent requests retain isolated immutable contexts", 
   const suspended = new Promise<void>((resolve) => resume = resolve);
   const authenticated: ServiceRequestMetadata = {
     ...persistentMetadata,
-    requestId: "request-establish",
+    contextId: "request-establish",
     auth: {
       authenticated: true,
       realm: "user",
@@ -493,12 +504,12 @@ Deno.test("overlapping persistent requests retain isolated immutable contexts", 
       return await kernel.admin.execute("service.list");
     });
     bridge.withRequest(
-      { ...authenticated, requestId: "request-websocket" },
+      { ...authenticated, contextId: "request-websocket" },
       () => undefined,
     );
     const control = bridge.withExecution(
       {
-        requestId: "request-control",
+        contextId: "request-control",
         serviceId: "service-version-a",
         persistentExecutionId: "persistent-test",
         user: workerMetadata.user,
@@ -507,8 +518,8 @@ Deno.test("overlapping persistent requests retain isolated immutable contexts", 
     );
     const controlCall = await calls.next();
     assertEquals(
-      (controlCall.payload as { request: { requestId: string } }).request
-        .requestId,
+      (controlCall.payload as { request: { contextId: string } }).request
+        .contextId,
       "request-control",
     );
     bridge.handle({
@@ -524,7 +535,7 @@ Deno.test("overlapping persistent requests retain isolated immutable contexts", 
     resume();
     const call = await calls.next();
     assertEquals(
-      (call.payload as { request: { requestId: string } }).request.requestId,
+      (call.payload as { request: { contextId: string } }).request.contextId,
       "request-establish",
     );
     bridge.handle({
@@ -554,18 +565,18 @@ Deno.test("overlapping persistent database calls keep exact request scopes", asy
   };
   try {
     const first = bridge.withRequest(
-      { ...base, requestId: "request-first" },
+      { ...base, contextId: "request-first" },
       () => kernel.database.execute("SELECT 1", [], { returnRows: true }),
     );
     const second = bridge.withRequest(
-      { ...base, requestId: "request-second" },
+      { ...base, contextId: "request-second" },
       () => kernel.database.execute("SELECT 2", [], { returnRows: true }),
     );
     const pending = [await calls.next(), await calls.next()];
     assertEquals(
       new Set(
         pending.map((call) =>
-          (call.payload as { request: { requestId: string } }).request.requestId
+          (call.payload as { request: { contextId: string } }).request.contextId
         ),
       ),
       new Set(["request-first", "request-second"]),
@@ -613,6 +624,62 @@ Deno.test("request cancellation cancels its exact pending kernel call", async ()
       }),
       true,
     );
+  } finally {
+    bridge.close();
+    channel.port1.close();
+    channel.port2.close();
+  }
+});
+
+Deno.test("log query cancellation affects only its own pending call", async () => {
+  const channel = new MessageChannel();
+  const bridge = createKernelBridge(channel.port1, workerMetadata);
+  const calls = createCallQueue(channel.port2);
+  const execution = new AbortController(), queryAbort = new AbortController();
+  try {
+    const input = {
+      node_id: "nod-0123456789",
+      position: "before-job",
+      username: "alice",
+      limit: 20,
+    };
+    const query = bridge.withRequest(
+      metadata,
+      () => kernel.logs.query(input, queryAbort.signal),
+      execution.signal,
+    );
+    const rejected = assertRejects(() => query, Error, "view closed");
+    const call = await calls.next();
+    assertEquals((call.payload as { arguments: unknown }).arguments, {
+      operation: "logs.query",
+      input,
+    });
+    const sibling = bridge.withRequest(
+      metadata,
+      () => kernel.logs.query({ tail: true }),
+      execution.signal,
+    );
+    const siblingCall = await calls.next();
+    queryAbort.abort(new DOMException("view closed", "AbortError"));
+    assertEquals(await calls.next(), {
+      type: "kernel_cancel",
+      correlationId: call.correlationId,
+    });
+    await rejected;
+    assertEquals(execution.signal.aborted, false);
+    const page = {
+      state: "ok",
+      records: [],
+      more: false,
+      scanned_bytes: 0,
+      cursor: "next",
+    };
+    bridge.handle({
+      type: "kernel_result",
+      correlationId: siblingCall.correlationId as string,
+      payload: { success: true, result: page },
+    });
+    assertEquals(await sibling, page);
   } finally {
     bridge.close();
     channel.port1.close();
@@ -674,10 +741,18 @@ Deno.test("typed secret and package APIs use private runtime operations", async 
     const programResult = {
       state: "failed",
       failure: "example",
-      executionId: "job-1",
+      executionId: "job-0123456789",
+      nodeId: "nod-0123456789",
+      sandboxId: "sbx-0123456789",
+      workerId: "wrk-0123456789",
+      contextId: "ctx-0123456789",
+      parentContextId: "ctx-abcdefghij",
+      logPosition: "saved-position",
+      queuedAt: "2026-09-06T01:02:03.000Z",
+      startedAt: "2026-09-06T01:02:03.100Z",
+      finishedAt: "2026-09-06T01:02:04.000Z",
       packageCommit: "abc",
       result: null,
-      logs: [{ level: "error", message: "example" }],
     };
     assertEquals(
       await respond(
@@ -936,7 +1011,7 @@ Deno.test("execution context is immutable and isolated across requests", async (
       bridge.withRequest(
         {
           ...metadata,
-          requestId: "request-alice",
+          contextId: "request-alice",
           user: { userId: "user:alice", username: "alice" },
         },
         async () => {
@@ -947,7 +1022,7 @@ Deno.test("execution context is immutable and isolated across requests", async (
       bridge.withRequest(
         {
           ...metadata,
-          requestId: "request-bob",
+          contextId: "request-bob",
           user: { userId: "user:bob", username: "bob" },
         },
         async () => {
@@ -956,7 +1031,7 @@ Deno.test("execution context is immutable and isolated across requests", async (
         },
       ),
     ]);
-    assertEquals(values.map((value) => [value.username, value.requestId]), [
+    assertEquals(values.map((value) => [value.username, value.contextId]), [
       ["alice", "request-alice"],
       ["bob", "request-bob"],
     ]);

@@ -4,8 +4,6 @@ package core
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +14,9 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
+
+	"the8020/kernel/identity"
 )
 
 const ProtocolVersion = 2
@@ -126,20 +127,30 @@ type Error struct {
 func (e *Error) Error() string             { return e.Message }
 func NewError(code, message string) *Error { return &Error{Code: code, Message: message} }
 
-type OutputEvent struct {
-	Level   string         `json:"level"`
-	Message string         `json:"message"`
-	Fields  map[string]any `json:"fields,omitempty"`
+// ExecutionReference identifies an allocated package-command run. Its result
+// stays in Response.Result; console records are retrieved separately from logd.
+type ExecutionReference struct {
+	ProgramID       string    `json:"program_id"`
+	ExecutionID     string    `json:"execution_id"`
+	NodeID          string    `json:"node_id"`
+	SandboxID       string    `json:"sandbox_id,omitempty"`
+	WorkerID        string    `json:"worker_id,omitempty"`
+	ContextID       string    `json:"context_id,omitempty"`
+	ParentContextID string    `json:"parent_context_id,omitempty"`
+	LogPosition     string    `json:"log_position,omitempty"`
+	QueuedAt        time.Time `json:"queued_at"`
+	StartedAt       time.Time `json:"started_at,omitzero"`
+	FinishedAt      time.Time `json:"finished_at,omitzero"`
 }
 
 type Response struct {
-	ProtocolVersion int           `json:"protocol_version"`
-	Success         bool          `json:"success"`
-	RequestID       string        `json:"request_id,omitempty"`
-	CatalogRevision string        `json:"catalog_revision,omitempty"`
-	Output          []OutputEvent `json:"output,omitempty"`
-	Result          any           `json:"result,omitempty"`
-	Error           *Error        `json:"error,omitempty"`
+	ProtocolVersion int                 `json:"protocol_version"`
+	Success         bool                `json:"success"`
+	RequestID       string              `json:"request_id,omitempty"`
+	CatalogRevision string              `json:"catalog_revision,omitempty"`
+	Execution       *ExecutionReference `json:"execution,omitempty"`
+	Result          any                 `json:"result,omitempty"`
+	Error           *Error              `json:"error,omitempty"`
 }
 
 type Diagnostic struct {
@@ -161,8 +172,8 @@ type Handler func(context.Context, Request) (Result, error)
 type DynamicHandler func(context.Context, Request) (Execution, error)
 
 type Execution struct {
-	Result any
-	Output []OutputEvent
+	Result    any
+	Reference *ExecutionReference
 }
 
 type Registration struct {
@@ -195,9 +206,14 @@ type Registry struct {
 }
 
 func NewRegistry(logger *slog.Logger) *Registry {
+	processID, err := identity.New("cat")
+	if err != nil {
+		panic(err)
+	} // A catalog cannot bootstrap without a unique incarnation.
+
 	r := &Registry{
 		core: map[string]registered{}, packages: map[string]registered{},
-		processID: NewRequestID(), logger: logger,
+		processID: processID, logger: logger,
 	}
 	r.current.Store(&snapshot{revision: r.processID + "-0", commands: map[string]registered{}, catalog: []Command{}})
 	return r
@@ -255,7 +271,11 @@ func (r *Registry) Catalog() Catalog {
 
 func (r *Registry) Execute(ctx context.Context, request Request) Response {
 	if request.RequestID == "" {
-		request.RequestID = NewRequestID()
+		id, err := NewRequestID()
+		if err != nil {
+			return Response{ProtocolVersion: ProtocolVersion, Error: NewError(CodeInternal, "request identity unavailable")}
+		}
+		request.RequestID = id
 	}
 	current := r.current.Load()
 	response := Response{ProtocolVersion: ProtocolVersion, RequestID: request.RequestID, CatalogRevision: current.revision}
@@ -295,6 +315,7 @@ func (r *Registry) Execute(ctx context.Context, request Request) Response {
 		request.Arguments = arguments
 	}
 	execution, err := entry.execute(ctx, request)
+	response.Execution = execution.Reference
 	if err != nil {
 		var commandError *Error
 		if errors.As(err, &commandError) {
@@ -308,7 +329,6 @@ func (r *Registry) Execute(ctx context.Context, request Request) Response {
 		return response
 	}
 	response.Success, response.Result = true, execution.Result
-	response.Output = append([]OutputEvent(nil), execution.Output...)
 	return response
 }
 
@@ -595,12 +615,6 @@ func cloneCommands(source []Command) []Command {
 
 func cloneCommand(command Command) Command { return normalizedCommand(command, command.Kind) }
 
-func NewRequestID() string {
-	var value [12]byte
-	if _, err := rand.Read(value[:]); err != nil {
-		return "request"
-	}
-	return hex.EncodeToString(value[:])
-}
+func NewRequestID() (string, error) { return identity.New("cor") }
 
 func PathString(path []string) string { return strings.Join(path, " ") }

@@ -8,16 +8,16 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
 # Ownership
 
 - Validate Worker entrypoints and permission subsets, start Workers through a
-  selected runtime group, aggregate/list/inspect live supervisor Worker state,
+  selected sandbox, aggregate/list/inspect live supervisor Worker state,
   stop/kill one Worker, invoke one exact registered function locally or through
   authenticated node forwarding, and delegate job/service operations.
-- Do not select runtime groups, create sandboxes, implement workload-specific
+- Do not select sandboxes, create sandboxes, implement workload-specific
   lifecycle policy, or execute modules outside the supervisor.
 
 # Local Contracts
 
 - Public API includes `New`, `Manager.Start`, `List`, `Inspect`, `Stop`,
-  `StopInGroup`, `InvokeWorker`, `InvokeLocalWorker`, `RunJob`,
+  `StopInSandbox`, `InvokeWorker`, `InvokeLocalWorker`, `RunJob`,
   `ConfigureService`, and service dispatch/proxy methods.
 - Worker permissions must be a subset of the parent sandbox envelope.
   Cached-only groups accept local file entrypoints; online entrypoints still
@@ -26,16 +26,19 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
   path must remain beneath the parent read envelope.
 - Worker lookup reads the latest cached absolute supervisor snapshot rather than
   container process state. A filtered `List` resolves only the exact cached
-  sandbox/runtime group and never contacts a supervisor or enumerates unrelated
+  sandbox and never contacts a supervisor or enumerates unrelated
   sandboxes. Explicit sandbox refresh owns live inspection.
 - Invocation verifies node, sandbox, and Worker identity, never scans unrelated
   Workers, carries an optional persistent-execution target for supervisor
   binding validation, forwards cross-node only to the exact authenticated node,
   and returns bounded structured target/function/timeout/application errors.
-- Runtime callbacks validate the cached runtime-group token at the callback
+- Local and forwarded invocation apply the shared node request validator before
+  lookup or forwarding. A malformed parent is rejected; a valid parent reaches
+  supervisor control so reused Workers receive distinct child contexts.
+- Runtime callbacks validate the cached sandbox token at the callback
   boundary; this Worker facade performs no per-call reverse liveness validation.
-- Workload managers with a durable Worker-to-group association stop through
-  `StopInGroup`; unrelated unavailable sandboxes must not block owned Worker
+- Workload managers with a durable Worker-to-sandbox association stop through
+  `StopInSandbox`; unrelated unavailable sandboxes must not block owned Worker
   cleanup.
 - Worker operations accept only ready, active, or draining sandbox runtimes.
   Exact access to a terminal runtime returns the shared typed
@@ -50,8 +53,9 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
   Worker.
 - Worker startup injects the configured non-secret database backend so module
   imports can construct the correct SQL compiler without a kernel callback. It
-  also validates the required canonical execution user and workload-compatible
-  service/job/program origin before contacting the supervisor.
+  also applies `ExecutionMetadata.Valid` to the canonical Worker ID, execution
+  user, and workload-compatible service/job/program origin before lookup or
+  contacting the supervisor.
 - Node-wide and sandbox-local admission failures have distinct typed sentinels;
   service placement may spill a sandbox-local rejection into another compatible
   sandbox, while creating another local sandbox cannot evade node exhaustion.
@@ -59,7 +63,7 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
 # Work Guidance
 
 - Keep all workload types on the same start/stop path and include stable
-  execution identity in debugger names.
+  Worker identity in debugger names.
 
 # Verification
 

@@ -144,15 +144,11 @@ func AdministrativeExecution(result adminrun.Result, detail bool) core.Result {
 		return core.Result{"execution": result}
 	}
 	execution := result.Execution
-	response := core.Result{"state": execution.State}
+	response := core.Result{"state": execution.State, "execution_id": execution.ExecutionID}
 	if execution.Detached {
-		response["execution_id"] = execution.ExecutionID
 		return response
 	}
 	response["result"] = execution.Result
 	response["duration"] = execution.Duration.String()
-	if len(execution.Logs) > 0 {
-		response["logs"] = execution.Logs
-	}
 	return response
 }

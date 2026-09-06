@@ -10,7 +10,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -21,15 +20,16 @@ import (
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"golang.org/x/sys/unix"
 
+	"the8020/kernel/logging/records"
 	"the8020/kernel/sandbox/backend"
 	"the8020/kernel/sandbox/backend/runscconsole"
 	"the8020/kernel/sandbox/model"
 )
 
 const (
-	labelManaged      = "the8020.runtime.managed"
-	labelInstance     = "the8020.runtime.instance_uuid"
-	labelRuntimeGroup = "the8020.runtime.group_id"
+	labelManaged  = "the8020.runtime.managed"
+	labelInstance = "the8020.runtime.instance_uuid"
+
 	labelWorkloadType = "the8020.runtime.workload_type"
 	labelProfileHash  = "the8020.runtime.profile_hash"
 	labelImageDigest  = "the8020.runtime.image_digest"
@@ -41,7 +41,7 @@ const (
 )
 
 type CommandRunner interface {
-	Run(context.Context, string, ...string) ([]byte, error)
+	Run(context.Context, Command) ([]byte, error)
 }
 
 type Config struct {
@@ -49,7 +49,6 @@ type Config struct {
 	RootFS                      string
 	StateRoot                   string
 	RuntimeRoot                 string
-	LogRoot                     string
 	InstanceUUID                string
 	KernelSocketPath            string
 	SupervisorHeartbeatInterval time.Duration
@@ -65,7 +64,6 @@ type Backend struct {
 	rootFS                      string
 	stateRoot                   string
 	runtimeRoot                 string
-	logRoot                     string
 	instanceUUID                string
 	kernelSocketPath            string
 	supervisorHeartbeatInterval time.Duration
@@ -79,41 +77,17 @@ type Backend struct {
 }
 
 type metadata struct {
-	SandboxID      string            `json:"sandbox_id"`
-	RuntimeGroupID string            `json:"runtime_group_id"`
-	InstanceUUID   string            `json:"instance_uuid"`
-	Labels         map[string]string `json:"labels"`
-	CreatedAt      time.Time         `json:"created_at"`
+	SandboxID string `json:"sandbox_id"`
+
+	InstanceUUID string            `json:"instance_uuid"`
+	Labels       map[string]string `json:"labels"`
+	CreatedAt    time.Time         `json:"created_at"`
 }
 
 type runtimeState struct {
 	ID     string `json:"id"`
 	Status string `json:"status"`
 	PID    int64  `json:"pid"`
-}
-
-type execRunner struct{}
-
-func (execRunner) Run(ctx context.Context, name string, arguments ...string) ([]byte, error) {
-	command := exec.CommandContext(ctx, name, arguments...)
-	command.Stdin = nil
-	if rootlessCommand(arguments) == "run" && containsArgument(arguments, "--detach") {
-		null, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
-		if err != nil {
-			return nil, err
-		}
-		defer null.Close()
-		command.Stdout, command.Stderr = null, null
-		if err := command.Run(); err != nil {
-			return nil, fmt.Errorf("%s: %w", filepath.Base(name), err)
-		}
-		return nil, nil
-	}
-	output, err := command.CombinedOutput()
-	if err != nil {
-		return output, fmt.Errorf("%s: %w: %s", filepath.Base(name), err, strings.TrimSpace(string(output)))
-	}
-	return output, nil
 }
 
 func rootlessCommand(arguments []string) string {
@@ -136,7 +110,7 @@ func containsArgument(arguments []string, wanted string) bool {
 }
 
 func New(config Config) (*Backend, error) {
-	for name, value := range map[string]string{"runsc path": config.RunscPath, "rootfs": config.RootFS, "state root": config.StateRoot, "runtime root": config.RuntimeRoot, "log root": config.LogRoot} {
+	for name, value := range map[string]string{"runsc path": config.RunscPath, "rootfs": config.RootFS, "state root": config.StateRoot, "runtime root": config.RuntimeRoot} {
 		if !filepath.IsAbs(value) {
 			return nil, fmt.Errorf("absolute %s is required", name)
 		}
@@ -164,12 +138,12 @@ func New(config Config) (*Backend, error) {
 	}
 	productionRunner := config.Runner == nil
 	if productionRunner {
-		config.Runner = execRunner{}
+		config.Runner = execRunner{logger: config.Logger}
 		if err := unix.Prctl(unix.PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0); err != nil {
 			return nil, fmt.Errorf("enable rootless sandbox child reaping: %w", err)
 		}
 	}
-	for _, directory := range []string{config.StateRoot, config.RuntimeRoot, config.LogRoot} {
+	for _, directory := range []string{config.StateRoot, config.RuntimeRoot} {
 		if err := os.MkdirAll(directory, 0o700); err != nil {
 			return nil, fmt.Errorf("initialize rootless runtime directory: %w", err)
 		}
@@ -179,7 +153,7 @@ func New(config Config) (*Backend, error) {
 	}
 	return &Backend{
 		runscPath: config.RunscPath, rootFS: config.RootFS, stateRoot: config.StateRoot, runtimeRoot: config.RuntimeRoot,
-		logRoot: config.LogRoot, instanceUUID: config.InstanceUUID, kernelSocketPath: config.KernelSocketPath,
+		instanceUUID: config.InstanceUUID, kernelSocketPath: config.KernelSocketPath,
 		supervisorHeartbeatInterval: config.SupervisorHeartbeatInterval, workerStopGrace: config.WorkerStopGrace,
 		startTimeout: config.StartTimeout, runner: config.Runner, logger: config.Logger,
 		subreaper: productionRunner, procRoot: "/proc",
@@ -225,10 +199,13 @@ func (b *Backend) OpenConsole(ctx context.Context, sandboxID string, options bac
 	return runscconsole.Open(ctx, b.runscPath, arguments, options.Size)
 }
 
-func (b *Backend) Create(ctx context.Context, sandbox model.SandboxSpec) (backend.Observation, error) {
+func (b *Backend) Create(ctx context.Context, sandbox model.SandboxSpec, output records.RawPaths) (backend.Observation, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if err := sandbox.Validate(); err != nil {
+		return backend.Observation{}, err
+	}
+	if err := backend.ValidateRawPaths(output); err != nil {
 		return backend.Observation{}, err
 	}
 	if sandbox.InternalToken == "" {
@@ -237,8 +214,8 @@ func (b *Backend) Create(ctx context.Context, sandbox model.SandboxSpec) (backen
 	if sandbox.Network.SandboxIP != "127.0.0.1" || sandbox.Network.SupervisorPort < 1 || sandbox.Network.InspectorPort < 1 {
 		return backend.Observation{}, errors.New("rootless sandbox requires assigned loopback control endpoints")
 	}
-	if !safeID(sandbox.SandboxID) || !safeID(sandbox.RuntimeGroupID) {
-		return backend.Observation{}, errors.New("safe sandbox and runtime-group IDs are required")
+	if !safeID(sandbox.SandboxID) {
+		return backend.Observation{}, errors.New("safe sandbox ID is required")
 	}
 	path := b.sandboxPath(sandbox.SandboxID)
 	if _, err := os.Lstat(path); err == nil {
@@ -255,16 +232,12 @@ func (b *Backend) Create(ctx context.Context, sandbox model.SandboxSpec) (backen
 		_ = os.RemoveAll(path)
 		return backend.Observation{}, err
 	}
-	if err := os.MkdirAll(b.sandboxLogRoot(sandbox.SandboxID), 0o700); err != nil {
-		_ = os.RemoveAll(path)
-		return backend.Observation{}, err
-	}
 	labels, err := b.labels(sandbox)
 	if err != nil {
 		_ = os.RemoveAll(path)
 		return backend.Observation{}, err
 	}
-	meta := metadata{SandboxID: sandbox.SandboxID, RuntimeGroupID: sandbox.RuntimeGroupID, InstanceUUID: b.instanceUUID, Labels: labels, CreatedAt: time.Now().UTC()}
+	meta := metadata{SandboxID: sandbox.SandboxID, InstanceUUID: b.instanceUUID, Labels: labels, CreatedAt: time.Now().UTC()}
 	if err := copyHostFile("/etc/resolv.conf", filepath.Join(bundle, "resolv.conf")); err != nil {
 		_ = os.RemoveAll(path)
 		return backend.Observation{}, err
@@ -286,22 +259,29 @@ func (b *Backend) Create(ctx context.Context, sandbox model.SandboxSpec) (backen
 		_ = os.RemoveAll(path)
 		return backend.Observation{}, err
 	}
-	arguments := b.runscArguments(meta, "run", "--detach", "--bundle="+bundle, "--user-log="+filepath.Join(b.sandboxLogRoot(sandbox.SandboxID), "user.log"), sandbox.SandboxID)
-	if output, err := b.runner.Run(ctx, b.runscPath, arguments...); err != nil {
-		_ = b.forceDelete(context.Background(), meta)
-		_ = os.RemoveAll(path)
-		return backend.Observation{}, fmt.Errorf("start rootless gVisor sandbox: %w: %s", err, strings.TrimSpace(string(output)))
+	arguments := b.runscArguments(meta, "run", "--detach", "--bundle="+bundle, "--user-log=/proc/self/fd/2", sandbox.SandboxID)
+	if output, err := b.runner.Run(ctx, Command{Path: b.runscPath, Arguments: arguments, SandboxID: sandbox.SandboxID, Output: output, Timeout: b.startTimeout}); err != nil {
+		return backend.Observation{}, errors.Join(fmt.Errorf("start rootless gVisor sandbox: %w: %s", err, strings.TrimSpace(string(output))), b.rollbackCreate(meta))
 	}
 	state, err := b.waitForState(ctx, meta, map[string]bool{"running": true}, b.startTimeout)
 	if err != nil {
-		_ = b.forceDelete(context.Background(), meta)
-		_ = os.RemoveAll(path)
-		return backend.Observation{}, fmt.Errorf("wait for rootless gVisor sandbox: %w", err)
+		return backend.Observation{}, errors.Join(fmt.Errorf("wait for rootless gVisor sandbox: %w", err), b.rollbackCreate(meta))
 	}
 	if b.logger != nil {
-		b.logger.Info("rootless sandbox started", "sandbox_id", sandbox.SandboxID, "runtime_group_id", sandbox.RuntimeGroupID, "runtime", backend.RootlessRuntimeName, "pid", state.PID)
+		b.logger.Info("rootless sandbox started", "sandbox_id", sandbox.SandboxID, "runtime", backend.RootlessRuntimeName, "pid", state.PID)
 	}
 	return observation(meta, state), nil
+}
+
+func (b *Backend) rollbackCreate(meta metadata) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := b.forceDelete(ctx, meta); err != nil {
+		// Preserve ownership evidence for the manager's cleanup retry, including
+		// the still-live native output descriptors and their logging registration.
+		return err
+	}
+	return os.RemoveAll(b.sandboxPath(meta.SandboxID))
 }
 
 func (b *Backend) UpdateLabels(ctx context.Context, sandboxID string, updates map[string]string) error {
@@ -351,7 +331,7 @@ func (b *Backend) List(ctx context.Context) ([]backend.Observation, error) {
 	}
 	result := make([]backend.Observation, 0, len(owned))
 	for _, ownedSandbox := range owned {
-		item, observeErr := b.observeLocked(ctx, ownedSandbox.ContainerID)
+		item, observeErr := b.observeLocked(ctx, ownedSandbox.SandboxID)
 		if errors.Is(observeErr, os.ErrNotExist) {
 			continue
 		}
@@ -360,7 +340,7 @@ func (b *Backend) List(ctx context.Context) ([]backend.Observation, error) {
 		}
 		result = append(result, item)
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].ContainerID < result[j].ContainerID })
+	sort.Slice(result, func(i, j int) bool { return result[i].SandboxID < result[j].SandboxID })
 	return result, nil
 }
 
@@ -392,7 +372,7 @@ func (b *Backend) listOwnedLocked() ([]backend.Observation, error) {
 		}
 		result = append(result, observation(meta, runtimeState{}))
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].ContainerID < result[j].ContainerID })
+	sort.Slice(result, func(i, j int) bool { return result[i].SandboxID < result[j].SandboxID })
 	return result, nil
 }
 
@@ -423,7 +403,7 @@ func (b *Backend) stop(ctx context.Context, sandboxID, signal string, grace time
 	if stateErr != nil {
 		return stateErr
 	}
-	if output, err := b.runner.Run(ctx, b.runscPath, b.runscArguments(meta, "kill", "--all", sandboxID, signal)...); err != nil && !runtimeAbsent(err) {
+	if output, err := b.run(ctx, meta, "kill", "--all", sandboxID, signal); err != nil && !runtimeAbsent(err) {
 		if staleControl(err) {
 			return b.forceDelete(ctx, meta)
 		}
@@ -435,7 +415,7 @@ func (b *Backend) stop(ctx context.Context, sandboxID, signal string, grace time
 		return b.forceDelete(ctx, meta)
 	}
 	if signal != "KILL" {
-		if output, err := b.runner.Run(ctx, b.runscPath, b.runscArguments(meta, "kill", "--all", sandboxID, "KILL")...); err != nil && !runtimeAbsent(err) {
+		if output, err := b.run(ctx, meta, "kill", "--all", sandboxID, "KILL"); err != nil && !runtimeAbsent(err) {
 			if staleControl(err) {
 				return b.forceDelete(ctx, meta)
 			}
@@ -470,10 +450,11 @@ func (b *Backend) Delete(ctx context.Context, sandboxID string) error {
 func (b *Backend) Metrics(ctx context.Context, sandboxID string) (model.ResourceMetrics, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if _, err := b.loadMetadata(sandboxID); err != nil {
+	meta, err := b.loadMetadata(sandboxID)
+	if err != nil {
 		return model.ResourceMetrics{}, err
 	}
-	output, err := b.runner.Run(ctx, b.runscPath, "--root="+b.runtimeRoot, "events", "--stats", sandboxID)
+	output, err := b.run(ctx, meta, "events", "--stats", sandboxID)
 	if err != nil {
 		return model.ResourceMetrics{}, fmt.Errorf("query rootless sandbox metrics: %w", err)
 	}
@@ -558,7 +539,7 @@ func (b *Backend) ociSpec(sandbox model.SandboxSpec, bundle string) (specs.Spec,
 }
 
 func (b *Backend) state(ctx context.Context, meta metadata) (runtimeState, error) {
-	output, err := b.runner.Run(ctx, b.runscPath, b.runscArguments(meta, "state", meta.SandboxID)...)
+	output, err := b.run(ctx, meta, "state", meta.SandboxID)
 	if err != nil {
 		return runtimeState{}, fmt.Errorf("query rootless sandbox state: %w", err)
 	}
@@ -603,7 +584,7 @@ func (b *Backend) waitForState(ctx context.Context, meta metadata, wanted map[st
 }
 
 func (b *Backend) forceDelete(ctx context.Context, meta metadata) error {
-	output, err := b.runner.Run(ctx, b.runscPath, b.runscArguments(meta, "delete", "--force", meta.SandboxID)...)
+	output, err := b.run(ctx, meta, "delete", "--force", meta.SandboxID)
 	if err != nil && !runtimeAbsent(err) {
 		return fmt.Errorf("delete rootless sandbox: %w: %s", err, strings.TrimSpace(string(output)))
 	}
@@ -615,8 +596,13 @@ func (b *Backend) runscArguments(meta metadata, command string, arguments ...str
 		"--allow-rootfs-tar-annotation", "--root=" + b.runtimeRoot, "--rootless=true", "--platform=systrap", "--directfs=false",
 		"--file-access=exclusive", "--file-access-mounts=shared", "--host-uds=open", "--network=host",
 		"--overlay2=root:dir=" + filepath.Join(b.sandboxPath(meta.SandboxID), "overlay"),
-		"--log=" + filepath.Join(b.sandboxLogRoot(meta.SandboxID), "runsc-"+command+".log"), command,
+		"--log=/proc/self/fd/2", "--panic-log=/proc/self/fd/2",
+		command,
 	}, arguments...)
+}
+
+func (b *Backend) run(ctx context.Context, meta metadata, command string, arguments ...string) ([]byte, error) {
+	return b.runner.Run(ctx, Command{Path: b.runscPath, Arguments: b.runscArguments(meta, command, arguments...), SandboxID: meta.SandboxID, Timeout: 5 * time.Second})
 }
 
 func (b *Backend) loadMetadata(sandboxID string) (metadata, error) {
@@ -637,7 +623,7 @@ func (b *Backend) loadMetadata(sandboxID string) (metadata, error) {
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return metadata{}, errors.New("decode rootless sandbox metadata: trailing data")
 	}
-	if value.SandboxID != sandboxID || value.InstanceUUID != b.instanceUUID || value.RuntimeGroupID == "" || value.Labels[labelManaged] != "true" || value.Labels[labelInstance] != b.instanceUUID {
+	if value.SandboxID != sandboxID || value.InstanceUUID != b.instanceUUID || value.SandboxID == "" || value.Labels[labelManaged] != "true" || value.Labels[labelInstance] != b.instanceUUID {
 		return metadata{}, errors.New("rootless sandbox metadata is not owned by this kernel instance")
 	}
 	return value, nil
@@ -645,7 +631,7 @@ func (b *Backend) loadMetadata(sandboxID string) (metadata, error) {
 
 func (b *Backend) labels(sandbox model.SandboxSpec) (map[string]string, error) {
 	labels := map[string]string{
-		labelManaged: "true", labelInstance: b.instanceUUID, labelRuntimeGroup: sandbox.RuntimeGroupID,
+		labelManaged: "true", labelInstance: b.instanceUUID,
 		labelWorkloadType: string(sandbox.WorkloadType), labelProfileHash: sandbox.ProfileHash, labelImageDigest: sandbox.ImageDigest,
 	}
 	for key, value := range sandbox.Labels {
@@ -675,7 +661,7 @@ func observation(meta metadata, state runtimeState) backend.Observation {
 		pid = uint32(state.PID)
 	}
 	return backend.Observation{
-		ContainerID: meta.SandboxID, Runtime: backend.RootlessRuntimeName, RuntimeGroupID: meta.RuntimeGroupID,
+		Runtime: backend.RootlessRuntimeName, SandboxID: meta.SandboxID,
 		TaskStatus: state.Status, TaskPID: pid, Labels: cloneMap(meta.Labels),
 	}
 }
@@ -885,10 +871,6 @@ func safeID(value string) bool {
 
 func (b *Backend) sandboxPath(sandboxID string) string {
 	return filepath.Join(b.stateRoot, sandboxID)
-}
-
-func (b *Backend) sandboxLogRoot(sandboxID string) string {
-	return filepath.Join(b.logRoot, sandboxID)
 }
 
 func cloneMap(values map[string]string) map[string]string {

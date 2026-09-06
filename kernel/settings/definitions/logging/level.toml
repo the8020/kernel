@@ -1,0 +1,9 @@
+key = "logging.level"
+type = "enum"
+storage = "node"
+default = "info"
+environment = "THE8020_LOGGING_LEVEL"
+allowed = ["debug", "info", "warn", "error"]
+runtime_mutable = true
+restart_required = false
+description = "Minimum severity persisted for managed kernel and Deno logs."

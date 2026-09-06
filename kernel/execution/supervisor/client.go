@@ -1,4 +1,4 @@
-// Package supervisor communicates with the Deno supervisor in each runtime group.
+// Package supervisor communicates with the Deno supervisor in each sandbox.
 package supervisor
 
 import (
@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"the8020/kernel/identity"
 
 	"the8020/kernel/execution"
 	"the8020/kernel/runtime/protocol"
@@ -56,11 +57,11 @@ func IsRequestRejected(err error) bool {
 }
 
 type Status struct {
-	Revision             uint64             `json:"revision"`
-	ProtocolVersion      int                `json:"protocol_version"`
-	SupervisorVersion    string             `json:"supervisor_version"`
-	DenoVersion          string             `json:"deno_version"`
-	RuntimeGroupID       string             `json:"runtime_group_id"`
+	Revision          uint64 `json:"revision"`
+	ProtocolVersion   int    `json:"protocol_version"`
+	SupervisorVersion string `json:"supervisor_version"`
+	DenoVersion       string `json:"deno_version"`
+
 	SandboxID            string             `json:"sandbox_id"`
 	WorkloadType         model.WorkloadType `json:"workload_type"`
 	WorkerCount          int                `json:"worker_count"`
@@ -74,30 +75,26 @@ type Status struct {
 }
 
 type WorkerFailure struct {
-	WorkerID    string `json:"worker_id"`
-	ExecutionID string `json:"execution_id"`
-	Reason      string `json:"reason"`
+	WorkerID string `json:"worker_id"`
+	Reason   string `json:"reason"`
 }
 
 type WorkerStatus struct {
-	WorkerID             string     `json:"worker_id"`
-	ExecutionID          string     `json:"execution_id"`
-	WorkloadID           string     `json:"workload_id"`
-	OwnerID              string     `json:"owner_id"`
-	DebuggerName         string     `json:"debugger_name"`
-	Entrypoint           string     `json:"entrypoint"`
-	ReleaseID            string     `json:"release_id"`
-	InFlight             int        `json:"in_flight"`
-	PersistentExecutions int        `json:"persistent_executions,omitempty"`
-	IdleSinceMS          int64      `json:"idle_since_ms,omitempty"`
-	State                string     `json:"state"`
-	Failure              string     `json:"failure,omitempty"`
-	Logs                 []LogEvent `json:"logs,omitempty"`
+	WorkerID             string `json:"worker_id"`
+	WorkloadID           string `json:"workload_id"`
+	OwnerID              string `json:"owner_id"`
+	DebuggerName         string `json:"debugger_name"`
+	Entrypoint           string `json:"entrypoint"`
+	ReleaseID            string `json:"release_id"`
+	InFlight             int    `json:"in_flight"`
+	PersistentExecutions int    `json:"persistent_executions,omitempty"`
+	IdleSinceMS          int64  `json:"idle_since_ms,omitempty"`
+	State                string `json:"state"`
+	Failure              string `json:"failure,omitempty"`
 }
 
 type ExecutionMetadata struct {
 	WorkerID           string                    `json:"workerId"`
-	ExecutionID        string                    `json:"executionId"`
 	WorkloadType       model.WorkloadType        `json:"workloadType"`
 	OwnerID            string                    `json:"ownerId"`
 	WorkloadID         string                    `json:"workloadId"`
@@ -110,6 +107,10 @@ type ExecutionMetadata struct {
 	User               execution.User            `json:"user"`
 	Origin             execution.Origin          `json:"origin"`
 	Service            *ServiceExecutionMetadata `json:"service,omitempty"`
+}
+
+func (m ExecutionMetadata) Valid() bool {
+	return identity.Is(m.WorkerID, "wrk") && m.User.Valid() && m.Origin.ValidForWorkload(m.WorkloadType)
 }
 
 type ServiceExecutionMetadata struct {
@@ -146,21 +147,15 @@ type WorkerPermissions struct {
 	Sys    []string `json:"sys,omitempty"`
 }
 
-type LogEvent struct {
-	Level   string         `json:"level"`
-	Message string         `json:"message"`
-	Fields  map[string]any `json:"fields,omitempty"`
-}
-
 type JobResult struct {
 	Result             any                 `json:"result"`
-	Logs               []LogEvent          `json:"logs,omitempty"`
 	ModuleDependencies map[string][]string `json:"module_dependencies,omitempty"`
 }
 
 type StartWorkerRequest struct {
-	Metadata    ExecutionMetadata `json:"metadata"`
-	Permissions WorkerPermissions `json:"permissions"`
+	Invocation  *execution.Invocation `json:"invocation,omitempty"`
+	Metadata    ExecutionMetadata     `json:"metadata"`
+	Permissions WorkerPermissions     `json:"permissions"`
 }
 
 func New(config Config) (*Client, error) {
@@ -205,7 +200,7 @@ func (c *Client) Status(ctx context.Context, spec model.SandboxSpec) (Status, er
 	if status.ProtocolVersion != c.protocolVersion {
 		return Status{}, fmt.Errorf("supervisor protocol version %d does not match %d", status.ProtocolVersion, c.protocolVersion)
 	}
-	if status.RuntimeGroupID != spec.RuntimeGroupID || status.SandboxID != spec.SandboxID || status.WorkloadType != spec.WorkloadType {
+	if status.SandboxID != spec.SandboxID || status.WorkloadType != spec.WorkloadType {
 		return Status{}, errors.New("supervisor identity does not match sandbox specification")
 	}
 	return status, nil
@@ -226,14 +221,14 @@ func (c *Client) Snapshot(ctx context.Context, spec model.SandboxSpec) (model.Ru
 	if err := c.query(ctx, spec, "/v1/snapshot", &snapshot); err != nil {
 		return snapshot, err
 	}
-	if snapshot.ProtocolVersion != c.protocolVersion || snapshot.RuntimeGroupID != spec.RuntimeGroupID || snapshot.SandboxID != spec.SandboxID || snapshot.WorkloadType != spec.WorkloadType || snapshot.Revision == 0 {
+	if snapshot.ProtocolVersion != c.protocolVersion || snapshot.SandboxID != spec.SandboxID || snapshot.WorkloadType != spec.WorkloadType || snapshot.Revision == 0 {
 		return model.RuntimeSnapshot{}, errors.New("supervisor snapshot does not match sandbox specification")
 	}
 	return snapshot, nil
 }
 
 func (c *Client) StartWorker(ctx context.Context, spec model.SandboxSpec, request StartWorkerRequest) (WorkerStatus, error) {
-	if request.Metadata.WorkloadType != spec.WorkloadType || request.Metadata.WorkerID == "" || request.Metadata.ExecutionID == "" || !request.Metadata.User.Valid() || !request.Metadata.Origin.ValidForWorkload(request.Metadata.WorkloadType) {
+	if request.Metadata.WorkloadType != spec.WorkloadType || !request.Metadata.Valid() {
 		return WorkerStatus{}, errors.New("Worker identity, user, origin, and matching workload type are required")
 	}
 	var response struct {
@@ -256,8 +251,8 @@ func (c *Client) StopWorker(ctx context.Context, spec model.SandboxSpec, workerI
 }
 
 func (c *Client) InvokeWorker(ctx context.Context, spec model.SandboxSpec, workerID, persistentExecutionID, function string, input any, user execution.User) (WorkerInvocationResult, error) {
-	if workerID == "" || function == "" || len(function) > 128 || !user.Valid() {
-		return WorkerInvocationResult{}, errors.New("Worker ID, registered function, and execution user are required")
+	if !identity.Is(workerID, "wrk") || (persistentExecutionID != "" && !identity.Is(persistentExecutionID, "pex")) || function == "" || len(function) > 128 || !user.Valid() {
+		return WorkerInvocationResult{}, errors.New("canonical Worker ID, optional persistent execution ID, registered function, and execution user are required")
 	}
 	payload, err := json.Marshal(input)
 	if err != nil {
@@ -266,13 +261,22 @@ func (c *Client) InvokeWorker(ctx context.Context, spec model.SandboxSpec, worke
 	if len(payload) > 1<<20 {
 		return WorkerInvocationResult{}, errors.New("Worker invocation input exceeds 1 MiB")
 	}
+	parentContextID := ""
+	if caller, ok := execution.CallerFromContext(ctx); ok {
+		parentContextID = caller.ContextID
+	}
+	invocation, err := execution.NewInvocation(parentContextID)
+	if err != nil {
+		return WorkerInvocationResult{}, err
+	}
 	var result WorkerInvocationResult
 	if err := c.control(ctx, spec, "/v1/workers/"+url.PathEscape(workerID)+"/invoke", protocol.MessageWorkerInvoke, struct {
-		Function              string         `json:"function"`
-		Input                 any            `json:"input"`
-		PersistentExecutionID string         `json:"persistent_execution_id,omitempty"`
-		User                  execution.User `json:"user"`
-	}{Function: function, Input: input, PersistentExecutionID: persistentExecutionID, User: user}, protocol.MessageWorkerResult, &result); err != nil {
+		Invocation            execution.Invocation `json:"invocation"`
+		Function              string               `json:"function"`
+		Input                 any                  `json:"input"`
+		PersistentExecutionID string               `json:"persistent_execution_id,omitempty"`
+		User                  execution.User       `json:"user"`
+	}{Invocation: invocation, Function: function, Input: input, PersistentExecutionID: persistentExecutionID, User: user}, protocol.MessageWorkerResult, &result); err != nil {
 		return WorkerInvocationResult{}, err
 	}
 	encoded, err := json.Marshal(result.Output)
@@ -286,12 +290,17 @@ func (c *Client) InvokeWorker(ctx context.Context, spec model.SandboxSpec, worke
 }
 
 func (c *Client) RunJob(ctx context.Context, spec model.SandboxSpec, workerID string, arguments []any, secrets map[string]string, checkModules []string) (JobResult, error) {
+	invocation, ok := execution.InvocationFromContext(ctx)
+	if !ok || invocation.JobRunID == "" {
+		return JobResult{}, errors.New("job invocation identity is required")
+	}
 	var response JobResult
 	if err := c.control(ctx, spec, "/v1/jobs/"+url.PathEscape(workerID)+"/run", protocol.MessageJobStart, struct {
-		Arguments    []any             `json:"arguments"`
-		Secrets      map[string]string `json:"secrets"`
-		CheckModules []string          `json:"check_modules,omitempty"`
-	}{Arguments: append([]any{}, arguments...), Secrets: cloneSecrets(secrets), CheckModules: append([]string(nil), checkModules...)}, protocol.MessageJobResult, &response); err != nil {
+		Invocation   execution.Invocation `json:"invocation"`
+		Arguments    []any                `json:"arguments"`
+		Secrets      map[string]string    `json:"secrets"`
+		CheckModules []string             `json:"check_modules,omitempty"`
+	}{Invocation: invocation, Arguments: append([]any{}, arguments...), Secrets: cloneSecrets(secrets), CheckModules: append([]string(nil), checkModules...)}, protocol.MessageJobResult, &response); err != nil {
 		return JobResult{}, err
 	}
 	return response, nil
@@ -426,7 +435,7 @@ func (c *Client) control(ctx context.Context, spec model.SandboxSpec, path strin
 	if err != nil {
 		return err
 	}
-	correlationID, err := model.NewID("correlation")
+	correlationID, err := identity.New("cor")
 	if err != nil {
 		return err
 	}
@@ -434,7 +443,7 @@ func (c *Client) control(ctx context.Context, spec model.SandboxSpec, path strin
 	if err != nil {
 		return err
 	}
-	data, err := json.Marshal(protocol.Envelope{ProtocolVersion: c.protocolVersion, MessageType: messageType, RuntimeGroupID: spec.RuntimeGroupID, CorrelationID: correlationID, Payload: payload})
+	data, err := json.Marshal(protocol.Envelope{ProtocolVersion: c.protocolVersion, MessageType: messageType, SandboxID: spec.SandboxID, CorrelationID: correlationID, Payload: payload})
 	if err != nil {
 		return err
 	}
@@ -465,7 +474,7 @@ func (c *Client) control(ctx context.Context, spec model.SandboxSpec, path strin
 	if err := envelope.Validate(); err != nil {
 		return err
 	}
-	if envelope.ProtocolVersion != c.protocolVersion || envelope.MessageType != responseType || envelope.RuntimeGroupID != spec.RuntimeGroupID || envelope.CorrelationID != correlationID {
+	if envelope.ProtocolVersion != c.protocolVersion || envelope.MessageType != responseType || envelope.SandboxID != spec.SandboxID || envelope.CorrelationID != correlationID {
 		return errors.New("supervisor response envelope does not match request")
 	}
 	if output == nil {

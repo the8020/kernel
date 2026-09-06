@@ -32,6 +32,12 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
 - A logical-service-to-pool index is rebuilt once from cached recovery records
   and updated with each pool write/removal. Version cleanup never scans every
   service pool.
+- `Record.ServiceID` identifies the existing `srv-` allocation/Worker pool;
+  `LogicalServiceID` is the declared service. Its lifetime includes restoration
+  after Worker or sandbox failure and ends at removal of the stopped record.
+  Start rejects IDs owned by another logical service, release, generation, or
+  placement slot, including stopped records. Sharing does not create another
+  service-instance entity.
 - Shared service groups retain separate pools keyed by service ID. Requests
   select least-in-flight eligible Workers and remain streaming across
   Go/supervisor/Worker boundaries.
@@ -48,7 +54,7 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
   of cached supervisor occupancy and kernel reservations, grows Workers to
   preserve target headroom, and reports typed sandbox-capacity failure when the
   high-level scheduler must place capacity elsewhere.
-- `Capacity` reads only the selected runtime group's cached snapshot. Lifecycle
+- `Capacity` reads only the selected sandbox's cached snapshot. Lifecycle
   and reconciliation mutations use a striped service lock; unrelated pools do
   not serialize behind supervisor or sandbox I/O.
 - A supervisor call made outside that striped lock must re-read and match the
@@ -59,7 +65,7 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
   reservations remain occupied while disconnected during keep-alive.
 - An explicit instance-root-bounded development workspace becomes an
   owner-scoped runtime-profile mount at `/workspace`; incompatible workspace
-  mounts split runtime groups.
+  mounts split sandboxes.
 - Scale-to-zero pools wake on demand and return to zero after Worker keepalive;
   saturated pools pre-scale within their sandbox-local maximum. Request-count
   recycling is not a second lifecycle policy.
@@ -81,7 +87,7 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
   occupied execution slots, and leaves that ownership durable for
   reconciliation. Once empty, it removes every Worker, releases its sandbox
   owner, and destroys the sandbox when that was its final owner. Failed startup
-  also releases partial ownership. If the runtime group was already removed,
+  also releases partial ownership. If the sandbox was already removed,
   shutdown retires the recoverable pool index without contacting missing
   Workers. `RemoveStopped` deletes only a pool that is durably `STOPPED` with no
   recorded Workers.
@@ -92,17 +98,27 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
   not unavailable capacity. Startup stops any partial Workers, releases the
   provisional group, and deletes the pool record when cleanup completes; only
   incomplete cleanup remains durably recoverable.
-- Sandbox/supervisor failure marks every live service in the runtime group
+- Sandbox/supervisor failure marks every live service in the sandbox
   failed with a durable runtime-unavailable marker. Subsequent shutdown clears
   its Worker indexes and releases ownership without calling the dead group.
 - Startup reconciliation may call `RetireUnavailable` for an exact pool whose
   sandbox is authoritatively absent; it clears Worker indexes and persists
   `STOPPED` without probing the vanished runtime.
-- Restart restoration marks a persisted pool failed when its runtime group is
+- Restart restoration marks a persisted pool failed when its sandbox is
   unavailable or any recorded Worker is no longer `ready`, allowing the
   filesystem reconciler to recreate it immediately.
 - Invalid records are quarantined individually; Worker restoration failures mark
   only their owning pool failed and never roll back healthy restored pools.
+- The pool owner emits start, drain, stop, removal, restoration, and failure
+  transitions through the shared logger with `service_id`, `sandbox_id`,
+  `logical_service_id`, and its configured `username` when known. These become
+  typed `srv-*`/`sbx-*`, declared-service, and user tokens in stored records.
+  Pool events have no single Worker or invocation; they never invent those IDs
+  or copy request error text outside its redacting invocation scope. Native
+  sandbox-loss reasons and recovery diagnostics remain attached to their pool.
+  Failed startup is logged before cleanup clears its allocated sandbox identity;
+  repeated drain/stop/failure reconciliation does not repeat unchanged events.
+  Quarantine records trust only the registry key, not malformed stored metadata.
 
 # Work Guidance
 
@@ -120,6 +136,10 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
   valid/corrupt recovery, isolated restoration, occupied-Worker draining,
   missing-group retirement, terminal-record removal, rejected-definition
   cleanup, idempotent already-absent group release, and rollback.
+- Lifecycle log regressions cover stable service/user attribution, allocated
+  sandbox identity after failed-start cleanup, observed native exit reasons,
+  recovery/quarantine metadata, and suppression of repeated drain/stop/failure
+  observations.
 
 # Child DOX Index
 

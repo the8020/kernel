@@ -5,4 +5,4 @@ default = "128MB"
 environment = "THE8020_SANDBOX_RESOURCES_SERVICE_TMPFS_MAXIMUM"
 runtime_mutable = false
 restart_required = true
-description = "Bounded temporary-filesystem maximum for service runtime groups."
+description = "Bounded temporary-filesystem maximum for service sandboxes."

@@ -4,10 +4,30 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"the8020/kernel/database"
 	"the8020/kernel/settings"
 )
+
+func TestDurationStorageUsesItsTypedValue(t *testing.T) {
+	store, _ := testStore(t)
+	d, err := settings.ValidateDefinition(settings.Definition{Key: "test.age", Type: settings.TypeDuration, Storage: settings.StorageGlobal, Default: "7d", Environment: "THE8020_TEST_AGE", RestartRequired: true, Description: "Duration storage test."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	values, _, err := store.Load(context.Background(), []settings.Definition{d})
+	if err != nil || values[d.Key] != settings.Duration(7*24*time.Hour) {
+		t.Fatal("duration default", values, err)
+	}
+	if _, err := store.Set(context.Background(), d, settings.Duration(48*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	values, _, err = store.Load(context.Background(), []settings.Definition{d})
+	if err != nil || values[d.Key] != settings.Duration(48*time.Hour) {
+		t.Fatal("duration reload", values, err)
+	}
+}
 
 func testStore(t *testing.T) (*Store, *database.Manager) {
 	t.Helper()

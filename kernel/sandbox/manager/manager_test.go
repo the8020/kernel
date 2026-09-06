@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"the8020/kernel/execution/supervisor"
+	"the8020/kernel/logging/records"
 	"the8020/kernel/sandbox/backend"
 	"the8020/kernel/sandbox/history"
 	"the8020/kernel/sandbox/model"
@@ -22,6 +23,8 @@ import (
 )
 
 type fakeBackend struct {
+	beforeCreate                      func(model.SandboxSpec)
+	rawPaths                          records.RawPaths
 	observations                      map[string]backend.Observation
 	created, stopped, killed, deleted []string
 	labels                            map[string]map[string]string
@@ -40,9 +43,9 @@ type blockingCreateBackend struct {
 	mu      sync.Mutex
 }
 
-func (b *blockingCreateBackend) Create(ctx context.Context, spec model.SandboxSpec) (backend.Observation, error) {
+func (b *blockingCreateBackend) Create(ctx context.Context, spec model.SandboxSpec, paths records.RawPaths) (backend.Observation, error) {
 	select {
-	case b.entered <- spec.RuntimeGroupID:
+	case b.entered <- spec.SandboxID:
 	case <-ctx.Done():
 		return backend.Observation{}, ctx.Err()
 	}
@@ -53,7 +56,7 @@ func (b *blockingCreateBackend) Create(ctx context.Context, spec model.SandboxSp
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.fakeBackend.Create(ctx, spec)
+	return b.fakeBackend.Create(ctx, spec, paths)
 }
 
 type fakeConsole struct {
@@ -75,12 +78,16 @@ func (f *fakeConsole) Close() error {
 	return nil
 }
 
-func (f *fakeBackend) Create(_ context.Context, spec model.SandboxSpec) (backend.Observation, error) {
+func (f *fakeBackend) Create(_ context.Context, spec model.SandboxSpec, paths records.RawPaths) (backend.Observation, error) {
+	f.rawPaths = paths
+	if f.beforeCreate != nil {
+		f.beforeCreate(spec)
+	}
 	f.created = append(f.created, spec.SandboxID)
 	if f.createError != nil {
 		return backend.Observation{}, f.createError
 	}
-	observation := backend.Observation{ContainerID: spec.SandboxID, Runtime: "io.containerd.runsc.v1", RuntimeGroupID: spec.RuntimeGroupID, TaskStatus: "running", TaskPID: 42}
+	observation := backend.Observation{Runtime: "io.containerd.runsc.v1", SandboxID: spec.SandboxID, TaskStatus: "running", TaskPID: 42}
 	if f.observations == nil {
 		f.observations = map[string]backend.Observation{}
 	}
@@ -145,18 +152,18 @@ type serializedNetwork struct {
 	mu sync.Mutex
 }
 
-func (n *serializedNetwork) Allocate(ctx context.Context, group, container string, configuration model.NetworkConfiguration) (sandboxnetwork.Allocation, error) {
+func (n *serializedNetwork) Allocate(ctx context.Context, sandboxID string, configuration model.NetworkConfiguration) (sandboxnetwork.Allocation, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	return n.fakeNetwork.Allocate(ctx, group, container, configuration)
+	return n.fakeNetwork.Allocate(ctx, sandboxID, configuration)
 }
 
-func (f *fakeNetwork) Allocate(_ context.Context, group, container string, _ model.NetworkConfiguration) (sandboxnetwork.Allocation, error) {
-	f.allocated = append(f.allocated, group)
+func (f *fakeNetwork) Allocate(_ context.Context, sandboxID string, _ model.NetworkConfiguration) (sandboxnetwork.Allocation, error) {
+	f.allocated = append(f.allocated, sandboxID)
 	if f.allocationError != nil {
 		return sandboxnetwork.Allocation{}, f.allocationError
 	}
-	return sandboxnetwork.Allocation{RuntimeGroupID: group, ContainerID: container, NamespaceName: "ns-" + group, NamespacePath: "/var/run/netns/ns-" + group, IPs: []string{"10.88.0.4"}}, nil
+	return sandboxnetwork.Allocation{SandboxID: sandboxID, NamespaceName: "ns-" + sandboxID, NamespacePath: "/var/run/netns/ns-" + sandboxID, IPs: []string{"10.88.0.4"}}, nil
 }
 func (f *fakeNetwork) Check(_ context.Context, group string) error {
 	f.checked = append(f.checked, group)
@@ -183,7 +190,7 @@ func (f *fakeSupervisor) Status(_ context.Context, spec model.SandboxSpec) (supe
 	if status.Revision == 0 {
 		status.Revision = 1
 	}
-	status.ProtocolVersion, status.RuntimeGroupID, status.SandboxID, status.WorkloadType = 1, spec.RuntimeGroupID, spec.SandboxID, spec.WorkloadType
+	status.ProtocolVersion, status.SandboxID, status.WorkloadType = 1, spec.SandboxID, spec.WorkloadType
 	return status, nil
 }
 func (f *fakeSupervisor) Workers(context.Context, model.SandboxSpec) ([]supervisor.WorkerStatus, error) {
@@ -202,11 +209,11 @@ func (f *fakeSupervisor) Snapshot(ctx context.Context, spec model.SandboxSpec) (
 	snapshot := model.RuntimeSnapshot{
 		Revision: status.Revision, ProtocolVersion: status.ProtocolVersion,
 		SupervisorVersion: status.SupervisorVersion, DenoVersion: status.DenoVersion,
-		RuntimeGroupID: status.RuntimeGroupID, SandboxID: status.SandboxID,
+		SandboxID:    status.SandboxID,
 		WorkloadType: status.WorkloadType, WorkerCount: len(workers),
 	}
 	for _, worker := range workers {
-		snapshot.Workers = append(snapshot.Workers, model.RuntimeWorkerStatus{WorkerID: worker.WorkerID, ExecutionID: worker.ExecutionID, WorkloadID: worker.WorkloadID, State: worker.State})
+		snapshot.Workers = append(snapshot.Workers, model.RuntimeWorkerStatus{WorkerID: worker.WorkerID, WorkloadID: worker.WorkloadID, State: worker.State})
 	}
 	return snapshot, nil
 }
@@ -217,6 +224,35 @@ type fakePorts struct {
 	err    error
 }
 
+type fakeLogRegistry struct {
+	mu               sync.Mutex
+	registered       map[string]string
+	beforeUnregister func(string)
+	position         string
+}
+
+func (f *fakeLogRegistry) ReadPosition() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.position
+}
+
+func (f *fakeLogRegistry) RegisterSandbox(_ context.Context, id, token string) (records.RawPaths, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.registered[id] = token
+	return records.RawPaths{Stdout: "/logs/" + id + "-stdout", Stderr: "/logs/" + id + "-stderr"}, nil
+}
+func (f *fakeLogRegistry) UnregisterSandbox(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.beforeUnregister != nil {
+		f.beforeUnregister(id)
+	}
+	delete(f.registered, id)
+	return nil
+}
+
 func (f *fakePorts) CloseForSandbox(sandboxID string) error {
 	f.closed = append(f.closed, sandboxID)
 	return f.err
@@ -225,7 +261,7 @@ func (f *fakePorts) CloseForSandbox(sandboxID string) error {
 func TestCreateInspectStopDeleteLifecycle(t *testing.T) {
 	manager, store, runtimeBackend, runtimeNetwork, runtimeSupervisor := testManager(t)
 	runtimePorts := manager.ports.(*fakePorts)
-	inspection, err := manager.Create(context.Background(), testSandboxSpec(t, "group-one", "sandbox-one"))
+	inspection, err := manager.Create(context.Background(), testSandboxSpec(t, "sandbox-one"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,12 +269,12 @@ func TestCreateInspectStopDeleteLifecycle(t *testing.T) {
 		t.Fatalf("inspection: %#v", inspection)
 	}
 	workerCalls := runtimeSupervisor.workerCalls
-	resolved, err := manager.ResolveRuntimeGroup("group-one")
-	if err != nil || resolved.RuntimeGroupID != "group-one" || resolved.SandboxID != "sandbox-one" {
+	resolved, err := manager.ResolveSandbox("sandbox-one")
+	if err != nil || resolved.SandboxID != "sandbox-one" {
 		t.Fatalf("resolved=%#v err=%v", resolved, err)
 	}
 	if runtimeSupervisor.workerCalls != workerCalls {
-		t.Fatal("runtime-group resolution contacted the supervisor")
+		t.Fatal("sandbox resolution contacted the supervisor")
 	}
 	runtimeSupervisor.workers = []supervisor.WorkerStatus{{WorkerID: "worker-one", State: "ready"}}
 	inspected, err := manager.Inspect(context.Background(), "sandbox-one")
@@ -267,7 +303,7 @@ func TestCreateInspectStopDeleteLifecycle(t *testing.T) {
 	if _, err := manager.OpenConsole(context.Background(), "sandbox-one", consoleOptions); err == nil || !strings.Contains(err.Error(), "not ready") {
 		t.Fatalf("stopped sandbox console error = %v", err)
 	}
-	_, status, err := store.Load("group-one")
+	_, status, err := store.Load("sandbox-one")
 	if err != nil || status.ObservedState != model.StateStopped || runtimeSupervisor.drains != 1 || len(runtimeBackend.stopped) != 1 || !contains(runtimePorts.closed, "sandbox-one") {
 		t.Fatalf("stopped status=%#v err=%v backend=%#v ports=%#v drains=%d", status, err, runtimeBackend.stopped, runtimePorts.closed, runtimeSupervisor.drains)
 	}
@@ -285,8 +321,80 @@ func TestCreateInspectStopDeleteLifecycle(t *testing.T) {
 	if len(runtimeBackend.deleted) != 1 || len(runtimeNetwork.released) != 1 {
 		t.Fatalf("cleanup backend=%#v network=%#v", runtimeBackend.deleted, runtimeNetwork.released)
 	}
-	if _, _, err := store.Load("group-one"); !errors.Is(err, os.ErrNotExist) {
+	if _, _, err := store.Load("sandbox-one"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("state remains: %v", err)
+	}
+}
+
+func TestLogSourceRegistrationPrecedesNativeStartAndSurvivesFailedCleanup(t *testing.T) {
+	manager, _, runtimeBackend, _, _ := testManager(t)
+	registry := manager.logs.(*fakeLogRegistry)
+	spec := testSandboxSpec(t, "sandbox-logging")
+	runtimeBackend.beforeCreate = func(created model.SandboxSpec) {
+		if registry.registered[created.SandboxID] != created.InternalToken {
+			t.Fatal("native startup preceded trusted log registration")
+		}
+		if runtimeBackend.rawPaths != (records.RawPaths{Stdout: "/logs/" + created.SandboxID + "-stdout", Stderr: "/logs/" + created.SandboxID + "-stderr"}) {
+			t.Fatal("native startup did not receive the registered raw endpoints")
+		}
+	}
+	registry.beforeUnregister = func(id string) {
+		if _, exists := runtimeBackend.observations[id]; exists {
+			t.Fatal("log registration was released before native deletion")
+		}
+	}
+	if _, err := manager.Create(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	runtimeBackend.deleteError = errors.New("native cleanup failed")
+	if err := manager.Delete(context.Background(), spec.SandboxID); err == nil {
+		t.Fatal("expected cleanup failure")
+	}
+	if registry.registered[spec.SandboxID] != spec.InternalToken {
+		t.Fatal("failed cleanup lost live producer binding")
+	}
+	runtimeBackend.deleteError = nil
+	if err := manager.Delete(context.Background(), spec.SandboxID); err != nil {
+		t.Fatal(err)
+	}
+	if len(registry.registered) != 0 {
+		t.Fatal("retired log binding was retained")
+	}
+}
+
+func TestFailedCreationReleasesLogBindingAndReconciliationRestoresExistingToken(t *testing.T) {
+	manager, store, runtimeBackend, _, _ := testManager(t)
+	registry := manager.logs.(*fakeLogRegistry)
+	registry.position = "before-native-start"
+	runtimeBackend.beforeCreate = func(spec model.SandboxSpec) {
+		_, status, err := store.Load(spec.SandboxID)
+		if err != nil || status.NodeID != manager.instanceUUID || status.CreatedAt.IsZero() || status.LogPosition != "before-native-start" {
+			t.Fatalf("log reference was not persisted before native startup: %#v, %v", status, err)
+		}
+	}
+	spec := testSandboxSpec(t, "sandbox-logging-failure")
+	runtimeBackend.createError = errors.New("start failed")
+	if _, err := manager.Create(context.Background(), spec); err == nil {
+		t.Fatal("expected startup failure")
+	}
+	if len(registry.registered) != 0 {
+		t.Fatal("creation rollback retained its log binding")
+	}
+	failed := historyForSandbox(t, manager, spec.SandboxID).Record.Status
+	if failed.LogPosition != "before-native-start" || failed.CreatedAt.IsZero() || !failed.StartedAt.IsZero() {
+		t.Fatalf("native startup failure lost its reference: %#v", failed)
+	}
+	runtimeBackend.createError = nil
+	spec = testSandboxSpec(t, "sandbox-logging-restored")
+	if _, err := manager.Create(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	registry.registered = map[string]string{}
+	if report, err := manager.Reconcile(context.Background()); err != nil || report.Restored != 1 {
+		t.Fatal(report, err)
+	}
+	if registry.registered[spec.SandboxID] != spec.InternalToken {
+		t.Fatal("restoration changed or omitted producer credentials")
 	}
 }
 
@@ -296,10 +404,10 @@ func TestManagerAllocatesCompactSandboxIDsAndRejectsRetainedCollision(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if matched, _ := regexp.MatchString(`^sbx-[a-z0-9]{8}$`, id); !matched {
+	if matched, _ := regexp.MatchString(`^sbx-[a-z0-9]{10}$`, id); !matched {
 		t.Fatalf("sandbox ID = %q", id)
 	}
-	spec := testSandboxSpec(t, "group-retained", id)
+	spec := testSandboxSpec(t, id)
 	if _, err := manager.history.Archive(spec, model.SandboxStatus{ObservedState: model.StateFailed}, "failed", manager.historyRetention); err != nil {
 		t.Fatal(err)
 	}
@@ -310,22 +418,29 @@ func TestManagerAllocatesCompactSandboxIDsAndRejectsRetainedCollision(t *testing
 
 func TestCreateFailureRollsBackAndArchivesFailure(t *testing.T) {
 	manager, store, runtimeBackend, runtimeNetwork, runtimeSupervisor := testManager(t)
+	manager.logs.(*fakeLogRegistry).position = "before-sandbox-startup"
 	runtimeSupervisor.statusError = errors.New("supervisor offline")
 	manager.startupTimeout = 5 * time.Millisecond
 	manager.probeInterval = time.Millisecond
-	_, err := manager.Create(context.Background(), testSandboxSpec(t, "group-failed", "sandbox-failed"))
+	inspection, err := manager.Create(context.Background(), testSandboxSpec(t, "sandbox-failed"))
 	if err == nil || !strings.Contains(err.Error(), "did not become ready") {
 		t.Fatalf("create error=%v", err)
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("create error lost readiness deadline: %v", err)
 	}
-	if _, _, loadErr := store.Load("group-failed"); !errors.Is(loadErr, os.ErrNotExist) {
+	if inspection.Spec.SandboxID != "sandbox-failed" {
+		t.Fatalf("create error lost allocated sandbox identity: %#v", inspection)
+	}
+	if _, _, loadErr := store.Load("sandbox-failed"); !errors.Is(loadErr, os.ErrNotExist) {
 		t.Fatalf("failed sandbox remains live: %v", loadErr)
 	}
 	archived := historyForSandbox(t, manager, "sandbox-failed")
 	if archived.Record.Status.ObservedState != model.StateFailed || archived.Record.Spec.InternalToken != "" || !strings.Contains(archived.Record.Status.FailureReason, "supervisor offline") {
 		t.Fatalf("history=%#v", archived)
+	}
+	if archived.Record.Status.NodeID != manager.instanceUUID || !archived.Record.Status.CreatedAt.Equal(manager.now()) || archived.Record.Status.LogPosition != "before-sandbox-startup" {
+		t.Fatalf("failed startup lost its log reference: %#v", archived.Record.Status)
 	}
 	if len(runtimeBackend.deleted) != 1 || len(runtimeNetwork.released) != 1 {
 		t.Fatalf("rollback backend=%#v network=%#v", runtimeBackend.deleted, runtimeNetwork.released)
@@ -334,7 +449,8 @@ func TestCreateFailureRollsBackAndArchivesFailure(t *testing.T) {
 
 func TestAssignWarmRequiresCleanHealthyGroupAndPersistsOwner(t *testing.T) {
 	manager, store, runtimeBackend, _, _ := testManager(t)
-	spec := testSandboxSpec(t, "group-warm", "sandbox-warm")
+	manager.logs.(*fakeLogRegistry).position = "before-warm-startup"
+	spec := testSandboxSpec(t, "sandbox-warm")
 	spec.GroupKey = ""
 	spec.OwnerIDs = nil
 	spec.Lifecycle.Warm = true
@@ -342,43 +458,46 @@ func TestAssignWarmRequiresCleanHealthyGroupAndPersistsOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assigned, err := manager.AssignWarm(context.Background(), inspection.Spec.RuntimeGroupID, "job:owner:nightly", "nightly")
+	assigned, err := manager.AssignWarm(context.Background(), inspection.Spec.SandboxID, "job:owner:nightly", "nightly")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if assigned.Spec.Lifecycle.Warm || assigned.Spec.GroupKey != "job:owner:nightly" || len(assigned.Spec.OwnerIDs) != 1 || assigned.Spec.OwnerIDs[0] != "nightly" || assigned.Status.CurrentOwners[0] != "nightly" {
 		t.Fatalf("assigned=%#v", assigned)
 	}
-	stored, status, err := store.Load("group-warm")
+	if assigned.Status.NodeID != manager.instanceUUID || assigned.Status.LogPosition != "before-warm-startup" || !assigned.Status.CreatedAt.Equal(inspection.Status.CreatedAt) {
+		t.Fatalf("warm assignment changed the sandbox log reference: %#v", assigned.Status)
+	}
+	stored, status, err := store.Load("sandbox-warm")
 	if err != nil || stored.Lifecycle.Warm || status.CurrentOwners[0] != "nightly" || runtimeBackend.labels["sandbox-warm"]["the8020.owner"] != "nightly" {
 		t.Fatalf("stored=%#v status=%#v labels=%#v err=%v", stored, status, runtimeBackend.labels, err)
 	}
-	if _, err := manager.AssignWarm(context.Background(), "group-warm", "job:owner:other", "other"); err == nil {
+	if _, err := manager.AssignWarm(context.Background(), "sandbox-warm", "job:owner:other", "other"); err == nil {
 		t.Fatal("assigned warm group was reusable")
 	}
 }
 
 func TestAddOwnerPersistsSharedGroupOwnershipAndContainerLabel(t *testing.T) {
 	manager, store, runtimeBackend, _, _ := testManager(t)
-	spec := testSandboxSpec(t, "group-shared", "sandbox-shared")
+	spec := testSandboxSpec(t, "sandbox-shared")
 	if _, err := manager.Create(context.Background(), spec); err != nil {
 		t.Fatal(err)
 	}
-	updated, err := manager.AddOwner(context.Background(), spec.RuntimeGroupID, "second-owner")
+	updated, err := manager.AddOwner(context.Background(), spec.SandboxID, "second-owner")
 	if err != nil {
 		t.Fatal(err)
 	}
-	stored, status, err := store.Load(spec.RuntimeGroupID)
+	stored, status, err := store.Load(spec.SandboxID)
 	if err != nil || len(updated.Spec.OwnerIDs) != 2 || updated.Spec.OwnerIDs[1] != "second-owner" || len(status.CurrentOwners) != 2 || len(stored.OwnerIDs) != 2 || runtimeBackend.labels[spec.SandboxID]["the8020.owners"] != "job,second-owner" {
 		t.Fatalf("updated=%#v stored=%#v status=%#v labels=%#v err=%v", updated, stored, status, runtimeBackend.labels, err)
 	}
 	if _, exists := runtimeBackend.labels[spec.SandboxID]["the8020.services"]; exists {
 		t.Fatalf("job ownership update emitted an empty service label: %#v", runtimeBackend.labels)
 	}
-	if _, err := manager.AddOwner(context.Background(), spec.RuntimeGroupID, "second-owner"); err != nil {
+	if _, err := manager.AddOwner(context.Background(), spec.SandboxID, "second-owner"); err != nil {
 		t.Fatal(err)
 	}
-	stored, _, _ = store.Load(spec.RuntimeGroupID)
+	stored, _, _ = store.Load(spec.SandboxID)
 	if len(stored.OwnerIDs) != 2 {
 		t.Fatalf("idempotent owner add duplicated owners: %#v", stored.OwnerIDs)
 	}
@@ -386,7 +505,7 @@ func TestAddOwnerPersistsSharedGroupOwnershipAndContainerLabel(t *testing.T) {
 
 func TestRemoveOwnerRetainsSharedSandboxThenDeletesItWhenEmpty(t *testing.T) {
 	manager, store, runtimeBackend, runtimeNetwork, _ := testManager(t)
-	spec := testSandboxSpec(t, "group-shared", "sandbox-shared")
+	spec := testSandboxSpec(t, "sandbox-shared")
 	spec.WorkloadType = model.WorkloadService
 	spec.RuntimeProfile.WorkloadType = model.WorkloadService
 	profileHash, err := spec.RuntimeProfile.Hash()
@@ -399,22 +518,22 @@ func TestRemoveOwnerRetainsSharedSandboxThenDeletesItWhenEmpty(t *testing.T) {
 	if _, err := manager.Create(context.Background(), spec); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.AddOwner(context.Background(), spec.RuntimeGroupID, "replica-b", "service-b"); err != nil {
+	if _, err := manager.AddOwner(context.Background(), spec.SandboxID, "replica-b", "service-b"); err != nil {
 		t.Fatal(err)
 	}
-	destroyed, err := manager.RemoveOwner(context.Background(), spec.RuntimeGroupID, "replica-a", "service-a")
+	destroyed, err := manager.RemoveOwner(context.Background(), spec.SandboxID, "replica-a", "service-a")
 	if err != nil || destroyed {
 		t.Fatalf("destroyed=%v err=%v", destroyed, err)
 	}
-	stored, status, err := store.Load(spec.RuntimeGroupID)
+	stored, status, err := store.Load(spec.SandboxID)
 	if err != nil || len(stored.OwnerIDs) != 1 || stored.OwnerIDs[0] != "replica-b" || len(stored.ServiceIDs) != 1 || stored.ServiceIDs[0] != "service-b" || len(status.CurrentOwners) != 1 || runtimeBackend.labels[spec.SandboxID]["the8020.owners"] != "replica-b" || runtimeBackend.labels[spec.SandboxID]["the8020.services"] != "service-b" {
 		t.Fatalf("stored=%#v status=%#v labels=%#v err=%v", stored, status, runtimeBackend.labels, err)
 	}
-	destroyed, err = manager.RemoveOwner(context.Background(), spec.RuntimeGroupID, "replica-b", "service-b")
+	destroyed, err = manager.RemoveOwner(context.Background(), spec.SandboxID, "replica-b", "service-b")
 	if err != nil || !destroyed {
 		t.Fatalf("destroyed=%v err=%v", destroyed, err)
 	}
-	if _, _, err := store.Load(spec.RuntimeGroupID); !errors.Is(err, os.ErrNotExist) || len(runtimeBackend.deleted) != 1 || len(runtimeNetwork.released) != 1 {
+	if _, _, err := store.Load(spec.SandboxID); !errors.Is(err, os.ErrNotExist) || len(runtimeBackend.deleted) != 1 || len(runtimeNetwork.released) != 1 {
 		t.Fatalf("load err=%v deleted=%#v released=%#v", err, runtimeBackend.deleted, runtimeNetwork.released)
 	}
 }
@@ -422,12 +541,12 @@ func TestRemoveOwnerRetainsSharedSandboxThenDeletesItWhenEmpty(t *testing.T) {
 func TestSandboxAdmissionEnforcesCountAndTemporaryStorageBudgets(t *testing.T) {
 	manager, _, _, _, _ := testManager(t)
 	manager.nodeLimits = NodeLimits{MaximumSandboxes: 1, TemporaryStorageBytes: 100}
-	first := testSandboxSpec(t, "group-first", "sandbox-first")
+	first := testSandboxSpec(t, "sandbox-first")
 	first.ResourceLimits.TmpfsMaximum = 64
 	if _, err := manager.Create(context.Background(), first); err != nil {
 		t.Fatal(err)
 	}
-	second := testSandboxSpec(t, "group-second", "sandbox-second")
+	second := testSandboxSpec(t, "sandbox-second")
 	if _, err := manager.Create(context.Background(), second); err == nil || !strings.Contains(err.Error(), "sandbox capacity") {
 		t.Fatalf("second sandbox admission error=%v", err)
 	}
@@ -445,8 +564,8 @@ func TestUnrelatedSandboxCreationsDoNotSerializeSlowBackendIO(t *testing.T) {
 	manager.network = &serializedNetwork{fakeNetwork: runtimeNetwork}
 
 	results := make(chan error, 2)
-	for _, identity := range [][2]string{{"group-parallel-a", "sandbox-parallel-a"}, {"group-parallel-b", "sandbox-parallel-b"}} {
-		spec := testSandboxSpec(t, identity[0], identity[1])
+	for _, identity := range []string{"sandbox-parallel-a", "sandbox-parallel-b"} {
+		spec := testSandboxSpec(t, identity)
 		go func() {
 			_, err := manager.Create(context.Background(), spec)
 			results <- err
@@ -469,7 +588,7 @@ func TestUnrelatedSandboxCreationsDoNotSerializeSlowBackendIO(t *testing.T) {
 		}
 	}
 	if len(seen) != 2 {
-		t.Fatalf("entered runtime groups=%#v", seen)
+		t.Fatalf("entered sandboxes=%#v", seen)
 	}
 }
 
@@ -478,7 +597,7 @@ func TestMetricsReadsSandboxCgroupAndPersistsSnapshot(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	manager.now = func() time.Time { return now }
 	manager.cgroupRoot = t.TempDir()
-	spec := testSandboxSpec(t, "group-metrics", "sandbox-metrics")
+	spec := testSandboxSpec(t, "sandbox-metrics")
 	if _, err := manager.Create(context.Background(), spec); err != nil {
 		t.Fatal(err)
 	}
@@ -507,7 +626,7 @@ func TestMetricsReadsSandboxCgroupAndPersistsSnapshot(t *testing.T) {
 	if err != nil || metrics.CPUUsageMicros != 500033 || metrics.MemoryCurrent != 200 || !metrics.SampledAt.Equal(now) {
 		t.Fatalf("derived metrics=%#v err=%v", metrics, err)
 	}
-	_, status, err := store.Load(spec.RuntimeGroupID)
+	_, status, err := store.Load(spec.SandboxID)
 	if err != nil || status.Metrics.MemoryCurrent != 200 || status.Metrics.CPUUsageMicros != 500033 {
 		t.Fatalf("status=%#v err=%v", status, err)
 	}
@@ -517,7 +636,7 @@ func TestHealthCheckDetectsOOMPreservesMetricsAndTerminatesGroup(t *testing.T) {
 	manager, store, runtimeBackend, runtimeNetwork, _ := testManager(t)
 	runtimePorts := manager.ports.(*fakePorts)
 	manager.cgroupRoot = t.TempDir()
-	spec := testSandboxSpec(t, "group-oom", "sandbox-oom")
+	spec := testSandboxSpec(t, "sandbox-oom")
 	if _, err := manager.Create(context.Background(), spec); err != nil {
 		t.Fatal(err)
 	}
@@ -536,18 +655,18 @@ func TestHealthCheckDetectsOOMPreservesMetricsAndTerminatesGroup(t *testing.T) {
 	if err != nil || report.Checked != 1 || len(report.Failures) != 1 || !report.Failures[0].OOM || !strings.Contains(report.Failures[0].Reason, "OOM") {
 		t.Fatalf("report=%#v err=%v", report, err)
 	}
-	if _, _, err := store.Load(spec.RuntimeGroupID); !errors.Is(err, os.ErrNotExist) {
+	if _, _, err := store.Load(spec.SandboxID); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("failed sandbox remains live: %v", err)
 	}
 	archived := historyForSandbox(t, manager, spec.SandboxID)
-	if archived.Record.Status.ObservedState != model.StateFailed || archived.Record.Status.Metrics.MemoryPeak != 256 || len(runtimeBackend.killed) != 1 || !contains(runtimeBackend.deleted, spec.SandboxID) || !contains(runtimeNetwork.released, spec.RuntimeGroupID) || !contains(runtimePorts.closed, spec.SandboxID) {
+	if archived.Record.Status.ObservedState != model.StateFailed || archived.Record.Status.Metrics.MemoryPeak != 256 || len(runtimeBackend.killed) != 1 || !contains(runtimeBackend.deleted, spec.SandboxID) || !contains(runtimeNetwork.released, spec.SandboxID) || !contains(runtimePorts.closed, spec.SandboxID) {
 		t.Fatalf("history=%#v killed=%#v deleted=%#v network=%#v ports=%#v", archived, runtimeBackend.killed, runtimeBackend.deleted, runtimeNetwork.released, runtimePorts.closed)
 	}
 }
 
 func TestHealthyHeartbeatCheckUsesOnlyCachedState(t *testing.T) {
 	manager, _, runtimeBackend, _, _ := testManager(t)
-	spec := testSandboxSpec(t, "group-healthy-cache", "sandbox-healthy-cache")
+	spec := testSandboxSpec(t, "sandbox-healthy-cache")
 	if _, err := manager.Create(context.Background(), spec); err != nil {
 		t.Fatal(err)
 	}
@@ -564,7 +683,7 @@ func TestHealthyHeartbeatCheckUsesOnlyCachedState(t *testing.T) {
 
 func TestHealthCheckDetectsSupervisorHeartbeatTimeout(t *testing.T) {
 	manager, store, runtimeBackend, _, _ := testManager(t)
-	spec := testSandboxSpec(t, "group-timeout", "sandbox-timeout")
+	spec := testSandboxSpec(t, "sandbox-timeout")
 	if _, err := manager.Create(context.Background(), spec); err != nil {
 		t.Fatal(err)
 	}
@@ -573,7 +692,7 @@ func TestHealthCheckDetectsSupervisorHeartbeatTimeout(t *testing.T) {
 	if err != nil || len(report.Failures) != 1 || report.Failures[0].OOM || !strings.Contains(report.Failures[0].Reason, "heartbeat") {
 		t.Fatalf("report=%#v err=%v", report, err)
 	}
-	if _, _, err := store.Load(spec.RuntimeGroupID); !errors.Is(err, os.ErrNotExist) {
+	if _, _, err := store.Load(spec.SandboxID); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("failed sandbox remains live: %v", err)
 	}
 	archived := historyForSandbox(t, manager, spec.SandboxID)
@@ -584,7 +703,7 @@ func TestHealthCheckDetectsSupervisorHeartbeatTimeout(t *testing.T) {
 
 func TestHealthCleanupFailureRemainsInLiveCatalog(t *testing.T) {
 	manager, store, runtimeBackend, _, _ := testManager(t)
-	spec := testSandboxSpec(t, "group-cleanup-failed", "sandbox-cleanup-failed")
+	spec := testSandboxSpec(t, "sandbox-cleanup-failed")
 	if _, err := manager.Create(context.Background(), spec); err != nil {
 		t.Fatal(err)
 	}
@@ -594,7 +713,7 @@ func TestHealthCleanupFailureRemainsInLiveCatalog(t *testing.T) {
 	if err != nil || len(report.Failures) != 1 || !strings.Contains(report.Failures[0].Reason, "backend busy") {
 		t.Fatalf("report=%#v err=%v", report, err)
 	}
-	_, status, err := store.Load(spec.RuntimeGroupID)
+	_, status, err := store.Load(spec.SandboxID)
 	if err != nil || status.ObservedState != model.StateFailed {
 		t.Fatalf("live failed status=%#v err=%v", status, err)
 	}
@@ -608,70 +727,70 @@ func TestHealthCleanupFailureRemainsInLiveCatalog(t *testing.T) {
 	}
 }
 
-func TestReconcileRestoresGroupsMarksMissingAndDeletesOrphans(t *testing.T) {
+func TestReconcileRestoresSandboxesMarksMissingAndDeletesOrphans(t *testing.T) {
 	manager, store, runtimeBackend, runtimeNetwork, _ := testManager(t)
-	for _, item := range []struct{ group, sandbox string }{{"group-restored", "sandbox-restored"}, {"group-missing", "sandbox-missing"}} {
-		spec := testSandboxSpec(t, item.group, item.sandbox)
+	for _, sandboxID := range []string{"sandbox-restored", "sandbox-missing"} {
+		spec := testSandboxSpec(t, sandboxID)
 		if err := store.SaveSpec(spec); err != nil {
 			t.Fatal(err)
 		}
-		if err := store.SaveStatus(item.group, model.SandboxStatus{DesiredState: model.StateReady, ObservedState: model.StateReady}); err != nil {
+		if err := store.SaveStatus(sandboxID, model.SandboxStatus{DesiredState: model.StateReady, ObservedState: model.StateReady}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	runtimeBackend.observations = map[string]backend.Observation{
-		"sandbox-restored": {ContainerID: "sandbox-restored", RuntimeGroupID: "group-restored", Runtime: "io.containerd.runsc.v1", TaskStatus: "running", TaskPID: 99},
-		"orphan":           {ContainerID: "orphan", RuntimeGroupID: "group-orphan", Runtime: "io.containerd.runsc.v1", TaskStatus: "running"},
+		"sandbox-restored": {SandboxID: "sandbox-restored", Runtime: "io.containerd.runsc.v1", TaskStatus: "running", TaskPID: 99},
+		"orphan":           {SandboxID: "orphan", Runtime: "io.containerd.runsc.v1", TaskStatus: "running"},
 	}
 	report, err := manager.Reconcile(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Restored != 1 || len(report.Missing) != 1 || report.Missing[0] != "group-missing" || len(report.Terminated) != 1 || report.Terminated[0].SandboxID != "sandbox-missing" || len(report.OrphansDeleted) != 1 || report.OrphansDeleted[0] != "orphan" {
+	if report.Restored != 1 || len(report.Missing) != 1 || report.Missing[0] != "sandbox-missing" || len(report.Terminated) != 1 || report.Terminated[0].SandboxID != "sandbox-missing" || len(report.OrphansDeleted) != 1 || report.OrphansDeleted[0] != "orphan" {
 		t.Fatalf("report=%#v", report)
 	}
-	if _, _, err := store.Load("group-missing"); !errors.Is(err, os.ErrNotExist) {
+	if _, _, err := store.Load("sandbox-missing"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing sandbox remains live: %v", err)
 	}
 	missing := historyForSandbox(t, manager, "sandbox-missing")
-	if missing.Record.Status.ObservedState != model.StateFailed || len(runtimeNetwork.checked) != 1 || !contains(runtimeBackend.deleted, "orphan") || !contains(runtimeNetwork.released, "group-orphan") {
+	if missing.Record.Status.ObservedState != model.StateFailed || len(runtimeNetwork.checked) != 1 || !contains(runtimeBackend.deleted, "orphan") || !contains(runtimeNetwork.released, "orphan") {
 		t.Fatalf("missing=%#v backend=%#v network=%#v", missing, runtimeBackend.deleted, runtimeNetwork)
 	}
 }
 
-func TestStartupReconcilePreservesHealthyGroups(t *testing.T) {
+func TestStartupReconcilePreservesHealthySandboxes(t *testing.T) {
 	manager, store, runtimeBackend, _, _ := testManager(t)
-	spec := testSandboxSpec(t, "group-existing", "sandbox-existing")
+	spec := testSandboxSpec(t, "sandbox-existing")
 	if err := store.SaveSpec(spec); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SaveStatus(spec.RuntimeGroupID, model.SandboxStatus{DesiredState: model.StateReady, ObservedState: model.StateReady}); err != nil {
+	if err := store.SaveStatus(spec.SandboxID, model.SandboxStatus{DesiredState: model.StateReady, ObservedState: model.StateReady}); err != nil {
 		t.Fatal(err)
 	}
-	runtimeBackend.observations[spec.SandboxID] = backend.Observation{ContainerID: spec.SandboxID, RuntimeGroupID: spec.RuntimeGroupID, Runtime: "io.containerd.runsc.v1", TaskStatus: "running", TaskPID: 99}
+	runtimeBackend.observations[spec.SandboxID] = backend.Observation{SandboxID: spec.SandboxID, Runtime: "io.containerd.runsc.v1", TaskStatus: "running", TaskPID: 99}
 
 	report, err := manager.Startup(context.Background(), StartupReconcile)
 	if err != nil || report.Restored != 1 {
 		t.Fatalf("report=%#v err=%v", report, err)
 	}
-	if _, _, err := store.Load(spec.RuntimeGroupID); err != nil || len(runtimeBackend.killed) != 0 || len(runtimeBackend.deleted) != 0 {
+	if _, _, err := store.Load(spec.SandboxID); err != nil || len(runtimeBackend.killed) != 0 || len(runtimeBackend.deleted) != 0 {
 		t.Fatalf("existing group was not preserved: killed=%#v deleted=%#v err=%v", runtimeBackend.killed, runtimeBackend.deleted, err)
 	}
 }
 
-func TestStartupDestroyRemovesKnownGroupsAndOwnedOrphans(t *testing.T) {
+func TestStartupDestroyRemovesKnownSandboxesAndOwnedOrphans(t *testing.T) {
 	manager, store, runtimeBackend, runtimeNetwork, runtimeSupervisor := testManager(t)
 	runtimeSupervisor.statusError = errors.New("startup destruction must not probe supervisors")
-	spec := testSandboxSpec(t, "group-existing", "sandbox-existing")
+	spec := testSandboxSpec(t, "sandbox-existing")
 	if err := store.SaveSpec(spec); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SaveStatus(spec.RuntimeGroupID, model.SandboxStatus{DesiredState: model.StateReady, ObservedState: model.StateReady}); err != nil {
+	if err := store.SaveStatus(spec.SandboxID, model.SandboxStatus{DesiredState: model.StateReady, ObservedState: model.StateReady}); err != nil {
 		t.Fatal(err)
 	}
 	runtimeBackend.observations = map[string]backend.Observation{
-		spec.SandboxID: {ContainerID: spec.SandboxID, RuntimeGroupID: spec.RuntimeGroupID, Runtime: "io.containerd.runsc.v1", TaskStatus: "running", TaskPID: 99},
-		"orphan":       {ContainerID: "orphan", RuntimeGroupID: "group-orphan", Runtime: "io.containerd.runsc.v1", TaskStatus: "running", TaskPID: 100},
+		spec.SandboxID: {SandboxID: spec.SandboxID, Runtime: "io.containerd.runsc.v1", TaskStatus: "running", TaskPID: 99},
+		"orphan":       {SandboxID: "orphan", Runtime: "io.containerd.runsc.v1", TaskStatus: "running", TaskPID: 100},
 	}
 
 	report, err := manager.Startup(context.Background(), StartupDestroy)
@@ -684,7 +803,7 @@ func TestStartupDestroyRemovesKnownGroupsAndOwnedOrphans(t *testing.T) {
 	if len(runtimeBackend.observations) != 0 || len(runtimeBackend.killed) != 0 || !contains(runtimeBackend.deleted, spec.SandboxID) || !contains(runtimeBackend.deleted, "orphan") {
 		t.Fatalf("observations=%#v killed=%#v deleted=%#v", runtimeBackend.observations, runtimeBackend.killed, runtimeBackend.deleted)
 	}
-	if !contains(runtimeNetwork.released, spec.RuntimeGroupID) || !contains(runtimeNetwork.released, "group-orphan") {
+	if !contains(runtimeNetwork.released, spec.SandboxID) || !contains(runtimeNetwork.released, "orphan") {
 		t.Fatalf("released networks=%#v", runtimeNetwork.released)
 	}
 	if len(runtimeNetwork.checked) != 0 {
@@ -694,7 +813,7 @@ func TestStartupDestroyRemovesKnownGroupsAndOwnedOrphans(t *testing.T) {
 
 func TestStartupRejectsUnknownPolicyWithoutSideEffects(t *testing.T) {
 	manager, _, runtimeBackend, _, _ := testManager(t)
-	runtimeBackend.observations["orphan"] = backend.Observation{ContainerID: "orphan", RuntimeGroupID: "group-orphan", TaskStatus: "running"}
+	runtimeBackend.observations["orphan"] = backend.Observation{SandboxID: "orphan", TaskStatus: "running"}
 	if _, err := manager.Startup(context.Background(), StartupPolicy("invalid")); err == nil {
 		t.Fatal("unknown startup policy was accepted")
 	}
@@ -706,7 +825,7 @@ func TestStartupRejectsUnknownPolicyWithoutSideEffects(t *testing.T) {
 func testManager(t *testing.T) (*Manager, *state.Store, *fakeBackend, *fakeNetwork, *fakeSupervisor) {
 	t.Helper()
 	root := t.TempDir()
-	store, err := state.New(filepath.Join(root, "groups"))
+	store, err := state.New(filepath.Join(root, "sandboxes"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -718,14 +837,14 @@ func testManager(t *testing.T) (*Manager, *state.Store, *fakeBackend, *fakeNetwo
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager, err := New(Config{InstanceUUID: "instance-one", Store: store, Backend: runtimeBackend, Network: runtimeNetwork, Supervisor: runtimeSupervisor, Ports: &fakePorts{}, History: historyStore, StartupTimeout: 50 * time.Millisecond, ProbeInterval: time.Millisecond, StopGrace: time.Millisecond, Now: now})
+	manager, err := New(Config{InstanceUUID: "instance-one", Store: store, Backend: runtimeBackend, Network: runtimeNetwork, Supervisor: runtimeSupervisor, Ports: &fakePorts{}, Logs: &fakeLogRegistry{registered: map[string]string{}}, History: historyStore, StartupTimeout: 50 * time.Millisecond, ProbeInterval: time.Millisecond, StopGrace: time.Millisecond, Now: now})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return manager, store, runtimeBackend, runtimeNetwork, runtimeSupervisor
 }
 
-func testSandboxSpec(t *testing.T, group, sandbox string) model.SandboxSpec {
+func testSandboxSpec(t *testing.T, sandbox string) model.SandboxSpec {
 	t.Helper()
 	digest := "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	profile := model.RuntimeProfile{WorkloadType: model.WorkloadJob, ImageDigest: digest, DependencyMode: model.DependencyCachedOnly, NetworkMode: "netstack", ResourceClass: "job-default"}
@@ -733,7 +852,7 @@ func testSandboxSpec(t *testing.T, group, sandbox string) model.SandboxSpec {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return model.SandboxSpec{SandboxID: sandbox, RuntimeGroupID: group, WorkloadType: model.WorkloadJob, GroupKey: "job:owner:job", OwnerIDs: []string{"job"}, ImageDigest: digest, RuntimeProfile: profile, ProfileHash: hash, ResourceLimits: model.ResourceLimits{PIDMaximum: 32, TmpfsMaximum: 64}, Network: model.NetworkConfiguration{Mode: "netstack", NetworkName: "the8020"}, DependencyMode: model.DependencyCachedOnly, Lifecycle: model.LifecyclePolicy{StopGracePeriod: time.Second}, InternalToken: "0123456789abcdef0123456789abcdef"}
+	return model.SandboxSpec{SandboxID: sandbox, WorkloadType: model.WorkloadJob, GroupKey: "job:owner:job", OwnerIDs: []string{"job"}, ImageDigest: digest, RuntimeProfile: profile, ProfileHash: hash, ResourceLimits: model.ResourceLimits{PIDMaximum: 32, TmpfsMaximum: 64}, Network: model.NetworkConfiguration{Mode: "netstack", NetworkName: "the8020"}, DependencyMode: model.DependencyCachedOnly, Lifecycle: model.LifecyclePolicy{StopGracePeriod: time.Second}, InternalToken: "0123456789abcdef0123456789abcdef"}
 }
 
 func contains(values []string, target string) bool {

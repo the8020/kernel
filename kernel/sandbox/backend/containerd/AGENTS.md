@@ -22,6 +22,9 @@ Parent DOX: [kernel/kernel/sandbox/backend DOX](../AGENTS.md).
   mounts, a cgroup-v2 PID limit, one workload type, and the configured
   supervisor heartbeat/Worker-stop intervals. CPU and memory receive no cgroup
   ceilings.
+- Use the stock installed gVisor shim and shared runsc configuration. Runtime
+  internal diagnostic files keep their upstream owner and are outside logd
+  retention; task stdout/stderr goes directly to logd's FIFOs.
 - Every container receives the node-local runsc configuration explicitly. It
   permits opening existing host Unix sockets so the mounted kernel callback
   socket works, but does not permit creating host sockets.
@@ -34,7 +37,12 @@ Parent DOX: [kernel/kernel/sandbox/backend DOX](../AGENTS.md).
 - Create failures clean partial task/container/snapshot state; stop is graceful
   then forced, kill is immediate, and delete removes the task before the
   snapshot-backed container.
-- Console exec uses containerd task exec with either a terminal or transparent
+- Task I/O uses the already registered stdout/stderr FIFOs through cio.Load. The
+  shim opens the native endpoints directly; the kernel starts no copy goroutines
+  and the FIFO set has no unlink callback. Logging owns endpoint lifetime across
+  kernel/logger restart and confirmed task deletion.
+- Console exec uses a shared `con-` ID; containerd task exec rejects collisions.
+  Console exec uses containerd task exec with either a terminal or transparent
   pipe I/O according to the caller; resize and close address only the exec
   process and never the owning task.
 
@@ -45,10 +53,8 @@ Parent DOX: [kernel/kernel/sandbox/backend DOX](../AGENTS.md).
 
 # Verification
 
-- Unit tests cover namespace derivation, OCI
-  security/resources/mounts/environment/network namespace, mutable shared-owner
-  metadata, reserved labels, dependency mode, and ownership filtering.
-  Privileged tests use real containerd and gVisor.
+- Unit tests cover OCI configuration, ownership, and direct use of logger-owned
+  stdout/stderr FIFOs. Full runtime integration requires containerd and gVisor.
 
 # Child DOX Index
 

@@ -15,5 +15,15 @@ export default async () => {
   } catch (error) {
     socket = error instanceof Error ? error.name : "denied";
   }
-  return { token, socket };
+  let logs = "connected";
+  try {
+    const connection = await Deno.connect({
+      transport: "unix",
+      path: "/run/the8020/logs.sock",
+    });
+    connection.close();
+  } catch (error) {
+    logs = error instanceof Error ? error.name : "denied";
+  }
+  return { token, socket, logs };
 };

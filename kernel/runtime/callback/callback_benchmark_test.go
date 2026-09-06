@@ -15,7 +15,7 @@ import (
 
 func BenchmarkConcurrentRuntimeHeartbeat(b *testing.B) {
 	root := b.TempDir()
-	store, err := state.New(filepath.Join(root, "groups"))
+	store, err := state.New(filepath.Join(root, "sandboxes"))
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -27,7 +27,7 @@ func BenchmarkConcurrentRuntimeHeartbeat(b *testing.B) {
 	b.Cleanup(func() { _ = server.Close(context.Background()) })
 	body := callbackMessage(b, protocol.MessageHeartbeat, spec, statusPayload{
 		Revision: 1, ProtocolVersion: protocol.ProtocolVersion,
-		RuntimeGroupID: spec.RuntimeGroupID, SandboxID: spec.SandboxID,
+		SandboxID:    spec.SandboxID,
 		WorkloadType: string(spec.WorkloadType),
 	})
 	transport := &http.Transport{

@@ -2,9 +2,7 @@ package packages
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -15,6 +13,7 @@ import (
 
 	"the8020/kernel/database"
 	"the8020/kernel/deployment"
+	idgen "the8020/kernel/identity"
 	"the8020/kernel/sandbox/model"
 )
 
@@ -735,13 +734,7 @@ func (s *Store) packagePath(packageID string) string {
 	return filepath.Join(s.packagesRoot, identity.Namespace, identity.Repository)
 }
 
-func activationID() (string, error) {
-	value := make([]byte, 16)
-	if _, err := rand.Read(value); err != nil {
-		return "", err
-	}
-	return "activation-" + hex.EncodeToString(value), nil
-}
+func activationID() (string, error) { return idgen.New("act") }
 
 func cloneCommits(source map[string]string) map[string]string {
 	result := make(map[string]string, len(source))

@@ -76,6 +76,17 @@ type openedConsole struct {
 
 type fakeConsoles struct{ opened chan openedConsole }
 
+func (c *fakeConsoles) ResolveTarget(id string) (string, error) {
+	switch id {
+	case "sbx-aaaaaaaaaa":
+		return "development", nil
+	case "sbx-ax9thsl300":
+		return "runtime", nil
+	default:
+		return "", errors.New("sandbox unavailable")
+	}
+}
+
 func (c *fakeConsoles) OpenConsole(_ context.Context, kind, sandboxID string, options backend.ConsoleOptions) (backend.Console, error) {
 	terminal := newFakeConsole()
 	c.opened <- openedConsole{kind: kind, sandboxID: sandboxID, options: options, terminal: terminal}
@@ -134,7 +145,7 @@ func (c *fakeConsole) finish() { c.finishOnce.Do(func() { _ = c.writer.Close() }
 func TestSSHPasswordTTYAndRouting(t *testing.T) {
 	authentication := testAuthentication()
 	observedAuthentication := &observingAuthentication{manager: authentication}
-	development := &fakeDevelopment{sandbox: "dev-alice"}
+	development := &fakeDevelopment{sandbox: "sbx-aaaaaaaaaa"}
 	consoles := &fakeConsoles{opened: make(chan openedConsole, 8)}
 	manager, err := New(Config{
 		Port: 0, HostKeyPath: filepath.Join(t.TempDir(), "ssh", "host_ed25519"),
@@ -176,7 +187,7 @@ func TestSSHPasswordTTYAndRouting(t *testing.T) {
 		t.Fatal(err)
 	}
 	opened := receiveOpened(t, consoles.opened)
-	if opened.kind != "development" || opened.sandboxID != "dev-alice" {
+	if opened.kind != "development" || opened.sandboxID != "sbx-aaaaaaaaaa" {
 		t.Fatalf("default route = %s %s", opened.kind, opened.sandboxID)
 	}
 	if opened.options.Size != (backend.ConsoleSize{Columns: 90, Rows: 27}) || opened.options.WorkingDir != "/workspace" ||
@@ -231,11 +242,11 @@ func TestSSHPasswordTTYAndRouting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := selected.Start("the8020 sandbox-id=sbx-ax9thsl3"); err != nil {
+	if err := selected.Start("the8020 sandbox-id=sbx-ax9thsl300"); err != nil {
 		t.Fatal(err)
 	}
 	selectedOpen := receiveOpened(t, consoles.opened)
-	if selectedOpen.kind != "runtime" || selectedOpen.sandboxID != "sbx-ax9thsl3" || selectedOpen.options.WorkingDir != "/" || !containsString(selectedOpen.options.Environment, "HOME=/tmp") {
+	if selectedOpen.kind != "runtime" || selectedOpen.sandboxID != "sbx-ax9thsl300" || selectedOpen.options.WorkingDir != "/" || !containsString(selectedOpen.options.Environment, "HOME=/tmp") {
 		t.Fatalf("selected route = %#v", selectedOpen)
 	}
 	selectedOpen.terminal.finish()
@@ -247,11 +258,11 @@ func TestSSHPasswordTTYAndRouting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := selectedDevelopment.Start("the8020 sandbox-id=dev-alice"); err != nil {
+	if err := selectedDevelopment.Start("the8020 sandbox-id=sbx-aaaaaaaaaa"); err != nil {
 		t.Fatal(err)
 	}
 	selectedDevelopmentOpen := receiveOpened(t, consoles.opened)
-	if selectedDevelopmentOpen.kind != "development" || selectedDevelopmentOpen.sandboxID != "dev-alice" || selectedDevelopmentOpen.options.WorkingDir != "/workspace" {
+	if selectedDevelopmentOpen.kind != "development" || selectedDevelopmentOpen.sandboxID != "sbx-aaaaaaaaaa" || selectedDevelopmentOpen.options.WorkingDir != "/workspace" {
 		t.Fatalf("selected development route = %#v", selectedDevelopmentOpen)
 	}
 	selectedDevelopmentOpen.terminal.finish()
@@ -271,7 +282,7 @@ func TestSSHPasswordTTYAndRouting(t *testing.T) {
 		t.Fatal(err)
 	}
 	commandOpen := receiveOpened(t, consoles.opened)
-	if commandOpen.kind != "development" || commandOpen.sandboxID != "dev-alice" ||
+	if commandOpen.kind != "development" || commandOpen.sandboxID != "sbx-aaaaaaaaaa" ||
 		commandOpen.options.Terminal || !equalStrings(commandOpen.options.Arguments, []string{"/bin/bash", "-c", "printf 'hello' && uname -a"}) {
 		t.Fatalf("command route = %#v", commandOpen)
 	}
@@ -318,7 +329,7 @@ func TestSSHPublicKeyAuthenticationAndRejections(t *testing.T) {
 	nonmatching := testSigner(t)
 	authorized := append([]byte("restrict "), gossh.MarshalAuthorizedKey(matching.PublicKey())...)
 	authorized = append(bytes.TrimSpace(authorized), []byte(" alice@test\n")...)
-	development := &fakeDevelopment{sandbox: "dev-alice", keys: map[string][]byte{"alice": authorized}}
+	development := &fakeDevelopment{sandbox: "sbx-aaaaaaaaaa", keys: map[string][]byte{"alice": authorized}}
 	consoles := &fakeConsoles{opened: make(chan openedConsole, 2)}
 	manager, err := New(Config{
 		Port: 0, HostKeyPath: filepath.Join(t.TempDir(), "host_ed25519"), Authentication: authentication,
@@ -354,7 +365,7 @@ func TestSSHPublicKeyAuthenticationAndRejections(t *testing.T) {
 		t.Fatal(err)
 	}
 	opened := receiveOpened(t, consoles.opened)
-	if opened.kind != "development" || opened.sandboxID != "dev-alice" || !containsString(opened.options.Environment, "USER=root") || !containsString(opened.options.Environment, "HOME=/root") {
+	if opened.kind != "development" || opened.sandboxID != "sbx-aaaaaaaaaa" || !containsString(opened.options.Environment, "USER=root") || !containsString(opened.options.Environment, "HOME=/root") {
 		t.Fatalf("public-key console route = %#v", opened)
 	}
 	opened.terminal.finish()
@@ -420,10 +431,10 @@ func TestHostKeyPersistsAndRejectsNonRegularFile(t *testing.T) {
 
 func TestExecGrammar(t *testing.T) {
 	valid := map[string]string{
-		"the8020":                               "",
-		"the8020 sandbox-id=sbx-ax9thsl3":       "sbx-ax9thsl3",
-		"  the8020   sandbox-id=sbx-1234abcd  ": "sbx-1234abcd",
-		"the8020 sandbox-id=dev-alice":          "dev-alice",
+		"the8020":                                 "",
+		"the8020 sandbox-id=sbx-ax9thsl300":       "sbx-ax9thsl300",
+		"  the8020   sandbox-id=sbx-1234abcd00  ": "sbx-1234abcd00",
+		"the8020 sandbox-id=sbx-aaaaaaaaaa":       "sbx-aaaaaaaaaa",
 	}
 	for command, want := range valid {
 		selected, err := parseExec(command)
@@ -440,9 +451,9 @@ func TestExecGrammar(t *testing.T) {
 		"", "the8020 whoami=yes", "the8020 sandbox-id=sbx-short",
 		"the8020 sandbox-id=dev-ab",
 		"the8020 sandbox-id=dev-Alice",
-		"the8020 sandbox-id=dev-alice-",
-		"the8020 sandbox-id=sbx-ax9thsl3 sandbox-id=sbx-bbbbbbbb",
-		"the8020 sandbox-id=sbx-ax9thsl3;uname",
+		"the8020 sandbox-id=sbx-aaaaaaaaaa-",
+		"the8020 sandbox-id=sbx-ax9thsl300 sandbox-id=sbx-bbbbbbbb00",
+		"the8020 sandbox-id=sbx-ax9thsl300;uname",
 	} {
 		if _, err := parseExec(command); err == nil {
 			t.Errorf("invalid selector %q was accepted", command)
@@ -474,7 +485,7 @@ func TestCloseStopsListener(t *testing.T) {
 	authentication := testAuthentication()
 	manager, err := New(Config{
 		Port: 0, HostKeyPath: filepath.Join(t.TempDir(), "host_ed25519"), Authentication: authentication,
-		Development: &fakeDevelopment{sandbox: "sbx-abc12345"}, Consoles: &fakeConsoles{opened: make(chan openedConsole, 1)},
+		Development: &fakeDevelopment{sandbox: "sbx-abc1234500"}, Consoles: &fakeConsoles{opened: make(chan openedConsole, 1)},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -500,7 +511,7 @@ func TestRuntimePortReplacementPreservesConnectionsAndRollsBack(t *testing.T) {
 	authentication := testAuthentication()
 	manager, err := New(Config{
 		Port: 0, HostKeyPath: filepath.Join(t.TempDir(), "host_ed25519"), Authentication: authentication,
-		Development: &fakeDevelopment{sandbox: "dev-alice"}, Consoles: &fakeConsoles{opened: make(chan openedConsole, 1)},
+		Development: &fakeDevelopment{sandbox: "sbx-aaaaaaaaaa"}, Consoles: &fakeConsoles{opened: make(chan openedConsole, 1)},
 	})
 	if err != nil {
 		t.Fatal(err)

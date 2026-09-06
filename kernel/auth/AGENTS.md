@@ -41,6 +41,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   expiry lease: live supervisors alone govern keepalive and completion. Token
   verification proves integrity, never existence or permission to recreate an
   execution. Routing and authentication profiles reject each other's tokens.
+- Route signing and verification require canonical `nod-`/`sbx-`/`wrk-`/`pex-`
+  targets through the shared identity helper, including for correctly signed
+  tokens. Opaque application authentication sessions keep their own contract.
 - Claims require canonical `sub = user:<username>`, a nonempty opaque `sid` of
   at most 128 bytes, and a positive safe-integer `ver`. Only Deno interprets
   session existence, account state, and authentication-version eligibility.

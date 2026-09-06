@@ -17,20 +17,19 @@ import (
 )
 
 type Store struct {
-	mu               sync.RWMutex
-	root             string
-	records          map[string]cachedRecord
-	ids              map[string]bool
-	sandboxToRuntime map[string]string
-	heartbeats       heartbeatQueue
-	heartbeatItems   map[string]*heartbeatItem
-	locks            [64]sync.Mutex
+	mu             sync.RWMutex
+	root           string
+	records        map[string]cachedRecord
+	ids            map[string]bool
+	heartbeats     heartbeatQueue
+	heartbeatItems map[string]*heartbeatItem
+	locks          [64]sync.Mutex
 }
 
 type heartbeatItem struct {
-	runtimeGroupID string
-	observedAt     time.Time
-	index          int
+	sandboxID  string
+	observedAt time.Time
+	index      int
 }
 
 type heartbeatQueue []*heartbeatItem
@@ -38,7 +37,7 @@ type heartbeatQueue []*heartbeatItem
 func (q heartbeatQueue) Len() int { return len(q) }
 func (q heartbeatQueue) Less(i, j int) bool {
 	if q[i].observedAt.Equal(q[j].observedAt) {
-		return q[i].runtimeGroupID < q[j].runtimeGroupID
+		return q[i].sandboxID < q[j].sandboxID
 	}
 	return q[i].observedAt.Before(q[j].observedAt)
 }
@@ -70,15 +69,15 @@ type cachedRecord struct {
 
 func New(root string) (*Store, error) {
 	if root == "" {
-		return nil, errors.New("runtime-group state root is required")
+		return nil, errors.New("sandbox state root is required")
 	}
 	if err := os.MkdirAll(root, 0o700); err != nil {
-		return nil, fmt.Errorf("create runtime-group state: %w", err)
+		return nil, fmt.Errorf("create sandbox state: %w", err)
 	}
 	if err := os.Chmod(root, 0o700); err != nil {
-		return nil, fmt.Errorf("restrict runtime-group state: %w", err)
+		return nil, fmt.Errorf("restrict sandbox state: %w", err)
 	}
-	store := &Store{root: root, records: map[string]cachedRecord{}, ids: map[string]bool{}, sandboxToRuntime: map[string]string{}, heartbeatItems: map[string]*heartbeatItem{}}
+	store := &Store{root: root, records: map[string]cachedRecord{}, ids: map[string]bool{}, heartbeatItems: map[string]*heartbeatItem{}}
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil, err
@@ -90,7 +89,6 @@ func New(root string) (*Store, error) {
 		store.ids[entry.Name()] = true
 		if record, loadErr := store.readRecord(entry.Name()); loadErr == nil {
 			store.records[entry.Name()] = record
-			store.sandboxToRuntime[record.spec.SandboxID] = entry.Name()
 			store.updateHeartbeatLocked(entry.Name(), record.status)
 		}
 	}
@@ -101,60 +99,56 @@ func (s *Store) SaveSpec(spec model.SandboxSpec) error {
 	if err := spec.Validate(); err != nil {
 		return err
 	}
-	lock := s.recordLock(spec.RuntimeGroupID)
+	lock := s.recordLock(spec.SandboxID)
 	lock.Lock()
 	defer lock.Unlock()
-	if err := s.write(spec.RuntimeGroupID, "spec.json", spec); err != nil {
+	if err := s.write(spec.SandboxID, "spec.json", spec); err != nil {
 		return err
 	}
 	if spec.InternalToken != "" {
-		if err := s.write(spec.RuntimeGroupID, "secret.json", map[string]string{"internal_token": spec.InternalToken}); err != nil {
+		if err := s.write(spec.SandboxID, "secret.json", map[string]string{"internal_token": spec.InternalToken}); err != nil {
 			return err
 		}
 	}
 	s.mu.Lock()
-	record := s.records[spec.RuntimeGroupID]
-	if record.spec.SandboxID != "" && record.spec.SandboxID != spec.SandboxID {
-		delete(s.sandboxToRuntime, record.spec.SandboxID)
-	}
+	record := s.records[spec.SandboxID]
 	record.spec = cloneSpec(spec)
 	record.complete = record.status.DesiredState.Valid() && record.status.ObservedState.Valid()
-	s.records[spec.RuntimeGroupID] = record
-	s.ids[spec.RuntimeGroupID] = true
-	s.sandboxToRuntime[spec.SandboxID] = spec.RuntimeGroupID
-	s.updateHeartbeatLocked(spec.RuntimeGroupID, record.status)
+	s.records[spec.SandboxID] = record
+	s.ids[spec.SandboxID] = true
+	s.updateHeartbeatLocked(spec.SandboxID, record.status)
 	s.mu.Unlock()
 	return nil
 }
 
-func (s *Store) SaveStatus(runtimeGroupID string, status model.SandboxStatus) error {
-	if runtimeGroupID == "" || !status.DesiredState.Valid() || !status.ObservedState.Valid() {
-		return errors.New("runtime-group ID and valid desired/observed states are required")
+func (s *Store) SaveStatus(sandboxID string, status model.SandboxStatus) error {
+	if sandboxID == "" || !status.DesiredState.Valid() || !status.ObservedState.Valid() {
+		return errors.New("sandbox ID and valid desired/observed states are required")
 	}
-	lock := s.recordLock(runtimeGroupID)
+	lock := s.recordLock(sandboxID)
 	lock.Lock()
 	defer lock.Unlock()
-	if err := s.write(runtimeGroupID, "state.json", status); err != nil {
+	if err := s.write(sandboxID, "state.json", status); err != nil {
 		return err
 	}
 	s.mu.Lock()
-	record := s.records[runtimeGroupID]
+	record := s.records[sandboxID]
 	record.status = cloneStatus(status)
-	record.complete = record.spec.RuntimeGroupID == runtimeGroupID
-	s.records[runtimeGroupID] = record
-	s.ids[runtimeGroupID] = true
-	s.updateHeartbeatLocked(runtimeGroupID, status)
+	record.complete = record.spec.SandboxID == sandboxID
+	s.records[sandboxID] = record
+	s.ids[sandboxID] = true
+	s.updateHeartbeatLocked(sandboxID, status)
 	s.mu.Unlock()
 	return nil
 }
 
 // UpdateStatus applies a read-modify-write while holding the store lock. It is
 // used when independent callback and monitor paths update different fields.
-func (s *Store) UpdateStatus(runtimeGroupID string, update func(*model.SandboxStatus) error) (model.SandboxStatus, error) {
-	lock := s.recordLock(runtimeGroupID)
+func (s *Store) UpdateStatus(sandboxID string, update func(*model.SandboxStatus) error) (model.SandboxStatus, error) {
+	lock := s.recordLock(sandboxID)
 	lock.Lock()
 	defer lock.Unlock()
-	record, err := s.loadRecord(runtimeGroupID)
+	record, err := s.loadRecord(sandboxID)
 	if err != nil {
 		return model.SandboxStatus{}, err
 	}
@@ -167,19 +161,19 @@ func (s *Store) UpdateStatus(runtimeGroupID string, update func(*model.SandboxSt
 	if !status.DesiredState.Valid() || !status.ObservedState.Valid() {
 		return status, errors.New("valid desired and observed states are required")
 	}
-	if err := s.write(runtimeGroupID, "state.json", status); err != nil {
+	if err := s.write(sandboxID, "state.json", status); err != nil {
 		return model.SandboxStatus{}, err
 	}
 	record.status = cloneStatus(status)
-	s.putRecord(runtimeGroupID, record)
+	s.putRecord(sandboxID, record)
 	return cloneStatus(status), nil
 }
 
-func (s *Store) Transition(runtimeGroupID string, observed model.SandboxState, update func(*model.SandboxStatus)) (model.SandboxStatus, error) {
-	lock := s.recordLock(runtimeGroupID)
+func (s *Store) Transition(sandboxID string, observed model.SandboxState, update func(*model.SandboxStatus)) (model.SandboxStatus, error) {
+	lock := s.recordLock(sandboxID)
 	lock.Lock()
 	defer lock.Unlock()
-	record, err := s.loadRecord(runtimeGroupID)
+	record, err := s.loadRecord(sandboxID)
 	if err != nil {
 		return model.SandboxStatus{}, err
 	}
@@ -191,21 +185,21 @@ func (s *Store) Transition(runtimeGroupID string, observed model.SandboxState, u
 	if update != nil {
 		update(&status)
 	}
-	if err := s.write(runtimeGroupID, "state.json", status); err != nil {
+	if err := s.write(sandboxID, "state.json", status); err != nil {
 		return model.SandboxStatus{}, err
 	}
 	record.status = cloneStatus(status)
-	s.putRecord(runtimeGroupID, record)
+	s.putRecord(sandboxID, record)
 	return cloneStatus(status), nil
 }
 
 // TransitionIf atomically re-checks a lifecycle predicate before publishing a
 // transition. A false predicate leaves state unchanged.
-func (s *Store) TransitionIf(runtimeGroupID string, observed model.SandboxState, condition func(model.SandboxStatus) bool, update func(*model.SandboxStatus)) (model.SandboxStatus, bool, error) {
-	lock := s.recordLock(runtimeGroupID)
+func (s *Store) TransitionIf(sandboxID string, observed model.SandboxState, condition func(model.SandboxStatus) bool, update func(*model.SandboxStatus)) (model.SandboxStatus, bool, error) {
+	lock := s.recordLock(sandboxID)
 	lock.Lock()
 	defer lock.Unlock()
-	record, err := s.loadRecord(runtimeGroupID)
+	record, err := s.loadRecord(sandboxID)
 	if err != nil {
 		return model.SandboxStatus{}, false, err
 	}
@@ -220,31 +214,31 @@ func (s *Store) TransitionIf(runtimeGroupID string, observed model.SandboxState,
 	if update != nil {
 		update(&status)
 	}
-	if err := s.write(runtimeGroupID, "state.json", status); err != nil {
+	if err := s.write(sandboxID, "state.json", status); err != nil {
 		return model.SandboxStatus{}, false, err
 	}
 	record.status = cloneStatus(status)
-	s.putRecord(runtimeGroupID, record)
+	s.putRecord(sandboxID, record)
 	return cloneStatus(status), true, nil
 }
 
-func (s *Store) Load(runtimeGroupID string) (model.SandboxSpec, model.SandboxStatus, error) {
-	lock := s.recordLock(runtimeGroupID)
+func (s *Store) Load(sandboxID string) (model.SandboxSpec, model.SandboxStatus, error) {
+	lock := s.recordLock(sandboxID)
 	lock.Lock()
 	defer lock.Unlock()
-	record, err := s.loadRecord(runtimeGroupID)
+	record, err := s.loadRecord(sandboxID)
 	if err != nil {
 		return model.SandboxSpec{}, model.SandboxStatus{}, err
 	}
 	return cloneSpec(record.spec), cloneStatus(record.status), nil
 }
 
-// Cached returns one completely preloaded runtime-group record without any
+// Cached returns one completely preloaded sandbox record without any
 // recovery filesystem fallback. Authentication and routing hot paths use this
 // method so unknown identities are cache misses rather than disk probes.
-func (s *Store) Cached(runtimeGroupID string) (model.SandboxSpec, model.SandboxStatus, bool) {
+func (s *Store) Cached(sandboxID string) (model.SandboxSpec, model.SandboxStatus, bool) {
 	s.mu.RLock()
-	record, ok := s.records[runtimeGroupID]
+	record, ok := s.records[sandboxID]
 	if ok && record.complete {
 		spec, status := cloneSpec(record.spec), cloneStatus(record.status)
 		s.mu.RUnlock()
@@ -254,14 +248,13 @@ func (s *Store) Cached(runtimeGroupID string) (model.SandboxSpec, model.SandboxS
 	return model.SandboxSpec{}, model.SandboxStatus{}, false
 }
 
-// Contains reports whether an identity is already indexed as either a runtime
-// group or sandbox. It never probes recovery files.
+// Contains reports whether a sandbox identity is already indexed. It never
+// probes recovery files.
 func (s *Store) Contains(identity string) bool {
 	s.mu.RLock()
-	_, runtimeGroupExists := s.ids[identity]
-	_, sandboxExists := s.sandboxToRuntime[identity]
+	_, exists := s.ids[identity]
 	s.mu.RUnlock()
-	return runtimeGroupExists || sandboxExists
+	return exists
 }
 
 func (s *Store) List() ([]string, error) {
@@ -275,23 +268,11 @@ func (s *Store) List() ([]string, error) {
 	return result, nil
 }
 
-// Resolve returns one cached record by either sandbox or runtime-group ID.
-// The secondary index avoids an O(n) scan on routing and administration paths.
-func (s *Store) Resolve(identity string) (model.SandboxSpec, model.SandboxStatus, error) {
-	s.mu.RLock()
-	runtimeGroupID := identity
-	if mapped := s.sandboxToRuntime[identity]; mapped != "" {
-		runtimeGroupID = mapped
-	}
-	s.mu.RUnlock()
-	return s.Load(runtimeGroupID)
-}
-
-func (s *Store) Delete(runtimeGroupID string) error {
-	lock := s.recordLock(runtimeGroupID)
+func (s *Store) Delete(sandboxID string) error {
+	lock := s.recordLock(sandboxID)
 	lock.Lock()
 	defer lock.Unlock()
-	directory := filepath.Join(s.root, runtimeGroupID)
+	directory := filepath.Join(s.root, sandboxID)
 	for _, name := range []string{"spec.json", "state.json", "secret.json"} {
 		if err := os.Remove(filepath.Join(directory, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
@@ -301,12 +282,9 @@ func (s *Store) Delete(runtimeGroupID string) error {
 		return err
 	}
 	s.mu.Lock()
-	if record, ok := s.records[runtimeGroupID]; ok {
-		delete(s.sandboxToRuntime, record.spec.SandboxID)
-	}
-	s.removeHeartbeatLocked(runtimeGroupID)
-	delete(s.records, runtimeGroupID)
-	delete(s.ids, runtimeGroupID)
+	s.removeHeartbeatLocked(sandboxID)
+	delete(s.records, sandboxID)
+	delete(s.ids, sandboxID)
 	s.mu.Unlock()
 	return nil
 }
@@ -315,14 +293,14 @@ func (s *Store) Delete(runtimeGroupID string) error {
 // Equal-epoch revisions refresh heartbeat freshness; older supervisor epochs
 // cannot keep a replacement supervisor healthy or roll state backwards. No
 // durable file is touched on this hot path.
-func (s *Store) Observe(runtimeGroupID string, snapshot model.RuntimeSnapshot, observedAt time.Time) (bool, error) {
-	if runtimeGroupID == "" || snapshot.Revision == 0 || snapshot.RuntimeGroupID != runtimeGroupID {
+func (s *Store) Observe(sandboxID string, snapshot model.RuntimeSnapshot, observedAt time.Time) (bool, error) {
+	if sandboxID == "" || snapshot.Revision == 0 || snapshot.SandboxID != sandboxID {
 		return false, errors.New("invalid runtime snapshot identity or revision")
 	}
-	lock := s.recordLock(runtimeGroupID)
+	lock := s.recordLock(sandboxID)
 	lock.Lock()
 	defer lock.Unlock()
-	record, err := s.loadRecord(runtimeGroupID)
+	record, err := s.loadRecord(sandboxID)
 	if err != nil {
 		return false, err
 	}
@@ -346,13 +324,13 @@ func (s *Store) Observe(runtimeGroupID string, snapshot model.RuntimeSnapshot, o
 	if snapshot.SupervisorStartedAtMS >= current.SupervisorStartedAtMS && observedAt.After(record.status.LastHeartbeat) {
 		record.status.LastHeartbeat = observedAt
 	}
-	s.putRecord(runtimeGroupID, record)
+	s.putRecord(sandboxID, record)
 	return applied, nil
 }
 
-func (s *Store) Snapshot(runtimeGroupID string) (model.RuntimeSnapshot, bool) {
+func (s *Store) Snapshot(sandboxID string) (model.RuntimeSnapshot, bool) {
 	s.mu.RLock()
-	record, ok := s.records[runtimeGroupID]
+	record, ok := s.records[sandboxID]
 	s.mu.RUnlock()
 	if !ok || record.snapshot.Revision == 0 {
 		return model.RuntimeSnapshot{}, false
@@ -360,7 +338,7 @@ func (s *Store) Snapshot(runtimeGroupID string) (model.RuntimeSnapshot, bool) {
 	return cloneSnapshot(record.snapshot), true
 }
 
-// ClaimStaleHeartbeats removes at most limit runtime groups whose cached
+// ClaimStaleHeartbeats removes at most limit sandboxes whose cached
 // heartbeat is no newer than cutoff. Callers inspect only these candidates and
 // then call RescheduleHeartbeat; a concurrent heartbeat inserts its own newer
 // deadline immediately.
@@ -376,76 +354,76 @@ func (s *Store) ClaimStaleHeartbeats(cutoff time.Time, limit int) []string {
 			break
 		}
 		heap.Pop(&s.heartbeats)
-		delete(s.heartbeatItems, item.runtimeGroupID)
-		result = append(result, item.runtimeGroupID)
+		delete(s.heartbeatItems, item.sandboxID)
+		result = append(result, item.sandboxID)
 	}
 	s.mu.Unlock()
 	return result
 }
 
-// RescheduleHeartbeat restores one claimed runtime group from its newest
+// RescheduleHeartbeat restores one claimed sandbox from its newest
 // cached status. Terminal or concurrently deleted groups remain absent.
-func (s *Store) RescheduleHeartbeat(runtimeGroupID string) {
+func (s *Store) RescheduleHeartbeat(sandboxID string) {
 	s.mu.Lock()
-	if record, ok := s.records[runtimeGroupID]; ok && record.complete {
-		s.updateHeartbeatLocked(runtimeGroupID, record.status)
+	if record, ok := s.records[sandboxID]; ok && record.complete {
+		s.updateHeartbeatLocked(sandboxID, record.status)
 	}
 	s.mu.Unlock()
 }
 
 // ObserveMetrics refreshes non-durable diagnostic metrics for one sandbox.
-func (s *Store) ObserveMetrics(runtimeGroupID string, metrics model.ResourceMetrics) error {
-	lock := s.recordLock(runtimeGroupID)
+func (s *Store) ObserveMetrics(sandboxID string, metrics model.ResourceMetrics) error {
+	lock := s.recordLock(sandboxID)
 	lock.Lock()
 	defer lock.Unlock()
-	record, err := s.loadRecord(runtimeGroupID)
+	record, err := s.loadRecord(sandboxID)
 	if err != nil {
 		return err
 	}
 	record.status.Metrics = metrics
-	s.putRecord(runtimeGroupID, record)
+	s.putRecord(sandboxID, record)
 	return nil
 }
 
-func (s *Store) recordLock(runtimeGroupID string) *sync.Mutex {
+func (s *Store) recordLock(sandboxID string) *sync.Mutex {
 	var hash uint64 = 1469598103934665603
-	for index := 0; index < len(runtimeGroupID); index++ {
-		hash ^= uint64(runtimeGroupID[index])
+	for index := 0; index < len(sandboxID); index++ {
+		hash ^= uint64(sandboxID[index])
 		hash *= 1099511628211
 	}
 	return &s.locks[hash%uint64(len(s.locks))]
 }
 
-func (s *Store) loadRecord(runtimeGroupID string) (cachedRecord, error) {
+func (s *Store) loadRecord(sandboxID string) (cachedRecord, error) {
 	s.mu.RLock()
-	record, ok := s.records[runtimeGroupID]
+	record, ok := s.records[sandboxID]
 	s.mu.RUnlock()
 	if ok && record.complete {
 		return record, nil
 	}
-	record, err := s.readRecord(runtimeGroupID)
+	record, err := s.readRecord(sandboxID)
 	if err != nil {
 		return cachedRecord{}, err
 	}
-	s.putRecord(runtimeGroupID, record)
+	s.putRecord(sandboxID, record)
 	return record, nil
 }
 
-func (s *Store) readRecord(runtimeGroupID string) (cachedRecord, error) {
+func (s *Store) readRecord(sandboxID string) (cachedRecord, error) {
 	var record cachedRecord
-	if err := s.read(runtimeGroupID, "spec.json", &record.spec); err != nil {
+	if err := s.read(sandboxID, "spec.json", &record.spec); err != nil {
 		return record, err
 	}
-	if err := s.read(runtimeGroupID, "state.json", &record.status); err != nil {
+	if err := s.read(sandboxID, "state.json", &record.status); err != nil {
 		return record, err
 	}
-	if record.spec.RuntimeGroupID != runtimeGroupID {
-		return record, errors.New("runtime-group state identity mismatch")
+	if record.spec.SandboxID != sandboxID {
+		return record, errors.New("sandbox state identity mismatch")
 	}
 	var secret struct {
 		InternalToken string `json:"internal_token"`
 	}
-	if err := s.read(runtimeGroupID, "secret.json", &secret); err == nil {
+	if err := s.read(sandboxID, "secret.json", &secret); err == nil {
 		record.spec.InternalToken = secret.InternalToken
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return record, err
@@ -454,28 +432,22 @@ func (s *Store) readRecord(runtimeGroupID string) (cachedRecord, error) {
 	return record, nil
 }
 
-func (s *Store) putRecord(runtimeGroupID string, record cachedRecord) {
+func (s *Store) putRecord(sandboxID string, record cachedRecord) {
 	s.mu.Lock()
-	if prior, ok := s.records[runtimeGroupID]; ok && prior.spec.SandboxID != "" && prior.spec.SandboxID != record.spec.SandboxID {
-		delete(s.sandboxToRuntime, prior.spec.SandboxID)
-	}
-	s.records[runtimeGroupID] = record
-	s.ids[runtimeGroupID] = true
-	if record.spec.SandboxID != "" {
-		s.sandboxToRuntime[record.spec.SandboxID] = runtimeGroupID
-	}
-	s.updateHeartbeatLocked(runtimeGroupID, record.status)
+	s.records[sandboxID] = record
+	s.ids[sandboxID] = true
+	s.updateHeartbeatLocked(sandboxID, record.status)
 	s.mu.Unlock()
 }
 
-func (s *Store) updateHeartbeatLocked(runtimeGroupID string, status model.SandboxStatus) {
-	record, complete := s.records[runtimeGroupID]
+func (s *Store) updateHeartbeatLocked(sandboxID string, status model.SandboxStatus) {
+	record, complete := s.records[sandboxID]
 	monitor := complete && record.complete && (status.ObservedState == model.StateReady || status.ObservedState == model.StateActive || status.ObservedState == model.StateDraining)
-	item, exists := s.heartbeatItems[runtimeGroupID]
+	item, exists := s.heartbeatItems[sandboxID]
 	if !monitor {
 		if exists {
 			heap.Remove(&s.heartbeats, item.index)
-			delete(s.heartbeatItems, runtimeGroupID)
+			delete(s.heartbeatItems, sandboxID)
 		}
 		return
 	}
@@ -484,23 +456,23 @@ func (s *Store) updateHeartbeatLocked(runtimeGroupID string, status model.Sandbo
 		heap.Fix(&s.heartbeats, item.index)
 		return
 	}
-	item = &heartbeatItem{runtimeGroupID: runtimeGroupID, observedAt: status.LastHeartbeat}
-	s.heartbeatItems[runtimeGroupID] = item
+	item = &heartbeatItem{sandboxID: sandboxID, observedAt: status.LastHeartbeat}
+	s.heartbeatItems[sandboxID] = item
 	heap.Push(&s.heartbeats, item)
 }
 
-func (s *Store) removeHeartbeatLocked(runtimeGroupID string) {
-	if item, ok := s.heartbeatItems[runtimeGroupID]; ok {
+func (s *Store) removeHeartbeatLocked(sandboxID string) {
+	if item, ok := s.heartbeatItems[sandboxID]; ok {
 		heap.Remove(&s.heartbeats, item.index)
-		delete(s.heartbeatItems, runtimeGroupID)
+		delete(s.heartbeatItems, sandboxID)
 	}
 }
 
-func (s *Store) write(runtimeGroupID, name string, value any) error {
-	if runtimeGroupID == "" || filepath.Base(runtimeGroupID) != runtimeGroupID {
-		return errors.New("invalid runtime-group ID")
+func (s *Store) write(sandboxID, name string, value any) error {
+	if sandboxID == "" || filepath.Base(sandboxID) != sandboxID {
+		return errors.New("invalid sandbox ID")
 	}
-	directory := filepath.Join(s.root, runtimeGroupID)
+	directory := filepath.Join(s.root, sandboxID)
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return err
 	}
@@ -536,18 +508,18 @@ func (s *Store) write(runtimeGroupID, name string, value any) error {
 	return os.Rename(temporaryName, filepath.Join(directory, name))
 }
 
-func (s *Store) read(runtimeGroupID, name string, output any) error {
-	if runtimeGroupID == "" || filepath.Base(runtimeGroupID) != runtimeGroupID {
-		return errors.New("invalid runtime-group ID")
+func (s *Store) read(sandboxID, name string, output any) error {
+	if sandboxID == "" || filepath.Base(sandboxID) != sandboxID {
+		return errors.New("invalid sandbox ID")
 	}
-	data, err := os.ReadFile(filepath.Join(s.root, runtimeGroupID, name))
+	data, err := os.ReadFile(filepath.Join(s.root, sandboxID, name))
 	if err != nil {
 		return err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(output); err != nil {
-		return fmt.Errorf("decode %s for %s: %w", name, runtimeGroupID, err)
+		return fmt.Errorf("decode %s for %s: %w", name, sandboxID, err)
 	}
 	return nil
 }

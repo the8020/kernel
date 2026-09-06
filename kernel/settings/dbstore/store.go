@@ -173,6 +173,13 @@ func decodeValue(definition settings.Definition, raw any) (any, error) {
 		}
 		integer, err := strconv.ParseInt(string(number), 10, 64)
 		return settings.ByteSize(integer), err
+	case settings.TypeDuration:
+		number, ok := value.(json.Number)
+		if !ok {
+			return nil, errors.New("stored value is not a duration")
+		}
+		integer, err := strconv.ParseInt(string(number), 10, 64)
+		return settings.Duration(integer), err
 	case settings.TypeBoolean:
 		boolean, ok := value.(bool)
 		if !ok {

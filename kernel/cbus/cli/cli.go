@@ -100,7 +100,11 @@ func (r *Runner) Run(ctx context.Context, args []string, jsonOutput bool, output
 		renderLocalError(output, err)
 		return 2
 	}
-	requestID := core.NewRequestID()
+	requestID, err := core.NewRequestID()
+	if err != nil {
+		renderLocalError(output, err)
+		return 1
+	}
 	response, err := r.executor.Execute(ctx, core.Request{ProtocolVersion: core.ProtocolVersion, CommandID: command.ID, Argv: argv, Secrets: secrets, RequestID: requestID, CatalogRevision: r.revision})
 	if err != nil {
 		renderLocalError(output, err)
@@ -126,15 +130,19 @@ func (r *Runner) Run(ctx context.Context, args []string, jsonOutput bool, output
 			renderValue(output, response.Error.Details, 0)
 		}
 	} else {
-		for _, event := range response.Output {
-			_, _ = fmt.Fprintln(output, event.Message)
-			if len(event.Fields) > 0 {
-				renderValue(output, event.Fields, 1)
-			}
-		}
 		if response.Result != nil {
 			renderValue(output, response.Result, 0)
 		}
+	}
+	if !jsonOutput && response.Execution != nil {
+		reference := response.Execution
+		ids := []string{}
+		for _, id := range []string{reference.ExecutionID, reference.NodeID, reference.SandboxID, reference.WorkerID, reference.ContextID} {
+			if id != "" {
+				ids = append(ids, id)
+			}
+		}
+		_, _ = fmt.Fprintln(output, "execution:", strings.Join(ids, " "))
 	}
 	if !response.Success {
 		return errorExitCode(response.Error.Code)
@@ -522,9 +530,9 @@ func orderedSummaryKeys(values map[string]any) []string {
 		}
 	}
 	specific := map[string][]string{
-		"sandbox_id":   {"workload_type", "state", "worker_count", "warm", "runtime_group_id", "failure"},
+		"sandbox_id":   {"workload_type", "state", "worker_count", "warm", "sandbox_id", "failure"},
 		"worker_id":    {"workload_type", "state", "workload_id", "owner_id", "sandbox_id", "in_flight", "failure"},
-		"session_id":   {"user_id", "state", "worker_id", "runtime_group_id", "failure"},
+		"session_id":   {"user_id", "state", "worker_id", "sandbox_id", "failure"},
 		"execution_id": {"job_id", "state", "owner_id", "detached", "duration", "failure"},
 		"service_id":   {"description", "canonical_base_path", "state", "enabled", "version_count", "sandbox_count", "worker_count", "validation_error"},
 		"package_id":   {"description", "valid", "validation_error"},
@@ -534,7 +542,7 @@ func orderedSummaryKeys(values map[string]any) []string {
 		"key":          {"description", "storage", "configured_value", "active_value", "default_value", "persisted_value", "environment_value", "startup_argument_value", "source", "runtime_mutable", "restart_required", "restart_pending"},
 	}
 	preferred := append(specific[primaryKey],
-		"description", "type", "state", "runtime_group_id", "sandbox_id", "worker_id", "execution_id", "failure", "validation_error")
+		"description", "type", "state", "worker_id", "execution_id", "failure", "validation_error")
 	for _, key := range preferred {
 		if _, exists := values[key]; exists && !seen[key] {
 			keys = append(keys, key)

@@ -1,4 +1,7 @@
+import { isId } from "../identity/mod.ts";
+import { runDeno } from "./subprocess.ts";
 import { trackStream } from "../worker/streams.ts";
+import type { LogSink } from "../logging/protocol.ts";
 import {
   assertEnvelope,
   type Envelope,
@@ -8,8 +11,8 @@ import {
 import type {
   ExecutionMetadata,
   ExecutionUserMetadata,
+  InvocationMetadata,
   KernelCall,
-  RuntimeLogEvent,
   ServiceRequestMetadata,
   WorkerPermissionSet,
   WorkloadType,
@@ -17,6 +20,7 @@ import type {
 import {
   canonicalExecutionOrigin,
   canonicalExecutionUser,
+  canonicalInvocation,
 } from "../worker/contracts.ts";
 import {
   RuntimeWorker,
@@ -25,7 +29,6 @@ import {
 import type { WorkerInvocationResult } from "../worker/runtime_worker.ts";
 
 export interface SupervisorOptions {
-  runtimeGroupId: string;
   sandboxId: string;
   workloadType: WorkloadType;
   token: string;
@@ -35,22 +38,24 @@ export interface SupervisorOptions {
   now?: () => number;
   workerStopGraceMilliseconds?: number;
   kernelCall?: KernelCall;
-  nodeId?: string;
+  nodeId: string;
   entrypointValidator?: (entrypoints: string[]) => Promise<void>;
   moduleAnalyzer?: (entrypoints: string[]) => Promise<ModuleDependencies>;
   onStateChange?: () => void;
+  logSink?: LogSink;
 }
 
 export type ModuleDependencies = Record<string, string[]>;
 
 export interface StartWorkerOptions {
+  invocation?: InvocationMetadata;
   metadata: ExecutionMetadata;
   permissions: WorkerPermissionSet;
 }
 
 export interface WorkerStatus {
   worker_id: string;
-  execution_id: string;
+
   workload_id: string;
   owner_id: string;
   debugger_name: string;
@@ -61,7 +66,6 @@ export interface WorkerStatus {
   persistent_executions: number;
   state: "starting" | "ready" | "stopping" | "stopped" | "failed";
   failure?: string;
-  logs?: RuntimeLogEvent[];
 }
 
 interface PersistentBinding {
@@ -121,6 +125,7 @@ export class Supervisor {
         | "entrypointValidator"
         | "moduleAnalyzer"
         | "onStateChange"
+        | "logSink"
       >
     >
     & {
@@ -140,31 +145,34 @@ export class Supervisor {
   #capacityWaiters = new Set<() => void>();
   #recentFailures: Array<{
     worker_id: string;
-    execution_id: string;
+
     reason: string;
   }> = [];
   #entrypointValidator: (entrypoints: string[]) => Promise<void>;
   #moduleAnalyzer: (entrypoints: string[]) => Promise<ModuleDependencies>;
   #onStateChange?: () => void;
   #revision = 1;
+  #logSink?: LogSink;
 
   constructor(options: SupervisorOptions) {
     if (
-      options.runtimeGroupId.length === 0 || options.sandboxId.length === 0 ||
+      !isId(options.nodeId, "nod") || !isId(options.sandboxId, "sbx") ||
       options.token.length < 16
     ) {
       throw new TypeError(
-        "runtime-group ID, sandbox ID, and high-entropy token are required",
+        "canonical node/sandbox IDs and a high-entropy token are required",
       );
     }
-    const { entrypointValidator, moduleAnalyzer, ...runtimeOptions } = options;
+    const { entrypointValidator, moduleAnalyzer, logSink, ...runtimeOptions } =
+      options;
+    this.#logSink = logSink;
     this.options = {
       ...runtimeOptions,
       denoVersion: options.denoVersion ?? Deno.version.deno,
       startedAt: options.startedAt ?? (options.now ?? Date.now)(),
       now: options.now ?? Date.now,
       workerStopGraceMilliseconds: options.workerStopGraceMilliseconds ?? 1_000,
-      nodeId: options.nodeId ?? options.runtimeGroupId,
+      nodeId: options.nodeId,
     };
     this.#entrypointValidator = entrypointValidator ?? validateEntrypoints;
     this.#moduleAnalyzer = moduleAnalyzer ?? analyzeModules;
@@ -180,9 +188,12 @@ export class Supervisor {
   }
 
   async startWorker(options: StartWorkerOptions): Promise<RuntimeWorker> {
-    if (this.#draining) throw new Error("runtime group is draining");
+    if (this.#draining) throw new Error("sandbox is draining");
+    if (!isId(options.metadata.workerId, "wrk")) {
+      throw new TypeError("canonical Worker ID is required");
+    }
     if (options.metadata.workloadType !== this.options.workloadType) {
-      throw new Error("Worker workload type does not match runtime group");
+      throw new Error("Worker workload type does not match sandbox");
     }
     const user = canonicalExecutionUser(options.metadata.user);
     const origin = canonicalExecutionOrigin(
@@ -198,7 +209,7 @@ export class Supervisor {
     const metadata = {
       ...options.metadata,
       nodeId: this.options.nodeId,
-      runtimeGroupId: this.options.runtimeGroupId,
+
       sandboxId: this.options.sandboxId,
       user,
       origin,
@@ -249,9 +260,10 @@ export class Supervisor {
     if (options.metadata.validateEntrypoint === true) {
       await this.#entrypointValidator([options.metadata.entrypoint]);
     }
-    if (this.#draining) throw new Error("runtime group is draining");
+    if (this.#draining) throw new Error("sandbox is draining");
     const worker = new RuntimeWorker({
       ...options,
+      logSink: this.#logSink,
       permissions: { ...options.permissions, net: true, import: true },
       metadata,
       now: this.options.now,
@@ -261,7 +273,6 @@ export class Supervisor {
         void this.options.kernelCall?.({
           operation: "database.scope.close",
           arguments: {},
-          executionId: metadata.executionId,
           workerId: metadata.workerId,
         }).catch(() => {});
       },
@@ -329,6 +340,7 @@ export class Supervisor {
     signal: AbortSignal,
     persistentExecutionId: string | undefined,
     user: ExecutionUserMetadata,
+    invocation: InvocationMetadata,
   ): Promise<WorkerInvocationResult> {
     const worker = this.#workers.get(workerId);
     if (worker === undefined || worker.closed || worker.draining) {
@@ -360,6 +372,7 @@ export class Supervisor {
       signal,
       persistentExecutionId,
       user,
+      invocation,
     );
   }
 
@@ -551,6 +564,9 @@ export class Supervisor {
       throw new ServiceUnavailableError(`service ${serviceId} is unavailable`);
     }
     const targetWorkerId = headers.get("the8020-internal-target-worker-id");
+    if (existingOnly && targetWorkerId === null) {
+      throw new PersistentExecutionLostError();
+    }
     if (pool.executionMode === "stateless") {
       if (existingOnly) throw new PersistentExecutionLostError();
       const target = targetWorkerId === null
@@ -577,8 +593,8 @@ export class Supervisor {
     const keepAliveMilliseconds = Number(
       headers.get("the8020-internal-persistent-keep-alive-ms") ?? "0",
     );
-    if (executionId.length === 0 || executionId.length > 256) {
-      throw new TypeError("persistent execution ID is required");
+    if (!isId(executionId, "pex")) {
+      throw new TypeError("canonical persistent execution ID is required");
     }
     if (
       !Number.isSafeInteger(keepAliveMilliseconds) || keepAliveMilliseconds < 1
@@ -589,6 +605,10 @@ export class Supervisor {
       this.#sweepPersistentBindings(pool);
       const existing = pool.bindings.get(executionId);
       if (existing !== undefined) {
+        // Only an explicit follow-up may reuse an existing binding. A random
+        // ID collision on initial dispatch must not attach to someone else's
+        // execution, including another execution under the same principal.
+        if (!existingOnly) throw new PersistentExecutionLostError();
         const worker = this.#workers.get(existing.workerId);
         if (
           worker === undefined || worker.closed || worker.draining ||
@@ -952,7 +972,7 @@ export class Supervisor {
       worker.failure !== undefined
     ).slice(-20).map((worker) => ({
       worker_id: worker.metadata.workerId,
-      execution_id: worker.metadata.executionId,
+
       reason: worker.failure,
     }));
     return {
@@ -961,7 +981,7 @@ export class Supervisor {
       protocol_version: PROTOCOL_VERSION,
       supervisor_version: this.options.supervisorVersion,
       deno_version: this.options.denoVersion,
-      runtime_group_id: this.options.runtimeGroupId,
+
       sandbox_id: this.options.sandboxId,
       workload_type: this.options.workloadType,
       worker_count: workers.length,
@@ -988,7 +1008,6 @@ export class Supervisor {
   }
 
   workers(
-    includeLogs = true,
     persistent = this.#persistentReservationCounts(),
   ): WorkerStatus[] {
     return [...this.#workers.values()].map<WorkerStatus>((worker) => {
@@ -1003,7 +1022,7 @@ export class Supervisor {
         : undefined;
       return {
         worker_id: worker.metadata.workerId,
-        execution_id: worker.metadata.executionId,
+
         workload_id: worker.metadata.workloadId,
         owner_id: worker.metadata.ownerId,
         debugger_name: worker.metadata.debuggerName,
@@ -1022,7 +1041,6 @@ export class Supervisor {
           ? "starting"
           : "ready",
         failure: worker.failure,
-        ...(includeLogs ? { logs: worker.logs } : {}),
       };
     }).sort((left, right) => left.worker_id.localeCompare(right.worker_id));
   }
@@ -1031,7 +1049,7 @@ export class Supervisor {
     return {
       protocol_version: PROTOCOL_VERSION,
       message_type: "heartbeat",
-      runtime_group_id: this.options.runtimeGroupId,
+      sandbox_id: this.options.sandboxId,
       payload: {
         ...this.snapshot(),
         event_loop_timestamp: this.options.now(),
@@ -1048,7 +1066,7 @@ export class Supervisor {
     const persistent = this.#persistentReservationCounts();
     return {
       ...this.status(persistent),
-      workers: this.workers(false, persistent),
+      workers: this.workers(persistent),
     };
   }
 
@@ -1119,9 +1137,12 @@ export class Supervisor {
           ) throw new TypeError("registered Worker function is required");
           if (
             payload.persistent_execution_id !== undefined &&
-            (typeof payload.persistent_execution_id !== "string" ||
-              payload.persistent_execution_id.length === 0)
-          ) throw new TypeError("persistent execution ID must be non-empty");
+            !isId(payload.persistent_execution_id, "pex")
+          ) {
+            throw new TypeError(
+              "canonical persistent execution ID is required",
+            );
+          }
           const user = canonicalExecutionUser(payload.user);
           return await this.invokeWorker(
             decodeURIComponent(workerInvoke[1]!),
@@ -1130,6 +1151,7 @@ export class Supervisor {
             request.signal,
             payload.persistent_execution_id,
             user,
+            canonicalInvocation(payload.invocation),
           );
         },
       );
@@ -1167,13 +1189,17 @@ export class Supervisor {
               typeof value === "string"
             )
           ) throw new TypeError("job secrets must be a string map");
+          const invocation = canonicalInvocation(payload.invocation);
+          if (invocation.jobRunId === undefined) {
+            throw new TypeError("job run identity is required");
+          }
           const result = await worker.runJob(
+            invocation,
             payload.arguments,
             payload.secrets as Record<string, string>,
           );
           return {
             result,
-            logs: worker.logs,
             module_dependencies: moduleDependencies,
           };
         },
@@ -1334,7 +1360,7 @@ export class Supervisor {
     const reason = error instanceof Error ? error.message : String(error);
     this.#recentFailures.push({
       worker_id: worker.metadata.workerId,
-      execution_id: worker.metadata.executionId,
+
       reason,
     });
     if (this.#recentFailures.length > 20) this.#recentFailures.shift();
@@ -1412,7 +1438,7 @@ export class Supervisor {
       opened = await openedPromise;
     } catch (error) {
       this.#finishServiceWorkerLease(serviceId, lease, false);
-      throw error;
+      return controlError(error);
     }
     if (!opened.accepted) {
       this.#finishServiceWorkerLease(serviceId, lease, false);
@@ -1479,7 +1505,7 @@ export class Supervisor {
       assertEnvelope(envelope);
       correlationId = envelope.correlation_id;
       if (
-        envelope.runtime_group_id !== this.options.runtimeGroupId ||
+        envelope.sandbox_id !== this.options.sandboxId ||
         envelope.message_type !== requestType
       ) throw new TypeError("runtime control envelope does not match request");
       if (correlationId === undefined || correlationId.length === 0) {
@@ -1516,7 +1542,7 @@ export class Supervisor {
       {
         protocol_version: PROTOCOL_VERSION,
         message_type: messageType,
-        runtime_group_id: this.options.runtimeGroupId,
+        sandbox_id: this.options.sandboxId,
         correlation_id: correlationId,
         payload,
       } satisfies Envelope<unknown>,
@@ -1526,7 +1552,7 @@ export class Supervisor {
 
   #requireWorker(workerId: string, workloadType: WorkloadType): RuntimeWorker {
     if (this.options.workloadType !== workloadType) {
-      throw new Error(`runtime group is not ${workloadType}`);
+      throw new Error(`sandbox is not ${workloadType}`);
     }
     const worker = this.#workers.get(workerId);
     if (worker === undefined) throw new Error(`unknown Worker ${workerId}`);
@@ -1594,13 +1620,24 @@ function trustedServiceMetadata(
   headers: Headers,
   worker: ExecutionMetadata,
 ): ServiceRequestMetadata {
+  const invocation = canonicalInvocation({
+    contextId: headers.get("the8020-internal-context-id"),
+    parentContextId: headers.get("the8020-internal-parent-context-id") ??
+      undefined,
+  });
+  const persistentExecutionId = headers.get(
+    "the8020-internal-persistent-execution-id",
+  ) ?? undefined;
+  if (
+    persistentExecutionId !== undefined && !isId(persistentExecutionId, "pex")
+  ) throw new TypeError("canonical persistent execution ID is required");
   const generation = Number(
     headers.get("the8020-internal-service-generation") ??
       worker.service?.generation ?? 0,
   );
   return {
-    requestId: headers.get("the8020-internal-request-id") ||
-      crypto.randomUUID(),
+    contextId: invocation.contextId,
+    parentContextId: invocation.parentContextId,
     serviceId: headers.get("the8020-internal-service-id") ||
       worker.service?.serviceId || worker.workloadId,
     serviceGeneration: Number.isSafeInteger(generation) ? generation : 0,
@@ -1612,22 +1649,18 @@ function trustedServiceMetadata(
       ipAddress: headers.get("the8020-internal-client-ip-address") || "",
       networkScope: clientNetworkScope(headers),
     },
-    persistentExecutionId: headers.get(
-      "the8020-internal-persistent-execution-id",
-    ) || undefined,
+    persistentExecutionId,
     persistentKeepAliveMilliseconds: positiveIntegerHeader(
       headers,
       "the8020-internal-persistent-keep-alive-ms",
     ),
     execution: {
       nodeId: worker.nodeId,
-      runtimeGroupId: worker.runtimeGroupId,
+
       sandboxId: worker.sandboxId,
       workerId: worker.workerId,
-      workerExecutionId: worker.executionId,
-      persistentExecutionId: headers.get(
-        "the8020-internal-persistent-execution-id",
-      ) || undefined,
+
+      persistentExecutionId,
     },
     auth: { authenticated: false },
     authentication: headers.has("the8020-internal-authentication")
@@ -1664,21 +1697,15 @@ function positiveIntegerHeader(
 }
 
 async function validateEntrypoints(entrypoints: string[]): Promise<void> {
-  const command = new Deno.Command(Deno.execPath(), {
-    args: serviceCheckArguments(
+  const output = await runDeno(
+    serviceCheckArguments(
       entrypoints,
       Deno.env.get("DEPENDENCY_MODE") ?? "cached_only",
     ),
-    stdout: "piped",
-    stderr: "piped",
-  });
-  const output = await command.output();
+    0,
+  );
   if (!output.success) {
-    const detail = new TextDecoder().decode(output.stderr).trim().slice(
-      0,
-      8192,
-    );
-    throw new TypeError(`module type check failed: ${detail}`);
+    throw new TypeError(`module type check failed: ${output.stderr}`);
   }
 }
 
@@ -1705,25 +1732,17 @@ async function analyzeModules(
       aggregator,
       roots.map((root) => `import ${JSON.stringify(root)};`).join("\n"),
     );
-    const output = await new Deno.Command(Deno.execPath(), {
-      args: [
+    const output = await runDeno(
+      [
         "info",
         "--json",
         "--config=/opt/runtime/deno.json",
         aggregator,
       ],
-      stdout: "piped",
-      stderr: "piped",
-    }).output();
+      16 * 1024 * 1024,
+    );
     if (!output.success) {
-      const detail = new TextDecoder().decode(output.stderr).trim().slice(
-        0,
-        8192,
-      );
-      throw new TypeError(`module graph failed: ${detail}`);
-    }
-    if (output.stdout.byteLength > 16 * 1024 * 1024) {
-      throw new TypeError("module graph exceeds 16 MiB");
+      throw new TypeError(`module graph failed: ${output.stderr}`);
     }
     const graph = JSON.parse(new TextDecoder().decode(output.stdout)) as {
       modules?: DenoInfoModule[];

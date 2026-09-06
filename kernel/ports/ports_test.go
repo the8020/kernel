@@ -90,6 +90,46 @@ func TestCloseForSandboxReleasesOnlyMatchingLeases(t *testing.T) {
 	}
 }
 
+func TestLeaseCollisionPreservesLiveAndPersistedOwnership(t *testing.T) {
+	manager, err := New(t.TempDir(), false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.CloseAll()
+	request := Request{SandboxID: "sandbox-one", SandboxIP: "127.0.0.1", InternalPort: 8000, Purpose: "collision-test"}
+	first, err := manager.Expose(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(manager.path(first.LeaseID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.SandboxID = "sandbox-two"
+	if _, err := manager.exposeIdentity(context.Background(), request, nil, first.LeaseID, time.Time{}); err == nil {
+		t.Fatal("duplicate active lease replaced its listener")
+	}
+	if leases := manager.List(); len(leases) != 1 || leases[0].SandboxID != first.SandboxID || leases[0].HostPort != first.HostPort {
+		t.Fatalf("active ownership changed: %#v", leases)
+	}
+	restarted, err := New(manager.root, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	collision := first
+	collision.SandboxID = request.SandboxID
+	restarted.mu.Lock()
+	err = restarted.register(collision, true)
+	restarted.mu.Unlock()
+	if err == nil {
+		t.Fatal("new lease replaced a retained record")
+	}
+	after, err := os.ReadFile(manager.path(first.LeaseID))
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("persisted ownership changed: %v", err)
+	}
+}
+
 func TestExplicitOccupiedAndPublicPortsAreRejected(t *testing.T) {
 	occupied, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

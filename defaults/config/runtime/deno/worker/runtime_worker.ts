@@ -1,10 +1,22 @@
+import { isId, newId } from "../identity/mod.ts";
+import { canonicalInvocation } from "./contracts.ts";
 import { trackStream } from "./streams.ts";
+import { bindWorkerRecord, REPORT_WEIGHT } from "../logging/worker_channel.ts";
+import { captureRecord } from "../logging/capture.ts";
+import {
+  allows,
+  INITIAL_POLICY,
+  type LogPolicy,
+  type LogSink,
+  MAX_FRAME,
+  validDrops,
+} from "../logging/protocol.ts";
 import type {
   ExecutionMetadata,
   ExecutionUserMetadata,
+  InvocationMetadata,
   KernelCall,
   KernelOperation,
-  RuntimeLogEvent,
   ServiceRequestMetadata,
   WorkerExecutionFailure,
   WorkerPermissionSet,
@@ -12,11 +24,13 @@ import type {
 
 interface RuntimeWorkerOptions {
   metadata: ExecutionMetadata;
+  invocation?: InvocationMetadata;
   permissions: WorkerPermissionSet;
   kernelCall?: KernelCall;
   now?: () => number;
   onCapacityChange?: () => void;
   onClose?: () => void;
+  logSink?: LogSink;
 }
 
 interface WorkerMessage {
@@ -28,6 +42,8 @@ interface WorkerMessage {
   status?: number;
   headers?: [string, string][];
   body?: ReadableStream<Uint8Array> | null;
+  frame?: unknown;
+  dropped?: unknown;
 }
 
 export class WorkerExecutionError extends Error {
@@ -53,7 +69,9 @@ interface KernelCallPayload {
   operation: KernelOperation;
   arguments: Record<string, unknown>;
   request?: {
-    requestId: string;
+    contextId: string;
+    parentContextId?: string;
+    jobRunId?: string;
     serviceId: string;
     persistentExecutionId?: string;
     user?: ExecutionUserMetadata;
@@ -91,7 +109,7 @@ export class RuntimeWorker {
   #worker: Worker;
   #port: MessagePort;
   #pending = new Map<string, Pending>();
-  #sequence = 0;
+  #activeContexts = new Set<string>();
   #closed = false;
   #draining = false;
   #failure?: string;
@@ -99,7 +117,10 @@ export class RuntimeWorker {
   #inFlight = 0;
   #idleWaiters = new Set<() => void>();
   #idleSinceMilliseconds: number | undefined;
-  #logs: RuntimeLogEvent[] = [];
+  #logSink?: LogSink;
+  #logUnsubscribe?: () => void;
+  #logPolicyPending = false;
+  #logPolicy: Readonly<LogPolicy> = INITIAL_POLICY;
   #kernelCall?: KernelCall;
   #kernelCalls = new Map<string, AbortController>();
   #webSockets = new Map<string, ServiceWebSocketCallbacks>();
@@ -108,11 +129,18 @@ export class RuntimeWorker {
   #onClose?: () => void;
 
   constructor(options: RuntimeWorkerOptions) {
+    if (
+      !isId(options.metadata.nodeId, "nod") ||
+      !isId(options.metadata.sandboxId, "sbx") ||
+      !isId(options.metadata.workerId, "wrk")
+    ) throw new TypeError("canonical node/sandbox/Worker IDs are required");
     this.metadata = options.metadata;
     this.#kernelCall = options.kernelCall;
     this.#now = options.now ?? Date.now;
     this.#onCapacityChange = options.onCapacityChange;
     this.#onClose = options.onClose;
+    this.#logSink = options.logSink;
+    this.#logPolicy = options.logSink?.policy ?? INITIAL_POLICY;
     const channel = new MessageChannel();
     this.#port = channel.port1;
     const workerOptions: WorkerOptions & {
@@ -134,9 +162,11 @@ export class RuntimeWorker {
     });
     this.#port.onmessage = (event: MessageEvent<WorkerMessage>) => {
       const message = event.data;
+      if (this.#handleLog(message)) return;
       if (message.type === "ready") {
         this.#starting = false;
         this.#idleSinceMilliseconds = this.#now();
+        this.#logLifecycle("Worker ready");
         this.#onCapacityChange?.();
         readyResolve();
         return;
@@ -145,17 +175,6 @@ export class RuntimeWorker {
         const reason = message.error ?? "Worker failed";
         readyReject(new Error(reason));
         this.#fail(reason);
-        return;
-      }
-      if (message.type === "log") {
-        const log = message.payload as RuntimeLogEvent;
-        if (
-          log !== null && typeof log === "object" &&
-          typeof log.level === "string" && typeof log.message === "string"
-        ) {
-          this.#logs.push(log);
-          if (this.#logs.length > 1_000) this.#logs.shift();
-        }
         return;
       }
       if (message.type === "kernel_call") {
@@ -232,8 +251,81 @@ export class RuntimeWorker {
     this.#worker.postMessage({
       type: "initialize",
       metadata: options.metadata,
+      invocation: options.invocation,
+      logPolicy: this.#logPolicy,
       port: channel.port2,
     }, [channel.port2]);
+    this.#logUnsubscribe = options.logSink?.subscribe(() =>
+      this.#publishLogPolicy()
+    );
+    this.#logLifecycle("Worker started");
+  }
+
+  #logLifecycle(
+    message: string,
+    reason?: "graceful" | "forced" | "drain_timeout" | "failure",
+  ): void {
+    const level = reason === "failure"
+      ? "ERROR"
+      : reason === "drain_timeout" || reason === "forced"
+      ? "WARN"
+      : "INFO";
+    if (this.#logSink === undefined || !allows(this.#logSink.policy, level)) {
+      return;
+    }
+    try {
+      const record = captureRecord(this.metadata, undefined, level, [message], {
+        phase: this.#starting ? "starting" : "running",
+        in_flight: this.#inFlight,
+        ...(reason === undefined ? {} : { reason }),
+      });
+      record.component = "worker-lifecycle";
+      this.#logSink.emit(record);
+    } catch {
+      // Logging failure must never prevent Worker startup or termination.
+    }
+  }
+
+  #publishLogPolicy(): void {
+    const next = this.#logSink?.policy;
+    if (
+      this.#closed || this.#logPolicyPending || next === undefined ||
+      (next.revision === this.#logPolicy.revision &&
+        next.enabled === this.#logPolicy.enabled &&
+        next.level === this.#logPolicy.level)
+    ) return;
+    this.#logPolicy = next;
+    this.#logPolicyPending = true;
+    this.#port.postMessage({ type: "log_policy", payload: next });
+  }
+
+  #handleLog(message: WorkerMessage): boolean {
+    if (message.type === "log_policy_ack") {
+      this.#logPolicyPending = false;
+      this.#publishLogPolicy();
+      return true;
+    }
+    if (message.type !== "log_record" && message.type !== "log_dropped") {
+      return false;
+    }
+    if (validDrops(message.dropped)) this.#logSink?.dropped(message.dropped);
+    let weight = REPORT_WEIGHT;
+    if (message.type === "log_record") {
+      if (
+        !(message.frame instanceof Uint8Array) ||
+        message.frame.length > MAX_FRAME + 4
+      ) return true;
+      weight = message.frame.length + 128;
+      try {
+        this.#logSink?.emit(bindWorkerRecord(message.frame, this.metadata));
+      } catch {
+        this.#logSink?.dropped([0, 0, 0, 1]);
+      }
+    }
+    // Return credit only after this hop has admitted/dropped the record. The
+    // downstream socket queue independently charges its in-flight write.
+    this.#port.postMessage({ type: "log_credit", payload: { bytes: weight } });
+    return true;
   }
 
   async #handleKernelCall(message: WorkerMessage): Promise<void> {
@@ -273,9 +365,10 @@ export class RuntimeWorker {
       const result = await this.#kernelCall({
         operation: payload.operation,
         arguments: payload.arguments as Record<string, unknown>,
-        requestId: payload.request?.requestId,
+        contextId: payload.request?.contextId,
         serviceId: payload.request?.serviceId ?? this.metadata.workloadId,
-        executionId: this.metadata.executionId,
+        jobRunId: payload.request?.jobRunId,
+        parentContextId: payload.request?.parentContextId,
         workerId: this.metadata.workerId,
         persistentExecutionId: payload.request?.persistentExecutionId,
         user: payload.request?.user,
@@ -326,23 +419,27 @@ export class RuntimeWorker {
     return this.#starting;
   }
 
-  get logs(): RuntimeLogEvent[] {
-    return this.#logs.map((event) => ({
-      ...event,
-      fields: event.fields === undefined ? undefined : { ...event.fields },
-    }));
-  }
-
   async runJob(
+    invocation: InvocationMetadata,
     arguments_: unknown[],
     secrets: Record<string, string> = {},
   ): Promise<unknown> {
-    this.#logs = [];
-    const message = await this.#request({
-      type: "job_run",
-      payload: { arguments: arguments_, secrets },
-    });
-    return (message as WorkerMessage).payload;
+    const release = this.#claimContext(
+      canonicalInvocation(invocation).contextId,
+    );
+    try {
+      const message = await this.#request({
+        type: "job_run",
+        payload: {
+          invocation: canonicalInvocation(invocation),
+          arguments: arguments_,
+          secrets,
+        },
+      });
+      return (message as WorkerMessage).payload;
+    } finally {
+      release();
+    }
   }
 
   async invoke(
@@ -351,21 +448,35 @@ export class RuntimeWorker {
     signal: AbortSignal | undefined,
     persistentExecutionId: string | undefined,
     user: ExecutionUserMetadata,
+    invocation: InvocationMetadata,
   ): Promise<WorkerInvocationResult> {
-    const response = await this.#request(
-      {
-        type: "worker_invoke",
-        payload: { function: functionName, input, persistentExecutionId, user },
-      },
-      [],
-      signal,
-    ) as WorkerMessage;
-    const result = response.payload as WorkerInvocationResult;
-    if (
-      result === null || typeof result !== "object" ||
-      typeof result.ok !== "boolean"
-    ) throw new TypeError("Worker returned an invalid invocation result");
-    return result;
+    const release = this.#claimContext(
+      canonicalInvocation(invocation).contextId,
+    );
+    try {
+      const response = await this.#request(
+        {
+          type: "worker_invoke",
+          payload: {
+            function: functionName,
+            input,
+            persistentExecutionId,
+            user,
+            invocation: canonicalInvocation(invocation),
+          },
+        },
+        [],
+        signal,
+      ) as WorkerMessage;
+      const result = response.payload as WorkerInvocationResult;
+      if (
+        result === null || typeof result !== "object" ||
+        typeof result.ok !== "boolean"
+      ) throw new TypeError("Worker returned an invalid invocation result");
+      return result;
+    } finally {
+      release();
+    }
   }
 
   async dispatchService(
@@ -374,7 +485,7 @@ export class RuntimeWorker {
   ): Promise<Response> {
     if (this.#draining) throw new Error("Worker is draining");
     metadata ??= {
-      requestId: crypto.randomUUID(),
+      contextId: newId("ctx"),
       serviceId: this.metadata.service?.serviceId ?? this.metadata.workloadId,
       serviceGeneration: this.metadata.service?.generation ?? 0,
       canonicalBasePath: this.metadata.service?.canonicalBasePath ?? "/",
@@ -382,35 +493,46 @@ export class RuntimeWorker {
       client: { ipAddress: "", networkScope: "special" },
       execution: {
         nodeId: this.metadata.nodeId,
-        runtimeGroupId: this.metadata.runtimeGroupId,
+
         sandboxId: this.metadata.sandboxId,
         workerId: this.metadata.workerId,
-        workerExecutionId: this.metadata.executionId,
       },
       auth: { authenticated: false },
       user: this.metadata.user,
     };
-    const headers = [...request.headers.entries()];
-    const body = request.body;
-    const response = await this.#request(
-      {
-        type: "service_request",
-        payload: { method: request.method, url: request.url, meta: metadata },
-        headers,
-        body,
-      },
-      body === null ? [] : [body],
-      request.signal,
-      true,
-    ) as WorkerMessage;
-    const responseBody = response.body === undefined || response.body === null
-      ? null
-      : trackStream(response.body, () => this.#completeInFlight());
-    if (responseBody === null) this.#completeInFlight();
-    return new Response(responseBody, {
-      status: response.status ?? 500,
-      headers: response.headers,
-    });
+    const release = this.#claimContext(canonicalInvocation(metadata).contextId);
+    try {
+      const headers = [...request.headers.entries()];
+      const body = request.body;
+      const response = await this.#request(
+        {
+          type: "service_request",
+          payload: { method: request.method, url: request.url, meta: metadata },
+          headers,
+          body,
+        },
+        body === null ? [] : [body],
+        request.signal,
+        true,
+      ) as WorkerMessage;
+      const responseBody = response.body === undefined || response.body === null
+        ? null
+        : trackStream(response.body, () => {
+          release();
+          this.#completeInFlight();
+        });
+      if (responseBody === null) {
+        release();
+        this.#completeInFlight();
+      }
+      return new Response(responseBody, {
+        status: response.status ?? 500,
+        headers: response.headers,
+      });
+    } catch (error) {
+      release();
+      throw error;
+    }
   }
 
   async serviceOpenAPI(): Promise<Record<string, unknown>> {
@@ -431,8 +553,18 @@ export class RuntimeWorker {
     callbacks: ServiceWebSocketCallbacks,
   ): Promise<ServiceWebSocketOpenResult> {
     if (this.#draining) throw new Error("Worker is draining");
-    const connectionId = `websocket-${crypto.randomUUID()}`;
-    this.#webSockets.set(connectionId, callbacks);
+    const connectionId = newId("wsc");
+    if (this.#webSockets.has(connectionId)) {
+      throw new Error("WebSocket connection identity collision");
+    }
+    const release = this.#claimContext(canonicalInvocation(metadata).contextId);
+    this.#webSockets.set(connectionId, {
+      ...callbacks,
+      close: (code, reason) => {
+        release();
+        callbacks.close(code, reason);
+      },
+    });
     let response: WorkerMessage;
     try {
       response = await this.#request(
@@ -453,10 +585,12 @@ export class RuntimeWorker {
       ) as WorkerMessage;
     } catch (error) {
       this.#webSockets.delete(connectionId);
+      release();
       throw error;
     }
     if (response.type === "service_websocket_rejected") {
       this.#webSockets.delete(connectionId);
+      release();
       this.#completeInFlight();
       return {
         accepted: false,
@@ -466,6 +600,7 @@ export class RuntimeWorker {
     }
     if (response.type !== "service_websocket_ready") {
       this.#webSockets.delete(connectionId);
+      release();
       this.#completeInFlight();
       throw new Error("Worker returned an invalid WebSocket response");
     }
@@ -484,6 +619,7 @@ export class RuntimeWorker {
           if (closed) return;
           closed = true;
           this.#webSockets.delete(connectionId);
+          release();
           if (!this.#closed) {
             this.#port.postMessage({
               type: "service_websocket_close",
@@ -502,17 +638,17 @@ export class RuntimeWorker {
     const deadline = Date.now() + graceMilliseconds;
     await this.#waitForIdle(Math.max(0, deadline - Date.now()));
     if (this.#inFlight > 0) {
-      this.kill();
+      this.#terminate("drain_timeout");
       return;
     }
     let forced = false;
     const timeout = setTimeout(() => {
       forced = true;
-      this.kill();
+      this.#terminate("drain_timeout");
     }, Math.max(1, deadline - Date.now()));
     try {
       await this.#request({ type: "stop" });
-      this.kill();
+      this.#terminate("graceful");
     } catch (error) {
       if (!forced) throw error;
     } finally {
@@ -521,15 +657,34 @@ export class RuntimeWorker {
   }
 
   kill(): void {
+    this.#terminate("forced");
+  }
+
+  #terminate(
+    reason: "graceful" | "forced" | "drain_timeout" | "failure",
+    failure = "Worker terminated",
+  ): void {
     if (this.#closed) return;
     this.#closed = true;
+    this.#logLifecycle("Worker exited", reason);
     this.#worker.terminate();
     for (const controller of this.#kernelCalls.values()) controller.abort();
     this.#kernelCalls.clear();
+    this.#activeContexts.clear();
     this.#port.close();
     this.#closedNotification();
-    this.#closeWebSockets("Worker terminated");
-    this.#rejectAll("Worker terminated");
+    this.#closeWebSockets(failure);
+    this.#rejectAll(failure);
+  }
+
+  #claimContext(contextId: string): () => void {
+    if (this.#activeContexts.has(contextId)) {
+      throw new Error("invocation context is already active in this Worker");
+    }
+    this.#activeContexts.add(contextId);
+    return () => {
+      this.#activeContexts.delete(contextId);
+    };
   }
 
   async #request(
@@ -543,7 +698,10 @@ export class RuntimeWorker {
     if (signal?.aborted) {
       throw signal.reason ?? new DOMException("Aborted", "AbortError");
     }
-    const correlationId = `${this.metadata.workerId}-${++this.#sequence}`;
+    const correlationId = newId("cor");
+    if (this.#pending.has(correlationId)) {
+      throw new Error("Worker correlation identity collision");
+    }
     this.#idleSinceMilliseconds = undefined;
     this.#inFlight++;
     this.#onCapacityChange?.();
@@ -616,12 +774,7 @@ export class RuntimeWorker {
   #fail(reason: string): void {
     if (this.#closed) return;
     this.#failure = reason;
-    this.#closed = true;
-    this.#worker.terminate();
-    this.#port.close();
-    this.#closedNotification();
-    this.#closeWebSockets(reason);
-    this.#rejectAll(reason);
+    this.#terminate("failure", reason);
   }
 
   #closeWebSockets(reason: string): void {
@@ -632,6 +785,8 @@ export class RuntimeWorker {
   }
 
   #closedNotification(): void {
+    this.#logUnsubscribe?.();
+    this.#logUnsubscribe = undefined;
     const notify = this.#onClose;
     this.#onClose = undefined;
     notify?.();

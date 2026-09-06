@@ -34,13 +34,15 @@ type RegisterHandlers func(*core.Registry, *services.Services) error
 
 // Config contains generated catalogs and process-level startup inputs.
 type Config struct {
-	Root        string
-	Startup     map[string]string
-	InitOnly    bool
-	Definitions []settings.Definition
-	Register    RegisterHandlers
-	BuildID     string
-	initialize  func(context.Context, *settings.Manager, *database.Manager, *services.Services) (*services.RuntimeServices, runtimeCleanupFunc)
+	Root            string
+	Startup         map[string]string
+	InitOnly        bool
+	Definitions     []settings.Definition
+	Register        RegisterHandlers
+	BuildID         string
+	logdExecutable  string
+	captureStandard bool
+	initialize      func(context.Context, *settings.Manager, *database.Manager, *services.Services) (*services.RuntimeServices, runtimeCleanupFunc)
 }
 
 const gracefulShutdownSteps = 8
@@ -108,7 +110,7 @@ func Main(args []string, definitions []settings.Definition, register RegisterHan
 		fmt.Fprintf(os.Stderr, "kernel: inspect node initialization: %s\n", err)
 		return 1
 	}
-	err = Run(context.Background(), Config{Root: resolved, Startup: startup, InitOnly: *initOnly, Definitions: definitions, Register: register, BuildID: buildID})
+	err = Run(context.Background(), Config{Root: resolved, Startup: startup, InitOnly: *initOnly, Definitions: definitions, Register: register, BuildID: buildID, captureStandard: true})
 	if errors.Is(err, ErrRestartRequested) {
 		if err := replaceCurrentProcess(args); err != nil {
 			fmt.Fprintf(os.Stderr, "kernel: restart: %s\n", err)
@@ -231,12 +233,23 @@ func Run(parent context.Context, config Config) error {
 	if err != nil {
 		return err
 	}
-	loggingManager, err := logging.New(paths.Logs, policy)
+	loggingManager, err := logging.New(logging.Config{
+		Directory: paths.Logs, Socket: filepath.Join(paths.RuntimeKernelSocketDir, "logs.sock"), NodeID: uuid,
+		Policy: policy, Executable: config.logdExecutable, CaptureStandard: config.captureStandard,
+		MaxProducers: activeInt(settingManager, "runtime.node.maximum_sandboxes", 0) + 1,
+	})
 	if err != nil {
 		return err
 	}
 	defer loggingManager.Close()
+	if err := settingManager.RegisterApplier([]string{
+		"logging.enabled", "logging.level", "logging.split_by", "logging.split_period",
+		"logging.max_file_size", "logging.max_total_size", "logging.max_age",
+	}, loggingManager); err != nil {
+		return err
+	}
 	logger := loggingManager.Logger()
+	logger.Info("kernel boot", "pid", os.Getpid(), "build_id", config.BuildID)
 	databaseManager := database.New(database.Config{
 		Backend:                activeString(settingManager, "database.backend", database.BackendSQLite),
 		Location:               activeString(settingManager, "database.location", database.InstanceRootPlaceholder+"/database/system.db"),
@@ -265,7 +278,7 @@ func Run(parent context.Context, config Config) error {
 	if err := commandServer.Start(); err != nil {
 		return err
 	}
-	logger.Info("kernel command bus started", "instance_uuid", uuid, "pid", os.Getpid())
+	logger.Info("kernel command bus started")
 	runtimeContext, cancelRuntime := context.WithCancel(parent)
 	initialize := config.initialize
 	if initialize == nil {
@@ -309,7 +322,7 @@ func Run(parent context.Context, config Config) error {
 	} else {
 		logger.Info("kernel shutting down")
 	}
-	commandServer.BeginShutdown("kernel.status", "kernel.shutdown", "kernel.restart")
+	commandServer.BeginShutdown("kernel.status", "kernel.logs", "kernel.shutdown", "kernel.restart")
 	shutdownContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	var shutdownError error
@@ -338,6 +351,7 @@ func Run(parent context.Context, config Config) error {
 	}
 	progress(false, "admin_socket", "administrative socket", "administrative command socket closed")
 	progress(true, "process_resources", "process resources", "closing logging and releasing the instance lock")
+	logger.Info("kernel exit", "restart", lifecycleManager.RestartRequested(), "error", shutdownError)
 	if err := loggingManager.Close(); err != nil {
 		shutdownError = errors.Join(shutdownError, err)
 	}

@@ -51,11 +51,11 @@ Deno.test("portable self-types expose the source date schema class and output", 
   assertEquals(schema.parse(date), date);
 });
 
-function context(requestId = "request-1"): RuntimeServiceContext {
+function context(contextId = "request-1"): RuntimeServiceContext {
   return {
     signal: new AbortController().signal,
     meta: {
-      requestId,
+      contextId,
       serviceId: "core/example/service",
       serviceGeneration: 3,
       canonicalBasePath: "/core/example/service",
@@ -63,10 +63,9 @@ function context(requestId = "request-1"): RuntimeServiceContext {
       client: { ipAddress: "127.0.0.1", networkScope: "loopback" },
       execution: {
         nodeId: "node-test",
-        runtimeGroupId: "rgp-test0001",
+
         sandboxId: "sbx-test0001",
         workerId: "wrk-test0001",
-        workerExecutionId: "execution-test",
       },
       user: { userId: "user:system", username: "system" },
       auth: { authenticated: false },
@@ -138,7 +137,7 @@ Deno.test("framework validates params query headers and JSON bodies before handl
         query,
         headers,
         body,
-        requestId: meta.requestId,
+        contextId: meta.contextId,
       }),
   );
 
@@ -156,7 +155,7 @@ Deno.test("framework validates params query headers and JSON bodies before handl
     query: { count: 4 },
     headers: { "x-example": "yes" },
     body: { enabled: true },
-    requestId: "request-valid",
+    contextId: "request-valid",
   });
 
   const invalid = await service.fetch(
@@ -169,7 +168,7 @@ Deno.test("framework validates params query headers and JSON bodies before handl
   );
   assertEquals(invalid.status, 400);
   const problem = await invalid.json();
-  assertEquals(problem.request_id, "request-invalid");
+  assertEquals(problem.context_id, "request-invalid");
   assertEquals(problem.error.code, "validation_error");
   assertEquals(problem.error.location, "params");
 });
@@ -178,7 +177,7 @@ Deno.test("framework middleware is ordinary ordered TypeScript", async () => {
   const calls: string[] = [];
   const service = defineService();
   service.use(async ({ meta }, next) => {
-    calls.push(`before:${meta.requestId}`);
+    calls.push(`before:${meta.contextId}`);
     const response = await next();
     calls.push("after");
     response.headers.set("x-middleware", "yes");
@@ -347,7 +346,7 @@ Deno.test("WebSocket routes preserve middleware, metadata, and bidirectional mes
   let middlewareRequest = "";
   let handlerContext: Record<string, unknown> = {};
   service.use(({ meta }, next) => {
-    middlewareRequest = meta.requestId;
+    middlewareRequest = meta.contextId;
     return next();
   });
   service.websocket("/events/:topic", async (context) => {
@@ -356,7 +355,7 @@ Deno.test("WebSocket routes preserve middleware, metadata, and bidirectional mes
       params: context.params,
       query: context.query,
       protocol: context.socket.protocol,
-      requestId: context.meta.requestId,
+      contextId: context.meta.contextId,
       auth: context.meta.auth,
       event,
     };
@@ -380,7 +379,7 @@ Deno.test("WebSocket routes preserve middleware, metadata, and bidirectional mes
     params: { topic: "status" },
     query: { watch: "yes" },
     protocol: "the8020.echo",
-    requestId: "request-websocket",
+    contextId: "request-websocket",
     auth: { authenticated: false },
     event: { type: "message", data: "hello" },
   });

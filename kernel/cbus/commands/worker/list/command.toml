@@ -13,7 +13,7 @@ name = "sandbox_id"
 type = "string"
 position = 0
 required = false
-description = "Optional sandbox or runtime-group filter."
+description = "Optional sandbox filter."
 [[result]]
 name = "workers"
 type = "array"

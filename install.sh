@@ -144,6 +144,7 @@ find "$DEVELOPMENT_DIR/generated" -name '*.go' -type f -print0 | xargs -0 "$GOFM
 "$GO_CMD" -C "$DEVELOPMENT_DIR/generated" list -mod=mod ./... >/dev/null
 "$GO_CMD" -C "$DEVELOPMENT_DIR/generated" build -mod=readonly -trimpath -o "$DEVELOPMENT_DIR/bin/kernel" ./cmd/kernel
 "$GO_CMD" -C "$DEVELOPMENT_DIR/generated" build -mod=readonly -trimpath -o "$DEVELOPMENT_DIR/bin/admin" ./cmd/admin
+"$GO_CMD" build -mod=readonly -trimpath -o "$DEVELOPMENT_DIR/bin/logd" ./kernel/logd
 
 KERNEL="$DEVELOPMENT_DIR/bin/kernel"
 KERNEL_CONFIG="$INSTANCE_ROOT/kernel.toml"

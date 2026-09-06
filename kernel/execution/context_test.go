@@ -12,10 +12,25 @@ func TestCallerContextRequiresCompleteValidatedIdentity(t *testing.T) {
 	if _, ok := CallerFromContext(WithCaller(base, Caller{})); ok {
 		t.Fatal("accepted an incomplete caller")
 	}
-	want := Caller{ExecutionID: "execution", Workload: model.WorkloadJob, User: SystemUser()}
+	want := Caller{ContextID: "ctx-aaaaaaaaaa", JobRunID: "job-bbbbbbbbbb", Workload: model.WorkloadJob, User: SystemUser()}
 	got, ok := CallerFromContext(WithCaller(base, want))
 	if !ok || got != want {
 		t.Fatalf("caller=%#v ok=%t", got, ok)
+	}
+	for _, invalid := range []Caller{
+		{ContextID: "request-1", JobRunID: want.JobRunID, Workload: want.Workload, User: want.User},
+		{ContextID: want.ContextID, JobRunID: "parent-job", Workload: want.Workload, User: want.User},
+		{ContextID: want.JobRunID, Workload: want.Workload, User: want.User},
+	} {
+		if invalid.Valid() {
+			t.Fatalf("accepted malformed caller: %#v", invalid)
+		}
+		if _, ok := CallerFromContext(WithCaller(base, invalid)); ok {
+			t.Fatalf("stored malformed caller: %#v", invalid)
+		}
+		if _, ok := CallerFromContext(context.WithValue(base, callerKey{}, invalid)); ok {
+			t.Fatalf("read malformed caller: %#v", invalid)
+		}
 	}
 }
 

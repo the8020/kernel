@@ -2,6 +2,8 @@ package containerd
 
 import (
 	"context"
+	"errors"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -14,9 +16,48 @@ import (
 	"github.com/containerd/containerd/v2/pkg/oci"
 	"github.com/containerd/typeurl/v2"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
+	"golang.org/x/sys/unix"
 
+	"the8020/kernel/logging/records"
 	"the8020/kernel/sandbox/model"
 )
+
+func TestTaskIOUsesExternalFIFOsWithoutCopyReadersOrUnlinking(t *testing.T) {
+	dir := t.TempDir()
+	paths := records.RawPaths{Stdout: filepath.Join(dir, "stdout"), Stderr: filepath.Join(dir, "stderr")}
+	for _, path := range []string{paths.Stdout, paths.Stderr} {
+		if err := unix.Mkfifo(path, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	streams, err := rawTaskIO(paths)("sbx-0123456789")
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := streams.Config()
+	if config.Stdout != paths.Stdout || config.Stderr != paths.Stderr || config.Stdin != "" || config.Terminal {
+		t.Fatalf("native IO=%#v", config)
+	}
+	for _, path := range []string{paths.Stdout, paths.Stderr} {
+		fd, err := unix.Open(path, unix.O_WRONLY|unix.O_NONBLOCK, 0)
+		if fd >= 0 {
+			_ = unix.Close(fd)
+		}
+		if !errors.Is(err, unix.ENXIO) {
+			t.Fatalf("task IO opened a competing read endpoint: %v", err)
+		}
+	}
+	streams.Cancel()
+	streams.Wait()
+	if err := streams.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{paths.Stdout, paths.Stderr} {
+		if info, err := os.Lstat(path); err != nil || info.Mode()&os.ModeNamedPipe == 0 {
+			t.Fatalf("task IO removed logger-owned FIFO: %v", err)
+		}
+	}
+}
 
 func TestNamespaceAndOwnershipAreInstanceScoped(t *testing.T) {
 	if got := NamespaceForInstance("ABC/123"); got != "the8020-abc-123" {
@@ -36,11 +77,11 @@ func TestNamespaceAndOwnershipAreInstanceScoped(t *testing.T) {
 	}
 }
 
-func TestMutableOwnerLabelsSupportSharedGroups(t *testing.T) {
+func TestMutableOwnerLabelsSupportSharedSandboxes(t *testing.T) {
 	if err := validateLabelUpdates(map[string]string{labelOwner: "first", labelOwners: "first,second", labelServices: "the8020/demo/api,the8020/demo/api", labelGroupKey: "service:shared", labelAssignedAt: "2026-08-20T00:00:00Z"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateLabelUpdates(map[string]string{labelRuntimeGroup: "other"}); err == nil {
+	if err := validateLabelUpdates(map[string]string{labelInstance: "other"}); err == nil {
 		t.Fatal("reserved runtime identity label was mutable")
 	}
 }
@@ -88,7 +129,7 @@ func TestSandboxOCIOptionEnforcesBoundaryAndLimits(t *testing.T) {
 		t.Fatalf("mounts: %#v", generated.Mounts)
 	}
 	environment := strings.Join(generated.Process.Env, "\n")
-	for _, expected := range []string{"INTERNAL_API_TOKEN=secret", "RUNTIME_GROUP_ID=group-one", "WORKLOAD_TYPE=job", "HEARTBEAT_INTERVAL_MS=5000", "WORKER_STOP_GRACE_MS=1500"} {
+	for _, expected := range []string{"INTERNAL_API_TOKEN=secret", "WORKLOAD_TYPE=job", "HEARTBEAT_INTERVAL_MS=5000", "WORKER_STOP_GRACE_MS=1500"} {
 		if !strings.Contains(environment, expected) {
 			t.Errorf("environment missing %q: %s", expected, environment)
 		}
@@ -127,7 +168,7 @@ func testSandbox(t *testing.T) model.SandboxSpec {
 		t.Fatal(err)
 	}
 	return model.SandboxSpec{
-		SandboxID: "sandbox-one", RuntimeGroupID: "group-one", WorkloadType: model.WorkloadJob,
+		SandboxID: "sandbox-one", WorkloadType: model.WorkloadJob,
 		GroupKey: "user-one", OwnerIDs: []string{"user-one"}, ImageDigest: digest, RuntimeProfile: profile, ProfileHash: hash,
 		ResourceLimits: model.ResourceLimits{PIDMaximum: 64, TmpfsMaximum: 16777216},
 		Network:        model.NetworkConfiguration{Mode: "netstack", NamespacePath: "/var/run/netns/the8020-one", NetworkName: "the8020"},

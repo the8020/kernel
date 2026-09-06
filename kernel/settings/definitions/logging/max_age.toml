@@ -1,0 +1,8 @@
+key = "logging.max_age"
+type = "duration"
+storage = "node"
+default = "7d"
+environment = "THE8020_LOGGING_MAX_AGE"
+runtime_mutable = true
+restart_required = false
+description = "Expire log segments after their last append reaches this age, including while idle. Use units such as 24h or 7d."

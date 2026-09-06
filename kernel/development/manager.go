@@ -24,6 +24,7 @@ import (
 
 	"the8020/kernel/deployment"
 	"the8020/kernel/execution"
+	"the8020/kernel/identity"
 	"the8020/kernel/sandbox/backend"
 )
 
@@ -42,20 +43,21 @@ type Config struct {
 }
 
 type Manager struct {
-	config        Config
-	driver        SandboxDriver
-	userMu        sync.Map
-	sandboxMu     sync.Map
-	imageMu       sync.RWMutex
-	repositoryMu  *sync.RWMutex
-	deploymentMu  sync.RWMutex
-	deployment    deployment.SchemaHook
-	owned         sync.Map
-	server        *http.Server
-	listener      net.Listener
-	endpoint      string
-	cleanupCancel context.CancelFunc
-	cleanupDone   chan struct{}
+	config         Config
+	driver         SandboxDriver
+	registrationMu sync.Mutex
+	userMu         sync.Map
+	sandboxMu      sync.Map
+	imageMu        sync.RWMutex
+	repositoryMu   *sync.RWMutex
+	deploymentMu   sync.RWMutex
+	deployment     deployment.SchemaHook
+	owned          sync.Map
+	server         *http.Server
+	listener       net.Listener
+	endpoint       string
+	cleanupCancel  context.CancelFunc
+	cleanupDone    chan struct{}
 }
 
 func (m *Manager) SetSchemaDeployment(hook deployment.SchemaHook) {
@@ -70,7 +72,7 @@ func (m *Manager) schemaDeployment() deployment.SchemaHook {
 	return m.deployment
 }
 
-const sandboxSchema = 1
+const sandboxSchema = 2
 
 const authorizedKeysLimit = 64 << 10
 
@@ -204,9 +206,13 @@ func (m *Manager) Close(ctx context.Context) error {
 		checkpointErr := m.checkpointOverlayLocked(ctx, sandbox)
 		stopErr := m.driver.Stop(ctx, item.sandboxID)
 		deleteErr := m.driver.Delete(ctx, item.sandboxID)
+		joined = errors.Join(joined, checkpointErr, stopErr, deleteErr)
+		if deleteErr != nil {
+			unlock()
+			continue
+		}
 		_ = removeDevelopmentFilestore(m.config.PackagesRoot, item.sandboxID)
 		m.owned.Delete(item.sandboxID)
-		joined = errors.Join(joined, checkpointErr, stopErr, deleteErr)
 		sandbox.State = StateStopped
 		sandbox.ActivationActive, sandbox.WritesPaused = false, false
 		sandbox.UpdatedAt = time.Now().UTC()
@@ -265,8 +271,7 @@ func (m *Manager) AuthorizedKeys(userID string) ([]byte, error) {
 	if err := readTOML(filepath.Join(m.sandboxRootForUser(userID), "sandbox.toml"), &sandbox); err != nil {
 		return nil, err
 	}
-	expectedID, _ := sandboxIDForUser(userID)
-	if sandbox.Schema != sandboxSchema || sandbox.UserID != userID || sandbox.SandboxID != expectedID || sandbox.DevelopmentImage == "" || sandbox.SystemPath == "" {
+	if sandbox.Schema != sandboxSchema || sandbox.UserID != userID || !identity.Is(sandbox.SandboxID, "sbx") || sandbox.DevelopmentImage == "" || sandbox.SystemPath == "" {
 		return nil, errors.New("development sandbox storage is unavailable")
 	}
 	expectedRoot, err := m.systemRootPath(userID, sandbox.DevelopmentImage)
@@ -317,13 +322,16 @@ func (m *Manager) createLocked(ctx context.Context, userID string) (Sandbox, err
 	if err != nil {
 		return Sandbox{}, err
 	}
-	sandboxID, _ := sandboxIDForUser(userID)
+	sandboxID, err := identity.New("sbx")
+	if err != nil {
+		return Sandbox{}, err
+	}
 	now := time.Now().UTC()
 	sandbox := Sandbox{Schema: sandboxSchema, UserID: userID, SandboxID: sandboxID, State: StateCreating, CreatedAt: now, UpdatedAt: now, Token: token}
 	if err := m.preparePersistentMounts(userID); err != nil {
 		return Sandbox{}, err
 	}
-	if err := m.saveSandbox(sandbox); err != nil {
+	if err := m.registerSandbox(sandbox); err != nil {
 		return Sandbox{}, err
 	}
 	if err := m.startLocked(ctx, &sandbox); err != nil {
@@ -386,12 +394,19 @@ func (m *Manager) startLocked(ctx context.Context, sandbox *Sandbox) error {
 	if m.driver == nil {
 		return errors.New("development sandbox driver is unavailable")
 	}
-	if _, active := m.owned.Load(sandbox.SandboxID); active {
+	unlockSandbox := m.lockSandbox(sandbox.SandboxID)
+	defer unlockSandbox()
+	if owner, active := m.owned.Load(sandbox.SandboxID); active {
+		if owner != sandbox.UserID {
+			return errors.New("development sandbox ID is owned by another user")
+		}
 		running, err := m.driver.Running(ctx, sandbox.SandboxID)
 		if err == nil && running {
 			return nil
 		}
-		_ = m.driver.Delete(ctx, sandbox.SandboxID)
+		if err := m.driver.Delete(ctx, sandbox.SandboxID); err != nil {
+			return fmt.Errorf("delete previous development sandbox %s: %w", sandbox.SandboxID, err)
+		}
 		_ = removeDevelopmentFilestore(m.config.PackagesRoot, sandbox.SandboxID)
 		m.owned.Delete(sandbox.SandboxID)
 	}
@@ -421,8 +436,6 @@ func (m *Manager) startLocked(ctx context.Context, sandbox *Sandbox) error {
 	if err != nil {
 		return err
 	}
-	unlockSandbox := m.lockSandbox(sandbox.SandboxID)
-	defer unlockSandbox()
 	if err := m.driver.Delete(ctx, sandbox.SandboxID); err != nil {
 		return fmt.Errorf("delete inherited development sandbox %s: %w", sandbox.SandboxID, err)
 	}
@@ -432,8 +445,12 @@ func (m *Manager) startLocked(ctx context.Context, sandbox *Sandbox) error {
 	}
 	m.owned.Store(sandbox.SandboxID, sandbox.UserID)
 	if err := m.restoreOverlayLocked(ctx, sandbox); err != nil {
-		_ = m.driver.Kill(context.Background(), sandbox.SandboxID)
-		_ = m.driver.Delete(context.Background(), sandbox.SandboxID)
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = m.driver.Kill(cleanup, sandbox.SandboxID)
+		if deleteErr := m.driver.Delete(cleanup, sandbox.SandboxID); deleteErr != nil {
+			return errors.Join(err, deleteErr)
+		}
 		_ = removeDevelopmentFilestore(m.config.PackagesRoot, sandbox.SandboxID)
 		m.owned.Delete(sandbox.SandboxID)
 		return err
@@ -735,14 +752,17 @@ func (m *Manager) loadSandbox(userID string) (Sandbox, error) {
 	if err := readTOML(filepath.Join(m.sandboxRootForUser(userID), "sandbox.toml"), &sandbox); err != nil {
 		return Sandbox{}, err
 	}
-	expectedID, _ := sandboxIDForUser(userID)
-	if sandbox.UserID != userID || sandbox.SandboxID != expectedID {
+	if sandbox.UserID != userID || !identity.Is(sandbox.SandboxID, "sbx") {
 		return Sandbox{}, errors.New("development sandbox identity mismatch")
 	}
 	if sandbox.Schema != sandboxSchema {
 		return Sandbox{}, fmt.Errorf("unsupported development sandbox schema %d", sandbox.Schema)
 	}
-	if _, owned := m.owned.Load(sandbox.SandboxID); !owned && sandbox.State != StateStopped && sandbox.State != StateFailed {
+	owner, owned := m.owned.Load(sandbox.SandboxID)
+	if owned && owner != userID {
+		return Sandbox{}, errors.New("development sandbox ID is owned by another user")
+	}
+	if !owned && sandbox.State != StateStopped && sandbox.State != StateFailed {
 		sandbox.State = StateStopped
 		sandbox.ActivationActive, sandbox.WritesPaused = false, false
 		sandbox.UpdatedAt = time.Now().UTC()
@@ -754,9 +774,42 @@ func (m *Manager) loadSandbox(userID string) (Sandbox, error) {
 	return sandbox, nil
 }
 
+// registerSandbox checks durable development ownership only at creation. Ordinary
+// lifecycle reads stay direct by username and never enumerate the user tree.
+func (m *Manager) registerSandbox(sandbox Sandbox) error {
+	m.registrationMu.Lock()
+	defer m.registrationMu.Unlock()
+	users, err := os.ReadDir(m.config.UsersRoot)
+	if err != nil {
+		return err
+	}
+	for _, user := range users {
+		if !user.IsDir() || !safeUserID(user.Name()) {
+			continue
+		}
+		var existing Sandbox
+		err := readTOML(filepath.Join(m.sandboxRootForUser(user.Name()), "sandbox.toml"), &existing)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if user.Name() == sandbox.UserID || existing.SandboxID == sandbox.SandboxID {
+			return errors.New("development sandbox identity is already registered")
+		}
+	}
+	return m.saveSandbox(sandbox)
+}
+
+// HasSandbox reports current ownership for the shared console broker.
+func (m *Manager) HasSandbox(sandboxID string) bool {
+	_, ok := m.owned.Load(sandboxID)
+	return ok
+}
+
 func (m *Manager) saveSandbox(sandbox Sandbox) error {
-	expectedID, err := sandboxIDForUser(sandbox.UserID)
-	if err != nil || sandbox.SandboxID != expectedID {
+	if !safeUserID(sandbox.UserID) || !identity.Is(sandbox.SandboxID, "sbx") {
 		return errors.New("invalid development sandbox identity")
 	}
 	return writeTOML(filepath.Join(m.sandboxRoot(sandbox), "sandbox.toml"), sandbox, 0o600)
@@ -776,13 +829,6 @@ func canSafelyReset(sandbox *Sandbox) bool {
 
 func safeUserID(value string) bool {
 	return execution.ValidateUsername(value) == nil
-}
-
-func sandboxIDForUser(userID string) (string, error) {
-	if err := execution.ValidateUsername(userID); err != nil {
-		return "", err
-	}
-	return "dev-" + userID, nil
 }
 
 func randomHex(size int) (string, error) {

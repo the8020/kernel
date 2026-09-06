@@ -2,7 +2,7 @@ version = 1
 id = "sandbox.history.inspect"
 path = ["sandbox", "history", "inspect"]
 summary = "Inspect a historical sandbox"
-description = "Loads one immutable terminal sandbox record and bounded archived log tails directly from the separate history store."
+description = "Loads immutable terminal sandbox metadata and its log reference. Read bounded log pages through kernel.logs."
 mutates_state = false
 restart_behavior = "none"
 [handler]
@@ -18,4 +18,4 @@ description = "History ID returned by sandbox history list."
 name = "sandbox_history"
 type = "object"
 [[examples]]
-command = "sandbox history inspect 20260827T130405.123456789Z-sbx-ax9thsl3"
+command = "sandbox history inspect 20260827T130405.123456789Z-sbx-ax9thsl300"

@@ -2,7 +2,7 @@ version = 1
 id = "sandbox.delete"
 path = ["sandbox", "delete"]
 summary = "Delete a sandbox and its state"
-description = "Stops the sandbox when needed, deletes runtime and network resources, archives terminal metadata and logs, and removes live runtime-group state."
+description = "Stops the sandbox when needed, deletes runtime and network resources, archives terminal metadata and logs, and removes live sandbox state."
 mutates_state = true
 restart_behavior = "none"
 [handler]
@@ -13,7 +13,7 @@ name = "sandbox_id"
 type = "string"
 position = 0
 required = true
-description = "Sandbox or runtime-group ID."
+description = "Sandbox ID."
 [[result]]
 name = "deleted"
 type = "boolean"

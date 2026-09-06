@@ -24,10 +24,13 @@ import (
 func controlPlaneDefinitions() []settings.Definition {
 	zero, minimum, maximum := int64(0), int64(1), int64(65535)
 	return []settings.Definition{
-		{Key: "node.id", Type: settings.TypeString, Storage: settings.StorageNode, Default: "00000000-0000-0000-0000-000000000000", Environment: "THE8020_TEST_CONTROL_NODE_ID", Pattern: `^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`, Description: "Test node identity."},
+		{Key: "node.id", Type: settings.TypeString, Storage: settings.StorageNode, Default: "nod-0000000000", Environment: "THE8020_TEST_CONTROL_NODE_ID", Pattern: `^nod-[a-z0-9]{10}$`, Description: "Test node identity."},
 		{Key: "network.main_port", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(8080), Environment: "THE8020_TEST_CONTROL_NETWORK_PORT", Minimum: &minimum, Maximum: &maximum, RuntimeMutable: true, Description: "Test HTTP port."},
 		{Key: "network.ssh_port", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(2222), Environment: "THE8020_TEST_CONTROL_SSH_PORT", Minimum: &minimum, Maximum: &maximum, RuntimeMutable: true, Description: "Test SSH port."},
 		{Key: "logging.enabled", Type: settings.TypeBoolean, Storage: settings.StorageNode, Default: true, Environment: "THE8020_TEST_CONTROL_LOGGING_ENABLED", RuntimeMutable: true, Description: "Test logging switch."},
+		{Key: "logging.level", Type: settings.TypeEnum, Storage: settings.StorageNode, Default: "info", Environment: "THE8020_TEST_CONTROL_LOGGING_LEVEL", Allowed: []string{"debug", "info", "warn", "error"}, RuntimeMutable: true, Description: "Test log severity."},
+		{Key: "logging.split_by", Type: settings.TypeEnum, Storage: settings.StorageNode, Default: "none", Environment: "THE8020_TEST_CONTROL_LOGGING_SOURCE", Allowed: []string{"none", "source"}, RuntimeMutable: true, Description: "Test log streams."},
+		{Key: "logging.max_age", Type: settings.TypeDuration, Storage: settings.StorageNode, Default: "7d", Environment: "THE8020_TEST_CONTROL_LOGGING_AGE", RuntimeMutable: true, Description: "Test log retention age."},
 		{Key: "logging.split_period", Type: settings.TypeEnum, Storage: settings.StorageNode, Default: "day", Environment: "THE8020_TEST_CONTROL_LOGGING_SPLIT", Allowed: []string{"none", "minute", "hour", "day", "week", "month", "year"}, RuntimeMutable: true, Description: "Test log split period."},
 		{Key: "logging.max_file_size", Type: settings.TypeByteSize, Storage: settings.StorageNode, Default: "1GB", Environment: "THE8020_TEST_CONTROL_LOGGING_FILE", RuntimeMutable: true, Description: "Test log file limit."},
 		{Key: "logging.max_total_size", Type: settings.TypeByteSize, Storage: settings.StorageNode, Default: "10GB", Environment: "THE8020_TEST_CONTROL_LOGGING_TOTAL", RuntimeMutable: true, Description: "Test total log limit."},
@@ -60,7 +63,7 @@ func registerControlPlaneCommands(registry *core.Registry, serviceSet *services.
 }
 
 func TestDatabaseFailureDoesNotBlockControlPlane(t *testing.T) {
-	root := t.TempDir()
+	root := testInstanceRoot(t)
 	if err := os.MkdirAll(filepath.Join(root, "scripts"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +84,7 @@ func TestDatabaseFailureDoesNotBlockControlPlane(t *testing.T) {
 			"database.username": "missing",
 			"database.password": "wrong",
 		},
-		Definitions: controlPlaneDefinitions(), Register: registerControlPlaneCommands,
+		Definitions: controlPlaneDefinitions(), Register: registerControlPlaneCommands, logdExecutable: appTestLogd,
 		initialize: func(context.Context, *settings.Manager, *database.Manager, *services.Services) (*services.RuntimeServices, runtimeCleanupFunc) {
 			return &services.RuntimeServices{Failure: "test runtime unavailable"}, func(context.Context, shutdownProgressFunc) error { return nil }
 		},
@@ -122,7 +125,7 @@ func TestDatabaseFailureDoesNotBlockControlPlane(t *testing.T) {
 }
 
 func TestAdministrativeSocketPrecedesRuntimeInitialization(t *testing.T) {
-	root := t.TempDir()
+	root := testInstanceRoot(t)
 	if err := os.MkdirAll(filepath.Join(root, "scripts"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +145,7 @@ func TestAdministrativeSocketPrecedesRuntimeInitialization(t *testing.T) {
 	runtimeStarted, releaseRuntime := make(chan struct{}), make(chan struct{})
 	cleanupStarted, releaseCleanup := make(chan struct{}), make(chan struct{})
 	config := Config{
-		Root: root, Startup: map[string]string{"network.main_port": strconv.Itoa(port), "network.ssh_port": strconv.Itoa(controlPlanePort(t))}, Definitions: controlPlaneDefinitions(), Register: registerControlPlaneCommands,
+		Root: root, Startup: map[string]string{"network.main_port": strconv.Itoa(port), "network.ssh_port": strconv.Itoa(controlPlanePort(t))}, Definitions: controlPlaneDefinitions(), Register: registerControlPlaneCommands, logdExecutable: appTestLogd,
 		initialize: func(ctx context.Context, _ *settings.Manager, _ *database.Manager, _ *services.Services) (*services.RuntimeServices, runtimeCleanupFunc) {
 			close(runtimeStarted)
 			select {

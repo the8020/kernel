@@ -1,5 +1,5 @@
 {
-  "protocol_version": 3,
+  "protocol_version": 4,
   "messages": [
     "supervisor_registration",
     "heartbeat",
@@ -25,6 +25,6 @@
   "required_envelope_fields": [
     "protocol_version",
     "message_type",
-    "runtime_group_id"
+    "sandbox_id"
   ]
 }

@@ -1,3 +1,12 @@
+export { isId, newId } from "../identity/mod.ts";
+import {
+  followLogs,
+  type LogFollowOptions,
+  type LogPage,
+  type LogQuery,
+} from "./logs.ts";
+export { formatLogRecord } from "./logs.ts";
+export type { LogFollowOptions, LogPage, LogQuery, LogRecord } from "./logs.ts";
 export type {
   ServiceConfiguration,
   ServiceIndexScope,
@@ -221,25 +230,47 @@ export interface AdminCommandErrorValue {
   details?: Record<string, unknown>;
 }
 
+/** Allocated package-command identity; log reads use kernel.logs.query. */
+export interface CommandExecutionReference {
+  program_id: string;
+  execution_id: string;
+  node_id: string;
+  sandbox_id?: string;
+  worker_id?: string;
+  context_id?: string;
+  parent_context_id?: string;
+  log_position?: string;
+  queued_at: string;
+  started_at?: string;
+  finished_at?: string;
+}
+
 interface AdminCommandResponse<Result> {
   protocol_version: number;
   success: boolean;
   request_id?: string;
   result?: Result;
   error?: AdminCommandErrorValue;
+  execution?: CommandExecutionReference;
 }
 
 export class AdminCommandError extends Error {
   readonly code: string;
   readonly details?: Record<string, unknown>;
   readonly requestId?: string;
+  readonly execution?: CommandExecutionReference;
 
-  constructor(error: AdminCommandErrorValue, requestId?: string) {
+  constructor(
+    error: AdminCommandErrorValue,
+    requestId?: string,
+    execution?: CommandExecutionReference,
+  ) {
     super(error.message);
     this.name = "AdminCommandError";
     this.code = error.code;
     this.details = error.details;
     this.requestId = requestId;
+    this.execution = execution;
   }
 }
 
@@ -330,6 +361,7 @@ export type KernelOperation =
 export type KernelInvoke = (
   operation: KernelOperation,
   input: Record<string, unknown>,
+  signal?: AbortSignal,
 ) => Promise<unknown>;
 
 export const kernelInvokeSymbol = Symbol.for("the8020.kernel.invoke");
@@ -370,6 +402,7 @@ function executionSecret(name: string): string {
 function invoke<Result>(
   operation: KernelOperation,
   input: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<Result> {
   const bridge = (globalThis as unknown as Record<symbol, unknown>)[
     kernelInvokeSymbol
@@ -377,7 +410,7 @@ function invoke<Result>(
   if (typeof bridge !== "function") {
     return Promise.reject(new Error("kernel API is unavailable"));
   }
-  return (bridge as KernelInvoke)(operation, input) as Promise<Result>;
+  return (bridge as KernelInvoke)(operation, input, signal) as Promise<Result>;
 }
 
 interface RuntimeOperationResponse<Result> {
@@ -389,6 +422,7 @@ interface RuntimeOperationResponse<Result> {
 async function executeRuntimeOperation<Result>(
   operation: string,
   input: Record<string, unknown> = {},
+  signal?: AbortSignal,
 ): Promise<Result> {
   if (operation.length === 0) {
     return Promise.reject(new TypeError("runtime operation is required"));
@@ -396,6 +430,7 @@ async function executeRuntimeOperation<Result>(
   const response = await invoke<RuntimeOperationResponse<Result>>(
     "runtime.operation",
     { operation, input },
+    signal,
   );
   if (
     response === null || typeof response !== "object" ||
@@ -492,7 +527,11 @@ async function executeAdminCommand<Result extends Record<string, unknown>>(
       typeof response.error.code !== "string" ||
       typeof response.error.message !== "string"
     ) throw new Error("kernel admin command failed");
-    throw new AdminCommandError(response.error, response.request_id);
+    throw new AdminCommandError(
+      response.error,
+      response.request_id,
+      response.execution,
+    );
   }
   if (
     response.result === undefined || response.result === null ||
@@ -579,6 +618,22 @@ function settingOperations(scope: "global" | "node") {
 }
 
 export const kernel = Object.freeze({
+  logs: Object.freeze({
+    query(input: LogQuery = {}, signal?: AbortSignal): Promise<LogPage> {
+      return executeRuntimeOperation("logs.query", { ...input }, signal);
+    },
+    follow(
+      input: LogQuery,
+      options: LogFollowOptions,
+    ): AsyncGenerator<LogPage> {
+      return followLogs(
+        (next, signal) =>
+          executeRuntimeOperation("logs.query", { ...next }, signal),
+        input,
+        options,
+      );
+    },
+  }),
   programs: Object.freeze({
     list(): Promise<ProgramSummary[]> {
       return executeRuntimeOperation("program.list");

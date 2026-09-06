@@ -85,6 +85,29 @@ func TestTextErrorsRenderStructuredDetails(t *testing.T) {
 	}
 }
 
+func TestCommandExecutionReferenceRendersOnSuccessAndFailure(t *testing.T) {
+	reference := &core.ExecutionReference{ExecutionID: "job-abcdefghij", NodeID: "nod-abcdefghij", SandboxID: "sbx-abcdefghij", WorkerID: "wrk-abcdefghij", ContextID: "ctx-abcdefghij", LogPosition: "opaque-position"}
+	for _, success := range []bool{true, false} {
+		response := core.Response{ProtocolVersion: core.ProtocolVersion, Success: success, Execution: reference, Result: core.Result{"ok": true}}
+		if !success {
+			response.Result = nil
+			response.Error = core.NewError(core.CodeRuntimeOperation, "job failed")
+		}
+		runner := New(testCatalog(), errorExecutor{response: response})
+		var output bytes.Buffer
+		_ = runner.Run(context.Background(), []string{"thing", "set", "value", "2", "true"}, false, &output)
+		if !strings.Contains(output.String(), "execution: job-abcdefghij nod-abcdefghij sbx-abcdefghij wrk-abcdefghij ctx-abcdefghij\n") || strings.Contains(output.String(), "opaque-position") {
+			t.Fatalf("compact reference missing: %s", output.String())
+		}
+		output.Reset()
+		_ = runner.Run(context.Background(), []string{"thing", "set", "value", "2", "true"}, true, &output)
+		var decoded core.Response
+		if err := json.Unmarshal(output.Bytes(), &decoded); err != nil || decoded.Execution == nil || decoded.Execution.LogPosition != reference.LogPosition {
+			t.Fatalf("JSON response lost full reference: %s, %v", output.String(), err)
+		}
+	}
+}
+
 func TestSharedLookupParsingHelpAndRendering(t *testing.T) {
 	executor := &fakeExecutor{}
 	runner := New(testCatalog(), executor)

@@ -1,7 +1,6 @@
 package model
 
 import (
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -72,7 +71,7 @@ func TestRuntimeProfileRejectsPermissionEscalatingDenoOptions(t *testing.T) {
 func TestSandboxSpecValidation(t *testing.T) {
 	profile := testProfile()
 	hash, _ := profile.Hash()
-	spec := SandboxSpec{SandboxID: "sandbox-1", RuntimeGroupID: "group-1", WorkloadType: WorkloadJob, GroupKey: "job:one", OwnerIDs: []string{"one"}, ImageDigest: testDigest, RuntimeProfile: profile, ProfileHash: hash, ResourceLimits: testLimits(), Network: NetworkConfiguration{Mode: "netstack", NetworkName: "the8020", SandboxIP: "10.88.0.2"}, InternalPorts: []int{8000, 9229}, Mounts: profile.Mounts, Permissions: profile.Permissions, DependencyMode: DependencyCachedOnly, Lifecycle: LifecyclePolicy{StopGracePeriod: 5 * time.Second}}
+	spec := SandboxSpec{SandboxID: "sandbox-1", WorkloadType: WorkloadJob, GroupKey: "job:one", OwnerIDs: []string{"one"}, ImageDigest: testDigest, RuntimeProfile: profile, ProfileHash: hash, ResourceLimits: testLimits(), Network: NetworkConfiguration{Mode: "netstack", NetworkName: "the8020", SandboxIP: "10.88.0.2"}, InternalPorts: []int{8000, 9229}, Mounts: profile.Mounts, Permissions: profile.Permissions, DependencyMode: DependencyCachedOnly, Lifecycle: LifecyclePolicy{StopGracePeriod: 5 * time.Second}}
 	if err := spec.Validate(); err != nil {
 		t.Fatalf("valid spec: %v", err)
 	}
@@ -105,7 +104,7 @@ func TestSandboxSpecValidation(t *testing.T) {
 func TestWarmSandboxCannotHaveOwners(t *testing.T) {
 	profile := testProfile()
 	hash, _ := profile.Hash()
-	spec := SandboxSpec{SandboxID: "sandbox", RuntimeGroupID: "group", WorkloadType: WorkloadJob, GroupKey: "shared", OwnerIDs: []string{"owner"}, ImageDigest: testDigest, RuntimeProfile: profile, ProfileHash: hash, ResourceLimits: testLimits(), Network: NetworkConfiguration{Mode: "netstack", NetworkName: "the8020"}, Mounts: profile.Mounts, Permissions: profile.Permissions, DependencyMode: DependencyCachedOnly, Lifecycle: LifecyclePolicy{Warm: true}}
+	spec := SandboxSpec{SandboxID: "sandbox", WorkloadType: WorkloadJob, GroupKey: "shared", OwnerIDs: []string{"owner"}, ImageDigest: testDigest, RuntimeProfile: profile, ProfileHash: hash, ResourceLimits: testLimits(), Network: NetworkConfiguration{Mode: "netstack", NetworkName: "the8020"}, Mounts: profile.Mounts, Permissions: profile.Permissions, DependencyMode: DependencyCachedOnly, Lifecycle: LifecyclePolicy{Warm: true}}
 	if err := spec.Validate(); err == nil || !strings.Contains(err.Error(), "warm sandbox") {
 		t.Fatalf("error = %v", err)
 	}
@@ -123,54 +122,5 @@ func TestSandboxStateTransitions(t *testing.T) {
 		if ValidTransition(transition[0], transition[1]) {
 			t.Errorf("accepted illegal transition %s -> %s", transition[0], transition[1])
 		}
-	}
-}
-
-func TestNewID(t *testing.T) {
-	first, err := NewID("sandbox")
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, _ := NewID("sandbox")
-	if first == second || !strings.HasPrefix(first, "sandbox-") {
-		t.Fatalf("IDs are not unique/prefixed: %q %q", first, second)
-	}
-}
-
-func TestNewCompactIDs(t *testing.T) {
-	tests := []struct {
-		name     string
-		pattern  string
-		generate func() (string, error)
-	}{
-		{name: "sandbox", pattern: `^sbx-[a-z0-9]{8}$`, generate: NewSandboxID},
-		{name: "runtime group", pattern: `^rgp-[a-z0-9]{8}$`, generate: NewRuntimeGroupID},
-		{name: "Worker", pattern: `^wrk-[a-z0-9]{8}$`, generate: NewWorkerID},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			first, err := test.generate()
-			if err != nil {
-				t.Fatal(err)
-			}
-			second, err := test.generate()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if matched, _ := regexp.MatchString(test.pattern, first); !matched {
-				t.Fatalf("unexpected ID %q", first)
-			}
-			if first == second {
-				t.Fatal("compact IDs must be random")
-			}
-		})
-	}
-	for _, value := range []string{"", "dev-abc12345", "sbx-short", "sbx-ABC12345", "sbx-abc12345-extra"} {
-		if IsSandboxID(value) {
-			t.Errorf("invalid sandbox ID %q was accepted", value)
-		}
-	}
-	if !IsSandboxID("sbx-abc12345") {
-		t.Fatal("valid sandbox ID was rejected")
 	}
 }

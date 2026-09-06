@@ -76,8 +76,8 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   boot, activation, edit, and cross-node publication path.
 - Setting TOML is authoritative for keys, types, node/global storage, defaults,
   environment inputs, validation, and runtime/restart metadata.
-- One runtime group is one gVisor sandbox with exactly one workload type—service
-  or job—and one infrastructure Deno supervisor; application code runs only in
+- One sandbox is one gVisor sandbox with exactly one workload type—service or
+  job—and one infrastructure Deno supervisor; application code runs only in
   Workers. There is no generic user-session workload.
 - Deno services resolves the runtime specification: lifecycle type is
   `stateless` or `session`; scaling owns minimum/maximum Workers, per-Worker
@@ -191,11 +191,11 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   service-pool records are removed after owner release so missing inherited
   sandboxes do not remain retry gates.
 - During graceful shutdown the administrative socket remains available for
-  `kernel.status` and idempotent `kernel.shutdown` and `kernel.restart` calls
-  until late process teardown, while all other command intake is rejected. The
-  first lifecycle request selects shutdown or restart. Status exposes
-  synchronized stage completion, restart intent, and the currently active
-  cleanup message.
+  `kernel.status`, bounded `kernel.logs` reads, and idempotent `kernel.shutdown`
+  and `kernel.restart` calls until late process teardown, while all other
+  command intake is rejected. The first lifecycle request selects shutdown or
+  restart. Status exposes synchronized stage completion, restart intent, and the
+  currently active cleanup message.
 - CPU and memory usage remain observable but never limit sandbox creation,
   placement, or Worker admission and receive no cgroup ceilings. Full mode
   retains PID control; rootless mode reports that PID cgroup enforcement and
@@ -234,8 +234,8 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   kernel.
 - `go test ./kernel/...` runs authored package and integration tests when the
   repository-local Go environment is configured.
-- Phase 1 completion also requires behavioral verification of both binaries and
-  `run.sh`, including a real PTY `Ctrl-C` shutdown-progress smoke.
+- Phase 1 completion also requires behavioral verification of kernel, admin,
+  logd and `run.sh`, including a real PTY `Ctrl-C` shutdown-progress smoke.
 
 # Child DOX Index
 
@@ -261,13 +261,17 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   reset behavior.
 - [events/AGENTS.md](events/AGENTS.md): asynchronous local package events,
   cached listeners, bounded dispatch, and minute-aligned notification.
-- [execution/AGENTS.md](execution/AGENTS.md): generic runtime groups, warm
-  capacity, supervisor communication, Workers, services, and jobs.
+- [execution/AGENTS.md](execution/AGENTS.md): generic sandboxes, warm capacity,
+  supervisor communication, Workers, services, and jobs.
+- [identity/AGENTS.md](identity/AGENTS.md): shared operational ID encoding,
+  generation, and validation.
 - [instance/AGENTS.md](instance/AGENTS.md): mapped instance paths,
   initialization, identity, lock, and cleanup.
 - [lifecycle/AGENTS.md](lifecycle/AGENTS.md): shutdown state and notification.
-- [logging/AGENTS.md](logging/AGENTS.md): slog writer, rotation, retention, and
-  policy replacement.
+- [logging/AGENTS.md](logging/AGENTS.md): bounded producers, logd lifecycle, raw
+  descriptor ownership, logging policy, and query delegation.
+- [logd/AGENTS.md](logd/AGENTS.md): standalone logging daemon entrypoint and
+  inherited kernel control/raw descriptors.
 - [network/AGENTS.md](network/AGENTS.md): proof HTTP listener and port
   replacement.
 - [nodes/AGENTS.md](nodes/AGENTS.md): shared node topology, capacity

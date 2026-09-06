@@ -77,7 +77,7 @@ func (f *NFTFirewall) Apply(ctx context.Context, allocation Allocation, policy m
 	if ip == nil {
 		return errors.New("nftables egress policy requires an IPv4 sandbox address")
 	}
-	table := firewallTable(f.instanceUUID, allocation.RuntimeGroupID)
+	table := firewallTable(f.instanceUUID, allocation.SandboxID)
 	rules := []string{
 		fmt.Sprintf("ip daddr %s ct state established,related counter accept", ip.String()),
 		fmt.Sprintf("ip saddr %s ip daddr %s counter accept", f.bridgeHost, ip.String()),
@@ -207,7 +207,7 @@ func systemDNSResolvers() []string {
 }
 
 func (f *NFTFirewall) Remove(ctx context.Context, allocation Allocation) error {
-	table := firewallTable(f.instanceUUID, allocation.RuntimeGroupID)
+	table := firewallTable(f.instanceUUID, allocation.SandboxID)
 	err := f.runner.Run(ctx, nil, "delete", "table", "inet", table)
 	if err != nil && strings.Contains(err.Error(), "No such file or directory") {
 		return nil
@@ -215,8 +215,8 @@ func (f *NFTFirewall) Remove(ctx context.Context, allocation Allocation) error {
 	return err
 }
 
-func firewallTable(instanceUUID, runtimeGroupID string) string {
-	value := "pl_" + compactID(instanceUUID) + "_" + compactID(runtimeGroupID)
+func firewallTable(instanceUUID, sandboxID string) string {
+	value := "pl_" + compactID(instanceUUID) + "_" + compactID(sandboxID)
 	if len(value) > 60 {
 		value = value[:60]
 	}

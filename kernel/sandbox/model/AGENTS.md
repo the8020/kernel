@@ -14,11 +14,9 @@ Parent DOX: [kernel/kernel/sandbox DOX](../AGENTS.md).
 # Local Contracts
 
 - Public API: exported model types, `CanonicalMounts`, `RuntimeProfile.Hash`,
-  `SandboxSpec.Validate`, `ValidTransition`, `NewID`, `NewSandboxID`,
-  `IsSandboxID`, `NewRuntimeGroupID`, and `NewWorkerID`.
-- New sandbox, runtime-group, and Worker IDs are respectively `sbx-`, `rgp-`,
-  and `wrk-` plus eight uniformly random lowercase alphanumeric characters;
-  other opaque identities retain the generic format.
+  `SandboxSpec.Validate` and `ValidTransition`.
+- Operational ID generation and validation belong to the shared `identity`
+  package. Sandbox and Worker registration retain their collision checks.
 - Profile hashes include workload type, image digest, dependency mode,
   permission envelope, mounts, network mode, global egress allowance, Deno
   flags, and resource class; a profile cannot carry egress hosts when egress is
@@ -33,10 +31,14 @@ Parent DOX: [kernel/kernel/sandbox DOX](../AGENTS.md).
   one sandbox; an empty placement group remains a valid shared value.
 - Sandbox resource limits contain only PID and temporary-filesystem bounds; CPU
   and RAM fields are observations, not limits or placement inputs.
+- Sandbox status retains its creation node, creation time and cached log reader
+  position from admission, before native startup. Warm assignment and owner
+  changes preserve them; terminal history archives the same status.
 - A `RuntimeSnapshot` is one complete supervisor observation, including its
   restart epoch, monotonic revision, Worker states, active requests, persistent
   executions, recent failures, and kernel receipt time. It contains no Worker
-  logs; an explicit targeted inspection owns that larger diagnostic payload.
+  logs; bounded logd queries own diagnostic log access for live and retired
+  Workers.
 
 # Lifecycle
 

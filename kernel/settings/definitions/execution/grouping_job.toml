@@ -6,4 +6,4 @@ environment = "THE8020_EXECUTION_GROUPING_JOB"
 allowed = ["isolated", "owner", "namespace", "shared"]
 runtime_mutable = false
 restart_required = true
-description = "Default runtime-group strategy for jobs."
+description = "Default sandbox grouping strategy for jobs."

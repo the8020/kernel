@@ -13,17 +13,33 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   request/execution context and correlate their results.
 - Own the private execution-local provider consumed by `@the8020/context`;
   public context types and getters remain in the sibling context package.
+- The bootstrap's internal executionContext accessor reads that same ALS store
+  for log capture and execution-local redaction. It is not a public SDK API and
+  never forwards the secure-input map to the supervisor or logger.
 - Do not own password verification, cookies, authorization policy, application
   configuration, application function schemas, or service behavior.
 
 # Local Contracts
 
+- `newId` and `isId` expose the shared operational ID contract to package
+  creation owners; they perform no kernel call.
 - Public API is `kernel.crypto`, `kernel.admin.execute()`, `kernel.execution`,
   `kernel.secrets`, `kernel.packages`, `kernel.services`, `kernel.nodes`,
   `kernel.development`, `kernel.settings`, `kernel.events`, `kernel.programs`,
   `kernel.database.info()`, unified `kernel.database.execute()`,
   `kernel.database.transaction`, `kernel.database.tables`,
   `kernel.worker.invoke()`, and `kernel.execution.completePersistent()`.
+- `kernel.logs.query(query, signal?)` returns one bounded page using the same
+  snake-case filters and opaque positions/cursors as `kernel.logs`. Optional
+  node_id selects the exact owner; omission selects this node. Log records
+  preserve source/component, typed identities, usernames and readable stacks.
+  `formatLogRecord` renders their compact identifying header and multiline text.
+- `kernel.logs.follow(query, {signal, intervalMs?})` yields one page at a time,
+  defaults to a recent tail, and polls at 500 ms after reaching the current end.
+  Empty pages may advance a scan; expired/unavailable pages end following.
+  Retain only the current page/cursor and one outstanding call. Explicit signal
+  cancellation stops polling and cancels only that kernel call, independently of
+  other work in the same execution. The execution's own signal still applies.
 - `kernel.events.emit(name, data)` returns an event ID and accepted listener
   count without waiting for their execution. Events are local to the emitting
   node and listeners inherit its user; kernel minute events use system identity.
@@ -33,10 +49,12 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   program execution.
   `kernel.programs.run({programId, arguments, username?,
   sandboxGroup?, timeoutMs?})`
-  executes asynchronously and returns terminal state, result, logs, failure,
-  execution ID, and package commit. Omitted user inherits the current caller;
-  the ordinary execution owner validates it. `programs.ts` owns these generic
-  models and the PackageEvent envelope. Schedules and history are owned by
+  executes asynchronously and returns terminal state, result, failure, package
+  commit, allocated node/sandbox/Worker/job/context IDs, saved log position, and
+  invocation times. Allocated references survive execution failure; results
+  contain no log messages. Omitted user inherits the current caller; the
+  ordinary execution owner validates it. `programs.ts` owns these generic models
+  and the PackageEvent envelope. Schedules and history are owned by
   `/p/the8020/jobs/mod.ts`.
 - `kernel.execution.secret()` reads one required value from only the active job;
   `optionalSecret()` returns `undefined` when absent. No service or concurrent
@@ -72,16 +90,20 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   failures; package command code uses the same error type for intentional
   not-found/conflict outcomes instead of flattening them into application
   exceptions.
+- `AdminCommandError.execution` retains an allocated command's log reference,
+  including its job/node/context IDs, saved position and time range. Local
+  validation failures have no execution reference. This metadata contains no
+  copied console messages and creates no additional execution identity.
 - The bridge uses `AsyncLocalStorage` to retain the exact trusted
   service-request or job-execution context across asynchronous continuations.
-  Every request or job gets a new frozen context containing its request ID,
-  validated user, outer origin, cancellation signal, authentication metadata,
-  and optional persistent execution ID. Worker metadata and transport input are
-  copied into primitives before exposure, so caller mutation cannot alter the
-  context or kernel-call identity. Concurrent transports in one persistent
-  execution never mutate or reuse one context object. Completion closes the
-  exact request database scope, and Worker shutdown closes its execution-scope
-  prefix.
+  Every request or job gets a new frozen context containing its `contextId`,
+  optional parent context and job-run ID, validated user, outer origin,
+  cancellation signal, authentication metadata, and optional persistent
+  execution ID. Worker metadata and transport input are copied into primitives
+  before exposure, so caller mutation cannot alter the context or kernel-call
+  identity. Concurrent transports in one persistent execution never mutate or
+  reuse one context object. Completion closes the exact request database scope,
+  and Worker shutdown closes its Worker-scope prefix.
 - Worker metadata and each request/execution must contain a canonical user.
   Missing identity fails before invoking application code; the bridge has no
   hardcoded user fallback.

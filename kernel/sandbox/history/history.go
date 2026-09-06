@@ -1,4 +1,4 @@
-// Package history stores terminal sandbox metadata and logs outside live state.
+// Package history stores terminal sandbox metadata outside live state.
 package history
 
 import (
@@ -24,7 +24,6 @@ const (
 	DefaultRetention = 7 * 24 * time.Hour
 	DefaultPageSize  = 100
 	MaximumPageSize  = 1000
-	maximumLogBytes  = 256 * 1024
 	bucketLayout     = "20060102T15"
 	historyLayout    = "20060102T150405.000000000Z"
 )
@@ -33,16 +32,14 @@ type Store struct {
 	mu             sync.Mutex
 	idsMu          sync.RWMutex
 	root           string
-	logPath        func(string) string
 	now            func() time.Time
 	lastArchivedAt time.Time
 	retainedIDs    map[string]bool
 }
 
 type Config struct {
-	Root    string
-	LogPath func(string) string
-	Now     func() time.Time
+	Root string
+	Now  func() time.Time
 }
 
 type Record struct {
@@ -56,29 +53,19 @@ type Record struct {
 }
 
 type Summary struct {
-	HistoryID      string             `json:"history_id"`
-	SandboxID      string             `json:"sandbox_id"`
-	RuntimeGroupID string             `json:"runtime_group_id"`
-	WorkloadType   model.WorkloadType `json:"workload_type"`
-	State          model.SandboxState `json:"state"`
-	Reason         string             `json:"reason,omitempty"`
-	FailureReason  string             `json:"failure_reason,omitempty"`
-	ArchivedAt     time.Time          `json:"archived_at"`
-	ExpiresAt      time.Time          `json:"expires_at"`
-	LogFiles       int                `json:"log_files"`
-	LogBytes       int64              `json:"log_bytes"`
-}
+	HistoryID string `json:"history_id"`
+	SandboxID string `json:"sandbox_id"`
 
-type Log struct {
-	Name      string `json:"name"`
-	Size      int64  `json:"size"`
-	Content   string `json:"content"`
-	Truncated bool   `json:"truncated"`
+	WorkloadType  model.WorkloadType `json:"workload_type"`
+	State         model.SandboxState `json:"state"`
+	Reason        string             `json:"reason,omitempty"`
+	FailureReason string             `json:"failure_reason,omitempty"`
+	ArchivedAt    time.Time          `json:"archived_at"`
+	ExpiresAt     time.Time          `json:"expires_at"`
 }
 
 type Inspection struct {
 	Record Record `json:"record"`
-	Logs   []Log  `json:"logs"`
 }
 
 type Page struct {
@@ -101,7 +88,7 @@ func New(config Config) (*Store, error) {
 			return nil, fmt.Errorf("restrict sandbox history: %w", err)
 		}
 	}
-	store := &Store{root: config.Root, logPath: config.LogPath, now: config.Now, retainedIDs: map[string]bool{}}
+	store := &Store{root: config.Root, now: config.Now, retainedIDs: map[string]bool{}}
 	shards, err := os.ReadDir(filepath.Join(config.Root, "ids"))
 	if err != nil {
 		return nil, err
@@ -135,8 +122,8 @@ func (s *Store) ContainsSandboxID(sandboxID string) (bool, error) {
 	return retained, nil
 }
 
-// Archive writes immutable terminal metadata, moves logs, appends one bucket
-// index entry, and finally publishes the direct ID marker.
+// Archive writes immutable terminal metadata with its existing log reference,
+// appends one bucket index entry, and finally publishes the direct ID marker.
 func (s *Store) Archive(spec model.SandboxSpec, status model.SandboxStatus, reason string, retention time.Duration) (Record, error) {
 	if err := validComponent(spec.SandboxID); err != nil {
 		return Record{}, fmt.Errorf("sandbox ID: %w", err)
@@ -168,7 +155,7 @@ func (s *Store) Archive(spec model.SandboxSpec, status model.SandboxStatus, reas
 	}
 	s.lastArchivedAt = archivedAt
 	historyID := archivedAt.Format(historyLayout) + "-" + spec.SandboxID
-	record := Record{SchemaVersion: 1, HistoryID: historyID, ArchivedAt: archivedAt, ExpiresAt: archivedAt.Add(retention), Reason: reason, Spec: spec, Status: status}
+	record := Record{SchemaVersion: 2, HistoryID: historyID, ArchivedAt: archivedAt, ExpiresAt: archivedAt.Add(retention), Reason: reason, Spec: spec, Status: status}
 	directory, err := s.recordDirectory(historyID)
 	if err != nil {
 		return Record{}, err
@@ -179,11 +166,7 @@ func (s *Store) Archive(spec model.SandboxSpec, status model.SandboxStatus, reas
 	if err := writeJSON(filepath.Join(directory, "metadata.json"), record); err != nil {
 		return Record{}, err
 	}
-	logFiles, logBytes, err := s.archiveLogs(spec.SandboxID, filepath.Join(directory, "logs"))
-	if err != nil {
-		return Record{}, err
-	}
-	summary := Summary{HistoryID: historyID, SandboxID: spec.SandboxID, RuntimeGroupID: spec.RuntimeGroupID, WorkloadType: spec.WorkloadType, State: status.ObservedState, Reason: reason, FailureReason: status.FailureReason, ArchivedAt: archivedAt, ExpiresAt: record.ExpiresAt, LogFiles: logFiles, LogBytes: logBytes}
+	summary := Summary{HistoryID: historyID, SandboxID: spec.SandboxID, WorkloadType: spec.WorkloadType, State: status.ObservedState, Reason: reason, FailureReason: status.FailureReason, ArchivedAt: archivedAt, ExpiresAt: record.ExpiresAt}
 	if err := appendJSONLine(s.indexPath(archivedAt), summary); err != nil {
 		return Record{}, err
 	}
@@ -250,11 +233,7 @@ func (s *Store) Inspect(historyID string) (Inspection, error) {
 	if err := readJSON(filepath.Join(directory, "metadata.json"), &record); err != nil {
 		return Inspection{}, err
 	}
-	logs, err := readLogs(filepath.Join(directory, "logs"), maximumLogBytes)
-	if err != nil {
-		return Inspection{}, err
-	}
-	return Inspection{Record: record, Logs: logs}, nil
+	return Inspection{Record: record}, nil
 }
 
 // Cleanup removes whole expired hour buckets. Marker deletion streams only the
@@ -309,56 +288,6 @@ func (s *Store) setRetained(sandboxID string, retained bool) {
 		delete(s.retainedIDs, sandboxID)
 	}
 	s.idsMu.Unlock()
-}
-
-func (s *Store) archiveLogs(sandboxID, destination string) (int, int64, error) {
-	if s.logPath == nil {
-		return 0, 0, nil
-	}
-	source := s.logPath(sandboxID)
-	if source == "" {
-		return 0, 0, nil
-	}
-	info, err := os.Stat(source)
-	if errors.Is(err, os.ErrNotExist) {
-		return 0, 0, nil
-	}
-	if err != nil {
-		return 0, 0, err
-	}
-	if err := os.MkdirAll(destination, 0o700); err != nil {
-		return 0, 0, err
-	}
-	if info.IsDir() {
-		entries, err := os.ReadDir(source)
-		if err != nil {
-			return 0, 0, err
-		}
-		var files int
-		var bytes int64
-		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
-			}
-			entryInfo, infoErr := entry.Info()
-			if infoErr != nil {
-				return 0, 0, infoErr
-			}
-			if err := moveFile(filepath.Join(source, entry.Name()), filepath.Join(destination, entry.Name())); err != nil {
-				return 0, 0, err
-			}
-			files++
-			bytes += entryInfo.Size()
-		}
-		if err := os.Remove(source); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return 0, 0, err
-		}
-		return files, bytes, nil
-	}
-	if err := moveFile(source, filepath.Join(destination, "runtime.log")); err != nil {
-		return 0, 0, err
-	}
-	return 1, info.Size(), nil
 }
 
 func (s *Store) bucketNames() ([]string, error) {
@@ -480,74 +409,6 @@ func readJSON(path string, output any) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	return decoder.Decode(output)
-}
-
-func moveFile(source, destination string) error {
-	if err := os.Rename(source, destination); err == nil {
-		return nil
-	}
-	input, err := os.Open(source)
-	if err != nil {
-		return err
-	}
-	defer input.Close()
-	output, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(output, input); err != nil {
-		_ = output.Close()
-		return err
-	}
-	if err := output.Sync(); err != nil {
-		_ = output.Close()
-		return err
-	}
-	if err := output.Close(); err != nil {
-		return err
-	}
-	return os.Remove(source)
-}
-
-func readLogs(root string, maximum int64) ([]Log, error) {
-	entries, err := os.ReadDir(root)
-	if errors.Is(err, os.ErrNotExist) {
-		return []Log{}, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	remaining := maximum
-	logs := make([]Log, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || remaining <= 0 {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return nil, err
-		}
-		readSize := info.Size()
-		if readSize > remaining {
-			readSize = remaining
-		}
-		file, err := os.Open(filepath.Join(root, entry.Name()))
-		if err != nil {
-			return nil, err
-		}
-		if _, err := file.Seek(info.Size()-readSize, io.SeekStart); err != nil {
-			_ = file.Close()
-			return nil, err
-		}
-		data, readErr := io.ReadAll(io.LimitReader(file, readSize))
-		closeErr := file.Close()
-		if readErr != nil || closeErr != nil {
-			return nil, errors.Join(readErr, closeErr)
-		}
-		logs = append(logs, Log{Name: entry.Name(), Size: info.Size(), Content: string(data), Truncated: readSize < info.Size()})
-		remaining -= readSize
-	}
-	return logs, nil
 }
 
 // readSummariesReverse performs bounded reverse line reads rather than loading

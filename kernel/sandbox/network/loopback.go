@@ -36,16 +36,13 @@ func NewLoopback(stateRoot string) (*LoopbackManager, error) {
 	return &LoopbackManager{stateRoot: stateRoot, listen: net.Listen}, nil
 }
 
-func (m *LoopbackManager) Allocate(_ context.Context, runtimeGroupID, containerID string, policy model.NetworkConfiguration) (Allocation, error) {
-	if !safeID(runtimeGroupID) || !safeID(containerID) || policy.Mode != "netstack" {
-		return Allocation{}, errors.New("safe runtime-group/container IDs and netstack mode are required")
+func (m *LoopbackManager) Allocate(_ context.Context, sandboxID string, policy model.NetworkConfiguration) (Allocation, error) {
+	if !safeID(sandboxID) || policy.Mode != "netstack" {
+		return Allocation{}, errors.New("safe sandbox ID and netstack mode are required")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if existing, err := m.loadLoopback(runtimeGroupID); err == nil {
-		if existing.ContainerID != containerID {
-			return Allocation{}, errors.New("loopback allocation belongs to another sandbox")
-		}
+	if existing, err := m.loadLoopback(sandboxID); err == nil {
 		return existing, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Allocation{}, err
@@ -62,8 +59,7 @@ func (m *LoopbackManager) Allocate(_ context.Context, runtimeGroupID, containerI
 	}
 	defer second.Close()
 	allocation := Allocation{
-		RuntimeGroupID: runtimeGroupID,
-		ContainerID:    containerID,
+		SandboxID:      sandboxID,
 		NetworkName:    "rootless-host",
 		IPs:            []string{"127.0.0.1"},
 		SupervisorPort: first.Addr().(*net.TCPAddr).Port,
@@ -78,13 +74,13 @@ func (m *LoopbackManager) Allocate(_ context.Context, runtimeGroupID, containerI
 	return allocation, nil
 }
 
-func (m *LoopbackManager) Check(_ context.Context, runtimeGroupID string) error {
-	if !safeID(runtimeGroupID) {
-		return errors.New("safe runtime-group ID is required")
+func (m *LoopbackManager) Check(_ context.Context, sandboxID string) error {
+	if !safeID(sandboxID) {
+		return errors.New("safe sandbox ID is required")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	allocation, err := m.loadLoopback(runtimeGroupID)
+	allocation, err := m.loadLoopback(sandboxID)
 	if err != nil {
 		return err
 	}
@@ -94,13 +90,13 @@ func (m *LoopbackManager) Check(_ context.Context, runtimeGroupID string) error 
 	return nil
 }
 
-func (m *LoopbackManager) Release(_ context.Context, runtimeGroupID string) error {
-	if !safeID(runtimeGroupID) {
-		return errors.New("safe runtime-group ID is required")
+func (m *LoopbackManager) Release(_ context.Context, sandboxID string) error {
+	if !safeID(sandboxID) {
+		return errors.New("safe sandbox ID is required")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if err := os.Remove(m.loopbackPath(runtimeGroupID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := os.Remove(m.loopbackPath(sandboxID)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove rootless loopback allocation: %w", err)
 	}
 	return nil
@@ -129,14 +125,14 @@ func (m *LoopbackManager) saveLoopback(allocation Allocation) error {
 	if err != nil {
 		return fmt.Errorf("write rootless loopback allocation: %w", err)
 	}
-	if err := os.Rename(name, m.loopbackPath(allocation.RuntimeGroupID)); err != nil {
+	if err := os.Rename(name, m.loopbackPath(allocation.SandboxID)); err != nil {
 		return fmt.Errorf("replace rootless loopback allocation: %w", err)
 	}
 	return nil
 }
 
-func (m *LoopbackManager) loadLoopback(runtimeGroupID string) (Allocation, error) {
-	file, err := os.Open(m.loopbackPath(runtimeGroupID))
+func (m *LoopbackManager) loadLoopback(sandboxID string) (Allocation, error) {
+	file, err := os.Open(m.loopbackPath(sandboxID))
 	if err != nil {
 		return Allocation{}, err
 	}
@@ -150,12 +146,12 @@ func (m *LoopbackManager) loadLoopback(runtimeGroupID string) (Allocation, error
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return Allocation{}, errors.New("decode rootless loopback allocation: trailing data")
 	}
-	if allocation.RuntimeGroupID != runtimeGroupID {
+	if allocation.SandboxID != sandboxID {
 		return Allocation{}, errors.New("rootless loopback allocation identity mismatch")
 	}
 	return allocation, nil
 }
 
-func (m *LoopbackManager) loopbackPath(runtimeGroupID string) string {
-	return filepath.Join(m.stateRoot, runtimeGroupID+".json")
+func (m *LoopbackManager) loopbackPath(sandboxID string) string {
+	return filepath.Join(m.stateRoot, sandboxID+".json")
 }

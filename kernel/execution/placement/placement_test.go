@@ -1,7 +1,6 @@
-package groups
+package placement
 
 import (
-	"sync"
 	"testing"
 
 	"the8020/kernel/sandbox/model"
@@ -46,14 +45,14 @@ func TestSelectGroupingStrategiesAndOverrides(t *testing.T) {
 func TestSelectRequiresTypeKeyAndProfileCompatibility(t *testing.T) {
 	request := Request{WorkloadType: model.WorkloadService, OwnerID: "service-a", Strategy: model.GroupingOwner, Profile: profile(model.WorkloadService, model.DependencyCachedOnly)}
 	hash, _ := request.Profile.Hash()
-	groups := []Group{
-		{RuntimeGroupID: "wrong-type", WorkloadType: model.WorkloadJob, GroupKey: "service:owner:service-a", ProfileHash: hash, State: model.StateReady, Healthy: true},
-		{RuntimeGroupID: "wrong-profile", WorkloadType: model.WorkloadService, GroupKey: "service:owner:service-a", ProfileHash: "sha256:different", State: model.StateReady, Healthy: true},
-		{RuntimeGroupID: "unhealthy", WorkloadType: model.WorkloadService, GroupKey: "service:owner:service-a", ProfileHash: hash, State: model.StateReady, Healthy: false},
-		{RuntimeGroupID: "compatible", WorkloadType: model.WorkloadService, GroupKey: "service:owner:service-a", ProfileHash: hash, State: model.StateActive, Healthy: true},
+	groups := []Candidate{
+		{SandboxID: "wrong-type", WorkloadType: model.WorkloadJob, GroupKey: "service:owner:service-a", ProfileHash: hash, State: model.StateReady, Healthy: true},
+		{SandboxID: "wrong-profile", WorkloadType: model.WorkloadService, GroupKey: "service:owner:service-a", ProfileHash: "sha256:different", State: model.StateReady, Healthy: true},
+		{SandboxID: "unhealthy", WorkloadType: model.WorkloadService, GroupKey: "service:owner:service-a", ProfileHash: hash, State: model.StateReady, Healthy: false},
+		{SandboxID: "compatible", WorkloadType: model.WorkloadService, GroupKey: "service:owner:service-a", ProfileHash: hash, State: model.StateActive, Healthy: true},
 	}
 	selection, err := Select(request, groups)
-	if err != nil || !selection.Existing || selection.RuntimeGroupID != "compatible" {
+	if err != nil || !selection.Existing || selection.SandboxID != "compatible" {
 		t.Fatalf("Select() = %#v, %v", selection, err)
 	}
 	request.Profile.DependencyMode = model.DependencyOnline
@@ -71,9 +70,9 @@ func TestJobPlacementGroupsMatchByValueAndStaySeparateFromServices(t *testing.T)
 		t.Fatalf("empty placement=%#v %v", selected, err)
 	}
 	hash, _ := request.Profile.Hash()
-	candidates := []Group{{RuntimeGroupID: "job-group", WorkloadType: model.WorkloadJob, GroupKey: selected.GroupKey, ProfileHash: hash, State: model.StateReady, Healthy: true}, {RuntimeGroupID: "service-group", WorkloadType: model.WorkloadService, GroupKey: selected.GroupKey, ProfileHash: hash, State: model.StateReady, Healthy: true}}
+	candidates := []Candidate{{SandboxID: "job-group", WorkloadType: model.WorkloadJob, GroupKey: selected.GroupKey, ProfileHash: hash, State: model.StateReady, Healthy: true}, {SandboxID: "service-group", WorkloadType: model.WorkloadService, GroupKey: selected.GroupKey, ProfileHash: hash, State: model.StateReady, Healthy: true}}
 	selected, err = Select(request, candidates)
-	if err != nil || selected.RuntimeGroupID != "job-group" {
+	if err != nil || selected.SandboxID != "job-group" {
 		t.Fatalf("selected=%#v %v", selected, err)
 	}
 	group = "other"
@@ -87,11 +86,11 @@ func TestServicePlacementGroupSharesAcrossServicesButNotDuplicateAllocations(t *
 	placement := ""
 	request := Request{WorkloadType: model.WorkloadService, OwnerID: "allocation-a", PlacementGroup: &placement, LogicalServiceID: "example/orders/api", Strategy: model.GroupingOwner, Profile: profile(model.WorkloadService, model.DependencyCachedOnly)}
 	hash, _ := request.Profile.Hash()
-	selection, err := Select(request, []Group{
-		{RuntimeGroupID: "same-service", WorkloadType: model.WorkloadService, GroupKey: "service:placement:", ProfileHash: hash, ServiceIDs: []string{"example/orders/api"}, State: model.StateReady, Healthy: true},
-		{RuntimeGroupID: "compatible", WorkloadType: model.WorkloadService, GroupKey: "service:placement:", ProfileHash: hash, ServiceIDs: []string{"example/catalog/api"}, State: model.StateReady, Healthy: true},
+	selection, err := Select(request, []Candidate{
+		{SandboxID: "same-service", WorkloadType: model.WorkloadService, GroupKey: "service:placement:", ProfileHash: hash, ServiceIDs: []string{"example/orders/api"}, State: model.StateReady, Healthy: true},
+		{SandboxID: "compatible", WorkloadType: model.WorkloadService, GroupKey: "service:placement:", ProfileHash: hash, ServiceIDs: []string{"example/catalog/api"}, State: model.StateReady, Healthy: true},
 	})
-	if err != nil || !selection.Existing || selection.RuntimeGroupID != "compatible" {
+	if err != nil || !selection.Existing || selection.SandboxID != "compatible" {
 		t.Fatalf("Select() = %#v, %v", selection, err)
 	}
 }
@@ -100,88 +99,17 @@ func TestSelectSkipsSandboxesAtWorkerCapacity(t *testing.T) {
 	placement := "shared"
 	request := Request{WorkloadType: model.WorkloadService, OwnerID: "allocation", PlacementGroup: &placement, LogicalServiceID: "example/orders/api", RequestedWorkers: 1, MaximumWorkers: 64, Strategy: model.GroupingOwner, Profile: profile(model.WorkloadService, model.DependencyCachedOnly)}
 	hash, _ := request.Profile.Hash()
-	base := Group{WorkloadType: model.WorkloadService, GroupKey: "service:placement:c2hhcmVk", ProfileHash: hash, State: model.StateReady, Healthy: true}
+	base := Candidate{WorkloadType: model.WorkloadService, GroupKey: "service:placement:c2hhcmVk", ProfileHash: hash, State: model.StateReady, Healthy: true}
 	workerFull, eligible := base, base
-	workerFull.RuntimeGroupID, workerFull.WorkerCount = "a-worker-full", 64
-	eligible.RuntimeGroupID, eligible.WorkerCount = "b-eligible", 63
-	selection, err := Select(request, []Group{workerFull, eligible})
-	if err != nil || !selection.Existing || selection.RuntimeGroupID != "b-eligible" {
+	workerFull.SandboxID, workerFull.WorkerCount = "a-worker-full", 64
+	eligible.SandboxID, eligible.WorkerCount = "b-eligible", 63
+	selection, err := Select(request, []Candidate{workerFull, eligible})
+	if err != nil || !selection.Existing || selection.SandboxID != "b-eligible" {
 		t.Fatalf("selection=%#v err=%v", selection, err)
 	}
 	request.RequestedWorkers = 2
-	selection, err = Select(request, []Group{eligible})
+	selection, err = Select(request, []Candidate{eligible})
 	if err != nil || selection.Existing {
 		t.Fatalf("multi-Worker allocation overfilled sandbox: selection=%#v err=%v", selection, err)
-	}
-}
-
-func TestWarmPoolAccountingAndNoReuseAfterAssignment(t *testing.T) {
-	pool := NewWarmPool()
-	profileHash, _ := profile(model.WorkloadJob, model.DependencyCachedOnly).Hash()
-	if err := pool.Resize(profileHash, 2); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.Add(WarmGroup{RuntimeGroupID: "warm-1", ProfileHash: profileHash, State: WarmCreating}); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.SetState("warm-1", WarmReady); err != nil {
-		t.Fatal(err)
-	}
-	status := pool.Status()[0]
-	if status.Ready != 1 || status.Replenish != 1 {
-		t.Fatalf("initial status = %#v", status)
-	}
-	reserved, ok := pool.Reserve(profileHash)
-	if !ok || reserved.RuntimeGroupID != "warm-1" {
-		t.Fatalf("Reserve() = %#v, %v", reserved, ok)
-	}
-	if err := pool.SetState("warm-1", WarmAssigned); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := pool.Reserve(profileHash); ok {
-		t.Fatal("assigned warm group was reused")
-	}
-	if err := pool.Destroy("warm-1"); err != nil {
-		t.Fatal(err)
-	}
-	status = pool.Status()[0]
-	if status.Replenish != 2 || status.Assigned != 0 {
-		t.Fatalf("released status = %#v", status)
-	}
-}
-
-func TestWarmPoolRestoresDurableAccounting(t *testing.T) {
-	pool := NewWarmPool()
-	hash := "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	for _, group := range []WarmGroup{{RuntimeGroupID: "ready", ProfileHash: hash, State: WarmReady}, {RuntimeGroupID: "assigned", ProfileHash: hash, State: WarmAssigned}, {RuntimeGroupID: "failed", ProfileHash: hash, State: WarmFailed}} {
-		if err := pool.Restore(group); err != nil {
-			t.Fatal(err)
-		}
-	}
-	status := pool.Status()[0]
-	if status.Ready != 1 || status.Assigned != 1 || status.Failed != 1 {
-		t.Fatalf("status=%#v", status)
-	}
-}
-
-func TestWarmPoolReservationsAreAtomic(t *testing.T) {
-	pool := NewWarmPool()
-	profileHash, _ := profile(model.WorkloadJob, model.DependencyCachedOnly).Hash()
-	_ = pool.Add(WarmGroup{RuntimeGroupID: "warm", ProfileHash: profileHash, State: WarmReady})
-	var wait sync.WaitGroup
-	winners := make(chan string, 2)
-	for range 2 {
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
-			if group, ok := pool.Reserve(profileHash); ok {
-				winners <- group.RuntimeGroupID
-			}
-		}()
-	}
-	wait.Wait()
-	close(winners)
-	if len(winners) != 1 {
-		t.Fatalf("reservation winners = %d, want 1", len(winners))
 	}
 }

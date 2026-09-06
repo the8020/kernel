@@ -31,7 +31,7 @@ name = "group_key"
 type = "string"
 option = "group-key"
 required = false
-description = "Explicit job runtime-group key."
+description = "Explicit job sandbox sharing key."
 [[parameters]]
 name = "namespace"
 type = "string"

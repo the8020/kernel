@@ -15,6 +15,8 @@ Parent DOX: [kernel/kernel/settings DOX](../AGENTS.md).
   configuration.
 - JSON parameters use the shared kernel database encoder; this repository does
   not embed engine-specific SQL syntax.
+- Preserve byte-size and duration numeric types on decode so the shared settings
+  owner validates and renders their units consistently with node persistence.
 
 # Child DOX Index
 

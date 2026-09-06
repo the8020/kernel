@@ -2,7 +2,7 @@ version = 1
 id = "worker.inspect"
 path = ["worker", "inspect"]
 summary = "Inspect one Deno Worker"
-description = "Shows Worker, execution, workload, owner, release, debugger, state, and runtime-group identity."
+description = "Shows Worker, execution, workload, owner, release, debugger, state, and sandbox identity."
 mutates_state = false
 restart_behavior = "none"
 [handler]

@@ -14,7 +14,7 @@ Parent DOX: [kernel/defaults/config/runtime DOX](../AGENTS.md).
 
 # Local Contracts
 
-- Every message contains protocol version, message type, runtime-group ID, and a
+- Every message contains protocol version, message type, sandbox ID, and a
   correlation ID where applicable.
 - Unknown versions and message types are rejected clearly.
 - Large request/response bodies use streams and are never encoded into control

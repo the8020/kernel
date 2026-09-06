@@ -1,8 +1,8 @@
 key = "logging.max_total_size"
 type = "byte_size"
 storage = "node"
-default = "10GB"
+default = "10GiB"
 environment = "THE8020_LOGGING_MAX_TOTAL_SIZE"
 runtime_mutable = true
 restart_required = false
-description = "Maximum total size of kernel-owned log files."
+description = "Maximum combined size of all owned log segments, including active files."

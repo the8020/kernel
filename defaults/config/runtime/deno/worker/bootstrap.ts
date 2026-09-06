@@ -1,6 +1,7 @@
 import type {
   BaseContext,
   ExecutionMetadata,
+  InvocationMetadata,
   JobEntrypoint,
   RuntimeLogEvent,
   ServiceContext,
@@ -9,13 +10,19 @@ import type {
   WorkerControlFunctions,
   WorkerExecutionFailure,
 } from "./contracts.ts";
-import { canonicalExecutionUser } from "./contracts.ts";
+import { canonicalExecutionUser, canonicalInvocation } from "./contracts.ts";
 import { authenticateRequest } from "./request_authentication.ts";
 import { createKernelBridge } from "../kernel/bridge.ts";
+import { installConsoleCapture, runtimeLog } from "../logging/capture.ts";
+import { INITIAL_POLICY, type LogPolicy } from "../logging/protocol.ts";
+import { WorkerLogSender } from "../logging/worker_channel.ts";
+import { formatValues } from "../logging/format.ts";
 
 interface InitializeMessage {
   type: "initialize";
   metadata: ExecutionMetadata;
+  invocation?: InvocationMetadata;
+  logPolicy?: LogPolicy;
   port: MessagePort;
 }
 
@@ -158,6 +165,12 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
   initialized = true;
   const { metadata, port } = event.data;
   const kernelBridge = createKernelBridge(port, metadata);
+  const logSender = new WorkerLogSender(
+    port,
+    metadata,
+    kernelBridge.executionContext,
+    event.data.logPolicy ?? INITIAL_POLICY,
+  );
   const controller = new AbortController();
   const activeRequests = new Map<string, AbortController>();
   const activeControls = new Map<string, AbortController>();
@@ -168,6 +181,7 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
     | undefined;
 
   port.onmessage = (controlEvent: MessageEvent<ControlMessage>) => {
+    if (logSender.handle(controlEvent.data)) return;
     if (kernelBridge.handle(controlEvent.data)) return;
     if (dispatchControl === undefined) {
       pendingControls.push(controlEvent);
@@ -178,8 +192,8 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
   port.start();
 
   const log = (logEvent: RuntimeLogEvent): void =>
-    port.postMessage({ type: "log", payload: logEvent });
-  installConsoleCapture(log);
+    runtimeLog(logSender, logEvent);
+  installConsoleCapture(logSender);
   const base: BaseContext = { metadata, signal: controller.signal, log };
   const kernelServiceId = metadata.service?.serviceId ?? metadata.workloadId;
   const closeDatabaseScope = async (): Promise<void> => {
@@ -239,7 +253,22 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
   };
 
   try {
-    const module = await import(metadata.entrypoint) as Record<string, unknown>;
+    const loadModule = async (): Promise<Record<string, unknown>> => {
+      try {
+        return await import(metadata.entrypoint);
+      } catch (error) {
+        logSender.print("ERROR", ["Worker import failed", error]);
+        throw error;
+      }
+    };
+    const module = event.data.invocation === undefined
+      ? await loadModule()
+      : await kernelBridge.withExecution({
+        ...canonicalInvocation(event.data.invocation),
+        serviceId: kernelServiceId,
+        user: metadata.user,
+        signal: controller.signal,
+      }, loadModule);
     const workerFunctions = registeredWorkerFunctions(module.workerFunctions);
     const platformService = isPlatformService(module.default)
       ? module.default
@@ -293,6 +322,7 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
             const input = message.payload as {
               arguments?: unknown;
               secrets?: unknown;
+              invocation?: unknown;
             };
             if (!Array.isArray(input.arguments)) {
               throw new TypeError("job arguments must be an array");
@@ -310,7 +340,7 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
             const secrets = { ...(input.secrets as Record<string, string>) };
             const result = await kernelBridge.withExecution(
               {
-                requestId: message.correlationId,
+                ...canonicalInvocation(input.invocation),
                 serviceId: metadata.workloadId,
                 user: metadata.user,
                 secrets,
@@ -319,6 +349,9 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
               async () => {
                 try {
                   return await jobEntrypoint!(...arguments_);
+                } catch (error) {
+                  logSender.print("ERROR", ["Job failed", error]);
+                  throw error;
                 } finally {
                   for (const name of Object.keys(secrets)) delete secrets[name];
                   await closeDatabaseScope();
@@ -336,6 +369,7 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
             const input = message.payload as {
               function?: unknown;
               input?: unknown;
+              invocation?: unknown;
               persistentExecutionId?: unknown;
               user?: unknown;
             };
@@ -372,7 +406,7 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
             try {
               const output = await kernelBridge.withExecution(
                 {
-                  requestId: message.correlationId,
+                  ...canonicalInvocation(input.invocation),
                   serviceId: kernelServiceId,
                   persistentExecutionId,
                   user: canonicalExecutionUser(input.user),
@@ -384,6 +418,12 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
                       ...base,
                       signal: control.signal,
                     });
+                  } catch (error) {
+                    logSender.print("ERROR", [
+                      "Worker invocation failed",
+                      error,
+                    ]);
+                    throw error;
                   } finally {
                     await closeDatabaseScope();
                   }
@@ -418,7 +458,7 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
             const requestMetadata = message.payload as {
               method: string;
               url: string;
-              meta?: ServiceRequestMetadata;
+              meta: ServiceRequestMetadata;
             };
             const requestController = new AbortController();
             activeRequests.set(message.correlationId, requestController);
@@ -431,25 +471,8 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
             let context: ServiceContext = {
               ...base,
               signal: requestController.signal,
-              requestId: requestMetadata.meta?.requestId ??
-                message.correlationId,
-              meta: requestMetadata.meta ?? {
-                requestId: message.correlationId,
-                serviceId: kernelServiceId,
-                serviceGeneration: metadata.service?.generation ?? 0,
-                canonicalBasePath: metadata.service?.canonicalBasePath ?? "/",
-                originalUrl: requestMetadata.url,
-                client: { ipAddress: "", networkScope: "special" },
-                execution: {
-                  nodeId: metadata.nodeId,
-                  runtimeGroupId: metadata.runtimeGroupId,
-                  sandboxId: metadata.sandboxId,
-                  workerId: metadata.workerId,
-                  workerExecutionId: metadata.executionId,
-                },
-                user: metadata.user,
-                auth: { authenticated: false },
-              },
+              contextId: requestMetadata.meta.contextId,
+              meta: requestMetadata.meta,
             };
             let response: Response;
             try {
@@ -473,6 +496,11 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
                 requestController.signal,
               );
             } catch (error) {
+              kernelBridge.withRequest(
+                context.meta,
+                () =>
+                  logSender.print("ERROR", ["Service execution failed", error]),
+              );
               await closeRequestDatabaseScope(context.meta);
               throw error;
             } finally {
@@ -530,7 +558,7 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
               method?: unknown;
               url?: unknown;
               protocol?: unknown;
-              meta?: ServiceRequestMetadata;
+              meta: ServiceRequestMetadata;
             };
             if (
               typeof input.connectionId !== "string" ||
@@ -573,6 +601,14 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
                 socket.signal,
               );
             } catch (error) {
+              kernelBridge.withRequest(
+                input.meta,
+                () =>
+                  logSender.print("ERROR", [
+                    "WebSocket execution failed",
+                    error,
+                  ]),
+              );
               await closeRequestDatabaseScope(input.meta);
               throw error;
             }
@@ -731,9 +767,7 @@ function validateWebSocketClose(code: number, reason: string): void {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error
-    ? `${error.name}: ${error.message}`
-    : String(error);
+  return formatValues([error], 4096);
 }
 
 function executionFailure(error: unknown): WorkerExecutionFailure {
@@ -752,24 +786,4 @@ function executionFailure(error: unknown): WorkerExecutionFailure {
     };
   }
   return { message: errorMessage(error) };
-}
-
-function installConsoleCapture(
-  log: (event: RuntimeLogEvent) => void,
-): void {
-  for (const level of ["debug", "info", "warn", "error"] as const) {
-    console[level] = (...values: unknown[]): void =>
-      log({ level, message: values.map(formatConsoleValue).join(" ") });
-  }
-  console.log = (...values: unknown[]): void =>
-    log({ level: "info", message: values.map(formatConsoleValue).join(" ") });
-}
-
-function formatConsoleValue(value: unknown): string {
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value) ?? String(value);
-  } catch {
-    return String(value);
-  }
 }

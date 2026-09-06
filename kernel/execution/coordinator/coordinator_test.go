@@ -4,24 +4,26 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"the8020/kernel/identity"
 
 	"the8020/kernel/sandbox/manager"
 	"the8020/kernel/sandbox/model"
 )
 
 type fakeSandboxes struct {
-	items     []manager.Inspection
-	creates   []model.SandboxSpec
-	ownerAdds int
+	items         []manager.Inspection
+	creates       []model.SandboxSpec
+	ownerAdds     int
+	createFailure error
 }
 
-func (f *fakeSandboxes) NewSandboxID() (string, error) { return model.NewSandboxID() }
+func (f *fakeSandboxes) NewSandboxID() (string, error) { return identity.New("sbx") }
 func (f *fakeSandboxes) ReleaseSandboxID(string)       {}
 
-func (f *fakeSandboxes) AddOwner(_ context.Context, groupID, ownerID string, serviceID ...string) (manager.Inspection, error) {
+func (f *fakeSandboxes) AddOwner(_ context.Context, sandboxID, ownerID string, serviceID ...string) (manager.Inspection, error) {
 	f.ownerAdds++
 	for index := range f.items {
-		if f.items[index].Spec.RuntimeGroupID != groupID {
+		if f.items[index].Spec.SandboxID != sandboxID {
 			continue
 		}
 		for _, existing := range f.items[index].Spec.OwnerIDs {
@@ -36,12 +38,12 @@ func (f *fakeSandboxes) AddOwner(_ context.Context, groupID, ownerID string, ser
 		f.items[index].Status.CurrentOwners = append(f.items[index].Status.CurrentOwners, ownerID)
 		return f.items[index], nil
 	}
-	return manager.Inspection{}, errors.New("runtime group not found")
+	return manager.Inspection{}, errors.New("sandbox not found")
 }
 
-func (f *fakeSandboxes) RemoveOwner(_ context.Context, groupID, ownerID, serviceID string) (bool, error) {
+func (f *fakeSandboxes) RemoveOwner(_ context.Context, sandboxID, ownerID, serviceID string) (bool, error) {
 	for index := range f.items {
-		if f.items[index].Spec.RuntimeGroupID != groupID {
+		if f.items[index].Spec.SandboxID != sandboxID {
 			continue
 		}
 		f.items[index].Spec.OwnerIDs = removeTestValue(f.items[index].Spec.OwnerIDs, ownerID)
@@ -80,11 +82,24 @@ func (f *fakeSandboxes) List() ([]manager.Inspection, error) {
 func (f *fakeSandboxes) Create(_ context.Context, spec model.SandboxSpec) (manager.Inspection, error) {
 	f.creates = append(f.creates, spec)
 	item := manager.Inspection{Spec: spec, Status: model.SandboxStatus{ObservedState: model.StateReady, SupervisorHealthy: true}}
+	if f.createFailure != nil {
+		return manager.Inspection{Spec: spec}, f.createFailure
+	}
 	f.items = append(f.items, item)
 	return item, nil
 }
 
-func TestEnsureReusesOnlyCompatibleHealthyGroups(t *testing.T) {
+func TestEnsurePreservesAllocatedIdentityOnCreationFailure(t *testing.T) {
+	failure := errors.New("native startup failed")
+	backend := &fakeSandboxes{createFailure: failure}
+	coordinator, _ := New(backend, 64)
+	inspection, err := coordinator.Ensure(context.Background(), testRequest(t, "owner", model.WorkloadJob))
+	if !errors.Is(err, failure) || len(backend.creates) != 1 || inspection.Spec.SandboxID != backend.creates[0].SandboxID || !identity.Is(inspection.Spec.SandboxID, "sbx") {
+		t.Fatalf("allocated identity was discarded: %#v, %v", inspection, err)
+	}
+}
+
+func TestEnsureReusesOnlyCompatibleHealthySandboxes(t *testing.T) {
 	backend := &fakeSandboxes{}
 	coordinator, _ := New(backend, 64)
 	request := testRequest(t, "owner-one", model.WorkloadJob)
@@ -96,7 +111,7 @@ func TestEnsureReusesOnlyCompatibleHealthyGroups(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Spec.RuntimeGroupID != second.Spec.RuntimeGroupID || len(backend.creates) != 1 || backend.ownerAdds != 1 {
+	if first.Spec.SandboxID != second.Spec.SandboxID || len(backend.creates) != 1 || backend.ownerAdds != 1 {
 		t.Fatalf("first=%#v second=%#v creates=%d", first, second, len(backend.creates))
 	}
 	request.OwnerID = "owner-two"
@@ -104,7 +119,7 @@ func TestEnsureReusesOnlyCompatibleHealthyGroups(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if third.Spec.RuntimeGroupID == first.Spec.RuntimeGroupID || len(backend.creates) != 2 {
+	if third.Spec.SandboxID == first.Spec.SandboxID || len(backend.creates) != 2 {
 		t.Fatalf("third=%#v creates=%d", third, len(backend.creates))
 	}
 	request.OwnerID = "owner-one"
@@ -113,7 +128,7 @@ func TestEnsureReusesOnlyCompatibleHealthyGroups(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fourth.Spec.RuntimeGroupID == first.Spec.RuntimeGroupID {
+	if fourth.Spec.SandboxID == first.Spec.SandboxID {
 		t.Fatal("incompatible profile reused")
 	}
 }
@@ -133,7 +148,7 @@ func TestEnsureSharedGroupPersistsEveryOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Spec.RuntimeGroupID != second.Spec.RuntimeGroupID || len(second.Spec.OwnerIDs) != 2 || second.Spec.OwnerIDs[1] != "owner-two" {
+	if first.Spec.SandboxID != second.Spec.SandboxID || len(second.Spec.OwnerIDs) != 2 || second.Spec.OwnerIDs[1] != "owner-two" {
 		t.Fatalf("first=%#v second=%#v", first, second)
 	}
 }
@@ -153,7 +168,7 @@ func TestEnsureSeparatesLogicalGroupingFromAllocationClaims(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Spec.RuntimeGroupID != second.Spec.RuntimeGroupID || len(backend.creates) != 1 {
+	if first.Spec.SandboxID != second.Spec.SandboxID || len(backend.creates) != 1 {
 		t.Fatalf("allocations did not share their logical owner's group: first=%#v second=%#v", first, second)
 	}
 	if len(second.Spec.OwnerIDs) != 2 || second.Spec.OwnerIDs[0] != "worker-one" || second.Spec.OwnerIDs[1] != "worker-two" {
@@ -178,7 +193,7 @@ func TestEnsureSharedExplicitKeyStillSeparatesWorkloadTypes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Spec.RuntimeGroupID == second.Spec.RuntimeGroupID || first.Spec.WorkloadType == second.Spec.WorkloadType {
+	if first.Spec.SandboxID == second.Spec.SandboxID || first.Spec.WorkloadType == second.Spec.WorkloadType {
 		t.Fatalf("groups=%#v %#v", first, second)
 	}
 }
@@ -208,10 +223,10 @@ func TestEnsureServiceSandboxesUsePlacementGroupWithoutDuplicateAllocation(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Spec.RuntimeGroupID != other.Spec.RuntimeGroupID {
+	if first.Spec.SandboxID != other.Spec.SandboxID {
 		t.Fatal("different services in the same placement group did not share")
 	}
-	if second.Spec.RuntimeGroupID == first.Spec.RuntimeGroupID {
+	if second.Spec.SandboxID == first.Spec.SandboxID {
 		t.Fatal("two allocations of one service were placed in one sandbox")
 	}
 }
@@ -219,7 +234,7 @@ func TestEnsureServiceSandboxesUsePlacementGroupWithoutDuplicateAllocation(t *te
 func TestEnsureAssignsCompatibleWarmGroupBeforeColdCreate(t *testing.T) {
 	backend := &fakeSandboxes{}
 	request := testRequest(t, "owner-one", model.WorkloadJob)
-	warmInspection := manager.Inspection{Spec: model.SandboxSpec{RuntimeGroupID: "group-warm", SandboxID: "sandbox-warm", WorkloadType: model.WorkloadJob}}
+	warmInspection := manager.Inspection{Spec: model.SandboxSpec{SandboxID: "sandbox-warm", WorkloadType: model.WorkloadJob}}
 	warm := &fakeWarmPool{inspection: warmInspection, assigned: true}
 	coordinator, err := New(backend, 64, warm)
 	if err != nil {
@@ -230,7 +245,7 @@ func TestEnsureAssignsCompatibleWarmGroupBeforeColdCreate(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantHash, _ := request.Profile.Hash()
-	if result.Spec.RuntimeGroupID != "group-warm" || warm.profile != wantHash || warm.groupKey != "job:owner:owner-one" || warm.owner != "owner-one" || len(backend.creates) != 0 {
+	if result.Spec.SandboxID != "sandbox-warm" || warm.profile != wantHash || warm.groupKey != "job:owner:owner-one" || warm.owner != "owner-one" || len(backend.creates) != 0 {
 		t.Fatalf("result=%#v warm=%#v creates=%#v", result, warm, backend.creates)
 	}
 }

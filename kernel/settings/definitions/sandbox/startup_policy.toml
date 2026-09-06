@@ -6,4 +6,4 @@ environment = "THE8020_SANDBOX_STARTUP_POLICY"
 allowed = ["reconcile", "destroy"]
 runtime_mutable = false
 restart_required = true
-description = "Destroy inherited runtime groups by default, or explicitly reconcile them across a kernel restart."
+description = "Destroy inherited sandboxes by default, or explicitly reconcile them across a kernel restart."

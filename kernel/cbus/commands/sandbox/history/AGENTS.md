@@ -13,13 +13,14 @@ Parent DOX: [kernel/kernel/cbus/commands/sandbox DOX](../AGENTS.md).
 # Local Contracts
 
 - `sandbox history list` is bounded and cursor-paginated.
-- `sandbox history inspect` loads one immutable record and bounded archived log
-  tails by history ID.
+- `sandbox history inspect` loads one immutable metadata record by history ID.
+  Its status retains the node, creation time and log position; `kernel.logs`
+  reads bounded pages using that reference and sandbox ID.
 
 # Work Guidance
 
-- Keep history identity distinct from reusable live sandbox and runtime-group
-  selectors.
+- A history ID addresses the retained record; its sbx-* ID addresses the actual
+  sandbox. Log retention and metadata retention remain independently owned.
 
 # Verification
 
@@ -30,4 +31,4 @@ Parent DOX: [kernel/kernel/cbus/commands/sandbox DOX](../AGENTS.md).
 No child DOX documents. This document owns the entire local scope.
 
 - `list/` owns the bounded history inventory command.
-- `inspect/` owns direct metadata and log inspection.
+- `inspect/` owns direct metadata and log-reference inspection.

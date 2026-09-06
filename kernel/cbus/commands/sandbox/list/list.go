@@ -11,14 +11,14 @@ import (
 )
 
 type summary struct {
-	SandboxID      string `json:"sandbox_id"`
-	WorkloadType   string `json:"workload_type"`
-	State          string `json:"state"`
-	WorkerCount    int    `json:"worker_count"`
-	Warm           bool   `json:"warm"`
-	RuntimeGroupID string `json:"runtime_group_id"`
-	Reason         string `json:"reason"`
-	Failure        string `json:"failure,omitempty"`
+	SandboxID    string `json:"sandbox_id"`
+	WorkloadType string `json:"workload_type"`
+	State        string `json:"state"`
+	WorkerCount  int    `json:"worker_count"`
+	Warm         bool   `json:"warm"`
+
+	Reason  string `json:"reason"`
+	Failure string `json:"failure,omitempty"`
 }
 
 func New(serviceSet *services.Services) core.Handler {
@@ -41,14 +41,14 @@ func New(serviceSet *services.Services) core.Handler {
 				state = inspection.Status.DesiredState
 			}
 			items = append(items, summary{
-				SandboxID:      inspection.Spec.SandboxID,
-				WorkloadType:   string(inspection.Spec.WorkloadType),
-				State:          string(state),
-				WorkerCount:    inspection.Status.WorkerCount,
-				Warm:           inspection.Spec.Lifecycle.Warm,
-				RuntimeGroupID: inspection.Spec.RuntimeGroupID,
-				Reason:         sandboxview.Reason(inspection),
-				Failure:        inspection.Status.FailureReason,
+				SandboxID:    inspection.Spec.SandboxID,
+				WorkloadType: string(inspection.Spec.WorkloadType),
+				State:        string(state),
+				WorkerCount:  inspection.Status.WorkerCount,
+				Warm:         inspection.Spec.Lifecycle.Warm,
+
+				Reason:  sandboxview.Reason(inspection),
+				Failure: inspection.Status.FailureReason,
 			})
 		}
 		return core.Result{"sandboxes": items}, nil

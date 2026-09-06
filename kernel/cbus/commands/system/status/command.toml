@@ -27,11 +27,8 @@ type = "string"
 name = "main_port"
 type = "integer"
 [[result]]
-name = "logging_enabled"
-type = "boolean"
-[[result]]
-name = "active_log_file"
-type = "string"
+name = "logging"
+type = "object"
 [[result]]
 name = "build_id"
 type = "string"

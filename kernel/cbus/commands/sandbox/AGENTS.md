@@ -13,10 +13,10 @@ Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
 # Local Contracts
 
 - `sandbox list` exposes only sandbox ID, workload type, observed state, concise
-  reason, Worker count, warm status, runtime-group ID, and any failure;
-  `sandbox inspect` owns the complete specification, status, Workers, resources,
-  leases, and correlated services. Application-owned logical state is never
-  discovered or duplicated in sandbox inspection.
+  reason, Worker count, warm status, and any failure; `sandbox inspect` owns the
+  complete specification, status, Workers, resources, leases, and correlated
+  services. Application-owned logical state is never discovered or duplicated in
+  sandbox inspection.
 - Live list and ordinary inspect use the latest cached supervisor snapshot.
   `sandbox refresh` alone performs one targeted supervisor/resource observation
   and returns refreshed detail with snapshot revision and observation time.
@@ -27,14 +27,16 @@ Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
   must not expose every colocated service or an opaque placement-group key.
 - `sandbox history list` is the only archive inventory path and returns a
   bounded cursor page; `sandbox history inspect` directly loads immutable
-  terminal metadata and bounded log tails by history ID.
+  terminal metadata and its log reference by history ID. `kernel.logs` owns
+  bounded log queries.
 - Stop is graceful, kill is immediate, and delete performs complete
   manager-owned cleanup, removes warm-pool accounting, and triggers replacement
   capacity when required.
 
 # Work Guidance
 
-- Accept either sandbox or runtime-group identity where the manager supports it.
+- Accept only the actual sandbox identity. Placement labels are not lookup
+  aliases.
 
 # Verification
 

@@ -113,7 +113,7 @@ if [[ "$RUNSC_DESTINATION" != "$GVISOR_ROOT/runsc" ]]; then
 fi
 
 SOURCE_INPUT=$(
-  find "$RUNTIME_SOURCE/deno/supervisor" "$RUNTIME_SOURCE/deno/worker" "$RUNTIME_SOURCE/deno/kernel" "$RUNTIME_SOURCE/deno/context" "$RUNTIME_SOURCE/deno/http" -maxdepth 1 -type f \( -name '*.ts' -o -name '*.d.ts' \) ! -name '*_test.ts' -print0 | sort -z | xargs -0 sha256sum
+  find "$RUNTIME_SOURCE/deno/supervisor" "$RUNTIME_SOURCE/deno/worker" "$RUNTIME_SOURCE/deno/kernel" "$RUNTIME_SOURCE/deno/context" "$RUNTIME_SOURCE/deno/identity" "$RUNTIME_SOURCE/deno/logging" "$RUNTIME_SOURCE/deno/http" -maxdepth 1 -type f \( -name '*.ts' -o -name '*.d.ts' \) ! -name '*_test.ts' -print0 | sort -z | xargs -0 sha256sum
   sha256sum "$RUNTIME_SOURCE/deno/deno.json" "$RUNTIME_SOURCE/deno/deno.lock" "$CONTAINERFILE" "$BUILD_SCRIPT" "$RUNTIME_DEFINITION" "$RUNTIME_LOCK" "$MANIFEST" "$RUNTIME_SOURCE/install-portable.sh" "$RUNTIME_SOURCE/materialize-oci-rootfs.sh" "$RUNTIME_SOURCE/run-rootfs-build.sh" "$RUNTIME_SOURCE/stage-service-runtime.sh" "$RUNTIME_SOURCE/bundle-runtime.sh" "$PROTOCOL_SOURCE" "$GVISOR_ROOT/runsc"
   printf '%s\n' "$BASE_MANIFEST" "$ARCHITECTURE"
 )

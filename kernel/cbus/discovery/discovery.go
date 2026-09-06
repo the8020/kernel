@@ -261,21 +261,26 @@ func (i *Indexer) discoverPackage(root, packageID, commit string) (fragment, err
 					arguments[index] = request.Argv[index]
 				}
 				result, err := i.programs.Run(ctx, programID, commit, arguments, request.Secrets)
+				executed := core.Execution{Result: result.Value}
+				if result.ExecutionID != "" {
+					executed.Reference = &core.ExecutionReference{
+						ProgramID: result.ProgramID, ExecutionID: result.ExecutionID, NodeID: result.NodeID,
+						SandboxID: result.SandboxID, WorkerID: result.WorkerID, ContextID: result.ContextID,
+						ParentContextID: result.ParentContextID, LogPosition: result.LogPosition,
+						QueuedAt: result.QueuedAt, StartedAt: result.StartedAt, FinishedAt: result.FinishedAt,
+					}
+				}
 				if err != nil {
 					if errors.Is(err, programrunner.ErrActiveCommitChanged) {
-						return core.Execution{}, core.NewError(core.CodeStaleCatalog, err.Error())
+						return executed, core.NewError(core.CodeStaleCatalog, err.Error())
 					}
 					var execution *supervisor.ResponseError
 					if errors.As(err, &execution) && execution.Code != "" {
-						return core.Execution{}, &core.Error{Code: execution.Code, Message: execution.Message, Details: execution.Details}
+						return executed, &core.Error{Code: execution.Code, Message: execution.Message, Details: execution.Details}
 					}
-					return core.Execution{}, core.NewError(core.CodeRuntimeOperation, err.Error())
+					return executed, core.NewError(core.CodeRuntimeOperation, err.Error())
 				}
-				output := make([]core.OutputEvent, len(result.Output))
-				for index, event := range result.Output {
-					output[index] = core.OutputEvent{Level: event.Level, Message: event.Message, Fields: event.Fields}
-				}
-				return core.Execution{Result: result.Value, Output: output}, nil
+				return executed, nil
 			},
 		})
 	}

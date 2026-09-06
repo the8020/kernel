@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"testing"
 	"time"
@@ -31,6 +32,45 @@ func TestRegistryValidatesAndConvertsArguments(t *testing.T) {
 	unknown := registry.Execute(context.Background(), Request{ProtocolVersion: ProtocolVersion, CommandID: "missing"})
 	if unknown.Error.Code != CodeUnknownCommand {
 		t.Fatalf("unknown response: %#v", unknown)
+	}
+}
+
+func TestAllocatedExecutionReferenceSurvivesSuccessfulAndFailedDispatch(t *testing.T) {
+	reference := &ExecutionReference{
+		ProgramID: "acme/tools/run", ExecutionID: "job-abcdefghij", NodeID: "nod-abcdefghij",
+		ContextID: "ctx-abcdefghij", ParentContextID: "ctx-0123456789", LogPosition: "before-admission",
+		QueuedAt: time.Unix(123, 0).UTC(),
+	}
+	for _, failure := range []error{nil, NewError(CodeRuntimeOperation, "failed"), errors.New("internal failure")} {
+		registry := NewRegistry(nil)
+		command := Command{ID: "acme/tools/run", Name: "tools.run"}
+		if err := registry.ReplacePackages([]Registration{{Command: command, Handler: func(context.Context, Request) (Execution, error) {
+			return Execution{Result: "result", Reference: reference}, failure
+		}}}, nil); err != nil {
+			t.Fatal(err)
+		}
+		response := registry.Execute(context.Background(), Request{ProtocolVersion: ProtocolVersion, CommandID: command.ID})
+		if response.Success != (failure == nil) || !reflect.DeepEqual(response.Execution, reference) {
+			t.Fatalf("dispatch lost reference with error %v: %#v", failure, response)
+		}
+		if failure != nil && response.Result != nil {
+			t.Fatal("failed dispatch returned a successful result")
+		}
+		data, err := json.Marshal(response)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var wire map[string]any
+		if err := json.Unmarshal(data, &wire); err != nil {
+			t.Fatal(err)
+		}
+		execution := wire["execution"].(map[string]any)
+		if _, exists := execution["started_at"]; exists {
+			t.Fatal("failed admission invented a native start time")
+		}
+		if _, exists := wire["output"]; exists {
+			t.Fatal("command response retained a copied log history")
+		}
 	}
 }
 

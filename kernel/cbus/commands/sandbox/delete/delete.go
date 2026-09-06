@@ -34,7 +34,7 @@ func New(serviceSet *services.Services) core.Handler {
 			return nil, commandutil.OperationError(err)
 		}
 		if runtimeServices.Pool != nil {
-			if err := runtimeServices.Pool.Forget(inspection.Spec.RuntimeGroupID); err != nil {
+			if err := runtimeServices.Pool.Forget(inspection.Spec.SandboxID); err != nil {
 				return nil, commandutil.OperationError(err)
 			}
 		}

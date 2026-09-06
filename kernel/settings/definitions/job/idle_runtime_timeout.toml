@@ -7,4 +7,4 @@ minimum = 1000
 maximum = 86400000
 runtime_mutable = false
 restart_required = true
-description = "Idle job runtime-group timeout in milliseconds."
+description = "Idle job sandbox timeout in milliseconds."

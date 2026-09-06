@@ -14,13 +14,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"the8020/kernel/identity"
 	"time"
 
 	gossh "golang.org/x/crypto/ssh"
 
 	"the8020/kernel/execution"
 	"the8020/kernel/sandbox/backend"
-	"the8020/kernel/sandbox/model"
 	"the8020/kernel/settings"
 )
 
@@ -51,6 +51,7 @@ type Development interface {
 }
 
 type Consoles interface {
+	ResolveTarget(string) (string, error)
 	OpenConsole(context.Context, string, string, backend.ConsoleOptions) (backend.Console, error)
 }
 
@@ -605,18 +606,13 @@ func (m *Manager) resolveTarget(ctx context.Context, username string, selected s
 		if err != nil {
 			return "", "", fmt.Errorf("prepare default development sandbox: %w", err)
 		}
-		if !validDevelopmentSandboxID(sandboxID) {
+		if !identity.Is(sandboxID, "sbx") {
 			return "", "", errors.New("default development sandbox identity is invalid")
 		}
 		return "development", sandboxID, nil
 	}
-	if validDevelopmentSandboxID(selected.sandboxID) {
-		return "development", selected.sandboxID, nil
-	}
-	if model.IsSandboxID(selected.sandboxID) {
-		return "runtime", selected.sandboxID, nil
-	}
-	return "", "", errors.New("selected sandbox ID is invalid")
+	kind, err := m.consoles.ResolveTarget(selected.sandboxID)
+	return kind, selected.sandboxID, err
 }
 
 func parseExec(command string) (selector, error) {
@@ -640,7 +636,7 @@ func parseExec(command string) (selector, error) {
 			return selector{}, errors.New("sandbox-id may be specified only once")
 		}
 		if !validSelectorSandboxID(value) {
-			return selector{}, errors.New("sandbox-id must be a canonical sbx- ID or dev-<username>")
+			return selector{}, errors.New("sandbox-id must be a canonical sbx- ID")
 		}
 		selected.sandboxID = value
 	}
@@ -648,12 +644,7 @@ func parseExec(command string) (selector, error) {
 }
 
 func validSelectorSandboxID(value string) bool {
-	return model.IsSandboxID(value) || validDevelopmentSandboxID(value)
-}
-
-func validDevelopmentSandboxID(value string) bool {
-	username, found := strings.CutPrefix(value, "dev-")
-	return found && execution.ValidateUsername(username) == nil
+	return identity.Is(value, "sbx")
 }
 
 func terminalFromRequest(request ptyRequest) (terminal, error) {

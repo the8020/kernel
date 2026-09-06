@@ -20,8 +20,12 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 - The authenticated lowercase alphanumeric `user_id` is the only control-plane
   key. The shared kernel principal contract guarantees 3-32 characters. The
-  runtime ID is exactly `dev-<user_id>`; there are no workspace IDs, aliases,
-  hashes, conversions, or compatibility paths.
+  sandbox has an opaque `sbx-` ID from the shared identity helper, persisted in
+  schema-2 `sandbox.toml`. Ordinary restart and activation retain the ID;
+  deletion or factory reset ends it. Username ownership and storage never derive
+  from the opaque ID. Creation serializes registration and rejects collisions
+  against retained development records; live ownership checks reject foreign
+  reuse before any backend cleanup.
 - Durable state is confined to `users/<username>/dev-sandbox/`: `sandbox.toml`,
   overlay checkpoints, and image-qualified writable system roots. Unrelated
   files beneath `users/<username>/` are not sandbox state.
@@ -49,14 +53,15 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   overlay.
 - Manager startup never waits for inherited runsc cleanup or scans sandbox
   records. User lifecycle calls load only
-  `users/<user_id>/dev-sandbox/sandbox.toml`; list is the sole operation that
-  enumerates users. Per-user and per-runtime-ID locks serialize lifecycle and
-  inherited cleanup for deterministic IDs.
+  `users/<user_id>/dev-sandbox/sandbox.toml`. Only listing and cold identity
+  registration enumerate user records. Per-user and per-sandbox-ID locks
+  serialize lifecycle and inherited cleanup. The console broker resolves active
+  development targets through `HasSandbox`, never by decoding a username.
 - Git scans happen only during explicit activation preview/run or lifecycle
   checkpointing. Activation creates one commit per selected changed package,
   uses Git merge/cherry-pick machinery, never pushes, preserves unselected
-  changes, and recreates the same deterministic sandbox with a clean overlay.
-  Local edits never affect the database. After candidate commits are staged, the
+  changes, and recreates the same registered sandbox with a clean overlay. Local
+  edits never affect the database. After candidate commits are staged, the
   shared schema deployment hook validates and synchronizes affected tables
   before Git references/source are published; failure leaves shared code and
   unrelated private changes intact.
@@ -111,12 +116,13 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 # Verification
 
-- Unit tests cover deterministic IDs, direct ensure/reuse/restart, bounded and
-  confined authorized-key reads without lifecycle mutation, user isolation,
-  overlay checkpoint/restore, explicit batched Git scans, ignored-artifact
-  exclusion, disposable-index recovery, schema-before-source activation and
-  rollback, activation/reset boundaries, repository-lock separation,
-  inherited-cleanup races, bounded diagnostics, and OCI mount policy.
+- Unit tests cover opaque IDs, collision rejection, direct ensure/reuse/restart,
+  bounded and confined authorized-key reads without lifecycle mutation, user
+  isolation, overlay checkpoint/restore, explicit batched Git scans,
+  ignored-artifact exclusion, disposable-index recovery, schema-before-source
+  activation and rollback, activation/reset boundaries, repository-lock
+  separation, inherited-cleanup races, bounded diagnostics, and OCI mount
+  policy.
 - The real gVisor E2E covers SSH/PTY behavior, APT/dpkg persistence across
   restart, temporary `/run`, directfs package isolation, ignored-artifact
   exclusion, read-only helper mounting, repeated helper activation and clean

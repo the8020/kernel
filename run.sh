@@ -116,14 +116,14 @@ stop_started_kernel() {
 
 report_start_failure() {
   local latest_log="" candidate
-  for candidate in "$INSTANCE_ROOT"/node/kernel/logs/kernel-*.log; do
+  for candidate in "$INSTANCE_ROOT"/node/kernel/logs/segment-*.log; do
     [[ -f "$candidate" ]] || continue
     if [[ -z "$latest_log" || "$candidate" -nt "$latest_log" ]]; then
       latest_log=$candidate
     fi
   done
   if [[ -n "$latest_log" ]]; then
-    echo "latest kernel log: $latest_log" >&2
+    echo "latest managed log: $latest_log" >&2
     tail -n 20 "$latest_log" >&2 || true
   fi
 }

@@ -8,9 +8,8 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
 # Ownership
 
 - Query an absolute revisioned runtime snapshot, aggregate ready/failed/active
-  status, and Workers with explicit failure state, last-idle time, and bounded
-  identity-associated logs; start and stop Workers; send exact
-  registered-function invocations, return job results with structured logs,
+  status, and Workers with explicit failure state and last-idle time; start and
+  stop Workers; send exact registered-function invocations, return job results,
   configure service pools, stream service requests with trusted selected-Worker
   identity, and request drain.
 - Do not create sandboxes, select groups, expose host ports, interpret program
@@ -23,9 +22,16 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
   allocated supervisor port.
 - Every request carries the per-sandbox bearer token and is context bounded;
   lifecycle control requests and responses use the generated versioned envelope
-  and must match message type, runtime-group identity, and correlation ID.
+  and must match message type, sandbox identity, and correlation ID.
+- Job RPCs require the kernel-allocated `Invocation` from Go context. Optional
+  startup invocation metadata attributes job imports without adding a Worker
+  lifetime execution ID. Exact control RPCs create a fresh `ctx-` child and
+  retain its caller context. Worker state reports Worker identity only.
 - Job arguments are always encoded as a JSON array, including an empty array for
   a no-argument program.
+- Worker status and job results contain no log arrays. Console and native
+  records travel independently through the bounded logging producer to logd;
+  execution owners retain identifiers and reader positions for later queries.
 - Service request and response bodies remain streams and are never converted to
   JSON or fully buffered; service redirects are returned unchanged and are never
   followed on the private supervisor hop.
@@ -39,16 +45,18 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
   application-defined function name, optional persistent-execution identity, and
   validated effective user plus JSON input/output without scanning, interpreting
   the name, or exposing the private endpoint publicly.
-- Worker startup requires a canonical user and a workload-compatible service,
-  job, or program origin; neither is optional runtime metadata.
+- `ExecutionMetadata.Valid` owns startup Worker ID, canonical user, and
+  workload-compatible service/job/program origin validation. Exact invocation
+  also rejects malformed Worker and optional persistent-execution IDs before
+  contacting the supervisor.
 - Non-success control responses retain their bounded HTTP status in
   `ResponseError`, including a structured execution code/details when supplied;
   callers may classify a `4xx` response without parsing error text, while
   authentication tokens remain hidden.
-- `Snapshot` validates protocol version, sandbox/runtime-group/workload
-  identity, and a nonzero revision before returning the supervisor's absolute
-  observation. Routine routing reads the kernel snapshot cache; this live RPC is
-  reserved for targeted refresh and recovery.
+- `Snapshot` validates protocol version, sandbox/workload identity, and a
+  nonzero revision before returning the supervisor's absolute observation.
+  Routine routing reads the kernel snapshot cache; this live RPC is reserved for
+  targeted refresh and recovery.
 
 # Work Guidance
 

@@ -17,6 +17,8 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+
+	"the8020/kernel/identity"
 	"time"
 
 	"the8020/kernel/deployment"
@@ -48,12 +50,13 @@ type fakeView struct {
 }
 
 type fakeDriver struct {
-	mu       sync.Mutex
-	views    map[string]*fakeView
-	starts   int
-	execs    int
-	startErr error
-	listWait <-chan struct{}
+	mu        sync.Mutex
+	views     map[string]*fakeView
+	starts    int
+	execs     int
+	startErr  error
+	deleteErr error
+	listWait  <-chan struct{}
 }
 
 func newFakeDriver() *fakeDriver { return &fakeDriver{views: map[string]*fakeView{}} }
@@ -237,6 +240,9 @@ func (d *fakeDriver) Kill(ctx context.Context, id string) error { return d.Stop(
 func (d *fakeDriver) Delete(_ context.Context, id string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.deleteErr != nil {
+		return d.deleteErr
+	}
 	if view := d.views[id]; view != nil && view.packages != "" {
 		_ = os.RemoveAll(view.packages)
 		_ = os.RemoveAll(view.temporary)
@@ -403,7 +409,7 @@ func TestEnsureSandboxCreatesAndRestartsDirectly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first != "dev-sshuser" || platform.driver.starts != 1 {
+	if !identity.Is(first, "sbx") || platform.driver.starts != 1 {
 		t.Fatalf("first default sandbox = %q, starts=%d", first, platform.driver.starts)
 	}
 	second, err := platform.manager.EnsureSandbox(context.Background(), "sshuser")
@@ -421,9 +427,10 @@ func TestEnsureSandboxCreatesAndRestartsDirectly(t *testing.T) {
 	if err != nil || restarted != first || platform.driver.starts != 2 {
 		t.Fatalf("restarted default sandbox = %q, starts=%d, err=%v", restarted, platform.driver.starts, err)
 	}
-	for owner, wanted := range map[string]string{"alice": "dev-alice", "teamuser": "dev-teamuser"} {
-		if got, err := sandboxIDForUser(owner); err != nil || got != wanted {
-			t.Errorf("development sandbox ID for %q = %q, want %q", owner, got, wanted)
+	for _, owner := range []string{"alice", "teamuser"} {
+		got, err := platform.manager.EnsureSandbox(context.Background(), owner)
+		if err != nil || !identity.Is(got, "sbx") || got == first {
+			t.Errorf("development sandbox for %q = %q, err=%v", owner, got, err)
 		}
 	}
 	for _, owner := range []string{"ab", "Alice", "alice@example", strings.Repeat("a", 33), "Unicode User/管理"} {
@@ -1191,7 +1198,7 @@ func TestInheritedCleanupNeverGatesStartup(t *testing.T) {
 	if err := writeAtomic(record, []byte(`{"image_digest":"sha256:test"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	sandbox := Sandbox{Schema: sandboxSchema, UserID: "developer", SandboxID: "dev-developer", State: StateReady, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(), Token: "token"}
+	sandbox := Sandbox{Schema: sandboxSchema, UserID: "developer", SandboxID: "sbx-abcdefghij", State: StateReady, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(), Token: "token"}
 	sandboxRoot := filepath.Join(users, "developer", "dev-sandbox")
 	if err := os.MkdirAll(sandboxRoot, 0o700); err != nil {
 		t.Fatal(err)
@@ -1202,7 +1209,15 @@ func TestInheritedCleanupNeverGatesStartup(t *testing.T) {
 	wait := make(chan struct{})
 	driver := newFakeDriver()
 	driver.listWait = wait
-	driver.views["dev-alice"] = &fakeView{start: SandboxStart{SandboxID: "dev-alice"}, running: true}
+	driver.views["sbx-klmnopqrst"] = &fakeView{start: SandboxStart{SandboxID: "sbx-klmnopqrst"}, running: true}
+	aliceRecord := sandbox
+	aliceRecord.UserID, aliceRecord.SandboxID = "alice", "sbx-klmnopqrst"
+	if err := os.MkdirAll(filepath.Join(users, "alice", "dev-sandbox", "runtime"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeTOML(filepath.Join(users, "alice", "dev-sandbox", "sandbox.toml"), aliceRecord, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	started := time.Now()
 	manager, err := New(Config{Root: root, PackagesRoot: packages, UsersRoot: users, RuntimeRoot: runtimeRoot, ImageRoot: image, ImageRecord: record, Driver: driver})
 	if err != nil {
@@ -1215,9 +1230,16 @@ func TestInheritedCleanupNeverGatesStartup(t *testing.T) {
 	if err != nil || inspected.State != StateStopped {
 		t.Fatalf("stale sandbox was not normalized lazily: %#v, %v", inspected, err)
 	}
-	alice, err := manager.Create(context.Background(), "alice")
-	if err != nil || alice.SandboxID != "dev-alice" {
-		t.Fatalf("deterministic development sandbox = %#v, %v", alice, err)
+	aliceRecord.State = StateCreating
+	if err := manager.prepareSandboxStorage(context.Background(), &aliceRecord, "sha256:test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.saveSandbox(aliceRecord); err != nil {
+		t.Fatal(err)
+	}
+	alice, err := manager.EnsureSandbox(context.Background(), "alice")
+	if err != nil || alice != "sbx-klmnopqrst" {
+		t.Fatalf("retained development sandbox = %#v, %v", alice, err)
 	}
 	close(wait)
 	select {
@@ -1225,8 +1247,8 @@ func TestInheritedCleanupNeverGatesStartup(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("inherited cleanup did not finish")
 	}
-	if running, err := driver.Running(context.Background(), "dev-alice"); err != nil || !running {
-		t.Fatalf("inherited cleanup deleted the current deterministic sandbox: running=%v err=%v", running, err)
+	if running, err := driver.Running(context.Background(), "sbx-klmnopqrst"); err != nil || !running {
+		t.Fatalf("inherited cleanup deleted the current registered sandbox: running=%v err=%v", running, err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -1242,7 +1264,7 @@ func TestDevelopmentSpecOverlaysOnlySandboxPackages(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	start := SandboxStart{UserID: "alice", SandboxID: "dev-alice", Packages: filepath.Join(root, "packages"), RootFS: filepath.Join(root, "rootfs"), Mounts: []SandboxMount{
+	start := SandboxStart{UserID: "alice", SandboxID: "sbx-klmnopqrst", Packages: filepath.Join(root, "packages"), RootFS: filepath.Join(root, "rootfs"), Mounts: []SandboxMount{
 		{MountDefinition: MountDefinition{ID: "packages", Target: "/workspace/packages", Behavior: MountSandboxSource, Writable: true}, HostSource: filepath.Join(root, "packages")},
 		{MountDefinition: MountDefinition{ID: "temporary", Target: "/tmp", Behavior: MountEphemeral, Writable: true}},
 	}}
@@ -1271,8 +1293,8 @@ func TestDevelopmentSpecOverlaysOnlySandboxPackages(t *testing.T) {
 	if !strings.Contains(runOptions, "size=65536k") {
 		t.Fatalf("development /run mount options = %q", runOptions)
 	}
-	driver := &RunscDriver{config: RunscConfig{RuntimeRoot: filepath.Join(root, "runtime"), SandboxRoot: filepath.Join(root, "sandboxes"), LogRoot: filepath.Join(root, "logs")}}
-	flags := strings.Join(driver.flags(start.SandboxID, "run"), " ")
+	driver := &RunscDriver{config: RunscConfig{RuntimeRoot: filepath.Join(root, "runtime"), SandboxRoot: filepath.Join(root, "sandboxes")}}
+	flags := strings.Join(driver.flags("sbx-0123456789", "run"), " ")
 	if !strings.Contains(flags, "--directfs=true") || !strings.Contains(flags, "--overlay2=none") || strings.Contains(flags, "overlay2=all") || strings.Contains(flags, "overlay2=root") || strings.Contains(flags, "rootfs-tar") {
 		t.Fatalf("development driver filesystem flags = %s", flags)
 	}
@@ -1320,5 +1342,37 @@ func TestSandboxNetworkFilesAreReadableByPackageAccounts(t *testing.T) {
 	contents, err := os.ReadFile(destination)
 	if err != nil || string(contents) != "nameserver 192.0.2.1\n" {
 		t.Fatalf("sandbox network file contents = %q, %v", contents, err)
+	}
+}
+
+func TestDevelopmentIDCollisionPreservesOwner(t *testing.T) {
+	platform := newTestPlatform(t)
+	first, err := platform.manager.Create(context.Background(), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflict := first
+	conflict.UserID = "bobby"
+	if err := platform.manager.registerSandbox(conflict); err == nil {
+		t.Fatal("duplicate retained sandbox ID registered")
+	}
+	if err := platform.manager.startLocked(context.Background(), &conflict); err == nil {
+		t.Fatal("foreign live sandbox reused")
+	}
+	if !platform.manager.HasSandbox(first.SandboxID) {
+		t.Fatal("collision removed the original owner")
+	}
+	if running, err := platform.driver.Running(context.Background(), first.SandboxID); err != nil || !running {
+		t.Fatalf("original sandbox disrupted: %v %v", running, err)
+	}
+	reset, err := platform.manager.FactoryReset(context.Background(), "alice", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reset.SandboxID == first.SandboxID || !identity.Is(reset.SandboxID, "sbx") {
+		t.Fatal("factory reset must allocate a new sandbox identity")
+	}
+	if platform.manager.sandboxRoot(reset) != platform.manager.sandboxRoot(first) {
+		t.Fatal("factory reset changed user storage ownership")
 	}
 }

@@ -41,6 +41,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - A fresh database stages every bootstrap package and performs one batched
   evaluation and synchronization before publishing the package set. Normal
   activation evaluates only candidate package tables in one batch.
+- Activation transactions use shared `act-` IDs. The initial database insert is
+  exclusive, rejects collisions, and shares that identity across hook and
+  activation history throughout recovery.
 - Activation is prepare schema → pre-activate hooks → atomically switch source →
   publish package records → post-activate hooks → complete. Durable activation,
   package, hook, and pending-deployment rows make retry/recovery idempotent.

@@ -36,7 +36,11 @@ func (c *Client) Execute(ctx context.Context, request core.Request) (core.Respon
 		request.ProtocolVersion = core.ProtocolVersion
 	}
 	if request.RequestID == "" {
-		request.RequestID = core.NewRequestID()
+		id, err := core.NewRequestID()
+		if err != nil {
+			return core.Response{}, err
+		}
+		request.RequestID = id
 	}
 	payload, err := json.Marshal(request)
 	if err != nil {

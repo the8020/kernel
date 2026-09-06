@@ -1,3 +1,4 @@
+import { newId } from "../identity/mod.ts";
 import { Supervisor } from "./supervisor.ts";
 import {
   assertEnvelope,
@@ -8,6 +9,9 @@ import type { KernelCall } from "../worker/contracts.ts";
 import { kernelCallbackRequest } from "./callback_request.ts";
 import { postUnixHTTP } from "./unix_http.ts";
 import { SnapshotPublisher } from "./snapshot_publisher.ts";
+import { LogProducer } from "../logging/producer.ts";
+import { installConsoleCapture, policyCapture } from "../logging/capture.ts";
+import { formatAttributes, formatValues } from "../logging/format.ts";
 
 const required = (name: string): string => {
   const value = Deno.env.get(name);
@@ -25,13 +29,37 @@ const requiredMilliseconds = (name: string, fallback: number): number => {
   return value;
 };
 
-const runtimeGroupId = required("RUNTIME_GROUP_ID");
 const sandboxId = required("SANDBOX_ID");
 const workloadType = required("WORKLOAD_TYPE") as
   | "service"
   | "job";
 const token = required("INTERNAL_API_TOKEN");
 const kernelSocketPath = Deno.env.get("KERNEL_SOCKET_PATH");
+const nodeId = required("NODE_ID");
+const logs = new LogProducer({
+  socket: "/run/the8020/logs.sock",
+  sandboxId,
+  nodeId,
+  token,
+});
+installConsoleCapture(
+  policyCapture(() => logs.policy, (level, values, fields) => {
+    logs.emit({
+      time: new Date().toISOString(),
+      level,
+      source: "deno",
+      component: "supervisor",
+      node_id: nodeId,
+      sandbox_id: sandboxId,
+      message: formatValues(values),
+      attributes: formatAttributes(fields),
+    });
+  }),
+);
+console.info("Supervisor starting", {
+  deno: Deno.version.deno,
+  workload: workloadType,
+});
 
 const postCallback = async (
   path: string,
@@ -62,11 +90,11 @@ const kernelCall: KernelCall | undefined = kernelSocketPath === undefined ||
   ? undefined
   : async (call, signal) => {
     const callbackRequest = kernelCallbackRequest(call);
-    const correlationId = crypto.randomUUID();
+    const correlationId = newId("cor");
     const envelope: Envelope<Record<string, unknown>> = {
       protocol_version: PROTOCOL_VERSION,
       message_type: callbackRequest.messageType,
-      runtime_group_id: runtimeGroupId,
+      sandbox_id: sandboxId,
       correlation_id: correlationId,
       payload: callbackRequest.payload,
     };
@@ -75,7 +103,7 @@ const kernelCall: KernelCall | undefined = kernelSocketPath === undefined ||
     assertEnvelope(result);
     if (
       result.message_type !== callbackRequest.responseMessageType ||
-      result.runtime_group_id !== runtimeGroupId ||
+      result.sandbox_id !== sandboxId ||
       result.correlation_id !== correlationId || result.payload === undefined
     ) {
       throw new Error("kernel response identity mismatch");
@@ -89,24 +117,17 @@ const snapshots = new SnapshotPublisher(
     const response = await postCallback("/v1/runtime/heartbeat", snapshot);
     await response.body?.cancel();
   },
-  (error) =>
-    console.error(
-      JSON.stringify({
-        level: "error",
-        event: "heartbeat_failed",
-        error: error instanceof Error ? error.message : String(error),
-      }),
-    ),
+  (error) => console.error("Heartbeat failed", error),
 );
 
 const supervisor = new Supervisor({
-  runtimeGroupId,
   sandboxId,
-  nodeId: Deno.env.get("NODE_ID") ?? runtimeGroupId,
+  nodeId,
   workloadType,
   token,
   supervisorVersion: "1.0.0",
   kernelCall,
+  logSink: logs,
   onStateChange: () => snapshots.markDirty(),
   workerStopGraceMilliseconds: requiredMilliseconds(
     "WORKER_STOP_GRACE_MS",
@@ -124,16 +145,40 @@ if (!Number.isSafeInteger(heartbeatInterval) || heartbeatInterval < 100) {
 }
 const server = Deno.serve({ hostname: host, port }, supervisor.handler);
 
-if (kernelSocketPath !== undefined && kernelSocketPath.length > 0) {
-  const send = async (path: string, body: unknown): Promise<void> => {
-    const response = await postCallback(path, body);
-    await response.body?.cancel();
-  };
-  await send("/v1/runtime/register", supervisor.registration());
-  snapshots.enable();
-  snapshots.markDirty();
-  setInterval(() => snapshots.markDirty(), heartbeatInterval);
-  await snapshots.flush();
+let heartbeat: ReturnType<typeof setInterval> | undefined;
+let stopping: Promise<void> | undefined;
+const stop = (): void => {
+  stopping ??= (async () => {
+    console.info("Supervisor stopping");
+    await supervisor.drain();
+    await server.shutdown();
+  })().catch((error) => {
+    console.error("Supervisor shutdown failed", error);
+  });
+};
+Deno.addSignalListener("SIGTERM", stop);
+Deno.addSignalListener("SIGINT", stop);
+try {
+  if (kernelSocketPath !== undefined && kernelSocketPath.length > 0) {
+    const send = async (path: string, body: unknown): Promise<void> => {
+      const response = await postCallback(path, body);
+      await response.body?.cancel();
+    };
+    await send("/v1/runtime/register", supervisor.registration());
+    snapshots.enable();
+    snapshots.markDirty();
+    heartbeat = setInterval(() => snapshots.markDirty(), heartbeatInterval);
+    await snapshots.flush();
+  }
+  console.info("Supervisor ready");
+  await server.finished;
+} catch (error) {
+  console.error("Supervisor failed", error);
+  throw error;
+} finally {
+  clearInterval(heartbeat);
+  Deno.removeSignalListener("SIGTERM", stop);
+  Deno.removeSignalListener("SIGINT", stop);
+  console.info("Supervisor exited");
+  await logs.close();
 }
-
-await server.finished;

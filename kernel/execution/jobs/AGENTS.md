@@ -2,7 +2,7 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
 
 # Purpose
 
-- Own non-durable job execution on job Workers in generic runtime groups.
+- Own non-durable job execution on job Workers in generic sandboxes.
 
 # Ownership
 
@@ -15,15 +15,37 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
 
 # Local Contracts
 
-- Public API: `New`, `Manager.Run`, `List`, `Inspect`, `Cancel`, `FailGroup`,
+- Public API: `New`, `Manager.Run`, `List`, `Inspect`, `Cancel`, `FailSandbox`,
   `Close`, and policy/options/record types.
 - `Options.Arguments` is the positional array spread into the job's default
   export. `Options.Secrets` travels separately and is cleared after every path.
+- `Record.ExecutionID` is the actual `job-` run ID, independent of the declared
+  `JobID`. `ContextID` is its `ctx-` invocation and `ParentContextID` is the
+  caller context. Admission rejects live run/context collisions. The same
+  invocation accompanies startup diagnostics and every run RPC; compatible
+  Worker reuse changes both run and context IDs. Parent admission discounts use
+  the caller's job run, not its context or Worker ID.
 - Only queued, starting, running, and reusable-idle state is retained in memory.
   Terminal result/output is returned to the caller and immediately removed.
-- Secure values are scrubbed from returned values, captured logs, and failures.
-  Redaction preserves structured execution error classification and details;
-  secret-free failures retain their original Go cause.
+- The composition owner supplies `Policy.NodeID` and the logging manager's
+  cached `LogPosition` getter. Admission snapshots that boundary before runtime
+  startup, without a logger RPC. Every invocation, including Worker reuse, keeps
+  its own position, allocated sandbox/Worker/run/context IDs, and time range.
+  Startup and invocation failures return those references even after cleanup. No
+  execution RPC or job record contains log messages.
+- The job owner emits admitted, started, completed, cancelled and failed events
+  with its allocated references and principal. Failure messages are the same
+  already scrubbed diagnostics returned to the caller, including validation
+  failures before application invocation. Publish logs after releasing state
+  locks and timestamp terminal observations with `FinishedAt`.
+- `FinishedAt` describes execution completion, not the last possible log capture.
+  A selected run's log view uses node/run/context IDs and saved position; do not
+  use completion time as an exclusive upper bound that hides the terminal event
+  or asynchronously captured diagnostics.
+- Secure values are scrubbed from returned values and failures; Worker capture
+  owns log redaction before forwarding to logd. Redaction preserves structured
+  execution error classification and details; secret-free failures retain their
+  original Go cause.
 - One started execution maps to one Worker unless explicit compatible reuse is
   enabled. Sandbox selection requests capacity for that one Worker. Each Worker
   owns one sandbox allocation claim. Non-reusable Workers stop and release that
@@ -63,10 +85,15 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
 
 # Verification
 
-- Unit and race tests cover results/output, secure redaction and cleanup,
-  detached FIFO behavior, queue bounds, cancellation, timeout, mounts, database
-  metadata, module checking, default destruction, compatible reuse, idle
-  retirement, no persistence/replay, and group failure.
+- Unit and race tests cover results, secure redaction and cleanup, detached FIFO
+  behavior, queue bounds, cancellation, timeout, mounts, database metadata,
+  module checking, default destruction, compatible reuse, idle retirement, no
+  persistence/replay, sandbox failure, and log references captured before startup
+  and preserved through failures and Worker reuse.
+- Lifecycle tests verify invocation/user attribution across reuse, startup and
+  invocation failure redaction, cancellation and sandbox-failure observations,
+  and publication outside state locks. The real rootless backend test retrieves
+  a native validation failure through its job/context reference after cleanup.
 
 # Child DOX Index
 

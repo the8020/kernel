@@ -3,7 +3,6 @@ package history
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -12,34 +11,24 @@ import (
 
 func TestArchiveListInspectAndCleanup(t *testing.T) {
 	root := t.TempDir()
-	logs := filepath.Join(root, "live-logs")
-	if err := os.MkdirAll(logs, 0o700); err != nil {
-		t.Fatal(err)
-	}
 	now := time.Date(2026, 8, 27, 13, 4, 5, 123456789, time.UTC)
 	store, err := New(Config{
 		Root: filepath.Join(root, "history"),
 		Now:  func() time.Time { return now },
-		LogPath: func(sandboxID string) string {
-			return filepath.Join(logs, sandboxID)
-		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := model.SandboxSpec{SandboxID: "sbx-ax9thsl3", RuntimeGroupID: "group-one", WorkloadType: model.WorkloadService}
-	firstLogs := filepath.Join(logs, first.SandboxID)
-	if err := os.MkdirAll(firstLogs, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(firstLogs, "runsc.log"), []byte("terminal diagnostics"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	record, err := store.Archive(first, model.SandboxStatus{ObservedState: model.StateFailed, FailureReason: "heartbeat timeout"}, "heartbeat timeout", DefaultRetention)
+	first := model.SandboxSpec{SandboxID: "sbx-ax9thsl300", WorkloadType: model.WorkloadService}
+	createdAt := now.Add(-time.Minute)
+	record, err := store.Archive(first, model.SandboxStatus{
+		ObservedState: model.StateFailed, FailureReason: "heartbeat timeout",
+		NodeID: "nod-abcdefghij", CreatedAt: createdAt, LogPosition: "saved-log-position",
+	}, "heartbeat timeout", DefaultRetention)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second := model.SandboxSpec{SandboxID: "sbx-bbbbbbbb", RuntimeGroupID: "group-two", WorkloadType: model.WorkloadJob}
+	second := model.SandboxSpec{SandboxID: "sbx-bbbbbbbbbb", WorkloadType: model.WorkloadJob}
 	if _, err := store.Archive(second, model.SandboxStatus{ObservedState: model.StateDeleting}, "sandbox deleted", DefaultRetention); err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +51,7 @@ func TestArchiveListInspectAndCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(inspection.Logs) != 1 || !strings.Contains(inspection.Logs[0].Content, "terminal diagnostics") {
+	if inspection.Record.SchemaVersion != 2 || inspection.Record.Status.NodeID != "nod-abcdefghij" || inspection.Record.Status.LogPosition != "saved-log-position" || !inspection.Record.Status.CreatedAt.Equal(createdAt) {
 		t.Fatalf("inspection = %#v", inspection)
 	}
 	if retained, err := store.ContainsSandboxID(first.SandboxID); err != nil || !retained {
@@ -89,26 +78,34 @@ func TestArchiveListInspectAndCleanup(t *testing.T) {
 	}
 }
 
-func TestInspectBoundsLogTails(t *testing.T) {
+func TestHistoryRetentionNeverTouchesUnifiedLogs(t *testing.T) {
 	root := t.TempDir()
-	logPath := filepath.Join(root, "runtime.log")
-	content := strings.Repeat("a", maximumLogBytes+100)
-	if err := os.WriteFile(logPath, []byte(content), 0o600); err != nil {
+	logPath := filepath.Join(root, "unified.log")
+	if err := os.WriteFile(logPath, []byte("terminal diagnostics\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	store, err := New(Config{Root: filepath.Join(root, "history"), LogPath: func(string) string { return logPath }})
+	now := time.Now().UTC()
+	store, err := New(Config{Root: filepath.Join(root, "history"), Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
-	record, err := store.Archive(model.SandboxSpec{SandboxID: "sbx-cccccccc", RuntimeGroupID: "group-three"}, model.SandboxStatus{ObservedState: model.StateFailed}, "failed", DefaultRetention)
+	record, err := store.Archive(model.SandboxSpec{SandboxID: "sbx-cccccccccc"}, model.SandboxStatus{ObservedState: model.StateFailed}, "failed", DefaultRetention)
 	if err != nil {
 		t.Fatal(err)
 	}
-	inspection, err := store.Inspect(record.HistoryID)
+	directory, err := store.recordDirectory(record.HistoryID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(inspection.Logs) != 1 || !inspection.Logs[0].Truncated || len(inspection.Logs[0].Content) != maximumLogBytes {
-		t.Fatalf("logs = %#v", inspection.Logs)
+	entries, err := os.ReadDir(directory)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "metadata.json" {
+		t.Fatalf("archive must contain only metadata: %v, %v", entries, err)
+	}
+	now = now.Add(DefaultRetention + 2*time.Hour)
+	if removed, err := store.Cleanup(DefaultRetention); err != nil || removed != 1 {
+		t.Fatalf("cleanup = %d, %v", removed, err)
+	}
+	if content, err := os.ReadFile(logPath); err != nil || string(content) != "terminal diagnostics\n" {
+		t.Fatalf("history changed unified logs: %q, %v", content, err)
 	}
 }

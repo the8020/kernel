@@ -4,7 +4,7 @@ import { z } from "zod";
 export { z };
 
 export interface RequestMetadata {
-  requestId: string;
+  contextId: string;
   serviceId: string;
   serviceGeneration: number;
   canonicalBasePath: string;
@@ -29,10 +29,10 @@ export interface ClientConnectionMetadata {
 
 export interface CurrentExecutionMetadata {
   nodeId: string;
-  runtimeGroupId: string;
+
   sandboxId: string;
   workerId: string;
-  workerExecutionId: string;
+
   persistentExecutionId?: string;
 }
 
@@ -463,24 +463,24 @@ class Service implements ServiceBuilder {
             definition.params,
             honoContext.req.param(),
             "params",
-            runtimeContext.meta.requestId,
+            runtimeContext.meta.contextId,
           ),
           query: await validateInput(
             definition.query,
             queryValues(request.url),
             "query",
-            runtimeContext.meta.requestId,
+            runtimeContext.meta.contextId,
           ),
           headers: await validateInput(
             definition.headers,
             Object.fromEntries(request.headers),
             "headers",
-            runtimeContext.meta.requestId,
+            runtimeContext.meta.contextId,
           ),
           body: await validatedBody(
             definition.body,
             request,
-            runtimeContext.meta.requestId,
+            runtimeContext.meta.contextId,
           ),
           signal: runtimeContext.signal,
           meta: runtimeContext.meta,
@@ -595,7 +595,7 @@ function normalizedRuntimeContext(
 ): RuntimeServiceContext {
   const meta = context?.meta;
   if (
-    meta === undefined || typeof meta.requestId !== "string" ||
+    meta === undefined || typeof meta.contextId !== "string" ||
     typeof meta.serviceId !== "string" ||
     !Number.isSafeInteger(meta.serviceGeneration) ||
     typeof meta.canonicalBasePath !== "string" ||
@@ -614,7 +614,7 @@ class InputValidationError extends Error {
   constructor(
     readonly location: string,
     readonly issues: unknown[],
-    readonly requestId: string,
+    readonly contextId: string,
   ) {
     super(`invalid ${location}`);
   }
@@ -624,12 +624,12 @@ async function validateInput(
   schema: z.ZodType | undefined,
   value: unknown,
   location: string,
-  requestId: string,
+  contextId: string,
 ): Promise<unknown> {
   if (schema === undefined) return {};
   const result = await schema.safeParseAsync(value);
   if (!result.success) {
-    throw new InputValidationError(location, result.error.issues, requestId);
+    throw new InputValidationError(location, result.error.issues, contextId);
   }
   return result.data;
 }
@@ -637,7 +637,7 @@ async function validateInput(
 async function validatedBody(
   schema: z.ZodType | undefined,
   request: Request,
-  requestId: string,
+  contextId: string,
 ): Promise<unknown> {
   if (schema === undefined) return {};
   let value: unknown;
@@ -651,10 +651,10 @@ async function validatedBody(
         message: "request body must be valid JSON",
         path: [],
       }],
-      requestId,
+      contextId,
     );
   }
-  return await validateInput(schema, value, "body", requestId);
+  return await validateInput(schema, value, "body", contextId);
 }
 
 function queryValues(rawUrl: string): Record<string, string | string[]> {
@@ -681,7 +681,7 @@ function handleError(
         location: error.location,
         issues: error.issues,
       },
-      request_id: error.requestId,
+      context_id: error.contextId,
     }, { status: 400 });
   }
   if (error instanceof HTTPError) {
@@ -708,14 +708,14 @@ function handleError(
     level: "error",
     message: "uncaught service handler error",
     fields: {
-      request_id: context.meta.requestId,
+      context_id: context.meta.contextId,
       service_id: context.meta.serviceId,
       error: error instanceof Error ? error.message : String(error),
     },
   });
   return Response.json({
     error: { code: "internal_error", message: "Internal server error" },
-    request_id: context.meta.requestId,
+    context_id: context.meta.contextId,
   }, { status: 500 });
 }
 

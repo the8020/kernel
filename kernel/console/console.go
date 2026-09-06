@@ -17,6 +17,7 @@ import (
 
 	"the8020/kernel/auth"
 	"the8020/kernel/execution"
+	"the8020/kernel/identity"
 	"the8020/kernel/sandbox/backend"
 )
 
@@ -32,6 +33,7 @@ type Authentication interface {
 }
 
 type Provider interface {
+	HasSandbox(string) bool
 	OpenConsole(context.Context, string, backend.ConsoleOptions) (backend.Console, error)
 }
 
@@ -264,6 +266,31 @@ func (m *Manager) serveSocket(socket *websocket.Conn) {
 	<-outputDone
 }
 
+// ResolveTarget selects the registered owner of an opaque sandbox ID. A
+// conflicting claim fails closed; opening a console is never used as a probe.
+func (m *Manager) ResolveTarget(sandboxID string) (string, error) {
+	if !identity.Is(sandboxID, "sbx") {
+		return "", errors.New("invalid sandbox ID")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return "", errors.New("console broker is closed")
+	}
+	development := m.development != nil && m.development.HasSandbox(sandboxID)
+	runtime := m.runtime != nil && m.runtime.HasSandbox(sandboxID)
+	if development && runtime {
+		return "", errors.New("sandbox ID has conflicting owners")
+	}
+	if development {
+		return "development", nil
+	}
+	if runtime {
+		return "runtime", nil
+	}
+	return "", errors.New("sandbox is unavailable")
+}
+
 // OpenConsole acquires one transport-neutral, lifecycle-tracked PTY lease.
 // The caller owns the returned console and must close it.
 func (m *Manager) OpenConsole(ctx context.Context, kind, sandboxID string, options backend.ConsoleOptions) (backend.Console, error) {
@@ -315,16 +342,7 @@ func validTarget(value target) bool {
 	if value.Kind != "runtime" && value.Kind != "development" {
 		return false
 	}
-	if value.SandboxID == "" || len(value.SandboxID) > 160 {
-		return false
-	}
-	for _, character := range value.SandboxID {
-		if (character < 'a' || character > 'z') &&
-			(character < '0' || character > '9') && character != '-' {
-			return false
-		}
-	}
-	return true
+	return identity.Is(value.SandboxID, "sbx")
 }
 
 func decodeJSON(text string, result any) error {

@@ -5,9 +5,9 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"the8020/kernel/identity"
 
 	"the8020/kernel/auth"
-	"the8020/kernel/sandbox/model"
 )
 
 const RouteHeader = "the8020-route"
@@ -58,7 +58,7 @@ func (m *Manager) beginPersistentDispatch(ctx context.Context, runtime *runtimeS
 	if err != nil {
 		return nil, err
 	}
-	executionID, err := model.NewID("persistent")
+	executionID, err := identity.New("pex")
 	if err != nil {
 		m.finishRequest(runtime, sandbox, 0, 0, 0, false)
 		return nil, err

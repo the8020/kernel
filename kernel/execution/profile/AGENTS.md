@@ -30,7 +30,7 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
 # Work Guidance
 
 - Treat every derived profile as immutable and let its canonical hash split
-  incompatible runtime groups.
+  incompatible sandboxes.
 - Every derived profile must own independent mount, permission, and startup-flag
   slices. Never let append capacity or element mutation alias the parent or a
   sibling profile.

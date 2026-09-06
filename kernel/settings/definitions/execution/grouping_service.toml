@@ -6,4 +6,4 @@ environment = "THE8020_EXECUTION_GROUPING_SERVICE"
 allowed = ["isolated", "owner", "namespace", "shared"]
 runtime_mutable = false
 restart_required = true
-description = "Default runtime-group strategy for services."
+description = "Default sandbox grouping strategy for services."

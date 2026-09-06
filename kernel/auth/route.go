@@ -3,9 +3,9 @@ package auth
 import (
 	"crypto/ed25519"
 	"errors"
-	"strings"
 
 	"github.com/golang-jwt/jwt/v5"
+	"the8020/kernel/identity"
 )
 
 const RouteTokenType = "the8020-route+jwt"
@@ -27,10 +27,8 @@ type routeClaims struct {
 }
 
 func (r RouteTarget) validate() error {
-	for _, id := range []string{r.NodeID, r.SandboxID, r.WorkerID, r.ExecutionID} {
-		if id == "" || len(id) > 256 || strings.TrimSpace(id) != id || strings.ContainsAny(id, "\x00\r\n") {
-			return ErrInvalidRoute
-		}
+	if !identity.Is(r.NodeID, "nod") || !identity.Is(r.SandboxID, "sbx") || !identity.Is(r.WorkerID, "wrk") || !identity.Is(r.ExecutionID, "pex") {
+		return ErrInvalidRoute
 	}
 	return nil
 }

@@ -8,8 +8,8 @@ Parent DOX: [kernel/kernel/sandbox/backend DOX](../AGENTS.md).
 # Ownership
 
 - Own direct `runsc` OCI bundles, per-sandbox root overlays, instance-scoped
-  runtime metadata, lifecycle commands, observation, labels, logs, and rootless
-  metrics.
+  runtime metadata, lifecycle commands, observation, labels, native output, and
+  rootless metrics.
 - Do not claim CNI network isolation or hard cgroup enforcement; those
   guarantees belong to the full containerd backend.
 
@@ -28,10 +28,10 @@ Parent DOX: [kernel/kernel/sandbox/backend DOX](../AGENTS.md).
   placement group, and warm-assignment labels; runtime identity remains
   immutable.
 - Stop is TERM-then-KILL, delete is forced and idempotent, failed creation
-  removes confirmed runtime state while retaining external logs, and the kernel
-  acts as a child subreaper so cleanup does not depend on the outer container's
-  PID 1. Reaping discovers only the kernel's task-owned children and never scans
-  the host-wide `/proc` directory.
+  removes only confirmed runtime state and preserves metadata when native
+  rollback fails. The kernel acts as a child subreaper so cleanup does not
+  depend on the outer container's PID 1. Reaping discovers only the kernel's
+  task-owned children and never scans the host-wide `/proc` directory.
 - Rootless memory and PID observations come from runsc. CPU usage is summed from
   `schedstat` for the same bounded set of kernel-owned sandbox/gofer tasks.
   These observations are diagnostic only and never influence placement.
@@ -39,6 +39,17 @@ Parent DOX: [kernel/kernel/sandbox/backend DOX](../AGENTS.md).
   either detached console-socket PTY transfer or attached byte-transparent
   streaming to the shared runsc console package; closure affects only that exec
   process.
+- Detached run inherits logger-owned FIFO descriptors directly for fd 1/2. Open
+  without blocking, verify the endpoint, then restore ordinary blocking native
+  writes. gVisor OCI-error, panic and user-log descriptors use /proc/self/fd/2
+  so they share that writer; no per-command or sandbox log files remain. Native
+  descriptors survive kernel exit. Anonymous bytes identify only the sandbox and
+  stream.
+- The injectable Command carries native output paths and an operation deadline.
+  Short control commands drain stdout within 64 KiB and stderr within 16 KiB,
+  preserving diagnostic head/tail with an omission marker. Reject truncated
+  JSON; send stderr diagnostics through the bounded kernel logger. Control
+  commands have a five-second deadline and 250 ms pipe-join bound.
 
 # Work Guidance
 
@@ -49,6 +60,9 @@ Parent DOX: [kernel/kernel/sandbox/backend DOX](../AGENTS.md).
 
 - Unit tests cover OCI restrictions, path mapping, ownership, lifecycle
   commands, bounded subreaper-child discovery, state conversion, and metrics.
+  Native subprocess tests verify FIFO inode inheritance, bounded control
+  diagnostics, context cancellation and cleanup ownership after rollback
+  failure.
 - The opt-in Linux E2E test starts the real supervisor through rootless gVisor,
   verifies its bind-mounted kernel Unix socket, and dispatches a discovered
   command declared in an arbitrarily named flat TOML file through the ordinary
@@ -62,6 +76,28 @@ Parent DOX: [kernel/kernel/sandbox/backend DOX](../AGENTS.md).
   `THE8020_RUNTIME_ROOTFS` paths to the pinned runtime and current prepared
   image. Installation also runs real rootless gVisor smoke and browser-console
   tests.
+- The E2E harness builds the actual logd and uses production runsc execution. It
+  verifies persisted kernel, Worker console, native stdout/stderr and failed job
+  stacks, including user and invocation attribution across await. A failed job's
+  returned identities, time range and saved position retrieve its diagnostics
+  after Worker cleanup. Its package index and callback replies remain explicit
+  fixtures.
+- Callback fixtures use the same length-delimited JSON acknowledgement as the
+  production callback so registration and first heartbeat finish in gVisor. An
+  isolated manager subtest also verifies warm assignment, shared owner release,
+  reconstruction, complete native/network/live-state cleanup, and
+  archived-reference retrieval of kernel and Deno boot logs. Discovered command
+  success and failure expose their allocated log references after Worker
+  cleanup.
+- The same managed job path exercises native Deno type checking and module graph
+  collection, verifies imported dependencies, returns a failed type check with
+  allocated references, and retrieves its persisted raw stderr after cleanup.
+- A real service sandbox suspends two users concurrently in each of two Workers,
+  verifies persisted begin records before releasing either Worker, rejects
+  duplicate initial persistent IDs, and resumes an explicit follow-up. Its saved
+  log position retrieves both ends after Worker cleanup, preserving node,
+  sandbox, Worker, service allocation, binding, context, parent, user and
+  object.
 
 # Child DOX Index
 

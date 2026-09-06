@@ -17,7 +17,7 @@ type developmentRecorder struct {
 func (r *developmentRecorder) record(name string) { r.calls[name]++ }
 func (r *developmentRecorder) sandbox(name string) development.Sandbox {
 	r.record(name)
-	return development.Sandbox{UserID: "alice", SandboxID: "dev-alice", State: development.StateReady}
+	return development.Sandbox{UserID: "alice", SandboxID: "sbx-aaaaaaaaaa", State: development.StateReady}
 }
 func (r *developmentRecorder) ImageStatus() (development.ImageStatus, error) {
 	r.record("image.status")
@@ -28,7 +28,7 @@ func (r *developmentRecorder) Create(context.Context, string) (development.Sandb
 }
 func (r *developmentRecorder) List() ([]development.Sandbox, error) {
 	r.record("sandbox.list")
-	return []development.Sandbox{{UserID: "alice", SandboxID: "dev-alice"}}, nil
+	return []development.Sandbox{{UserID: "alice", SandboxID: "sbx-aaaaaaaaaa"}}, nil
 }
 func (r *developmentRecorder) Inspect(string) (development.Sandbox, error) {
 	return r.sandbox("sandbox.inspect"), nil
@@ -51,7 +51,7 @@ func (r *developmentRecorder) Delete(context.Context, string) error {
 }
 func (r *developmentRecorder) Shell(context.Context, string, string) (development.ShellResult, error) {
 	r.record("sandbox.shell")
-	return development.ShellResult{UserID: "alice", SandboxID: "dev-alice"}, nil
+	return development.ShellResult{UserID: "alice", SandboxID: "sbx-aaaaaaaaaa"}, nil
 }
 func (r *developmentRecorder) ResetSource(context.Context, string, bool) (development.Sandbox, error) {
 	return r.sandbox("sandbox.reset-source"), nil

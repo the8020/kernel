@@ -1,0 +1,127 @@
+version = 1
+id = "kernel.logs"
+path = ["kernel.logs"]
+summary = "Query managed logs"
+description = "Reads a bounded page of kernel and Deno logs, including retained executions. Returns an explicit unavailable or expired state when logs cannot be read."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/logs/logs.go"
+symbol = "New"
+[[parameters]]
+name = "from"
+type = "string"
+option = "from"
+required = false
+description = "Inclusive capture time in RFC3339 format."
+[[parameters]]
+name = "until"
+type = "string"
+option = "until"
+required = false
+description = "Exclusive capture time in RFC3339 format."
+[[parameters]]
+name = "level"
+type = "string"
+option = "level"
+required = false
+description = "Minimum severity: debug, info, warn, or error."
+[[parameters]]
+name = "source"
+type = "string"
+option = "source"
+required = false
+description = "Source: kernel, deno, or logd."
+[[parameters]]
+name = "node_id"
+type = "string"
+option = "node"
+required = false
+description = "Exact node that owns the logs; defaults to this node."
+[[parameters]]
+name = "sandbox_id"
+type = "string"
+option = "sandbox"
+required = false
+description = "Sandbox ID, sbx-*."
+[[parameters]]
+name = "worker_id"
+type = "string"
+option = "worker"
+required = false
+description = "Worker ID, wrk-*."
+[[parameters]]
+name = "context_id"
+type = "string"
+option = "context"
+required = false
+description = "Execution context ID, ctx-*."
+[[parameters]]
+name = "parent_context_id"
+type = "string"
+option = "parent-context"
+required = false
+description = "Parent execution context ID, ctx-*."
+[[parameters]]
+name = "job_id"
+type = "string"
+option = "job"
+required = false
+description = "Job-run instance ID, job-*."
+[[parameters]]
+name = "service_id"
+type = "string"
+option = "service-instance"
+required = false
+description = "Service-instance ID, srv-*."
+[[parameters]]
+name = "persistent_id"
+type = "string"
+option = "persistent-execution"
+required = false
+description = "Persistent execution ID, pex-*."
+[[parameters]]
+name = "object"
+type = "string"
+option = "object"
+required = false
+description = "Exact declared object, such as service:acme/billing/invoices."
+[[parameters]]
+name = "username"
+type = "string"
+option = "user"
+required = false
+description = "Exact execution username captured by the service or job."
+[[parameters]]
+name = "position"
+type = "string"
+option = "position"
+required = false
+description = "Saved starting position for an execution's logs; use the returned cursor for subsequent pages."
+[[parameters]]
+name = "cursor"
+type = "string"
+option = "cursor"
+required = false
+description = "Continuation cursor; repeat a cursor poll to follow new records."
+[[parameters]]
+name = "limit"
+type = "integer"
+option = "limit"
+required = false
+description = "Maximum records, default 100 and at most 500; the page is also limited to 256 KiB."
+[[parameters]]
+name = "tail"
+type = "boolean"
+option = "tail"
+required = false
+description = "Start from the bounded recent tail; use its cursor for subsequent polls."
+[[result]]
+name = "page"
+type = "object"
+[[examples]]
+command = "kernel.logs --tail --limit 100"
+[[examples]]
+command = "kernel.logs --sandbox sbx-0123456789 --context ctx-abcdefghij"
+[[examples]]
+command = "kernel.logs --user alice --object service:acme/billing/invoices --level error"

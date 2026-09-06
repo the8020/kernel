@@ -16,7 +16,7 @@ Parent DOX: [kernel/kernel/sandbox DOX](../AGENTS.md).
 - Limits cover PID maximum; tmpfs bounds are passed to OCI mount construction.
   CPU and memory have no cgroup limits.
 - Metrics come from cgroup v2 files and represent the complete gVisor/Deno
-  runtime group, never an individual Worker.
+  sandbox, never an individual Worker.
 
 # Lifecycle
 

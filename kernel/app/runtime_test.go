@@ -280,26 +280,26 @@ type recordedFailureSink struct {
 }
 
 type failureCall struct {
-	groupID string
-	reason  string
+	sandboxID string
+	reason    string
 }
 
-func (s *recordedFailureSink) FailGroup(groupID, reason string) error {
-	s.calls = append(s.calls, failureCall{groupID: groupID, reason: reason})
+func (s *recordedFailureSink) FailSandbox(sandboxID, reason string) error {
+	s.calls = append(s.calls, failureCall{sandboxID: sandboxID, reason: reason})
 	return s.err
 }
 
 func (s *recordedFailureSink) RetireUnavailable(serviceID, reason string) error {
-	s.calls = append(s.calls, failureCall{groupID: serviceID, reason: reason})
+	s.calls = append(s.calls, failureCall{sandboxID: serviceID, reason: reason})
 	return s.err
 }
 
-func TestPropagateReconciledFailuresSelectsHealthySandboxesAndFailsUnavailableGroups(t *testing.T) {
+func TestPropagateReconciledFailuresSelectsHealthySandboxesAndFailsUnavailableSandboxes(t *testing.T) {
 	items := []manager.Inspection{
-		{Spec: model.SandboxSpec{RuntimeGroupID: "group-ready", SandboxID: "sandbox-ready"}, Status: model.SandboxStatus{ObservedState: model.StateReady, SupervisorHealthy: true}},
-		{Spec: model.SandboxSpec{RuntimeGroupID: "group-active", SandboxID: "sandbox-active"}, Status: model.SandboxStatus{ObservedState: model.StateActive, SupervisorHealthy: true}},
-		{Spec: model.SandboxSpec{RuntimeGroupID: "group-unhealthy", SandboxID: "sandbox-unhealthy"}, Status: model.SandboxStatus{ObservedState: model.StateReady}},
-		{Spec: model.SandboxSpec{RuntimeGroupID: "group-failed", SandboxID: "sandbox-failed"}, Status: model.SandboxStatus{ObservedState: model.StateFailed, FailureReason: "containerd task is missing"}},
+		{Spec: model.SandboxSpec{SandboxID: "sandbox-ready"}, Status: model.SandboxStatus{ObservedState: model.StateReady, SupervisorHealthy: true}},
+		{Spec: model.SandboxSpec{SandboxID: "sandbox-active"}, Status: model.SandboxStatus{ObservedState: model.StateActive, SupervisorHealthy: true}},
+		{Spec: model.SandboxSpec{SandboxID: "sandbox-unhealthy"}, Status: model.SandboxStatus{ObservedState: model.StateReady}},
+		{Spec: model.SandboxSpec{SandboxID: "sandbox-failed"}, Status: model.SandboxStatus{ObservedState: model.StateFailed, FailureReason: "containerd task is missing"}},
 	}
 	first, second := &recordedFailureSink{}, &recordedFailureSink{}
 	healthy, err := propagateReconciledFailures(items, first, second)
@@ -311,7 +311,7 @@ func TestPropagateReconciledFailuresSelectsHealthySandboxesAndFailsUnavailableGr
 		t.Fatalf("healthy=%#v want=%#v", healthy, wantHealthy)
 	}
 	for _, sink := range []*recordedFailureSink{first, second} {
-		if len(sink.calls) != 2 || sink.calls[0].groupID != "group-unhealthy" || !strings.Contains(sink.calls[0].reason, "supervisor_healthy=false") || sink.calls[1] != (failureCall{groupID: "group-failed", reason: "containerd task is missing"}) {
+		if len(sink.calls) != 2 || sink.calls[0].sandboxID != "sandbox-unhealthy" || !strings.Contains(sink.calls[0].reason, "supervisor_healthy=false") || sink.calls[1] != (failureCall{sandboxID: "sandbox-failed", reason: "containerd task is missing"}) {
 			t.Fatalf("calls=%#v", sink.calls)
 		}
 	}
@@ -319,7 +319,7 @@ func TestPropagateReconciledFailuresSelectsHealthySandboxesAndFailsUnavailableGr
 
 func TestPropagateReconciledFailuresReturnsSinkErrors(t *testing.T) {
 	sinkFailure := errors.New("persist workload failure")
-	_, err := propagateReconciledFailures([]manager.Inspection{{Spec: model.SandboxSpec{RuntimeGroupID: "group", SandboxID: "sandbox"}, Status: model.SandboxStatus{ObservedState: model.StateFailed}}}, &recordedFailureSink{err: sinkFailure})
+	_, err := propagateReconciledFailures([]manager.Inspection{{Spec: model.SandboxSpec{SandboxID: "sandbox"}, Status: model.SandboxStatus{ObservedState: model.StateFailed}}}, &recordedFailureSink{err: sinkFailure})
 	if !errors.Is(err, sinkFailure) {
 		t.Fatalf("error=%v", err)
 	}
@@ -328,16 +328,16 @@ func TestPropagateReconciledFailuresReturnsSinkErrors(t *testing.T) {
 func TestFailUnavailableServicePoolsRetiresEveryMissingPoolWithoutSupervisorProbes(t *testing.T) {
 	sink := &recordedFailureSink{}
 	records := []executionservices.Record{
-		{ServiceID: "healthy", RuntimeGroupID: "group-healthy", SandboxID: "sandbox-healthy", State: "READY"},
-		{ServiceID: "missing-ready", RuntimeGroupID: "group-missing", SandboxID: "sandbox-missing", State: "READY"},
-		{ServiceID: "missing-idle-same-group", RuntimeGroupID: "group-missing", SandboxID: "sandbox-missing", State: "IDLE"},
-		{ServiceID: "missing-starting", RuntimeGroupID: "group-starting", SandboxID: "sandbox-starting", State: "STARTING"},
-		{ServiceID: "already-failed", RuntimeGroupID: "group-failed", SandboxID: "sandbox-failed", State: "FAILED"},
+		{ServiceID: "healthy", SandboxID: "sandbox-healthy", State: "READY"},
+		{ServiceID: "missing-ready", SandboxID: "sandbox-missing", State: "READY"},
+		{ServiceID: "missing-idle-same-group", SandboxID: "sandbox-missing", State: "IDLE"},
+		{ServiceID: "missing-starting", SandboxID: "sandbox-starting", State: "STARTING"},
+		{ServiceID: "already-failed", SandboxID: "sandbox-failed", State: "FAILED"},
 	}
 	if err := failUnavailableServicePools(records, map[string]bool{"sandbox-healthy": true}, sink); err != nil {
 		t.Fatal(err)
 	}
-	if len(sink.calls) != 4 || sink.calls[0].groupID != "missing-ready" || sink.calls[1].groupID != "missing-idle-same-group" || sink.calls[2].groupID != "missing-starting" || sink.calls[3].groupID != "already-failed" {
+	if len(sink.calls) != 4 || sink.calls[0].sandboxID != "missing-ready" || sink.calls[1].sandboxID != "missing-idle-same-group" || sink.calls[2].sandboxID != "missing-starting" || sink.calls[3].sandboxID != "already-failed" {
 		t.Fatalf("failure calls=%#v", sink.calls)
 	}
 	for _, call := range sink.calls {

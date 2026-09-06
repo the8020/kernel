@@ -1,0 +1,9 @@
+key = "logging.split_by"
+type = "enum"
+storage = "node"
+default = "none"
+environment = "THE8020_LOGGING_SPLIT_BY"
+allowed = ["none", "source"]
+runtime_mutable = true
+restart_required = false
+description = "Keep one unified log stream, or separate kernel, Deno, and log-writer sources."

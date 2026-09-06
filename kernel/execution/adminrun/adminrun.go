@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"the8020/kernel/identity"
 	"time"
 
 	"the8020/kernel/execution"
@@ -85,7 +86,7 @@ func (m *Manager) Eval(ctx context.Context, code string, options Options) (Resul
 	if strings.TrimSpace(code) == "" {
 		return Result{}, errors.New("evaluation source is required")
 	}
-	artifactID, err := model.NewID("artifact")
+	artifactID, err := identity.New("art")
 	if err != nil {
 		return Result{}, err
 	}
@@ -123,7 +124,7 @@ func (m *Manager) Run(ctx context.Context, path string, options Options) (Result
 	if err != nil {
 		return Result{}, err
 	}
-	artifactID, err := model.NewID("artifact")
+	artifactID, err := identity.New("art")
 	if err != nil {
 		return Result{}, err
 	}

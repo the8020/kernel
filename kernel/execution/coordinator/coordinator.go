@@ -1,13 +1,14 @@
-// Package coordinator ensures one compatible runtime group for a workload request.
+// Package coordinator ensures one compatible sandbox for a workload request.
 package coordinator
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"the8020/kernel/identity"
 	"time"
 
-	"the8020/kernel/execution/groups"
+	"the8020/kernel/execution/placement"
 	"the8020/kernel/sandbox/manager"
 	"the8020/kernel/sandbox/model"
 )
@@ -23,8 +24,8 @@ type SandboxManager interface {
 
 // Release removes one workload owner and destroys the sandbox when it became
 // empty. Worker shutdown remains the caller's responsibility.
-func (c *Coordinator) Release(ctx context.Context, runtimeGroupID, ownerID, logicalServiceID string) error {
-	_, err := c.sandboxes.RemoveOwner(ctx, runtimeGroupID, ownerID, logicalServiceID)
+func (c *Coordinator) Release(ctx context.Context, sandboxID, ownerID, logicalServiceID string) error {
+	_, err := c.sandboxes.RemoveOwner(ctx, sandboxID, ownerID, logicalServiceID)
 	return err
 }
 
@@ -76,15 +77,15 @@ func (c *Coordinator) Ensure(ctx context.Context, request Request) (manager.Insp
 	if err != nil {
 		return manager.Inspection{}, err
 	}
-	existing := make([]groups.Group, 0, len(items))
+	existing := make([]placement.Candidate, 0, len(items))
 	byID := map[string]manager.Inspection{}
 	for _, item := range items {
 		healthy := item.Status.SupervisorHealthy && (item.Status.ObservedState == model.StateReady || item.Status.ObservedState == model.StateActive)
-		group := groups.Group{RuntimeGroupID: item.Spec.RuntimeGroupID, WorkloadType: item.Spec.WorkloadType, GroupKey: item.Spec.GroupKey, ProfileHash: item.Spec.ProfileHash, Owners: append([]string(nil), item.Spec.OwnerIDs...), ServiceIDs: append([]string(nil), item.Spec.ServiceIDs...), State: item.Status.ObservedState, Healthy: healthy, WorkerCount: item.Status.WorkerCount}
+		group := placement.Candidate{SandboxID: item.Spec.SandboxID, WorkloadType: item.Spec.WorkloadType, GroupKey: item.Spec.GroupKey, ProfileHash: item.Spec.ProfileHash, Owners: append([]string(nil), item.Spec.OwnerIDs...), ServiceIDs: append([]string(nil), item.Spec.ServiceIDs...), State: item.Status.ObservedState, Healthy: healthy, WorkerCount: item.Status.WorkerCount}
 		existing = append(existing, group)
-		byID[item.Spec.RuntimeGroupID] = item
+		byID[item.Spec.SandboxID] = item
 	}
-	selection, err := groups.Select(groups.Request{WorkloadType: request.WorkloadType, OwnerID: request.OwnerID, ExecutionID: request.ExecutionID, Namespace: request.Namespace, ExplicitGroupKey: request.ExplicitGroupKey, PlacementGroup: request.PlacementGroup, LogicalServiceID: request.LogicalServiceID, RequestedWorkers: request.RequestedWorkers, MaximumWorkers: c.maximumWorkers, Strategy: request.Strategy, Profile: request.Profile}, existing)
+	selection, err := placement.Select(placement.Request{WorkloadType: request.WorkloadType, OwnerID: request.OwnerID, ExecutionID: request.ExecutionID, Namespace: request.Namespace, ExplicitGroupKey: request.ExplicitGroupKey, PlacementGroup: request.PlacementGroup, LogicalServiceID: request.LogicalServiceID, RequestedWorkers: request.RequestedWorkers, MaximumWorkers: c.maximumWorkers, Strategy: request.Strategy, Profile: request.Profile}, existing)
 	if err != nil {
 		return manager.Inspection{}, err
 	}
@@ -93,7 +94,7 @@ func (c *Coordinator) Ensure(ctx context.Context, request Request) (manager.Insp
 		allocationID = request.OwnerID
 	}
 	if selection.Existing {
-		return c.sandboxes.AddOwner(ctx, selection.RuntimeGroupID, allocationID, request.LogicalServiceID)
+		return c.sandboxes.AddOwner(ctx, selection.SandboxID, allocationID, request.LogicalServiceID)
 	}
 	if err := request.ResourceLimits.Validate(); err != nil {
 		return manager.Inspection{}, err
@@ -101,22 +102,18 @@ func (c *Coordinator) Ensure(ctx context.Context, request Request) (manager.Insp
 	if c.warm != nil && request.LogicalServiceID == "" {
 		inspection, assigned, assignErr := c.warm.Assign(ctx, selection.ProfileHash, selection.GroupKey, allocationID)
 		if assignErr != nil {
-			return manager.Inspection{}, fmt.Errorf("assign warm runtime group: %w", assignErr)
+			return manager.Inspection{}, fmt.Errorf("assign warm sandbox: %w", assignErr)
 		}
 		if assigned {
 			return inspection, nil
 		}
-	}
-	runtimeGroupID, err := model.NewRuntimeGroupID()
-	if err != nil {
-		return manager.Inspection{}, err
 	}
 	sandboxID, err := c.sandboxes.NewSandboxID()
 	if err != nil {
 		return manager.Inspection{}, err
 	}
 	defer c.sandboxes.ReleaseSandboxID(sandboxID)
-	token, err := model.NewID("token")
+	token, err := identity.NewToken()
 	if err != nil {
 		return manager.Inspection{}, err
 	}
@@ -138,10 +135,10 @@ func (c *Coordinator) Ensure(ctx context.Context, request Request) (manager.Insp
 	if placementGroup != "" {
 		labels["the8020.placement_group"] = placementGroup
 	}
-	spec := model.SandboxSpec{SandboxID: sandboxID, RuntimeGroupID: runtimeGroupID, WorkloadType: request.WorkloadType, GroupKey: selection.GroupKey, PlacementGroup: placementGroup, OwnerIDs: []string{allocationID}, ServiceIDs: serviceIDs, ImageDigest: request.Profile.ImageDigest, RuntimeProfile: request.Profile, ProfileHash: profileHash, ResourceLimits: request.ResourceLimits, Network: model.NetworkConfiguration{Mode: "netstack", NetworkName: "the8020", EgressEnabled: request.Profile.EgressAllowed, AllowedHosts: egressHosts}, InternalPorts: []int{8000, 9229}, Mounts: append([]model.Mount(nil), request.Profile.Mounts...), Permissions: request.Profile.Permissions, DependencyMode: request.Profile.DependencyMode, Lifecycle: request.Lifecycle, Labels: labels, InternalToken: token}
+	spec := model.SandboxSpec{SandboxID: sandboxID, WorkloadType: request.WorkloadType, GroupKey: selection.GroupKey, PlacementGroup: placementGroup, OwnerIDs: []string{allocationID}, ServiceIDs: serviceIDs, ImageDigest: request.Profile.ImageDigest, RuntimeProfile: request.Profile, ProfileHash: profileHash, ResourceLimits: request.ResourceLimits, Network: model.NetworkConfiguration{Mode: "netstack", NetworkName: "the8020", EgressEnabled: request.Profile.EgressAllowed, AllowedHosts: egressHosts}, InternalPorts: []int{8000, 9229}, Mounts: append([]model.Mount(nil), request.Profile.Mounts...), Permissions: request.Profile.Permissions, DependencyMode: request.Profile.DependencyMode, Lifecycle: request.Lifecycle, Labels: labels, InternalToken: token}
 	inspection, err := c.sandboxes.Create(ctx, spec)
 	if err != nil {
-		return manager.Inspection{}, fmt.Errorf("create runtime group: %w", err)
+		return inspection, fmt.Errorf("create sandbox: %w", err)
 	}
 	return inspection, nil
 }

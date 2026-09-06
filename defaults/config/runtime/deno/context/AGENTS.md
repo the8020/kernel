@@ -12,6 +12,12 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   and jobs. Reading any context property never checks a token, account, or
   session.
 
+- `contextId` identifies the current `ctx-` invocation; optional
+  `parentContextId` identifies its caller and `jobRunId` identifies its owning
+  `job-` run. There is no separate first-invocation ID on Worker metadata.
+  `serviceInstanceId` identifies the current `srv-` service allocation/Worker
+  pool. `persistentExecutionId` identifies the longer service binding, not a
+  call.
 - Context is invocation-scoped. Concurrent requests in one Worker must observe
   different values through the Worker bridge's asynchronous context.
 - Package code receives getters and frozen snapshots only. Installing or
@@ -22,6 +28,9 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 - Every active context has a user validated by the kernel. Anonymous requests
   use the service's assigned user; jobs use an explicit or inherited identity.
   The runtime never supplies a default user for missing metadata.
+- The console capture reads this same invocation-local username and IDs before
+  forwarding a record. Persist username as user:<username>; do not substitute
+  the Worker's configured user for a different active request user.
 
 # Verification
 

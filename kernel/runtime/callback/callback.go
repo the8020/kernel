@@ -21,6 +21,7 @@ import (
 	"the8020/kernel/cbus/core"
 	"the8020/kernel/database"
 	"the8020/kernel/execution"
+	"the8020/kernel/identity"
 	"the8020/kernel/nodes"
 	"the8020/kernel/runtime/protocol"
 	"the8020/kernel/sandbox/model"
@@ -77,46 +78,45 @@ type Server struct {
 }
 
 type statusPayload struct {
-	Revision              uint64                      `json:"revision"`
-	SupervisorStartedAtMS int64                       `json:"supervisor_started_at_ms"`
-	ProtocolVersion       int                         `json:"protocol_version"`
-	SupervisorVersion     string                      `json:"supervisor_version"`
-	DenoVersion           string                      `json:"deno_version"`
-	RuntimeGroupID        string                      `json:"runtime_group_id"`
-	SandboxID             string                      `json:"sandbox_id"`
-	WorkloadType          string                      `json:"workload_type"`
-	WorkerCount           int                         `json:"worker_count"`
-	ReadyWorkerCount      int                         `json:"ready_worker_count"`
-	FailedWorkerCount     int                         `json:"failed_worker_count"`
-	ActiveRequests        int                         `json:"active_requests"`
-	ActiveExecutionCount  int                         `json:"active_execution_count"`
-	UptimeMS              int64                       `json:"uptime_ms"`
-	Draining              bool                        `json:"draining"`
-	EventLoopTime         int64                       `json:"event_loop_timestamp,omitempty"`
-	MemoryUsage           json.RawMessage             `json:"memory_usage,omitempty"`
-	RecentFailures        []workerFailure             `json:"recent_failures,omitempty"`
-	Workers               []model.RuntimeWorkerStatus `json:"workers"`
+	Revision              uint64 `json:"revision"`
+	SupervisorStartedAtMS int64  `json:"supervisor_started_at_ms"`
+	ProtocolVersion       int    `json:"protocol_version"`
+	SupervisorVersion     string `json:"supervisor_version"`
+	DenoVersion           string `json:"deno_version"`
+
+	SandboxID            string                      `json:"sandbox_id"`
+	WorkloadType         string                      `json:"workload_type"`
+	WorkerCount          int                         `json:"worker_count"`
+	ReadyWorkerCount     int                         `json:"ready_worker_count"`
+	FailedWorkerCount    int                         `json:"failed_worker_count"`
+	ActiveRequests       int                         `json:"active_requests"`
+	ActiveExecutionCount int                         `json:"active_execution_count"`
+	UptimeMS             int64                       `json:"uptime_ms"`
+	Draining             bool                        `json:"draining"`
+	EventLoopTime        int64                       `json:"event_loop_timestamp,omitempty"`
+	MemoryUsage          json.RawMessage             `json:"memory_usage,omitempty"`
+	RecentFailures       []workerFailure             `json:"recent_failures,omitempty"`
+	Workers              []model.RuntimeWorkerStatus `json:"workers"`
 }
 
 type workerFailure struct {
-	WorkerID    string `json:"worker_id"`
-	ExecutionID string `json:"execution_id"`
-	Reason      string `json:"reason"`
+	WorkerID string `json:"worker_id"`
+	Reason   string `json:"reason"`
 }
 
 type adminCallPayload struct {
-	ExecutionID string         `json:"execution_id"`
-	WorkerID    string         `json:"worker_id"`
-	RequestID   string         `json:"request_id"`
-	CommandID   string         `json:"command_id"`
-	Arguments   map[string]any `json:"arguments"`
-	User        execution.User `json:"user"`
+	JobRunID  string         `json:"job_run_id,omitempty"`
+	WorkerID  string         `json:"worker_id"`
+	ContextID string         `json:"context_id,omitempty"`
+	CommandID string         `json:"command_id"`
+	Arguments map[string]any `json:"arguments"`
+	User      execution.User `json:"user"`
 }
 
 type databaseCallPayload struct {
-	ExecutionID    string          `json:"execution_id"`
+	JobRunID       string          `json:"job_run_id,omitempty"`
 	WorkerID       string          `json:"worker_id"`
-	RequestID      string          `json:"request_id"`
+	ContextID      string          `json:"context_id,omitempty"`
 	Statement      string          `json:"statement"`
 	Parameters     json.RawMessage `json:"parameters,omitempty"`
 	ReturnRows     bool            `json:"return_rows,omitempty"`
@@ -127,9 +127,9 @@ type databaseCallPayload struct {
 }
 
 type workerCallPayload struct {
-	ExecutionID                 string         `json:"execution_id"`
+	JobRunID                    string         `json:"job_run_id,omitempty"`
 	SourceWorkerID              string         `json:"worker_id"`
-	RequestID                   string         `json:"request_id"`
+	ContextID                   string         `json:"context_id,omitempty"`
 	TargetNodeID                string         `json:"target_node_id"`
 	TargetSandboxID             string         `json:"target_sandbox_id"`
 	TargetWorkerID              string         `json:"target_worker_id"`
@@ -140,12 +140,12 @@ type workerCallPayload struct {
 }
 
 type operationCallPayload struct {
-	ExecutionID string         `json:"execution_id"`
-	WorkerID    string         `json:"worker_id"`
-	RequestID   string         `json:"request_id"`
-	Operation   string         `json:"operation"`
-	Input       map[string]any `json:"input"`
-	User        execution.User `json:"user"`
+	JobRunID  string         `json:"job_run_id,omitempty"`
+	WorkerID  string         `json:"worker_id"`
+	ContextID string         `json:"context_id,omitempty"`
+	Operation string         `json:"operation"`
+	Input     map[string]any `json:"input"`
+	User      execution.User `json:"user"`
 }
 
 type operationCallResult struct {
@@ -266,9 +266,9 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 		http.Error(writer, "runtime protocol mismatch", http.StatusBadRequest)
 		return
 	}
-	spec, status, ok := s.store.Cached(message.RuntimeGroupID)
+	spec, status, ok := s.store.Cached(message.SandboxID)
 	if !ok {
-		http.Error(writer, "unknown runtime group", http.StatusNotFound)
+		http.Error(writer, "unknown sandbox", http.StatusNotFound)
 		return
 	}
 	token := strings.TrimPrefix(request.Header.Get("Authorization"), "Bearer ")
@@ -277,7 +277,7 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	if status.ObservedState == model.StateFailed || status.ObservedState == model.StateStopping || status.ObservedState == model.StateStopped || status.ObservedState == model.StateDeleting {
-		http.Error(writer, "runtime group is not accepting callbacks", http.StatusConflict)
+		http.Error(writer, "sandbox is not accepting callbacks", http.StatusConflict)
 		return
 	}
 	if wantType == protocol.MessageAdminCommand {
@@ -301,7 +301,7 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 		http.Error(writer, "invalid runtime payload", http.StatusBadRequest)
 		return
 	}
-	if payload.ProtocolVersion != s.protocolVersion || payload.RuntimeGroupID != message.RuntimeGroupID {
+	if payload.ProtocolVersion != s.protocolVersion || payload.SandboxID != message.SandboxID {
 		http.Error(writer, "runtime protocol mismatch", http.StatusBadRequest)
 		return
 	}
@@ -309,10 +309,10 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 		http.Error(writer, "runtime identity mismatch", http.StatusBadRequest)
 		return
 	}
-	_, err := s.store.Observe(spec.RuntimeGroupID, model.RuntimeSnapshot{
+	_, err := s.store.Observe(spec.SandboxID, model.RuntimeSnapshot{
 		Revision: payload.Revision, SupervisorStartedAtMS: payload.SupervisorStartedAtMS, ProtocolVersion: payload.ProtocolVersion,
 		SupervisorVersion: payload.SupervisorVersion, DenoVersion: payload.DenoVersion,
-		RuntimeGroupID: payload.RuntimeGroupID, SandboxID: payload.SandboxID,
+		SandboxID:    payload.SandboxID,
 		WorkloadType: model.WorkloadType(payload.WorkloadType), WorkerCount: payload.WorkerCount,
 		ReadyWorkerCount: payload.ReadyWorkerCount, FailedWorkerCount: payload.FailedWorkerCount,
 		ActiveRequests: payload.ActiveRequests, ActiveExecutionCount: payload.ActiveExecutionCount,
@@ -329,7 +329,7 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 func runtimeFailures(values []workerFailure) []model.RuntimeFailure {
 	result := make([]model.RuntimeFailure, len(values))
 	for index, value := range values {
-		result[index] = model.RuntimeFailure{WorkerID: value.WorkerID, ExecutionID: value.ExecutionID, Reason: value.Reason}
+		result[index] = model.RuntimeFailure{WorkerID: value.WorkerID, Reason: value.Reason}
 	}
 	return result
 }
@@ -368,7 +368,9 @@ func (s *Server) handleDatabase(writer http.ResponseWriter, request *http.Reques
 		return
 	}
 	var payload databaseCallPayload
-	if err := decodePayload(message.Payload, &payload); err != nil || payload.ExecutionID == "" || payload.WorkerID == "" {
+	if err := decodePayload(message.Payload, &payload); err != nil || !identity.Is(payload.WorkerID, "wrk") ||
+		(payload.ContextID != "" && !identity.Is(payload.ContextID, "ctx")) ||
+		(payload.JobRunID != "" && !identity.Is(payload.JobRunID, "job")) {
 		http.Error(writer, "invalid runtime database payload", http.StatusBadRequest)
 		return
 	}
@@ -376,17 +378,17 @@ func (s *Server) handleDatabase(writer http.ResponseWriter, request *http.Reques
 		s.writeDatabaseResult(writer, message, spec, s.database.Status())
 		return
 	}
-	workerScope := databaseScope(spec.RuntimeGroupID, spec.SandboxID, payload.WorkerID, payload.ExecutionID)
-	if request.URL.Path == "/v1/runtime/database/scope" && payload.RequestID == "" {
+	workerScope := databaseScope(spec.SandboxID, payload.WorkerID)
+	if request.URL.Path == "/v1/runtime/database/scope" && payload.ContextID == "" {
 		s.database.CloseScopePrefix(workerScope)
 		s.writeDatabaseResult(writer, message, spec, map[string]any{"closed": true})
 		return
 	}
-	if payload.RequestID == "" {
+	if payload.ContextID == "" {
 		http.Error(writer, "runtime database execution context is required", http.StatusConflict)
 		return
 	}
-	scope := workerScope + "\x00" + payload.RequestID
+	scope := workerScope + "\x00" + payload.ContextID
 	if request.URL.Path == "/v1/runtime/database/scope" {
 		s.database.CloseScope(scope)
 		s.writeDatabaseResult(writer, message, spec, map[string]any{"closed": true})
@@ -428,8 +430,8 @@ func (s *Server) handleDatabase(writer http.ResponseWriter, request *http.Reques
 	s.writeDatabaseResult(writer, message, spec, result)
 }
 
-func databaseScope(runtimeGroupID, sandboxID, workerID, executionID string) string {
-	return strings.Join([]string{runtimeGroupID, sandboxID, workerID, executionID}, "\x00")
+func databaseScope(sandboxID, workerID string) string {
+	return strings.Join([]string{sandboxID, workerID}, "\x00")
 }
 
 func (s *Server) writeDatabaseResult(writer http.ResponseWriter, message protocol.Envelope, spec model.SandboxSpec, result any) {
@@ -442,7 +444,7 @@ func (s *Server) writeDatabaseResult(writer http.ResponseWriter, message protoco
 		http.Error(writer, "encode database result", http.StatusInternalServerError)
 		return
 	}
-	response := protocol.Envelope{ProtocolVersion: s.protocolVersion, MessageType: protocol.MessageDatabaseResult, RuntimeGroupID: spec.RuntimeGroupID, CorrelationID: message.CorrelationID, Payload: data}
+	response := protocol.Envelope{ProtocolVersion: s.protocolVersion, MessageType: protocol.MessageDatabaseResult, SandboxID: spec.SandboxID, CorrelationID: message.CorrelationID, Payload: data}
 	writeJSON(writer, response)
 }
 
@@ -463,23 +465,29 @@ func (s *Server) handleWorkerInvocation(writer http.ResponseWriter, request *htt
 		http.Error(writer, "invalid Worker invocation payload", http.StatusBadRequest)
 		return
 	}
-	if payload.ExecutionID == "" || payload.SourceWorkerID == "" || payload.RequestID == "" || !payload.User.Valid() {
+	caller := execution.Caller{ContextID: payload.ContextID, JobRunID: payload.JobRunID, Workload: spec.WorkloadType, User: payload.User}
+	if !identity.Is(payload.SourceWorkerID, "wrk") || !caller.Valid() {
 		http.Error(writer, "runtime Worker control request is not active", http.StatusConflict)
+		return
+	}
+	input := nodes.WorkerInvocationRequest{
+		NodeID: payload.TargetNodeID, SandboxID: payload.TargetSandboxID, ParentContextID: payload.ContextID,
+		WorkerID: payload.TargetWorkerID, PersistentExecutionID: payload.TargetPersistentExecutionID,
+		Function: payload.Function, Input: payload.Input, User: payload.User,
+	}
+	if err := input.Validate(); err != nil {
+		http.Error(writer, "invalid Worker invocation target", http.StatusBadRequest)
 		return
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), 5*time.Second)
 	defer cancel()
-	result := invoker.InvokeWorker(ctx, nodes.WorkerInvocationRequest{
-		NodeID: payload.TargetNodeID, SandboxID: payload.TargetSandboxID,
-		WorkerID: payload.TargetWorkerID, PersistentExecutionID: payload.TargetPersistentExecutionID,
-		Function: payload.Function, Input: payload.Input, User: payload.User,
-	})
+	result := invoker.InvokeWorker(ctx, input)
 	data, err := json.Marshal(result)
 	if err != nil || len(data) > 1<<20 {
 		http.Error(writer, "encode Worker invocation result", http.StatusInternalServerError)
 		return
 	}
-	response := protocol.Envelope{ProtocolVersion: s.protocolVersion, MessageType: protocol.MessageWorkerResult, RuntimeGroupID: spec.RuntimeGroupID, CorrelationID: message.CorrelationID, Payload: data}
+	response := protocol.Envelope{ProtocolVersion: s.protocolVersion, MessageType: protocol.MessageWorkerResult, SandboxID: spec.SandboxID, CorrelationID: message.CorrelationID, Payload: data}
 	writeJSON(writer, response)
 }
 
@@ -509,11 +517,12 @@ func (s *Server) handleAdministration(writer http.ResponseWriter, request *http.
 		http.Error(writer, "invalid runtime administration payload", http.StatusBadRequest)
 		return
 	}
-	if payload.ExecutionID == "" || payload.WorkerID == "" || payload.RequestID == "" || !payload.User.Valid() {
+	caller := execution.Caller{ContextID: payload.ContextID, JobRunID: payload.JobRunID, Workload: spec.WorkloadType, User: payload.User}
+	if !identity.Is(payload.WorkerID, "wrk") || !caller.Valid() {
 		http.Error(writer, "runtime administration request is not active", http.StatusConflict)
 		return
 	}
-	callContext := execution.WithCaller(request.Context(), execution.Caller{ExecutionID: payload.ExecutionID, Workload: spec.WorkloadType, User: payload.User})
+	callContext := execution.WithCaller(request.Context(), caller)
 	result := s.adminBus.Execute(callContext, core.Request{
 		ProtocolVersion: core.ProtocolVersion,
 		CommandID:       payload.CommandID,
@@ -525,7 +534,7 @@ func (s *Server) handleAdministration(writer http.ResponseWriter, request *http.
 		http.Error(writer, "encode runtime administration result", http.StatusInternalServerError)
 		return
 	}
-	response := protocol.Envelope{ProtocolVersion: s.protocolVersion, MessageType: protocol.MessageAdminResult, RuntimeGroupID: spec.RuntimeGroupID, CorrelationID: message.CorrelationID, Payload: payloadData}
+	response := protocol.Envelope{ProtocolVersion: s.protocolVersion, MessageType: protocol.MessageAdminResult, SandboxID: spec.SandboxID, CorrelationID: message.CorrelationID, Payload: payloadData}
 	writeJSON(writer, response)
 }
 
@@ -542,11 +551,16 @@ func (s *Server) handleOperation(writer http.ResponseWriter, request *http.Reque
 		return
 	}
 	var payload operationCallPayload
-	if err := decodePayload(message.Payload, &payload); err != nil || payload.Operation == "" || payload.ExecutionID == "" || payload.WorkerID == "" || payload.RequestID == "" || !payload.User.Valid() {
+	if err := decodePayload(message.Payload, &payload); err != nil || payload.Operation == "" {
 		http.Error(writer, "invalid runtime operation payload", http.StatusBadRequest)
 		return
 	}
-	callContext := execution.WithCaller(request.Context(), execution.Caller{ExecutionID: payload.ExecutionID, Workload: spec.WorkloadType, User: payload.User})
+	caller := execution.Caller{ContextID: payload.ContextID, JobRunID: payload.JobRunID, Workload: spec.WorkloadType, User: payload.User}
+	if !identity.Is(payload.WorkerID, "wrk") || !caller.Valid() {
+		http.Error(writer, "invalid runtime operation payload", http.StatusBadRequest)
+		return
+	}
+	callContext := execution.WithCaller(request.Context(), caller)
 	result, operationErr := operations.Execute(callContext, payload.Operation, payload.Input)
 	responseResult := operationCallResult{Success: operationErr == nil, Result: result}
 	if operationErr != nil {
@@ -563,7 +577,7 @@ func (s *Server) handleOperation(writer http.ResponseWriter, request *http.Reque
 		http.Error(writer, "encode runtime operation result", http.StatusInternalServerError)
 		return
 	}
-	response := protocol.Envelope{ProtocolVersion: s.protocolVersion, MessageType: protocol.MessageAdminResult, RuntimeGroupID: spec.RuntimeGroupID, CorrelationID: message.CorrelationID, Payload: payloadData}
+	response := protocol.Envelope{ProtocolVersion: s.protocolVersion, MessageType: protocol.MessageAdminResult, SandboxID: spec.SandboxID, CorrelationID: message.CorrelationID, Payload: payloadData}
 	writeJSON(writer, response)
 }
 

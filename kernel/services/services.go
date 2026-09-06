@@ -14,8 +14,8 @@ import (
 	"the8020/kernel/development"
 	"the8020/kernel/events"
 	"the8020/kernel/execution/adminrun"
-	"the8020/kernel/execution/groups"
 	"the8020/kernel/execution/jobs"
+	"the8020/kernel/execution/pool"
 	programrunner "the8020/kernel/execution/programs"
 	"the8020/kernel/execution/workers"
 	"the8020/kernel/instance"
@@ -249,7 +249,7 @@ type DebugService interface {
 // PoolService is the handler-facing warm-pool contract.
 type PoolService interface {
 	Resize(string, int) error
-	Status() []groups.PoolStatus
+	Status() []pool.PoolStatus
 	Forget(string) error
 }
 

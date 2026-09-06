@@ -57,7 +57,7 @@ BASE_DIGEST=$(toml_value deno base_image_digest)
 NAMESPACE="the8020-$INSTANCE_UUID"
 
 SOURCE_HASH=$(
-  find "$RUNTIME_SOURCE/deno/supervisor" "$RUNTIME_SOURCE/deno/worker" "$RUNTIME_SOURCE/deno/kernel" "$RUNTIME_SOURCE/deno/context" "$RUNTIME_SOURCE/deno/http" -maxdepth 1 -type f \( -name '*.ts' -o -name '*.d.ts' \) ! -name '*_test.ts' -print0 | sort -z | xargs -0 sha256sum
+  find "$RUNTIME_SOURCE/deno/supervisor" "$RUNTIME_SOURCE/deno/worker" "$RUNTIME_SOURCE/deno/kernel" "$RUNTIME_SOURCE/deno/context" "$RUNTIME_SOURCE/deno/identity" "$RUNTIME_SOURCE/deno/logging" "$RUNTIME_SOURCE/deno/http" -maxdepth 1 -type f \( -name '*.ts' -o -name '*.d.ts' \) ! -name '*_test.ts' -print0 | sort -z | xargs -0 sha256sum
   sha256sum "$RUNTIME_SOURCE/deno/deno.json" "$RUNTIME_SOURCE/deno/deno.lock" "$MANIFEST" "$IMAGE_DEFINITION/Containerfile" "$IMAGE_DEFINITION/build.sh" "$IMAGE_DEFINITION/deno.json" "$IMAGE_DEFINITION/deno.lock" "$RUNTIME_SOURCE/build-image.sh" "$RUNTIME_SOURCE/stage-service-runtime.sh" "$RUNTIME_SOURCE/bundle-runtime.sh" "$RUNTIME_SOURCE/protocol/generated.ts"
   printf '%s\n' "$BASE_MANIFEST"
 )
@@ -112,7 +112,7 @@ echo "runtime image [full 1/3]: building generic image inside BuildKit" >&2
 IMAGE_DIGEST=$("$CTR_BIN" --namespace "$NAMESPACE" images list | awk -v name="$IMAGE_NAME" '$1 == name { print $3; exit }')
 if [[ ! "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then echo "containerd returned invalid runtime image digest: $IMAGE_DIGEST" >&2; exit 1; fi
 
-SMOKE_ID="the8020-smoke-$$"
+SMOKE_ID="sbx-smoketest0"
 echo "runtime image [full 2/3]: smoke-testing imported gVisor image" >&2
 SMOKE_NAMESPACE="the8020-smoke-$INSTANCE_UUID-$$-$(date +%s)"
 SUPERVISOR_PORT=18000
@@ -135,13 +135,13 @@ trap cleanup_smoke EXIT
   --runtime-config-path "$RUNTIME_SOURCE/runsc.toml" --net-host --read-only --null-io \
   --mount type=tmpfs,dst=/tmp,options=nosuid:nodev:noexec:mode=1777:size=67108864 \
   --mount type=tmpfs,dst=/runtime-cache,options=nosuid:nodev:noexec:mode=1777:size=67108864 \
-  --env "SANDBOX_ID=$SMOKE_ID" --env "RUNTIME_GROUP_ID=$SMOKE_ID" --env WORKLOAD_TYPE=job \
+  --env NODE_ID=nod-smoketest0 --env "SANDBOX_ID=$SMOKE_ID" --env WORKLOAD_TYPE=job \
   --env "IMAGE_DIGEST=$IMAGE_DIGEST" --env "INTERNAL_API_TOKEN=$SMOKE_TOKEN" \
   --env "SUPERVISOR_PORT=$SUPERVISOR_PORT" --env "INSPECTOR_PORT=$INSPECTOR_PORT" --env RUNTIME_PROFILE_HASH=smoke \
   "$IMAGE_NAME" "$SMOKE_ID" deno run --unstable-worker-options --config=/opt/runtime/deno.json --cached-only --no-prompt \
   "--inspect=127.0.0.1:$INSPECTOR_PORT" --allow-read=/opt/runtime --allow-write=/tmp,/runtime-cache \
   "--allow-net=0.0.0.0:$SUPERVISOR_PORT" \
-  --allow-env=SANDBOX_ID,RUNTIME_GROUP_ID,WORKLOAD_TYPE,IMAGE_DIGEST,INTERNAL_API_TOKEN,SUPERVISOR_PORT,INSPECTOR_PORT,RUNTIME_PROFILE_HASH \
+  --allow-env=NODE_ID,SANDBOX_ID,WORKLOAD_TYPE,IMAGE_DIGEST,INTERNAL_API_TOKEN,SUPERVISOR_PORT,INSPECTOR_PORT,RUNTIME_PROFILE_HASH,KERNEL_SOCKET_PATH,SUPERVISOR_HOST,HEARTBEAT_INTERVAL_MS,WORKER_STOP_GRACE_MS \
   /opt/runtime/supervisor/main.ts
 "$CTR_BIN" --namespace "$SMOKE_NAMESPACE" containers info "$SMOKE_ID" | grep -Fq io.containerd.runsc.v1
 for _ in $(seq 1 200); do
@@ -150,19 +150,19 @@ for _ in $(seq 1 200); do
 done
 grep -Fq "\"deno_version\":\"$DENO_VERSION\"" "$RUNTIME_ROOT/tmp/smoke-status.json"
 curl --fail --silent --header "Authorization: Bearer $SMOKE_TOKEN" --header 'Content-Type: application/json' \
-  --data "{\"protocol_version\":$RUNTIME_PROTOCOL,\"message_type\":\"start_worker\",\"runtime_group_id\":\"$SMOKE_ID\",\"correlation_id\":\"smoke-start\",\"payload\":{\"metadata\":{\"workerId\":\"worker-smoke\",\"executionId\":\"execution-smoke\",\"workloadType\":\"job\",\"ownerId\":\"installer\",\"workloadId\":\"smoke\",\"releaseId\":\"$IMAGE_DIGEST\",\"entrypoint\":\"file:///opt/runtime/worker/smoke.ts\",\"debuggerName\":\"job:installer:execution-smoke:worker-smoke\"},\"permissions\":{\"read\":[\"/opt/runtime\"]}}}" \
+  --data "{\"protocol_version\":$RUNTIME_PROTOCOL,\"message_type\":\"start_worker\",\"sandbox_id\":\"$SMOKE_ID\",\"correlation_id\":\"smoke-start\",\"payload\":{\"metadata\":{\"workerId\":\"wrk-smoketest0\",\"workloadType\":\"job\",\"ownerId\":\"installer\",\"databaseBackend\":\"sqlite\",\"databaseAccess\":\"none\",\"user\":{\"userId\":\"user:system\",\"username\":\"system\"},\"origin\":{\"type\":\"job\",\"id\":\"installer/smoke/run\"},\"workloadId\":\"job-smoketest0\",\"releaseId\":\"$IMAGE_DIGEST\",\"entrypoint\":\"file:///opt/runtime/worker/smoke.ts\",\"debuggerName\":\"job:installer:ctx-smoketest0:wrk-smoketest0\"},\"permissions\":{\"read\":[\"/opt/runtime\"]}}}" \
   "http://127.0.0.1:$SUPERVISOR_PORT/v1/workers/start" > "$RUNTIME_ROOT/tmp/smoke-worker.json"
-grep -Fq '"worker_id":"worker-smoke"' "$RUNTIME_ROOT/tmp/smoke-worker.json"
+grep -Fq '"worker_id":"wrk-smoketest0"' "$RUNTIME_ROOT/tmp/smoke-worker.json"
 grep -Fq '"message_type":"worker_state_change"' "$RUNTIME_ROOT/tmp/smoke-worker.json"
-curl --fail --silent "http://127.0.0.1:$INSPECTOR_PORT/json/list" | grep -Fq 'job:installer:execution-smoke:worker-smoke'
+curl --fail --silent "http://127.0.0.1:$INSPECTOR_PORT/json/list" | grep -Fq 'job:installer:ctx-smoketest0:wrk-smoketest0'
 curl --fail --silent --header "Authorization: Bearer $SMOKE_TOKEN" --header 'Content-Type: application/json' \
-  --data "{\"protocol_version\":$RUNTIME_PROTOCOL,\"message_type\":\"job_start\",\"runtime_group_id\":\"$SMOKE_ID\",\"correlation_id\":\"smoke-job\",\"payload\":{\"arguments\":[{\"value\":1}],\"secrets\":{}}}" \
-  "http://127.0.0.1:$SUPERVISOR_PORT/v1/jobs/worker-smoke/run" > "$RUNTIME_ROOT/tmp/smoke-result.json"
+  --data "{\"protocol_version\":$RUNTIME_PROTOCOL,\"message_type\":\"job_start\",\"sandbox_id\":\"$SMOKE_ID\",\"correlation_id\":\"smoke-job\",\"payload\":{\"invocation\":{\"contextId\":\"ctx-smoketest0\",\"jobRunId\":\"job-smoketest0\"},\"arguments\":[{\"value\":1}],\"secrets\":{}}}" \
+  "http://127.0.0.1:$SUPERVISOR_PORT/v1/jobs/wrk-smoketest0/run" > "$RUNTIME_ROOT/tmp/smoke-result.json"
 grep -Fq '"smoke":true' "$RUNTIME_ROOT/tmp/smoke-result.json"
 grep -Fq '"message_type":"job_result"' "$RUNTIME_ROOT/tmp/smoke-result.json"
 curl --fail --silent --request POST --header "Authorization: Bearer $SMOKE_TOKEN" --header 'Content-Type: application/json' \
-  --data "{\"protocol_version\":$RUNTIME_PROTOCOL,\"message_type\":\"stop_worker\",\"runtime_group_id\":\"$SMOKE_ID\",\"correlation_id\":\"smoke-stop\",\"payload\":{\"immediate\":false}}" \
-  "http://127.0.0.1:$SUPERVISOR_PORT/v1/workers/worker-smoke/stop" > "$RUNTIME_ROOT/tmp/smoke-stop.json"
+  --data "{\"protocol_version\":$RUNTIME_PROTOCOL,\"message_type\":\"stop_worker\",\"sandbox_id\":\"$SMOKE_ID\",\"correlation_id\":\"smoke-stop\",\"payload\":{\"immediate\":false}}" \
+  "http://127.0.0.1:$SUPERVISOR_PORT/v1/workers/wrk-smoketest0/stop" > "$RUNTIME_ROOT/tmp/smoke-stop.json"
 grep -Fq '"message_type":"worker_state_change"' "$RUNTIME_ROOT/tmp/smoke-stop.json"
 cleanup_smoke
 if "$CTR_BIN" namespaces list -q | grep -Fxq "$SMOKE_NAMESPACE"; then

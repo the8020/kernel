@@ -13,14 +13,13 @@ import (
 func New(serviceSet *services.Services) core.Handler {
 	return func(_ context.Context, _ core.Request) (core.Result, error) {
 		result := core.Result{
-			"instance_uuid":   serviceSet.Instance.UUID,
-			"pid":             serviceSet.Instance.PID,
-			"instance_root":   serviceSet.Instance.Paths.Root,
-			"uptime":          time.Since(serviceSet.Instance.StartedAt).Round(time.Millisecond).String(),
-			"admin_socket":    serviceSet.Instance.Paths.Socket,
-			"logging_enabled": serviceSet.Logging.Enabled(),
-			"active_log_file": serviceSet.Logging.ActiveFile(),
-			"build_id":        serviceSet.Instance.BuildID,
+			"instance_uuid": serviceSet.Instance.UUID,
+			"pid":           serviceSet.Instance.PID,
+			"instance_root": serviceSet.Instance.Paths.Root,
+			"uptime":        time.Since(serviceSet.Instance.StartedAt).Round(time.Millisecond).String(),
+			"admin_socket":  serviceSet.Instance.Paths.Socket,
+			"logging":       serviceSet.Logging.Status(),
+			"build_id":      serviceSet.Instance.BuildID,
 		}
 		if network := serviceSet.PlatformSnapshot().Network; network != nil {
 			result["main_port"] = network.Port()

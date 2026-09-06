@@ -1,3 +1,5 @@
+import { isId } from "../identity/mod.ts";
+
 export type WorkloadType = "service" | "job";
 
 export interface ExecutionUserMetadata {
@@ -48,10 +50,9 @@ export function canonicalExecutionOrigin(
 
 export interface ExecutionMetadata {
   nodeId: string;
-  runtimeGroupId: string;
+
   sandboxId: string;
   workerId: string;
-  executionId: string;
   workloadType: WorkloadType;
   ownerId: string;
   workloadId: string;
@@ -79,7 +80,8 @@ export interface ServiceExecutionMetadata {
 }
 
 export interface ServiceRequestMetadata {
-  requestId: string;
+  contextId: string;
+  parentContextId?: string;
   serviceId: string;
   serviceGeneration: number;
   canonicalBasePath: string;
@@ -109,10 +111,10 @@ export interface ClientConnectionMetadata {
 
 export interface CurrentExecutionMetadata {
   nodeId: string;
-  runtimeGroupId: string;
+
   sandboxId: string;
   workerId: string;
-  workerExecutionId: string;
+
   persistentExecutionId?: string;
 }
 
@@ -138,9 +140,10 @@ export type KernelOperation =
 export interface KernelCallRequest {
   operation: KernelOperation;
   arguments: Record<string, unknown>;
-  requestId?: string;
+  contextId?: string;
+  parentContextId?: string;
+  jobRunId?: string;
   serviceId?: string;
-  executionId: string;
   workerId: string;
   persistentExecutionId?: string;
   user?: ExecutionUserMetadata;
@@ -179,7 +182,7 @@ export interface BaseContext {
 }
 
 export interface ServiceContext extends BaseContext {
-  readonly requestId: string;
+  readonly contextId: string;
   readonly meta: ServiceRequestMetadata;
 }
 
@@ -201,3 +204,30 @@ export type WorkerControlFunction = (
 export type WorkerControlFunctions = Readonly<
   Record<string, WorkerControlFunction>
 >;
+
+// One invocation, independent of the Worker that executes it.
+export interface InvocationMetadata {
+  readonly contextId: string;
+  readonly parentContextId?: string;
+  readonly jobRunId?: string;
+}
+
+export function canonicalInvocation(value: unknown): InvocationMetadata {
+  if (value === null || typeof value !== "object") {
+    throw new TypeError("invocation identity is required");
+  }
+  const input = value as Record<string, unknown>;
+  if (
+    !isId(input.contextId, "ctx") ||
+    (input.parentContextId !== undefined &&
+      !isId(input.parentContextId, "ctx")) ||
+    (input.jobRunId !== undefined && !isId(input.jobRunId, "job"))
+  ) {
+    throw new TypeError("invalid invocation identity");
+  }
+  return Object.freeze({
+    contextId: input.contextId,
+    parentContextId: input.parentContextId,
+    jobRunId: input.jobRunId,
+  }) as InvocationMetadata;
+}

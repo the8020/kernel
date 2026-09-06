@@ -52,7 +52,7 @@ func TestValidateConsoleOptions(t *testing.T) {
 
 func TestSupervisorProcessReceivesReservedValidationPermissions(t *testing.T) {
 	sandbox := model.SandboxSpec{
-		SandboxID: "sandbox", RuntimeGroupID: "group", WorkloadType: model.WorkloadService,
+		SandboxID: "sandbox", WorkloadType: model.WorkloadService,
 		DependencyMode: model.DependencyCachedOnly,
 	}
 	config := ProcessConfig{NodeID: "node-one", KernelSocketPath: "/run/the8020/kernel.sock", SupervisorHost: "127.0.0.1", SupervisorPort: 8000, InspectorHost: "127.0.0.1", InspectorPort: 9229}
@@ -66,6 +66,9 @@ func TestSupervisorProcessReceivesReservedValidationPermissions(t *testing.T) {
 	arguments := DenoProcessArguments([]string{"deno", "run", "--cached-only", "/opt/runtime/supervisor/main.ts"}, sandbox, config)
 	if !containsArgumentValue(arguments, "--allow-env=", "DEPENDENCY_MODE") || !containsArgumentValue(arguments, "--allow-env=", "NODE_ID") || !containsArgumentValue(arguments, "--allow-read=", config.KernelSocketPath) || !containsArgumentValue(arguments, "--allow-write=", config.KernelSocketPath) || !containsExact(arguments, "--allow-run=/usr/bin/deno") {
 		t.Fatalf("service supervisor permissions = %#v", arguments)
+	}
+	if !containsArgumentValue(arguments, "--allow-read=", "/run/the8020/logs.sock") || !containsArgumentValue(arguments, "--allow-write=", "/run/the8020/logs.sock") || !containsArgumentValue(arguments, "--allow-net=", "unix:/run/the8020/logs.sock") || !containsArgumentValue(arguments, "--allow-net=", "unix:"+config.KernelSocketPath) {
+		t.Fatalf("supervisor logging socket permissions missing: %#v", arguments)
 	}
 
 	sandbox.WorkloadType = model.WorkloadJob

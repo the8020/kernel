@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"the8020/kernel/identity"
 )
 
 func TestResolveRootCanonicalizesAStillMissingExplicitDirectory(t *testing.T) {
@@ -37,10 +38,10 @@ func TestInitializeIdentityIsStable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first != second {
+	if first != second || !identity.Is(first, "nod") {
 		t.Fatalf("identity changed: %s != %s", first, second)
 	}
-	for _, path := range []string{paths.Packages, paths.Users, paths.Database, paths.NodeSettingsFile, paths.Run, paths.Logs, paths.Runtime, paths.RuntimeDefinitions, paths.RuntimeGroups, paths.RuntimeSandboxHistory, paths.RuntimePorts, paths.RuntimeServices, paths.RuntimeServicePools, paths.RuntimeAttachments, paths.RuntimeTemporary, paths.SSH} {
+	for _, path := range []string{paths.Packages, paths.Users, paths.Database, paths.NodeSettingsFile, paths.Run, paths.Logs, paths.Runtime, paths.RuntimeDefinitions, paths.RuntimeSandboxes, paths.RuntimeSandboxHistory, paths.RuntimePorts, paths.RuntimeServices, paths.RuntimeServicePools, paths.RuntimeAttachments, paths.RuntimeTemporary, paths.SSH} {
 		if _, err := os.Stat(path); err != nil {
 			t.Errorf("missing %s: %v", path, err)
 		}

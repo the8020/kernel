@@ -20,7 +20,7 @@ Parent DOX: [kernel/kernel/runtime DOX](../AGENTS.md).
   `Server.Address`, and `Close`.
 - Only generated registration, heartbeat, administrative, database, and
   Worker-invocation envelopes are accepted; envelope/payload versions and
-  runtime-group identity must agree, constant-time bearer validation uses the
+  sandbox identity must agree, constant-time bearer validation uses the
   state store's preloaded token cache, unknown identities remain cache-only
   misses, and terminal groups cannot be revived by late callbacks.
 - Registration and heartbeat carry one absolute revisioned supervisor snapshot.
@@ -28,14 +28,17 @@ Parent DOX: [kernel/kernel/runtime DOX](../AGENTS.md).
   revisions cannot replace newer state, and restart recovery obtains fresh truth
   from the supervisor heartbeat.
 - Administration, typed operations, database access, and Worker invocation are
-  available to both job and service Workers after cached runtime-group token
-  validation and required nonempty execution/request identity. They do not
+  available to both job and service Workers after cached sandbox token
+  validation and shared canonical Worker/context identity validation. They do not
   reverse-query the supervisor or scan Workers per call.
-- Administration and typed-operation calls carry the trusted Worker execution
+- Administration and typed-operation calls carry the trusted invocation context, optional job-run identity,
   and effective user in Go context so child jobs inherit identity and cannot
   queue behind the waiting parent that requested them.
+- Reject malformed caller `ctx-`/optional `job-` identities before attaching Go
+  context or dispatching an operation. Exact Worker calls additionally apply
+  the shared node target validator before forwarding.
 - Sandbox and workload identity derive from the authenticated runtime envelope.
-  Payloads carry only Worker execution and request identity plus fields owned by
+  Payloads carry only Worker, invocation context, and optional job-run identity plus fields owned by
   the selected operation.
 - Signing and verification are ordinary typed runtime operations for both
   service and job Workers. There are no login/logout endpoints, application
@@ -50,13 +53,16 @@ Parent DOX: [kernel/kernel/runtime DOX](../AGENTS.md).
   value.
 - Database calls delegate to the kernel-owned database. The backend name needed
   during module import travels in non-secret Worker metadata.
-- Database transaction tokens are scoped by runtime group, sandbox, Worker,
-  Worker execution, and request/job identity. Request completion closes that
+- Database transaction tokens are scoped by sandbox, Worker, and
+  invocation context. Request completion closes that
   exact scope; Worker termination closes its scope prefix, rolling back leaked
   transactions. These checks are in memory and never validate Worker liveness.
   Evaluator Workers have database calls disabled.
+- Database metadata access and whole-Worker scope cleanup allow an absent
+  context. Any provided Worker, context, or job-run ID must be canonical; other
+  database operations require an execution context.
 - Worker invocation applies a five-second context and forwards one exact
-  node/sandbox/Worker, the caller's validated effective user, and an optional
+  node/sandbox/Worker, the caller's context and validated effective user, and an optional
   persistent-execution target while treating the registered function and JSON as
   opaque.
 - Production mounts the socket's containing node-private directory for the

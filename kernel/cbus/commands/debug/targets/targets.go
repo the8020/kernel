@@ -13,7 +13,7 @@ type summary struct {
 	ID          string `json:"id"`
 	Type        string `json:"type"`
 	Title       string `json:"title"`
-	ExecutionID string `json:"execution_id,omitempty"`
+	WorkerID    string `json:"worker_id,omitempty"`
 	Description string `json:"description,omitempty"`
 }
 
@@ -36,7 +36,7 @@ func New(serviceSet *services.Services) core.Handler {
 		}
 		items := make([]summary, 0, len(targets))
 		for _, target := range targets {
-			items = append(items, summary{ID: target.ID, Type: target.Type, Title: target.Title, ExecutionID: target.ExecutionID, Description: target.Description})
+			items = append(items, summary{ID: target.ID, Type: target.Type, Title: target.Title, WorkerID: target.WorkerID, Description: target.Description})
 		}
 		return core.Result{"targets": items}, nil
 	}

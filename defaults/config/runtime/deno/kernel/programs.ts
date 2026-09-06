@@ -21,11 +21,17 @@ export interface ProgramRun {
   state: "succeeded" | "failed";
   failure: string;
   executionId: string;
+  nodeId: string;
+  sandboxId: string;
+  workerId: string;
+  contextId: string;
+  parentContextId: string;
+  logPosition: string;
+  queuedAt: string;
+  startedAt: string;
+  finishedAt: string;
   packageCommit: string;
   result: unknown;
-  logs:
-    | { level: string; message: string; fields?: Record<string, unknown> }[]
-    | null;
 }
 export interface PackageEvent<Data = unknown> {
   id: string;

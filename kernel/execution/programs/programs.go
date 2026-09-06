@@ -11,7 +11,6 @@ import (
 
 	"the8020/kernel/execution"
 	"the8020/kernel/execution/jobs"
-	"the8020/kernel/execution/supervisor"
 	workspacepackages "the8020/kernel/packages"
 )
 
@@ -31,12 +30,20 @@ type Runner struct {
 }
 
 type Result struct {
-	ProgramID   string                `json:"program_id"`
-	PackageID   string                `json:"package_id"`
-	Commit      string                `json:"commit"`
-	ExecutionID string                `json:"execution_id"`
-	Value       any                   `json:"result,omitempty"`
-	Output      []supervisor.LogEvent `json:"output,omitempty"`
+	ProgramID       string    `json:"program_id"`
+	PackageID       string    `json:"package_id"`
+	Commit          string    `json:"commit"`
+	ExecutionID     string    `json:"execution_id"`
+	NodeID          string    `json:"node_id"`
+	SandboxID       string    `json:"sandbox_id,omitempty"`
+	WorkerID        string    `json:"worker_id,omitempty"`
+	ContextID       string    `json:"context_id,omitempty"`
+	ParentContextID string    `json:"parent_context_id,omitempty"`
+	LogPosition     string    `json:"log_position,omitempty"`
+	QueuedAt        time.Time `json:"queued_at,omitempty"`
+	StartedAt       time.Time `json:"started_at,omitempty"`
+	FinishedAt      time.Time `json:"finished_at,omitempty"`
+	Value           any       `json:"result,omitempty"`
 }
 
 // Options selects execution identity, placement, and timeout for an ordinary job.
@@ -76,7 +83,9 @@ func (r *Runner) RunWithOptions(ctx context.Context, programID, expectedCommit s
 	result := Result{
 		ProgramID: program.ID, PackageID: program.PackageID, Commit: program.Commit,
 		ExecutionID: record.ExecutionID, Value: record.Result,
-		Output: record.Logs,
+		NodeID: record.NodeID, SandboxID: record.SandboxID, WorkerID: record.WorkerID,
+		ContextID: record.ContextID, ParentContextID: record.ParentContextID, LogPosition: record.LogPosition,
+		QueuedAt: record.QueuedAt, StartedAt: record.StartedAt, FinishedAt: record.FinishedAt,
 	}
 	return result, err
 }

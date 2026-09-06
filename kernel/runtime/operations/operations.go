@@ -119,6 +119,9 @@ func (d *Dispatcher) Execute(ctx context.Context, operation string, input map[st
 	if operation == "event.emit" || operation == "program.run" {
 		return d.execution(ctx, operation, input)
 	}
+	if operation == "logs.query" {
+		return d.queryLogs(ctx, input)
+	}
 	if operation == "program.list" {
 		runtime := d.services.RuntimeSnapshot()
 		if runtime == nil || runtime.ListPrograms == nil {

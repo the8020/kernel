@@ -11,11 +11,13 @@ export interface ContextAPI {
   readonly username: string;
   readonly authenticated: boolean;
   readonly nodeId: string;
-  readonly runtimeGroupId: string;
+
   readonly sandboxId: string;
   readonly workerId: string;
-  readonly executionId: string;
-  readonly requestId: string;
+  readonly contextId: string;
+  readonly parentContextId: string | undefined;
+  readonly jobRunId: string | undefined;
+  readonly serviceInstanceId: string | undefined;
   readonly persistentExecutionId: string | undefined;
 }
 
@@ -41,20 +43,23 @@ export const context: ContextAPI = Object.freeze({
   get nodeId() {
     return currentExecutionContext().nodeId;
   },
-  get runtimeGroupId() {
-    return currentExecutionContext().runtimeGroupId;
-  },
   get sandboxId() {
     return currentExecutionContext().sandboxId;
   },
   get workerId() {
     return currentExecutionContext().workerId;
   },
-  get executionId() {
-    return currentExecutionContext().executionId;
+  get contextId() {
+    return currentExecutionContext().contextId;
   },
-  get requestId() {
-    return currentExecutionContext().requestId;
+  get parentContextId() {
+    return currentExecutionContext().parentContextId;
+  },
+  get jobRunId() {
+    return currentExecutionContext().jobRunId;
+  },
+  get serviceInstanceId() {
+    return currentExecutionContext().serviceInstanceId;
   },
   get persistentExecutionId() {
     return currentExecutionContext().persistentExecutionId;

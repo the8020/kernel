@@ -33,6 +33,10 @@ Parent DOX: [kernel/kernel/cbus DOX](../AGENTS.md).
   before package activation switches source.
 - Dispatch package commands through the program runner as ordinary system-user
   jobs using normal shared package mounts. Discovery owns no execution policy.
+- Return the program's result without collecting console messages into the
+  command response. Project its allocated IDs, saved log position and times into
+  the command's execution reference on both success and failure. No new identity
+  is generated here; console messages use the ordinary unified logging path.
 - Preserve structured supervisor errors returned by the shared job system as
   command code/message/details; other failures use the runtime error code.
 

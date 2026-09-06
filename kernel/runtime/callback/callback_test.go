@@ -124,7 +124,7 @@ func TestAuthenticatedRegistrationAndHeartbeatUpdateMemoryOnly(t *testing.T) {
 	now := time.Date(2026, 8, 20, 1, 2, 3, 0, time.UTC)
 	server := newCallbackTestServer(t, store, func(config *Config) { config.Now = func() time.Time { return now } })
 	for _, endpoint := range []struct{ path, message string }{{"/v1/runtime/register", "supervisor_registration"}, {"/v1/runtime/heartbeat", "heartbeat"}} {
-		body := callbackMessage(t, protocol.MessageType(endpoint.message), spec, statusPayload{ProtocolVersion: protocol.ProtocolVersion, RuntimeGroupID: spec.RuntimeGroupID, SandboxID: spec.SandboxID, WorkloadType: string(spec.WorkloadType), SupervisorVersion: "1.0.0", DenoVersion: "2.9.4", WorkerCount: 2})
+		body := callbackMessage(t, protocol.MessageType(endpoint.message), spec, statusPayload{ProtocolVersion: protocol.ProtocolVersion, SandboxID: spec.SandboxID, WorkloadType: string(spec.WorkloadType), SupervisorVersion: "1.0.0", DenoVersion: "2.9.4", WorkerCount: 2})
 		request := httptest.NewRequest(http.MethodPost, "http://callback"+endpoint.path, bytes.NewReader(body))
 		request.RemoteAddr = "10.88.0.2:1000"
 		request.Header.Set("Authorization", "Bearer "+spec.InternalToken)
@@ -134,7 +134,7 @@ func TestAuthenticatedRegistrationAndHeartbeatUpdateMemoryOnly(t *testing.T) {
 			t.Fatalf("%s status=%d body=%s", endpoint.path, response.Code, response.Body.String())
 		}
 	}
-	_, updated, err := store.Load(spec.RuntimeGroupID)
+	_, updated, err := store.Load(spec.SandboxID)
 	if err != nil || !updated.SupervisorHealthy || updated.WorkerCount != 2 || !updated.LastHeartbeat.Equal(now) || updated.ObservedState != status.ObservedState {
 		t.Fatalf("updated=%#v err=%v", updated, err)
 	}
@@ -142,7 +142,7 @@ func TestAuthenticatedRegistrationAndHeartbeatUpdateMemoryOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, durable, err := reloaded.Load(spec.RuntimeGroupID)
+	_, durable, err := reloaded.Load(spec.SandboxID)
 	if err != nil || durable.WorkerCount != status.WorkerCount || durable.SupervisorHealthy != status.SupervisorHealthy {
 		t.Fatalf("runtime snapshot leaked into durable status: %#v err=%v", durable, err)
 	}
@@ -156,7 +156,7 @@ func TestCallbackRejectsTokenAndProtocolMismatch(t *testing.T) {
 	if err := os.RemoveAll(root); err != nil {
 		t.Fatal(err)
 	}
-	validPayload := statusPayload{Revision: 2, SupervisorStartedAtMS: 1, ProtocolVersion: protocol.ProtocolVersion, RuntimeGroupID: spec.RuntimeGroupID, SandboxID: spec.SandboxID, WorkloadType: string(spec.WorkloadType)}
+	validPayload := statusPayload{Revision: 2, SupervisorStartedAtMS: 1, ProtocolVersion: protocol.ProtocolVersion, SandboxID: spec.SandboxID, WorkloadType: string(spec.WorkloadType)}
 	for _, test := range []struct {
 		name, remote, token string
 		version             int
@@ -168,7 +168,7 @@ func TestCallbackRejectsTokenAndProtocolMismatch(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			payload, _ := json.Marshal(validPayload)
-			body, _ := json.Marshal(protocol.Envelope{ProtocolVersion: test.version, MessageType: protocol.MessageHeartbeat, RuntimeGroupID: spec.RuntimeGroupID, Payload: payload})
+			body, _ := json.Marshal(protocol.Envelope{ProtocolVersion: test.version, MessageType: protocol.MessageHeartbeat, SandboxID: spec.SandboxID, Payload: payload})
 			request := httptest.NewRequest(http.MethodPost, "http://callback/v1/runtime/heartbeat", bytes.NewReader(body))
 			request.RemoteAddr = test.remote
 			request.Header.Set("Authorization", "Bearer "+test.token)
@@ -181,16 +181,16 @@ func TestCallbackRejectsTokenAndProtocolMismatch(t *testing.T) {
 	}
 }
 
-func TestCallbackCannotReviveTerminalRuntimeGroup(t *testing.T) {
+func TestCallbackCannotReviveTerminalSandbox(t *testing.T) {
 	store, _ := state.New(t.TempDir())
 	spec, status := callbackFixture(t, store)
 	status.ObservedState = model.StateFailed
 	status.SupervisorHealthy = false
-	if err := store.SaveStatus(spec.RuntimeGroupID, status); err != nil {
+	if err := store.SaveStatus(spec.SandboxID, status); err != nil {
 		t.Fatal(err)
 	}
 	server := newCallbackTestServer(t, store, nil)
-	body := callbackMessage(t, protocol.MessageHeartbeat, spec, statusPayload{ProtocolVersion: protocol.ProtocolVersion, RuntimeGroupID: spec.RuntimeGroupID, SandboxID: spec.SandboxID, WorkloadType: string(spec.WorkloadType)})
+	body := callbackMessage(t, protocol.MessageHeartbeat, spec, statusPayload{ProtocolVersion: protocol.ProtocolVersion, SandboxID: spec.SandboxID, WorkloadType: string(spec.WorkloadType)})
 	request := httptest.NewRequest(http.MethodPost, "http://callback/v1/runtime/heartbeat", bytes.NewReader(body))
 	request.RemoteAddr = "10.88.0.2:1"
 	request.Header.Set("Authorization", "Bearer "+spec.InternalToken)
@@ -199,7 +199,7 @@ func TestCallbackCannotReviveTerminalRuntimeGroup(t *testing.T) {
 	if response.Code != http.StatusConflict {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	_, updated, _ := store.Load(spec.RuntimeGroupID)
+	_, updated, _ := store.Load(spec.SandboxID)
 	if updated.SupervisorHealthy || updated.ObservedState != model.StateFailed {
 		t.Fatalf("updated=%#v", updated)
 	}
@@ -238,7 +238,7 @@ func TestJobsAndServicesCanExecuteAdminCommandsWithoutAUserOrHTTPRequest(t *test
 				config.AdminBus = registry
 			})
 			payload := adminCallPayload{
-				ExecutionID: "execution-1", WorkerID: "worker-1", RequestID: "request-1",
+				JobRunID: "job-1111111111", WorkerID: "wrk-1111111111", ContextID: "ctx-1111111111",
 				CommandID: "kernel.test", Arguments: map[string]any{"value": "accepted"},
 				User: execution.SystemUser(),
 			}
@@ -270,14 +270,14 @@ func TestJobsAndServicesCanUseTypedRuntimeOperations(t *testing.T) {
 			operations := &recordingOperations{result: map[string]any{"value": string(make([]byte, 4*1024))}}
 			server := newCallbackTestServer(t, store, func(config *Config) { config.Operations = operations })
 			response := runtimeControlCall(t, server, spec, "/v1/runtime/operation/execute", protocol.MessageAdminCommand, operationCallPayload{
-				ExecutionID: "execution-1", WorkerID: "worker-1", RequestID: "request-1",
+				JobRunID: "job-1111111111", WorkerID: "wrk-1111111111", ContextID: "ctx-1111111111",
 				Operation: "example.inspect", Input: map[string]any{"id": "one"},
 				User: execution.SystemUser(),
 			})
 			if response.Code != http.StatusOK || operations.operation != "example.inspect" || operations.input["id"] != "one" {
 				t.Fatalf("status=%d body=%q operation=%#v", response.Code, response.Body.String(), operations)
 			}
-			if operations.caller.ExecutionID != "execution-1" || operations.caller.Workload != workload {
+			if operations.caller.JobRunID != "job-1111111111" || operations.caller.Workload != workload {
 				t.Fatalf("runtime caller = %#v", operations.caller)
 			}
 			if response.Header().Get("Content-Length") != strconv.Itoa(response.Body.Len()) {
@@ -294,7 +294,7 @@ func TestRuntimeOperationPreservesNullResults(t *testing.T) {
 		config.Operations = &recordingOperations{result: nil}
 	})
 	response := runtimeControlCall(t, server, spec, "/v1/runtime/operation/execute", protocol.MessageAdminCommand, operationCallPayload{
-		ExecutionID: "execution-1", WorkerID: "worker-1", RequestID: "request-1",
+		JobRunID: "job-1111111111", WorkerID: "wrk-1111111111", ContextID: "ctx-1111111111",
 		Operation: "example.optional", User: execution.SystemUser(),
 	})
 	var envelope protocol.Envelope
@@ -307,6 +307,52 @@ func TestRuntimeOperationPreservesNullResults(t *testing.T) {
 	}
 }
 
+func TestRuntimeCallbacksRejectMalformedCallerBeforeDispatch(t *testing.T) {
+	store, _ := state.New(t.TempDir())
+	spec, _ := callbackFixtureForWorkload(t, store, model.WorkloadJob)
+	operations := &recordingOperations{}
+	invoker := &recordingWorkerInvoker{}
+	db := &recordingDatabase{}
+	registry := core.NewRegistry(nil)
+	adminCalls := 0
+	if err := registry.Register(core.Command{Version: 1, ID: "kernel.test", Name: "kernel.test", Path: []string{"kernel.test"}}, func(context.Context, core.Request) (core.Result, error) {
+		adminCalls++
+		return core.Result{}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	server := newCallbackTestServer(t, store, func(c *Config) {
+		c.Operations, c.WorkerInvoker, c.Database, c.AdminBus = operations, invoker, db, registry
+	})
+	for _, kind := range []string{"admin/execute", "operation/execute", "worker/invoke", "database/execute", "database/info", "database/scope"} {
+		for field, invalid := range map[string]string{"worker_id": "worker-1", "context_id": "job-1111111111", "job_run_id": "parent-job"} {
+			t.Run(kind+"/"+field, func(t *testing.T) {
+				payload := map[string]any{"worker_id": "wrk-1111111111", "context_id": "ctx-1111111111", "job_run_id": "job-1111111111"}
+				switch kind {
+				case "admin/execute":
+					payload["command_id"], payload["user"] = "kernel.test", execution.SystemUser()
+				case "operation/execute":
+					payload["operation"], payload["user"] = "example.inspect", execution.SystemUser()
+				case "worker/invoke":
+					payload["target_node_id"], payload["target_sandbox_id"], payload["target_worker_id"] = "nod-bbbbbbbbbb", "sbx-bbbbbbbbbb", "wrk-bbbbbbbbbb"
+					payload["function"], payload["user"] = "example.inspect", execution.SystemUser()
+				case "database/execute":
+					payload["statement"] = "SELECT 1"
+				}
+				payload[field] = invalid
+				path := "/v1/runtime/" + kind
+				response := runtimeControlCall(t, server, spec, path, callbackMessageType(path), payload)
+				if response.Code != http.StatusBadRequest && response.Code != http.StatusConflict {
+					t.Fatalf("malformed caller accepted: status=%d", response.Code)
+				}
+				if adminCalls != 0 || operations.operation != "" || len(invoker.calls) != 0 || len(db.statements) != 0 || len(db.closed) != 0 || len(db.prefixes) != 0 {
+					t.Fatal("malformed caller reached an operation owner")
+				}
+			})
+		}
+	}
+}
+
 func TestJobsAndServicesCanUseKernelOwnedDatabase(t *testing.T) {
 	for _, workload := range []model.WorkloadType{model.WorkloadJob, model.WorkloadService} {
 		t.Run(string(workload), func(t *testing.T) {
@@ -315,7 +361,7 @@ func TestJobsAndServicesCanUseKernelOwnedDatabase(t *testing.T) {
 			databaseService := &recordingDatabase{}
 			server := newCallbackTestServer(t, store, func(config *Config) { config.Database = databaseService })
 			payload := databaseCallPayload{
-				ExecutionID: "execution-1", WorkerID: "worker-1", RequestID: "request-database",
+				JobRunID: "job-1111111111", WorkerID: "wrk-1111111111", ContextID: "ctx-dddddddddd",
 				Statement: "SELECT $1", Parameters: json.RawMessage(`[3]`), ReturnRows: true, ReturnInsertID: true,
 			}
 			response := runtimeControlCall(t, server, spec, "/v1/runtime/database/execute", protocol.MessageDatabaseExecute, payload)
@@ -331,7 +377,7 @@ func TestJobsAndServicesCanUseKernelOwnedDatabase(t *testing.T) {
 			if response.Code != http.StatusOK || len(databaseService.statements) != 2 || databaseService.statements[1].ReturnRows {
 				t.Fatalf("execute status=%d body=%q database=%#v", response.Code, response.Body.String(), databaseService)
 			}
-			payload.RequestID = "next-execution-scope"
+			payload.ContextID = "ctx-nnnnnnnnnn"
 			response = runtimeControlCall(t, server, spec, "/v1/runtime/database/execute", protocol.MessageDatabaseExecute, payload)
 			if response.Code != http.StatusOK || len(databaseService.statements) != 3 {
 				t.Fatalf("execution-scoped status=%d database=%#v", response.Code, databaseService)
@@ -350,7 +396,7 @@ func TestConcurrentRuntimeDatabaseCallsDoNotSerializeTheCallbackServer(t *testin
 	for index := range calls {
 		go func() {
 			responses <- runtimeControlCall(t, server, spec, "/v1/runtime/database/execute", protocol.MessageDatabaseExecute, databaseCallPayload{
-				ExecutionID: "execution-1", WorkerID: "worker-1", RequestID: fmt.Sprintf("request-%d", index),
+				JobRunID: "job-1111111111", WorkerID: "wrk-1111111111", ContextID: fmt.Sprintf("ctx-%010d", index),
 				Statement: "SELECT 1", ReturnRows: true,
 			})
 		}()
@@ -373,7 +419,7 @@ func TestConcurrentRuntimeDatabaseCallsDoNotSerializeTheCallbackServer(t *testin
 
 func TestConcurrentRuntimeDatabaseReadLoad(t *testing.T) {
 	root := t.TempDir()
-	store, _ := state.New(filepath.Join(root, "groups"))
+	store, _ := state.New(filepath.Join(root, "sandboxes"))
 	spec, _ := callbackFixtureForWorkload(t, store, model.WorkloadService)
 	db := database.New(database.Config{
 		Backend: database.BackendSQLite, Location: filepath.Join(root, "system.db"),
@@ -395,7 +441,7 @@ func TestConcurrentRuntimeDatabaseReadLoad(t *testing.T) {
 			defer wait.Done()
 			<-start
 			response := runtimeControlCall(t, server, spec, "/v1/runtime/database/execute", protocol.MessageDatabaseExecute, databaseCallPayload{
-				ExecutionID: "execution-1", WorkerID: "worker-1", RequestID: fmt.Sprintf("request-%d", index),
+				JobRunID: "job-1111111111", WorkerID: "wrk-1111111111", ContextID: fmt.Sprintf("ctx-%010d", index),
 				Statement: "SELECT 1", ReturnRows: true,
 			})
 			if response.Code != http.StatusOK {
@@ -414,21 +460,21 @@ func TestConcurrentRuntimeDatabaseReadLoad(t *testing.T) {
 func TestDatabaseScopeCleanupUsesExactExecutionIdentity(t *testing.T) {
 	store, _ := state.New(t.TempDir())
 	spec, _ := callbackFixtureForWorkload(t, store, model.WorkloadService)
-	requestID := "request-database"
+	requestID := "ctx-dddddddddd"
 	databaseService := &recordingDatabase{}
 	server := newCallbackTestServer(t, store, func(config *Config) { config.Database = databaseService })
 	payload := databaseCallPayload{
-		ExecutionID: "execution-1", WorkerID: "worker-1", RequestID: requestID,
+		JobRunID: "job-1111111111", WorkerID: "wrk-1111111111", ContextID: requestID,
 	}
 	response := runtimeControlCall(t, server, spec, "/v1/runtime/database/scope", protocol.MessageDatabaseExecute, payload)
 	if response.Code != http.StatusOK || len(databaseService.closed) != 1 {
 		t.Fatalf("exact cleanup status=%d database=%#v", response.Code, databaseService)
 	}
-	wantedWorker := databaseScope(spec.RuntimeGroupID, spec.SandboxID, payload.WorkerID, payload.ExecutionID)
+	wantedWorker := databaseScope(spec.SandboxID, payload.WorkerID)
 	if databaseService.closed[0] != wantedWorker+"\x00"+requestID {
 		t.Fatalf("closed scope = %q", databaseService.closed[0])
 	}
-	payload.RequestID = ""
+	payload.ContextID = ""
 	response = runtimeControlCall(t, server, spec, "/v1/runtime/database/scope", protocol.MessageDatabaseExecute, payload)
 	if response.Code != http.StatusOK || len(databaseService.prefixes) != 1 || databaseService.prefixes[0] != wantedWorker {
 		t.Fatalf("Worker cleanup status=%d database=%#v", response.Code, databaseService)
@@ -438,22 +484,22 @@ func TestDatabaseScopeCleanupUsesExactExecutionIdentity(t *testing.T) {
 func TestActiveServiceCanInvokeOneExactWorker(t *testing.T) {
 	store, _ := state.New(t.TempDir())
 	spec, _ := callbackFixtureForWorkload(t, store, model.WorkloadService)
-	requestID := "request-control"
+	requestID := "ctx-cccccccccc"
 	invoker := &recordingWorkerInvoker{result: nodes.WorkerInvocationResult{OK: true, Output: map[string]any{"state": "live"}}}
 	server := newCallbackTestServer(t, store, func(config *Config) {
 		config.WorkerInvoker = invoker
 	})
 	payload := workerCallPayload{
-		ExecutionID: "source-execution", SourceWorkerID: "source-worker", RequestID: requestID,
-		TargetNodeID: "node-b", TargetSandboxID: "sandbox-b", TargetWorkerID: "worker-b",
-		TargetPersistentExecutionID: "persistent-target",
+		JobRunID: "job-ssssssssss", SourceWorkerID: "wrk-ssssssssss", ContextID: requestID,
+		TargetNodeID: "nod-bbbbbbbbbb", TargetSandboxID: "sbx-bbbbbbbbbb", TargetWorkerID: "wrk-bbbbbbbbbb",
+		TargetPersistentExecutionID: "pex-tttttttttt",
 		Function:                    "example.inspect", Input: map[string]any{"id": "opaque"}, User: execution.SystemUser(),
 	}
 	response := runtimeControlCall(t, server, spec, "/v1/runtime/worker/invoke", protocol.MessageWorkerInvoke, payload)
 	if response.Code != http.StatusOK {
 		t.Fatalf("invoke status=%d body=%q", response.Code, response.Body.String())
 	}
-	if len(invoker.calls) != 1 || invoker.calls[0].NodeID != "node-b" || invoker.calls[0].SandboxID != "sandbox-b" || invoker.calls[0].WorkerID != "worker-b" || invoker.calls[0].PersistentExecutionID != "persistent-target" || invoker.calls[0].Function != "example.inspect" || invoker.calls[0].User != execution.SystemUser() {
+	if len(invoker.calls) != 1 || invoker.calls[0].NodeID != "nod-bbbbbbbbbb" || invoker.calls[0].ParentContextID != payload.ContextID || invoker.calls[0].SandboxID != "sbx-bbbbbbbbbb" || invoker.calls[0].WorkerID != "wrk-bbbbbbbbbb" || invoker.calls[0].PersistentExecutionID != "pex-tttttttttt" || invoker.calls[0].Function != "example.inspect" || invoker.calls[0].User != execution.SystemUser() {
 		t.Fatalf("exact invocation=%#v", invoker.calls)
 	}
 	var envelope protocol.Envelope
@@ -464,7 +510,11 @@ func TestActiveServiceCanInvokeOneExactWorker(t *testing.T) {
 	if err := json.Unmarshal(envelope.Payload, &result); err != nil || !result.OK {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
-
+	payload.TargetPersistentExecutionID = "persistent-target"
+	response = runtimeControlCall(t, server, spec, "/v1/runtime/worker/invoke", protocol.MessageWorkerInvoke, payload)
+	if response.Code != http.StatusBadRequest || len(invoker.calls) != 1 {
+		t.Fatalf("invalid target reached invoker: status=%d calls=%d", response.Code, len(invoker.calls))
+	}
 }
 
 func runtimeControlCall(t *testing.T, server *Server, spec model.SandboxSpec, path string, messageType protocol.MessageType, payload any) *httptest.ResponseRecorder {
@@ -473,7 +523,7 @@ func runtimeControlCall(t *testing.T, server *Server, spec model.SandboxSpec, pa
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, err := json.Marshal(protocol.Envelope{ProtocolVersion: protocol.ProtocolVersion, MessageType: messageType, RuntimeGroupID: spec.RuntimeGroupID, CorrelationID: "control-correlation", Payload: payloadData})
+	body, err := json.Marshal(protocol.Envelope{ProtocolVersion: protocol.ProtocolVersion, MessageType: messageType, SandboxID: spec.SandboxID, CorrelationID: "control-correlation", Payload: payloadData})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -494,7 +544,7 @@ func callbackMessage(t testing.TB, messageType protocol.MessageType, spec model.
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err := json.Marshal(protocol.Envelope{ProtocolVersion: protocol.ProtocolVersion, MessageType: messageType, RuntimeGroupID: spec.RuntimeGroupID, Payload: payloadData})
+	data, err := json.Marshal(protocol.Envelope{ProtocolVersion: protocol.ProtocolVersion, MessageType: messageType, SandboxID: spec.SandboxID, Payload: payloadData})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -528,7 +578,7 @@ func TestCallbackListenerLifecycle(t *testing.T) {
 
 func TestCallbackClientReconnectsAfterSocketReplacement(t *testing.T) {
 	root := t.TempDir()
-	store, _ := state.New(filepath.Join(root, "groups"))
+	store, _ := state.New(filepath.Join(root, "sandboxes"))
 	spec, status := callbackFixture(t, store)
 	socketPath := filepath.Join(root, "runtime", "kernel.sock")
 	newServer := func() *Server {
@@ -547,8 +597,8 @@ func TestCallbackClientReconnectsAfterSocketReplacement(t *testing.T) {
 	call := func() {
 		body := callbackMessage(t, protocol.MessageHeartbeat, spec, statusPayload{
 			Revision:        revision,
-			ProtocolVersion: protocol.ProtocolVersion, RuntimeGroupID: spec.RuntimeGroupID,
-			SandboxID: spec.SandboxID, WorkloadType: string(spec.WorkloadType),
+			ProtocolVersion: protocol.ProtocolVersion,
+			SandboxID:       spec.SandboxID, WorkloadType: string(spec.WorkloadType),
 		})
 		request, err := http.NewRequest(http.MethodPost, "http://kernel/v1/runtime/heartbeat", bytes.NewReader(body))
 		if err != nil {
@@ -574,7 +624,7 @@ func TestCallbackClientReconnectsAfterSocketReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	status.SupervisorHealthy = false
-	if err := store.SaveStatus(spec.RuntimeGroupID, status); err != nil {
+	if err := store.SaveStatus(spec.SandboxID, status); err != nil {
 		t.Fatal(err)
 	}
 	second := newServer()
@@ -583,7 +633,7 @@ func TestCallbackClientReconnectsAfterSocketReplacement(t *testing.T) {
 	}
 	defer second.Close(context.Background())
 	call()
-	_, observed, err := store.Load(spec.RuntimeGroupID)
+	_, observed, err := store.Load(spec.SandboxID)
 	if err != nil || !observed.SupervisorHealthy {
 		t.Fatalf("observed=%#v err=%v", observed, err)
 	}
@@ -598,12 +648,12 @@ func callbackFixtureForWorkload(t testing.TB, store *state.Store, workload model
 	digest := "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	profile := model.RuntimeProfile{WorkloadType: workload, ImageDigest: digest, DependencyMode: model.DependencyCachedOnly, NetworkMode: "netstack", ResourceClass: string(workload)}
 	hash, _ := profile.Hash()
-	spec := model.SandboxSpec{SandboxID: "sandbox", RuntimeGroupID: "group", WorkloadType: workload, GroupKey: string(workload) + ":owner:test", OwnerIDs: []string{"test"}, ImageDigest: digest, RuntimeProfile: profile, ProfileHash: hash, ResourceLimits: model.ResourceLimits{PIDMaximum: 1, TmpfsMaximum: 1}, Network: model.NetworkConfiguration{Mode: "netstack", NetworkName: "the8020"}, DependencyMode: model.DependencyCachedOnly, Lifecycle: model.LifecyclePolicy{}, InternalToken: "0123456789abcdef0123456789abcdef"}
+	spec := model.SandboxSpec{SandboxID: "sandbox", WorkloadType: workload, GroupKey: string(workload) + ":owner:test", OwnerIDs: []string{"test"}, ImageDigest: digest, RuntimeProfile: profile, ProfileHash: hash, ResourceLimits: model.ResourceLimits{PIDMaximum: 1, TmpfsMaximum: 1}, Network: model.NetworkConfiguration{Mode: "netstack", NetworkName: "the8020"}, DependencyMode: model.DependencyCachedOnly, Lifecycle: model.LifecyclePolicy{}, InternalToken: "0123456789abcdef0123456789abcdef"}
 	status := model.SandboxStatus{DesiredState: model.StateReady, ObservedState: model.StateStarting}
 	if err := store.SaveSpec(spec); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SaveStatus(spec.RuntimeGroupID, status); err != nil {
+	if err := store.SaveStatus(spec.SandboxID, status); err != nil {
 		t.Fatal(err)
 	}
 	return spec, status

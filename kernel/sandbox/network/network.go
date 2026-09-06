@@ -52,8 +52,7 @@ type Config struct {
 }
 
 type Allocation struct {
-	RuntimeGroupID string   `json:"runtime_group_id"`
-	ContainerID    string   `json:"container_id"`
+	SandboxID      string   `json:"sandbox_id"`
 	NetworkName    string   `json:"network_name"`
 	NamespaceName  string   `json:"namespace_name,omitempty"`
 	NamespacePath  string   `json:"namespace_path,omitempty"`
@@ -112,21 +111,21 @@ func New(config Config) (*Manager, error) {
 	return &Manager{instanceUUID: config.InstanceUUID, configuration: configuration, stateRoot: config.StateRoot, netNSRoot: config.NetNSRoot, cni: config.CNI, commands: config.Commands, firewall: config.Firewall}, nil
 }
 
-func (m *Manager) Allocate(ctx context.Context, runtimeGroupID, containerID string, policy model.NetworkConfiguration) (allocation Allocation, returnError error) {
-	if !safeID(runtimeGroupID) || !safeID(containerID) || policy.Mode != "netstack" {
-		return allocation, errors.New("safe runtime-group/container IDs and netstack mode are required")
+func (m *Manager) Allocate(ctx context.Context, sandboxID string, policy model.NetworkConfiguration) (allocation Allocation, returnError error) {
+	if !safeID(sandboxID) || policy.Mode != "netstack" {
+		return allocation, errors.New("safe sandbox ID and netstack mode are required")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if existing, err := m.load(runtimeGroupID); err == nil {
+	if existing, err := m.load(sandboxID); err == nil {
 		return existing, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return allocation, err
 	}
 	configuration := m.configuration
-	namespaceName := namespaceName(m.instanceUUID, runtimeGroupID)
+	namespaceName := namespaceName(m.instanceUUID, sandboxID)
 	allocation = Allocation{
-		RuntimeGroupID: runtimeGroupID, ContainerID: containerID, NetworkName: configuration.Name,
+		SandboxID: sandboxID, NetworkName: configuration.Name,
 		NamespaceName: namespaceName, NamespacePath: filepath.Join(m.netNSRoot, namespaceName), InterfaceName: "eth0",
 		SupervisorPort: model.DefaultSupervisorPort, InspectorPort: model.DefaultInspectorPort,
 	}
@@ -169,23 +168,23 @@ func (m *Manager) Allocate(ctx context.Context, runtimeGroupID, containerID stri
 	return allocation, nil
 }
 
-func (m *Manager) Check(ctx context.Context, runtimeGroupID string) error {
+func (m *Manager) Check(ctx context.Context, sandboxID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	allocation, err := m.load(runtimeGroupID)
+	allocation, err := m.load(sandboxID)
 	if err != nil {
 		return err
 	}
 	return m.cni.CheckNetworkList(ctx, m.configuration, runtimeConfig(allocation))
 }
 
-func (m *Manager) Release(ctx context.Context, runtimeGroupID string) error {
-	if !safeID(runtimeGroupID) {
-		return errors.New("safe runtime-group ID is required")
+func (m *Manager) Release(ctx context.Context, sandboxID string) error {
+	if !safeID(sandboxID) {
+		return errors.New("safe sandbox ID is required")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	allocation, err := m.load(runtimeGroupID)
+	allocation, err := m.load(sandboxID)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -206,7 +205,7 @@ func (m *Manager) Release(ctx context.Context, runtimeGroupID string) error {
 	if joined != nil {
 		return joined
 	}
-	if err := os.Remove(m.recordPath(runtimeGroupID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := os.Remove(m.recordPath(sandboxID)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	return nil
@@ -279,7 +278,7 @@ func configuredNetwork(path, name, bridge, subnet string) (*libcni.NetworkConfig
 }
 
 func runtimeConfig(allocation Allocation) *libcni.RuntimeConf {
-	return &libcni.RuntimeConf{ContainerID: allocation.ContainerID, NetNS: allocation.NamespacePath, IfName: allocation.InterfaceName, Args: [][2]string{{"IgnoreUnknown", "1"}, {"K8S_POD_NAME", allocation.RuntimeGroupID}}}
+	return &libcni.RuntimeConf{ContainerID: allocation.SandboxID, NetNS: allocation.NamespacePath, IfName: allocation.InterfaceName, Args: [][2]string{{"IgnoreUnknown", "1"}, {"K8S_POD_NAME", allocation.SandboxID}}}
 }
 
 func resultIPs(result types.Result) ([]string, error) {
@@ -327,12 +326,12 @@ func (m *Manager) save(allocation Allocation) error {
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	return os.Rename(name, m.recordPath(allocation.RuntimeGroupID))
+	return os.Rename(name, m.recordPath(allocation.SandboxID))
 }
 
-func (m *Manager) load(runtimeGroupID string) (Allocation, error) {
+func (m *Manager) load(sandboxID string) (Allocation, error) {
 	var allocation Allocation
-	data, err := os.ReadFile(m.recordPath(runtimeGroupID))
+	data, err := os.ReadFile(m.recordPath(sandboxID))
 	if err != nil {
 		return allocation, err
 	}
@@ -341,18 +340,18 @@ func (m *Manager) load(runtimeGroupID string) (Allocation, error) {
 	if err := decoder.Decode(&allocation); err != nil {
 		return allocation, err
 	}
-	if allocation.RuntimeGroupID != runtimeGroupID || !safeID(allocation.ContainerID) || allocation.NamespacePath != filepath.Join(m.netNSRoot, allocation.NamespaceName) {
+	if allocation.SandboxID != sandboxID || !safeID(allocation.SandboxID) || allocation.NamespacePath != filepath.Join(m.netNSRoot, allocation.NamespaceName) {
 		return Allocation{}, errors.New("network allocation identity mismatch")
 	}
 	return allocation, nil
 }
 
-func (m *Manager) recordPath(runtimeGroupID string) string {
-	return filepath.Join(m.stateRoot, runtimeGroupID+".json")
+func (m *Manager) recordPath(sandboxID string) string {
+	return filepath.Join(m.stateRoot, sandboxID+".json")
 }
 
-func namespaceName(instanceUUID, runtimeGroupID string) string {
-	value := "pl-" + compactID(instanceUUID) + "-" + compactID(runtimeGroupID)
+func namespaceName(instanceUUID, sandboxID string) string {
+	value := "pl-" + compactID(instanceUUID) + "-" + compactID(sandboxID)
 	if len(value) > 63 {
 		value = value[:63]
 	}

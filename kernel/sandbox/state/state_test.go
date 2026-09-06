@@ -19,13 +19,13 @@ func testRecord(t *testing.T, id string) (model.SandboxSpec, model.SandboxStatus
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec := model.SandboxSpec{SandboxID: "sandbox-" + id, RuntimeGroupID: id, WorkloadType: model.WorkloadJob, GroupKey: "job:one", OwnerIDs: []string{"one"}, ImageDigest: testDigest, RuntimeProfile: profile, ProfileHash: hash, ResourceLimits: model.ResourceLimits{PIDMaximum: 32, TmpfsMaximum: 64}, Network: model.NetworkConfiguration{Mode: "netstack", NetworkName: "the8020"}, DependencyMode: model.DependencyCachedOnly, InternalToken: "secret-" + id}
+	spec := model.SandboxSpec{SandboxID: id, WorkloadType: model.WorkloadJob, GroupKey: "job:one", OwnerIDs: []string{"one"}, ImageDigest: testDigest, RuntimeProfile: profile, ProfileHash: hash, ResourceLimits: model.ResourceLimits{PIDMaximum: 32, TmpfsMaximum: 64}, Network: model.NetworkConfiguration{Mode: "netstack", NetworkName: "the8020"}, DependencyMode: model.DependencyCachedOnly, InternalToken: "secret-" + id}
 	status := model.SandboxStatus{DesiredState: model.StateReady, ObservedState: model.StateCreating}
 	return spec, status
 }
 
 func TestStorePersistsListsTransitionsAndDeletes(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "groups")
+	root := filepath.Join(t.TempDir(), "sandboxes")
 	store, err := New(root)
 	if err != nil {
 		t.Fatal(err)
@@ -44,15 +44,15 @@ func TestStorePersistsListsTransitionsAndDeletes(t *testing.T) {
 		t.Fatalf("List() = %#v, %v", ids, err)
 	}
 	spec, status, err := store.Load("group-a")
-	if err != nil || spec.SandboxID != "sandbox-group-a" || spec.InternalToken != "secret-group-a" || status.ObservedState != model.StateCreating {
+	if err != nil || spec.SandboxID != "group-a" || spec.InternalToken != "secret-group-a" || status.ObservedState != model.StateCreating {
 		t.Fatalf("Load() = %#v %#v, %v", spec, status, err)
 	}
 	storedSpec, err := os.ReadFile(filepath.Join(root, "group-a", "spec.json"))
 	if err != nil || strings.Contains(string(storedSpec), "secret-group-a") {
 		t.Fatalf("secret leaked into specification: %v %s", err, storedSpec)
 	}
-	status, err = store.Transition("group-a", model.StateStarting, func(value *model.SandboxStatus) { value.ContainerID = "container" })
-	if err != nil || status.ContainerID != "container" {
+	status, err = store.Transition("group-a", model.StateStarting, func(value *model.SandboxStatus) { value.TaskPID = 42 })
+	if err != nil || status.TaskPID != 42 {
 		t.Fatalf("Transition() = %#v, %v", status, err)
 	}
 	heartbeat := time.Unix(100, 0).UTC()
@@ -94,13 +94,13 @@ func TestStorePersistsListsTransitionsAndDeletes(t *testing.T) {
 }
 
 func TestStoreRejectsCorruptionAndUnsafeIDs(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "groups")
+	root := filepath.Join(t.TempDir(), "sandboxes")
 	store, err := New(root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := store.SaveStatus("../escape", model.SandboxStatus{DesiredState: model.StateReady, ObservedState: model.StateReady}); err == nil {
-		t.Fatal("accepted unsafe runtime-group ID")
+		t.Fatal("accepted unsafe sandbox ID")
 	}
 	directory := filepath.Join(root, "broken")
 	if err := os.Mkdir(directory, 0o700); err != nil {
@@ -114,7 +114,7 @@ func TestStoreRejectsCorruptionAndUnsafeIDs(t *testing.T) {
 }
 
 func TestCachedLookupNeverFallsBackToRecoveryFiles(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "groups")
+	root := filepath.Join(t.TempDir(), "sandboxes")
 	cache, err := New(root)
 	if err != nil {
 		t.Fatal(err)
@@ -127,25 +127,25 @@ func TestCachedLookupNeverFallsBackToRecoveryFiles(t *testing.T) {
 	if err := writer.SaveSpec(spec); err != nil {
 		t.Fatal(err)
 	}
-	if err := writer.SaveStatus(spec.RuntimeGroupID, status); err != nil {
+	if err := writer.SaveStatus(spec.SandboxID, status); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, ok := cache.Cached(spec.RuntimeGroupID); ok {
+	if _, _, ok := cache.Cached(spec.SandboxID); ok {
 		t.Fatal("cache-only lookup discovered a record created after startup")
 	}
-	if cache.Contains(spec.RuntimeGroupID) || cache.Contains(spec.SandboxID) {
+	if cache.Contains(spec.SandboxID) {
 		t.Fatal("cache-only identity check discovered a record created after startup")
 	}
-	if loaded, _, err := cache.Load(spec.RuntimeGroupID); err != nil || loaded.SandboxID != spec.SandboxID {
+	if loaded, _, err := cache.Load(spec.SandboxID); err != nil || loaded.SandboxID != spec.SandboxID {
 		t.Fatalf("explicit recovery load=%#v err=%v", loaded, err)
 	}
-	if !cache.Contains(spec.RuntimeGroupID) || !cache.Contains(spec.SandboxID) {
-		t.Fatal("explicit load did not populate both identity indexes")
+	if !cache.Contains(spec.SandboxID) {
+		t.Fatal("explicit load did not populate the sandbox identity index")
 	}
 }
 
-func TestHeartbeatDeadlineIndexReturnsOnlyBoundedStaleGroups(t *testing.T) {
-	store, err := New(filepath.Join(t.TempDir(), "groups"))
+func TestHeartbeatDeadlineIndexReturnsOnlyBoundedStaleSandboxes(t *testing.T) {
+	store, err := New(filepath.Join(t.TempDir(), "sandboxes"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +178,7 @@ func TestHeartbeatDeadlineIndexReturnsOnlyBoundedStaleGroups(t *testing.T) {
 	}
 	newest := time.Unix(30, 0).UTC()
 	if applied, err := store.Observe("group-a", model.RuntimeSnapshot{
-		Revision: 1, SupervisorStartedAtMS: 1, RuntimeGroupID: "group-a",
+		Revision: 1, SupervisorStartedAtMS: 1,
 		SandboxID: spec.SandboxID, WorkloadType: spec.WorkloadType,
 	}, newest); err != nil || !applied {
 		t.Fatalf("new heartbeat applied=%t err=%v", applied, err)
@@ -193,7 +193,7 @@ func TestHeartbeatDeadlineIndexReturnsOnlyBoundedStaleGroups(t *testing.T) {
 }
 
 func TestSupervisorSnapshotsAreAbsoluteRevisionedAndMemoryOnly(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "groups")
+	root := filepath.Join(t.TempDir(), "sandboxes")
 	store, err := New(root)
 	if err != nil {
 		t.Fatal(err)
@@ -203,54 +203,54 @@ func TestSupervisorSnapshotsAreAbsoluteRevisionedAndMemoryOnly(t *testing.T) {
 	if err := store.SaveSpec(spec); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SaveStatus(spec.RuntimeGroupID, status); err != nil {
+	if err := store.SaveStatus(spec.SandboxID, status); err != nil {
 		t.Fatal(err)
 	}
-	statePath := filepath.Join(root, spec.RuntimeGroupID, "state.json")
+	statePath := filepath.Join(root, spec.SandboxID, "state.json")
 	durableBefore, err := os.ReadFile(statePath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	firstTime := time.Unix(10, 0).UTC()
 	first := model.RuntimeSnapshot{
-		Revision: 2, SupervisorStartedAtMS: 100, RuntimeGroupID: spec.RuntimeGroupID,
+		Revision: 2, SupervisorStartedAtMS: 100,
 		SandboxID: spec.SandboxID, WorkloadType: spec.WorkloadType, WorkerCount: 1,
 		Workers: []model.RuntimeWorkerStatus{{WorkerID: "worker-new", State: "ready"}},
 	}
-	if applied, err := store.Observe(spec.RuntimeGroupID, first, firstTime); err != nil || !applied {
+	if applied, err := store.Observe(spec.SandboxID, first, firstTime); err != nil || !applied {
 		t.Fatalf("first observation applied=%t err=%v", applied, err)
 	}
 	stale := first
 	stale.Revision = 1
 	stale.Workers = []model.RuntimeWorkerStatus{{WorkerID: "worker-stale", State: "ready"}}
 	secondTime := firstTime.Add(time.Second)
-	if applied, err := store.Observe(spec.RuntimeGroupID, stale, secondTime); err != nil || applied {
+	if applied, err := store.Observe(spec.SandboxID, stale, secondTime); err != nil || applied {
 		t.Fatalf("stale observation applied=%t err=%v", applied, err)
 	}
-	snapshot, ok := store.Snapshot(spec.RuntimeGroupID)
+	snapshot, ok := store.Snapshot(spec.SandboxID)
 	if !ok || snapshot.Revision != 2 || snapshot.Workers[0].WorkerID != "worker-new" {
 		t.Fatalf("snapshot rolled back = %#v", snapshot)
 	}
-	_, observed, err := store.Resolve(spec.SandboxID)
+	_, observed, err := store.Load(spec.SandboxID)
 	if err != nil || !observed.LastHeartbeat.Equal(secondTime) {
 		t.Fatalf("sandbox index or heartbeat freshness failed: %#v, %v", observed, err)
 	}
 	restarted := stale
 	restarted.SupervisorStartedAtMS = 200
-	if applied, err := store.Observe(spec.RuntimeGroupID, restarted, secondTime.Add(time.Second)); err != nil || !applied {
+	if applied, err := store.Observe(spec.SandboxID, restarted, secondTime.Add(time.Second)); err != nil || !applied {
 		t.Fatalf("new supervisor epoch applied=%t err=%v", applied, err)
 	}
-	snapshot, _ = store.Snapshot(spec.RuntimeGroupID)
+	snapshot, _ = store.Snapshot(spec.SandboxID)
 	if snapshot.Revision != 1 || snapshot.Workers[0].WorkerID != "worker-stale" {
 		t.Fatalf("new supervisor epoch was ignored = %#v", snapshot)
 	}
 	restartedAt := secondTime.Add(time.Second)
 	olderSupervisor := first
 	olderSupervisor.Revision = 3
-	if applied, err := store.Observe(spec.RuntimeGroupID, olderSupervisor, restartedAt.Add(time.Second)); err != nil || applied {
+	if applied, err := store.Observe(spec.SandboxID, olderSupervisor, restartedAt.Add(time.Second)); err != nil || applied {
 		t.Fatalf("older supervisor applied=%t err=%v", applied, err)
 	}
-	_, observed, err = store.Resolve(spec.SandboxID)
+	_, observed, err = store.Load(spec.SandboxID)
 	if err != nil || !observed.LastHeartbeat.Equal(restartedAt) {
 		t.Fatalf("older supervisor refreshed heartbeat: %#v, %v", observed, err)
 	}
@@ -262,7 +262,7 @@ func TestSupervisorSnapshotsAreAbsoluteRevisionedAndMemoryOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, _, err := reloaded.Resolve(spec.SandboxID)
+	resolved, _, err := reloaded.Load(spec.SandboxID)
 	if err != nil || resolved.InternalToken != spec.InternalToken {
 		t.Fatalf("startup cache did not preload identity/token: %#v, %v", resolved, err)
 	}

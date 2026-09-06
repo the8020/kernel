@@ -2,13 +2,13 @@
 package instance
 
 import (
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"the8020/kernel/identity"
 
 	"github.com/pelletier/go-toml/v2"
 	"golang.org/x/sys/unix"
@@ -39,7 +39,7 @@ type Paths struct {
 	Run                    string
 	Logs                   string
 	Runtime                string
-	RuntimeGroups          string
+	RuntimeSandboxes       string
 	RuntimeSandboxHistory  string
 	RuntimePorts           string
 	RuntimeServices        string
@@ -128,7 +128,7 @@ func NewPaths(root string) Paths {
 		DevelopmentImage: filepath.Join(runtimeImages, "development"), RuntimeVersionsFile: filepath.Join(runtimeDefinitions, "versions.toml"),
 		Database: filepath.Join(root, "database"), NodeSettingsFile: filepath.Join(root, "kernel.toml"), Run: run,
 		Logs: filepath.Join(kernel, "logs"), Runtime: runtimeState,
-		RuntimeGroups: filepath.Join(runtimeState, "groups"), RuntimeSandboxHistory: filepath.Join(runtimeState, "sandbox-history"), RuntimePorts: filepath.Join(runtimeState, "ports"), RuntimeServices: filepath.Join(runtimeState, "services"), RuntimeServicePools: filepath.Join(runtimeState, "service-pools"),
+		RuntimeSandboxes: filepath.Join(runtimeState, "sandboxes"), RuntimeSandboxHistory: filepath.Join(runtimeState, "sandbox-history"), RuntimePorts: filepath.Join(runtimeState, "ports"), RuntimeServices: filepath.Join(runtimeState, "services"), RuntimeServicePools: filepath.Join(runtimeState, "service-pools"),
 		RuntimeAttachments: filepath.Join(runtimeState, "attachments"), RuntimeTemporary: filepath.Join(runtimeState, "tmp"),
 		RuntimeDevelopment:     filepath.Join(runtimeState, "development"),
 		RuntimeKernelSocketDir: filepath.Join(runtimeState, "kernel-api"),
@@ -270,7 +270,7 @@ func Initialize(paths Paths) (string, error) {
 			return "", fmt.Errorf("set workspace directory permissions %s: %w", dir, err)
 		}
 	}
-	for _, dir := range []string{paths.Kernel, paths.Bin, paths.Database, paths.RuntimeDefinitions, paths.RuntimeRootlessImage, paths.RuntimeFullImage, paths.DevelopmentImage, paths.Run, paths.Logs, paths.Runtime, paths.RuntimeGroups, paths.RuntimeSandboxHistory, paths.RuntimePorts, paths.RuntimeServices, paths.RuntimeServicePools, paths.RuntimeAttachments, paths.RuntimeTemporary, paths.RuntimeDevelopment, paths.RuntimeKernelSocketDir, paths.SSH} {
+	for _, dir := range []string{paths.Kernel, paths.Bin, paths.Database, paths.RuntimeDefinitions, paths.RuntimeRootlessImage, paths.RuntimeFullImage, paths.DevelopmentImage, paths.Run, paths.Logs, paths.Runtime, paths.RuntimeSandboxes, paths.RuntimeSandboxHistory, paths.RuntimePorts, paths.RuntimeServices, paths.RuntimeServicePools, paths.RuntimeAttachments, paths.RuntimeTemporary, paths.RuntimeDevelopment, paths.RuntimeKernelSocketDir, paths.SSH} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return "", fmt.Errorf("create runtime directory %s: %w", dir, err)
 		}
@@ -324,7 +324,7 @@ func ensureIdentity(path string) (string, error) {
 			return parseIdentity(id)
 		}
 	}
-	uuid, err := newUUID()
+	id, err := identity.New("nod")
 	if err != nil {
 		return "", err
 	}
@@ -332,7 +332,7 @@ func ensureIdentity(path string) (string, error) {
 	if node == nil {
 		node = map[string]any{}
 	}
-	node["id"] = uuid
+	node["id"] = id
 	document["node"] = node
 	encoded, err := toml.Marshal(document)
 	if err != nil {
@@ -341,25 +341,14 @@ func ensureIdentity(path string) (string, error) {
 	if err := writePrivateFile(path, encoded); err != nil {
 		return "", err
 	}
-	return uuid, nil
+	return id, nil
 }
 
-func parseIdentity(uuid string) (string, error) {
-	if len(uuid) != 36 {
-		return "", errors.New("invalid node.id in kernel.toml")
+func parseIdentity(id string) (string, error) {
+	if !identity.Is(id, "nod") {
+		return "", errors.New("invalid node.id in kernel.toml: expected nod- and ten lowercase alphanumeric characters")
 	}
-	for index, character := range uuid {
-		if index == 8 || index == 13 || index == 18 || index == 23 {
-			if character != '-' {
-				return "", errors.New("invalid node.id in kernel.toml")
-			}
-			continue
-		}
-		if !strings.ContainsRune("0123456789abcdefABCDEF", character) {
-			return "", errors.New("invalid node.id in kernel.toml")
-		}
-	}
-	return uuid, nil
+	return id, nil
 }
 
 func writePrivateFile(path string, data []byte) error {
@@ -385,17 +374,6 @@ func writePrivateFile(path string, data []byte) error {
 		return fmt.Errorf("write kernel.toml: %w", err)
 	}
 	return nil
-}
-
-func newUUID() (string, error) {
-	var value [16]byte
-	if _, err := rand.Read(value[:]); err != nil {
-		return "", fmt.Errorf("generate instance UUID: %w", err)
-	}
-	value[6] = value[6]&0x0f | 0x40
-	value[8] = value[8]&0x3f | 0x80
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
-		value[0:4], value[4:6], value[6:8], value[8:10], value[10:16]), nil
 }
 
 // Lock is the authoritative process-lifetime lock for one instance.

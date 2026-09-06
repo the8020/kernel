@@ -1,3 +1,4 @@
+import { newId } from "../identity/mod.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 // Preload the public module in the trusted bootstrap graph so applications can
 // import it without gaining read access to the runtime implementation.
@@ -22,7 +23,9 @@ import {
 } from "./mod.ts";
 
 export interface KernelExecutionContext {
-  readonly requestId: string;
+  readonly contextId: string;
+  readonly parentContextId?: string;
+  readonly jobRunId?: string;
   readonly serviceId: string;
   readonly persistentExecutionId?: string;
   readonly user: ExecutionUserMetadata;
@@ -45,6 +48,7 @@ interface Pending {
 }
 
 export interface KernelBridge {
+  executionContext(): KernelExecutionContext | undefined;
   withRequest<Result>(
     metadata: ServiceRequestMetadata,
     invoke: () => Result,
@@ -65,10 +69,9 @@ export function createKernelBridge(
 ): KernelBridge {
   const worker = Object.freeze({
     nodeId: metadata.nodeId,
-    runtimeGroupId: metadata.runtimeGroupId,
+
     sandboxId: metadata.sandboxId,
     workerId: metadata.workerId,
-    executionId: metadata.executionId,
     workloadType: metadata.workloadType,
     workloadId: metadata.workloadId,
     serviceId: metadata.service?.serviceId,
@@ -77,7 +80,6 @@ export function createKernelBridge(
     origin: canonicalExecutionOrigin(metadata.origin, metadata.workloadType),
   });
   const databaseBackend: DatabaseBackend = worker.databaseBackend;
-  let sequence = 0;
   const requestContext = new AsyncLocalStorage<KernelExecutionContext>();
   const pending = new Map<string, Pending>();
   const releaseContextProvider = installContextProvider(() => {
@@ -92,15 +94,19 @@ export function createKernelBridge(
       username: user.username,
       authenticated: active.auth?.authenticated === true,
       nodeId: worker.nodeId,
-      runtimeGroupId: worker.runtimeGroupId,
+
       sandboxId: worker.sandboxId,
       workerId: worker.workerId,
-      executionId: worker.executionId,
-      requestId: active.requestId,
+      contextId: active.contextId,
+      parentContextId: active.parentContextId,
+      jobRunId: active.jobRunId,
+      serviceInstanceId: worker.workloadType === "service"
+        ? worker.workloadId
+        : undefined,
       persistentExecutionId: active.persistentExecutionId,
     }) satisfies ExecutionContext;
   });
-  const invoke: KernelInvoke = (operation, input) => {
+  const invoke: KernelInvoke = (operation, input, callSignal) => {
     const request = requestContext.getStore();
     if (request === undefined && operation !== "database.info") {
       return Promise.reject(
@@ -115,11 +121,16 @@ export function createKernelBridge(
         new Error("persistent execution context is unavailable"),
       );
     }
-    const correlationId = `kernel-${++sequence}-${crypto.randomUUID()}`;
+    const correlationId = newId("cor");
+    if (pending.has(correlationId)) {
+      return Promise.reject(new Error("kernel correlation collision"));
+    }
     const result = new Promise<unknown>((resolve, reject) => {
       const signal = operation === "database.scope.close"
         ? undefined
-        : request?.signal;
+        : callSignal && request?.signal
+        ? AbortSignal.any([callSignal, request.signal])
+        : callSignal ?? request?.signal;
       const abort = (): void => {
         const call = pending.get(correlationId);
         if (call === undefined) return;
@@ -143,7 +154,9 @@ export function createKernelBridge(
         operation,
         arguments: input,
         request: request === undefined ? undefined : {
-          requestId: request.requestId,
+          contextId: request.contextId,
+          parentContextId: request.parentContextId,
+          jobRunId: request.jobRunId,
           serviceId: request.serviceId,
           persistentExecutionId: request.persistentExecutionId,
           user: request.user,
@@ -162,6 +175,7 @@ export function createKernelBridge(
   ] = databaseBackend;
 
   return {
+    executionContext: () => requestContext.getStore(),
     async closeExecution(): Promise<void> {
       await invoke("database.scope.close", {});
     },
@@ -172,7 +186,8 @@ export function createKernelBridge(
     ): Result {
       return requestContext.run(
         Object.freeze({
-          requestId: metadata.requestId,
+          contextId: metadata.contextId,
+          parentContextId: metadata.parentContextId,
           serviceId: metadata.serviceId,
           persistentExecutionId: metadata.persistentExecutionId,
           user: canonicalExecutionUser(metadata.user),
@@ -227,7 +242,9 @@ function immutableKernelContext(
   value: KernelExecutionContext,
 ): KernelExecutionContext {
   return Object.freeze({
-    requestId: value.requestId,
+    contextId: value.contextId,
+    parentContextId: value.parentContextId,
+    jobRunId: value.jobRunId,
     serviceId: value.serviceId,
     persistentExecutionId: value.persistentExecutionId,
     user: canonicalExecutionUser(value.user),

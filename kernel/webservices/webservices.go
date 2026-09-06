@@ -4,9 +4,7 @@ package webservices
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	idgen "the8020/kernel/identity"
 	"time"
 	"unicode/utf8"
 
@@ -32,7 +31,6 @@ import (
 	executionservices "the8020/kernel/execution/services"
 	executionworkers "the8020/kernel/execution/workers"
 	workspacepackages "the8020/kernel/packages"
-	"the8020/kernel/sandbox/model"
 )
 
 const internalHeaderPrefix = "the8020-internal-"
@@ -114,10 +112,10 @@ const (
 )
 
 type ServiceSandboxStatus struct {
-	Index              int       `json:"index"`
-	Version            uint64    `json:"version"`
-	PoolID             string    `json:"pool_id"`
-	RuntimeGroupID     string    `json:"runtime_group_id"`
+	Index   int    `json:"index"`
+	Version uint64 `json:"version"`
+	PoolID  string `json:"pool_id"`
+
 	SandboxID          string    `json:"sandbox_id"`
 	WorkerIDs          []string  `json:"worker_ids"`
 	ActiveRequests     int       `json:"active_requests"`
@@ -240,6 +238,9 @@ func New(config Config) (*Manager, error) {
 	if config.ObservedRoot == "" {
 		return nil, errors.New("node-local observed service root is required")
 	}
+	if !idgen.Is(config.NodeID, "nod") {
+		return nil, errors.New("canonical node ID is required")
+	}
 	if err := os.MkdirAll(config.ObservedRoot, 0o700); err != nil {
 		return nil, err
 	}
@@ -251,9 +252,6 @@ func New(config Config) (*Manager, error) {
 	}
 	background, stopBackground := context.WithCancel(context.Background())
 	manager := &Manager{index: config.Index, pools: config.Pools, observed: config.ObservedRoot, interval: config.ReconcileInterval, startup: config.StartupTimeout, logger: config.Logger, authentication: config.Authentication, authenticator: config.Authenticator, nodes: config.Nodes, services: map[string]*runtimeService{}, signing: config.Signing, nodeID: config.NodeID, background: background, stopBackground: stopBackground, maintenanceSet: map[string]bool{}}
-	if manager.nodeID == "" {
-		manager.nodeID = "local"
-	}
 	if err := config.Router.RegisterServiceBoundary(manager); err != nil {
 		return nil, err
 	}
@@ -720,7 +718,6 @@ func (m *Manager) syncRetiredSandboxes(serviceID string, records []executionserv
 		sandbox.status.Index = record.SandboxIndex
 		sandbox.status.Version = record.Generation
 		sandbox.status.PoolID = record.ServiceID
-		sandbox.status.RuntimeGroupID = record.RuntimeGroupID
 		sandbox.status.SandboxID = record.SandboxID
 		sandbox.status.WorkerIDs = append([]string(nil), record.WorkerIDs...)
 		retired = append(retired, sandbox)
@@ -748,7 +745,6 @@ func (m *Manager) refreshVersion(ctx context.Context, definition Specification, 
 		}
 		status := sandbox.status
 		status.Version = record.Generation
-		status.RuntimeGroupID = record.RuntimeGroupID
 		status.SandboxID = record.SandboxID
 		status.WorkerIDs = append([]string{}, record.WorkerIDs...)
 		refreshed[sandbox] = status
@@ -763,7 +759,6 @@ func (m *Manager) refreshVersion(ctx context.Context, definition Specification, 
 	for _, sandbox := range sandboxes {
 		record, err := m.pools.ReconcileCapacity(ctx, sandbox.status.PoolID, minimumWorkers[sandbox.status.Index])
 		status := refreshed[sandbox]
-		status.RuntimeGroupID = record.RuntimeGroupID
 		status.SandboxID = record.SandboxID
 		status.WorkerIDs = append([]string{}, record.WorkerIDs...)
 		refreshed[sandbox] = status
@@ -1070,31 +1065,39 @@ func (m *Manager) prepareSandbox(ctx context.Context, definition Specification, 
 	if err != nil {
 		return nil, err
 	}
-	poolID := versionPoolID(definition.Identity.ServiceID(), definition.Release, index)
-	record, err := m.pools.Start(ctx, poolID, definition.EntrypointURL, executionservices.Options{
-		User:                 user,
-		GroupKey:             definition.Effective.Placement.SandboxGroup,
-		Namespace:            definition.Identity.Namespace,
-		MinimumWorkers:       minimumWorkers,
-		MaximumWorkers:       definition.Effective.Placement.WorkersPerSandbox,
-		ConcurrencyPerWorker: definition.Effective.Scaling.ConcurrencyPerWorker,
-		WorkerKeepAlive:      definition.Effective.Scaling.WorkerKeepAlive,
-		ReleaseID:            "service-version-" + definition.Release,
-		LogicalServiceID:     definition.Identity.ServiceID(),
-		Generation:           definition.Version,
-		CanonicalBasePath:    definition.Identity.CanonicalBasePath(),
-		OpenAPI:              definition.OpenAPI,
-		ValidateEntrypoint:   true,
-		SandboxIndex:         index,
-		ExecutionMode:        serviceExecutionMode(definition),
-		TargetUtilization:    definition.Effective.Scaling.TargetUtilization,
-		PlacementWorkers:     initialWorkers,
-	})
-	acquired := err == nil
+	record, found, err := m.poolForPlacement(definition, index)
 	if err != nil {
-		if existing, inspectErr := m.pools.Inspect(poolID); inspectErr == nil && (existing.State == "READY" || existing.State == "IDLE") && existing.ReleaseID == "service-version-"+definition.Release {
-			record, err, acquired = existing, nil, true
+		return nil, err
+	}
+	poolID := record.ServiceID
+	if !found {
+		poolID, err = idgen.New("srv")
+		if err != nil {
+			return nil, err
 		}
+	}
+	acquired := found && (record.State == "READY" || record.State == "IDLE")
+	if !acquired {
+		record, err = m.pools.Start(ctx, poolID, definition.EntrypointURL, executionservices.Options{
+			User:                 user,
+			GroupKey:             definition.Effective.Placement.SandboxGroup,
+			Namespace:            definition.Identity.Namespace,
+			MinimumWorkers:       minimumWorkers,
+			MaximumWorkers:       definition.Effective.Placement.WorkersPerSandbox,
+			ConcurrencyPerWorker: definition.Effective.Scaling.ConcurrencyPerWorker,
+			WorkerKeepAlive:      definition.Effective.Scaling.WorkerKeepAlive,
+			ReleaseID:            "service-version-" + definition.Release,
+			LogicalServiceID:     definition.Identity.ServiceID(),
+			Generation:           definition.Version,
+			CanonicalBasePath:    definition.Identity.CanonicalBasePath(),
+			OpenAPI:              definition.OpenAPI,
+			ValidateEntrypoint:   true,
+			SandboxIndex:         index,
+			ExecutionMode:        serviceExecutionMode(definition),
+			TargetUtilization:    definition.Effective.Scaling.TargetUtilization,
+			PlacementWorkers:     initialWorkers,
+		})
+		acquired = err == nil
 	}
 	if err == nil && len(record.WorkerIDs) != initialWorkers {
 		record, err = m.pools.Scale(ctx, poolID, initialWorkers)
@@ -1119,7 +1122,7 @@ func (m *Manager) prepareSandbox(ctx context.Context, definition Specification, 
 		}
 		return nil, err
 	}
-	return &runtimeSandbox{status: ServiceSandboxStatus{Index: index, Version: record.Generation, PoolID: poolID, RuntimeGroupID: record.RuntimeGroupID, SandboxID: record.SandboxID, WorkerIDs: append([]string{}, record.WorkerIDs...)}}, nil
+	return &runtimeSandbox{status: ServiceSandboxStatus{Index: index, Version: record.Generation, PoolID: poolID, SandboxID: record.SandboxID, WorkerIDs: append([]string{}, record.WorkerIDs...)}}, nil
 }
 
 func (m *Manager) stopRuntime(ctx context.Context, definition Specification) (Status, error) {
@@ -1279,7 +1282,10 @@ func (m *Manager) Validate(ctx context.Context, serviceID string) ValidationResu
 	if err != nil {
 		return ValidationResult{ServiceID: serviceID, Error: err.Error()}
 	}
-	validationID := validationPoolID(serviceID)
+	validationID, err := idgen.New("srv")
+	if err != nil {
+		return ValidationResult{ServiceID: serviceID, Error: err.Error()}
+	}
 	record, err := m.pools.Start(ctx, validationID, definition.EntrypointURL, executionservices.Options{
 		User:     user,
 		GroupKey: "validation-" + validationID, Namespace: definition.Identity.Namespace,
@@ -1515,7 +1521,7 @@ func (m *Manager) dispatch(writer http.ResponseWriter, request *http.Request, id
 		http.Error(writer, "service unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	requestID, err := model.NewID("request")
+	requestID, err := idgen.New("ctx")
 	if err != nil {
 		m.finishRequest(runtime, sandbox, 0, 0, 0, false)
 		http.Error(writer, "service unavailable", http.StatusServiceUnavailable)
@@ -1544,7 +1550,7 @@ func (m *Manager) dispatch(writer http.ResponseWriter, request *http.Request, id
 		}
 	}
 	forwarded.Header.Del(RouteHeader)
-	forwarded.Header.Set(internalHeaderPrefix+"request-id", requestID)
+	forwarded.Header.Set(internalHeaderPrefix+"context-id", requestID)
 	forwarded.Header.Set(internalHeaderPrefix+"service-id", identity.ServiceID())
 	m.mu.Lock()
 	loadedVersion := runtime.status.LoadedVersion
@@ -1571,7 +1577,7 @@ func (m *Manager) dispatch(writer http.ResponseWriter, request *http.Request, id
 	if dispatchErr != nil {
 		m.finishRequest(runtime, sandbox, 0, 0, time.Since(started), errors.Is(ctx.Err(), context.DeadlineExceeded))
 		if m.logger != nil {
-			m.logger.Error("service request dispatch failed", "service_id", identity.ServiceID(), "request_id", requestID, "error", dispatchErr)
+			m.logger.Error("service request dispatch failed", "service_id", identity.ServiceID(), "context_id", requestID, "error", dispatchErr)
 		}
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			http.Error(writer, "service request timed out", http.StatusGatewayTimeout)
@@ -1599,10 +1605,10 @@ func (m *Manager) dispatch(writer http.ResponseWriter, request *http.Request, id
 	duration := time.Since(started)
 	m.finishRequest(runtime, sandbox, response.StatusCode, uint64(max64(written, 0)), duration, errors.Is(ctx.Err(), context.DeadlineExceeded))
 	if m.logger != nil {
-		m.logger.Info("service request completed", "package_id", identity.PackageID(), "service_id", identity.ServiceID(), "request_id", requestID, "runtime_group_id", sandbox.status.RuntimeGroupID, "sandbox_id", sandbox.status.SandboxID, "duration", duration, "status_code", response.StatusCode, "bytes_streamed", max64(written, 0))
+		m.logger.Info("service request completed", "package_id", identity.PackageID(), "service_id", identity.ServiceID(), "context_id", requestID, "sandbox_id", sandbox.status.SandboxID, "duration", duration, "status_code", response.StatusCode, "bytes_streamed", max64(written, 0))
 	}
 	if copyErr != nil && m.logger != nil {
-		m.logger.Error("service response stream failed", "service_id", runtime.status.ServiceID, "request_id", requestID, "error", copyErr)
+		m.logger.Error("service response stream failed", "service_id", runtime.status.ServiceID, "context_id", requestID, "error", copyErr)
 	}
 }
 
@@ -1621,7 +1627,7 @@ func (m *Manager) dispatchRequestWebSocket(writer http.ResponseWriter, request *
 }
 
 func (m *Manager) dispatchWebSocket(writer http.ResponseWriter, request *http.Request, identity workspacepackages.Identity, runtime *runtimeService, sandbox *runtimeSandbox, relativePath string, authentication *authenticationSetup, user execution.User, persistent *persistentDispatch) bool {
-	requestID, err := model.NewID("request")
+	requestID, err := idgen.New("ctx")
 	if err != nil {
 		http.Error(writer, "service unavailable", http.StatusServiceUnavailable)
 		return false
@@ -1644,7 +1650,7 @@ func (m *Manager) dispatchWebSocket(writer http.ResponseWriter, request *http.Re
 		}
 	}
 	forwarded.Header.Del(RouteHeader)
-	forwarded.Header.Set(internalHeaderPrefix+"request-id", requestID)
+	forwarded.Header.Set(internalHeaderPrefix+"context-id", requestID)
 	forwarded.Header.Set(internalHeaderPrefix+"service-id", identity.ServiceID())
 	m.mu.Lock()
 	loadedVersion := runtime.status.LoadedVersion
@@ -1669,7 +1675,7 @@ func (m *Manager) dispatchWebSocket(writer http.ResponseWriter, request *http.Re
 	setAuthenticationMetadata(forwarded.Header, authentication, user)
 	if err := m.pools.ProxyWebSocket(request.Context(), sandbox.status.PoolID, writer, forwarded, func(response *http.Response) error { return m.prepareServiceResponse(response, persistent) }); err != nil {
 		if m.logger != nil {
-			m.logger.Error("service WebSocket proxy failed", "service_id", identity.ServiceID(), "request_id", requestID, "pool_id", sandbox.status.PoolID, "error", err)
+			m.logger.Error("service WebSocket proxy failed", "service_id", identity.ServiceID(), "context_id", requestID, "pool_id", sandbox.status.PoolID, "error", err)
 		}
 		http.Error(writer, "service proxy failed", http.StatusBadGateway)
 		return false
@@ -2323,17 +2329,27 @@ func requestScheme(request *http.Request) string {
 	return "http"
 }
 func cloneURL(value *url.URL) *url.URL { copied := *value; return &copied }
-func versionPoolID(serviceID, release string, index int) string {
-	return hashedID("service", fmt.Sprintf("%s\x00%s\x00%d", serviceID, release, index))
+
+// poolForPlacement resolves existing allocation state by its explicit placement
+// fields. The opaque instance ID never encodes a version or placement slot.
+func (m *Manager) poolForPlacement(definition Specification, index int) (executionservices.Record, bool, error) {
+	records, err := m.pools.ListForService(definition.Identity.ServiceID())
+	if err != nil {
+		return executionservices.Record{}, false, err
+	}
+	var found executionservices.Record
+	for _, record := range records {
+		if record.LogicalServiceID != definition.Identity.ServiceID() || record.ReleaseID != "service-version-"+definition.Release || record.Generation != definition.Version || record.SandboxIndex != index || record.State == "DRAINING" {
+			continue
+		}
+		if found.ServiceID != "" {
+			return executionservices.Record{}, false, errors.New("conflicting service allocations for placement slot")
+		}
+		found = record
+	}
+	return found, found.ServiceID != "", nil
 }
-func validationPoolID(serviceID string) string {
-	id, _ := model.NewID("validation")
-	return hashedID("validation", serviceID+"\x00"+id)
-}
-func hashedID(prefix, value string) string {
-	sum := sha256.Sum256([]byte(value))
-	return prefix + "-" + hex.EncodeToString(sum[:16])
-}
+
 func sandboxesOf(service *runtimeService) []*runtimeSandbox {
 	if service == nil {
 		return nil

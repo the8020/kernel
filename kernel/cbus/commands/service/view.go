@@ -20,7 +20,7 @@ func Observed(ctx context.Context, status webservices.Status, sandboxes services
 	uniqueWorkers := map[string]bool{}
 	for index := range status.Sandboxes {
 		sandbox := &status.Sandboxes[index]
-		inspection, err := sandboxes.Inspect(ctx, sandbox.RuntimeGroupID)
+		inspection, err := sandboxes.Inspect(ctx, sandbox.SandboxID)
 		if err != nil || inspection.Runtime.Revision == 0 {
 			for _, workerID := range sandbox.WorkerIDs {
 				uniqueWorkers[workerID] = true
@@ -62,11 +62,11 @@ func Refresh(ctx context.Context, status webservices.Status, sandboxes services.
 	seen := map[string]bool{}
 	groups := make([]string, 0, len(status.Sandboxes))
 	for _, sandbox := range status.Sandboxes {
-		if seen[sandbox.RuntimeGroupID] {
+		if seen[sandbox.SandboxID] {
 			continue
 		}
-		seen[sandbox.RuntimeGroupID] = true
-		groups = append(groups, sandbox.RuntimeGroupID)
+		seen[sandbox.SandboxID] = true
+		groups = append(groups, sandbox.SandboxID)
 	}
 	if len(groups) == 0 {
 		return Observed(ctx, status, sandboxes), nil
@@ -81,8 +81,8 @@ func Refresh(ctx context.Context, status webservices.Status, sandboxes services.
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
-			for runtimeGroupID := range jobs {
-				if _, err := sandboxes.Refresh(refreshContext, runtimeGroupID); err != nil {
+			for sandboxID := range jobs {
+				if _, err := sandboxes.Refresh(refreshContext, sandboxID); err != nil {
 					failureOnce.Do(func() {
 						failure = err
 						cancel()
@@ -93,9 +93,9 @@ func Refresh(ctx context.Context, status webservices.Status, sandboxes services.
 		}()
 	}
 send:
-	for _, runtimeGroupID := range groups {
+	for _, sandboxID := range groups {
 		select {
-		case jobs <- runtimeGroupID:
+		case jobs <- sandboxID:
 		case <-refreshContext.Done():
 			break send
 		}

@@ -76,7 +76,7 @@ func TestImageSmokeUsesVersionedRuntimeControlEnvelopes(t *testing.T) {
 		`\"message_type\":\"start_worker\"`,
 		`\"message_type\":\"job_start\"`,
 		`\"message_type\":\"stop_worker\"`,
-		`\"runtime_group_id\":\"$SMOKE_ID\"`,
+		`\"sandbox_id\":\"$SMOKE_ID\"`,
 		`\"correlation_id\":\"smoke-start\"`,
 		`\"correlation_id\":\"smoke-job\"`,
 		`\"correlation_id\":\"smoke-stop\"`,

@@ -17,7 +17,7 @@ Parent DOX: [kernel/kernel/runtime DOX](../AGENTS.md).
 - `defaults/config/runtime/protocol/schema.json` is authoritative;
   `go run ./kernel/cbus/gen` is the only writer.
 - Every envelope validates protocol version, generated message type, and
-  runtime-group identity; correlation IDs are enforced by the applicable
+  sandbox identity; correlation IDs are enforced by the applicable
   consumer.
 
 # Work Guidance

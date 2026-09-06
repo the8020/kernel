@@ -33,13 +33,31 @@ Parent DOX: [kernel/kernel/sandbox DOX](../AGENTS.md).
   requires both for Unix-socket connection; the surrounding bind mount remains
   read-only. Service supervisors alone may execute the pinned Deno binary for
   in-sandbox type checking; application Workers never receive run permission.
+- The existing private mount also exposes /run/the8020/logs.sock; shared Deno
+  argument construction grants that exact socket to supervisors. Application
+  Worker permissions remain separately constructed and omit both private
+  sockets.
 - Backend calls are context bounded and idempotent where lifecycle
   reconciliation requires retries.
+- Create requires stdout/stderr FIFO paths from the logging lifecycle owner.
+  Both endpoints must be distinct absolute named pipes. Native runtimes write
+  directly to those endpoints, without a kernel copy loop or backend-owned log
+  files. Backends never create or unlink them; interactive exec streams retain
+  their caller-owned console behavior.
+- OpenRawOutput validates and opens logger-owned FIFO descriptors without an
+  indefinite open. OutputBuffer retains bounded native command head/tail,
+  preserving UTF-8 at omission boundaries. Both direct runtime and development
+  runsc drivers use these helpers; command deadlines and lifecycle stay with
+  their respective driver.
 - `ListOwned` enumerates instance-owned metadata without task or supervisor
   health probes so default crash-restart destruction is independent of stale
   runtime responsiveness; `List` remains the full observed-task inventory.
 
 # Work Guidance
+
+- Pinned Deno 2.9 Unix connections require read, write and unix:<path> network
+  grants. Include both private socket network grants even when outbound network
+  access is otherwise restricted; preserve those restrictions for other targets.
 
 - Keep pure OCI construction testable without a live daemon; reserve real-daemon
   behavior for privileged integration tests.

@@ -35,11 +35,11 @@ func (f *fakeCoordinator) Ensure(_ context.Context, request coordinator.Request)
 	if f.ensureErr != nil {
 		return manager.Inspection{}, f.ensureErr
 	}
-	return manager.Inspection{Spec: model.SandboxSpec{SandboxID: "sandbox", RuntimeGroupID: "group", WorkloadType: model.WorkloadService, Network: model.NetworkConfiguration{SandboxIP: "10.88.0.2"}, Permissions: model.Permissions{ReadPaths: []string{"/programs"}}}}, nil
+	return manager.Inspection{Spec: model.SandboxSpec{SandboxID: "sbx-0123456789", WorkloadType: model.WorkloadService, Network: model.NetworkConfiguration{SandboxIP: "10.88.0.2"}, Permissions: model.Permissions{ReadPaths: []string{"/programs"}}}}, nil
 }
 
-func (f *fakeCoordinator) Release(_ context.Context, groupID, ownerID, serviceID string) error {
-	f.releases = append(f.releases, groupID+":"+ownerID+":"+serviceID)
+func (f *fakeCoordinator) Release(_ context.Context, sandboxID, ownerID, serviceID string) error {
+	f.releases = append(f.releases, sandboxID+":"+ownerID+":"+serviceID)
 	return f.releaseErr
 }
 
@@ -195,7 +195,7 @@ func (f *fakeWorkers) Start(_ context.Context, group string, request supervisor.
 	if f.startErr != nil {
 		return workers.Record{}, f.startErr
 	}
-	return workers.Record{RuntimeGroupID: group, Worker: supervisor.WorkerStatus{WorkerID: request.Metadata.WorkerID}}, nil
+	return workers.Record{SandboxID: group, Worker: supervisor.WorkerStatus{WorkerID: request.Metadata.WorkerID}}, nil
 }
 func (f *fakeWorkers) List(_ context.Context, group string) ([]workers.Record, error) {
 	if f.listErr != nil {
@@ -212,7 +212,7 @@ func (f *fakeWorkers) List(_ context.Context, group string) ([]workers.Record, e
 			if state == "" {
 				state = "ready"
 			}
-			result = append(result, workers.Record{RuntimeGroupID: group, Worker: supervisor.WorkerStatus{WorkerID: request.Metadata.WorkerID, WorkloadID: request.Metadata.WorkloadID, InFlight: f.inFlight[request.Metadata.WorkerID], IdleSinceMS: f.idleSinceMS[request.Metadata.WorkerID], State: state}})
+			result = append(result, workers.Record{SandboxID: group, Worker: supervisor.WorkerStatus{WorkerID: request.Metadata.WorkerID, WorkloadID: request.Metadata.WorkloadID, InFlight: f.inFlight[request.Metadata.WorkerID], IdleSinceMS: f.idleSinceMS[request.Metadata.WorkerID], State: state}})
 		}
 	}
 	return result, nil
@@ -224,7 +224,7 @@ func TestServiceRestoreMarksAStaleRuntimeRecordFailedSoItCanRestart(t *testing.T
 		t.Fatal(err)
 	}
 	record := testRecord("api")
-	record.RuntimeGroupID, record.SandboxID, record.WorkerIDs, record.State = "missing-group", "missing-sandbox", []string{"missing-worker"}, "READY"
+	record.SandboxID, record.WorkerIDs, record.State = "missing-sandbox", []string{"missing-worker"}, "READY"
 	if err := store.Save(record.ServiceID, record); err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +237,7 @@ func TestServiceRestoreMarksAStaleRuntimeRecordFailedSoItCanRestart(t *testing.T
 		t.Fatal(err)
 	}
 	failed, err := manager.Inspect("api")
-	if err != nil || failed.State != "FAILED" || !strings.Contains(failed.Failure, "restore runtime group") {
+	if err != nil || failed.State != "FAILED" || !strings.Contains(failed.Failure, "restore sandbox") {
 		t.Fatalf("failed=%#v err=%v", failed, err)
 	}
 }
@@ -249,7 +249,7 @@ func TestServiceRestoreRejectsPersistedFailedWorker(t *testing.T) {
 	}
 	const workerID = "worker-failed"
 	record := testRecord("api")
-	record.RuntimeGroupID, record.SandboxID, record.WorkerIDs, record.State = "group", "sandbox", []string{workerID}, "READY"
+	record.SandboxID, record.WorkerIDs, record.State = "sbx-0123456789", []string{workerID}, "READY"
 	if err := store.Save(record.ServiceID, record); err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +269,7 @@ func TestServiceRestoreRejectsPersistedFailedWorker(t *testing.T) {
 		t.Fatalf("failed=%#v err=%v", failed, err)
 	}
 }
-func (f *fakeWorkers) StopInGroup(_ context.Context, _ string, workerID string, _ bool) error {
+func (f *fakeWorkers) StopInSandbox(_ context.Context, _ string, workerID string, _ bool) error {
 	if err := f.stopErrors[workerID]; err != nil {
 		return err
 	}
@@ -348,7 +348,7 @@ func TestServiceStopDrainsOccupiedWorkersWithoutError(t *testing.T) {
 	}
 }
 
-func TestServiceStopRetiresMissingRuntimeGroupAndRecord(t *testing.T) {
+func TestServiceStopRetiresMissingSandboxAndRecord(t *testing.T) {
 	store, _ := records.New(t.TempDir())
 	workersFake := &fakeWorkers{listErr: os.ErrNotExist}
 	coordinatorFake := &fakeCoordinator{}
@@ -357,7 +357,7 @@ func TestServiceStopRetiresMissingRuntimeGroupAndRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	record := testRecord("stale-pool")
-	record.LogicalServiceID, record.RuntimeGroupID, record.SandboxID = "core/example/service", "missing-group", "missing-sandbox"
+	record.LogicalServiceID, record.SandboxID = "core/example/service", "missing-sandbox"
 	record.WorkerIDs, record.State = []string{"missing-worker"}, "FAILED"
 	if err := store.Save(record.ServiceID, record); err != nil {
 		t.Fatal(err)
@@ -412,10 +412,10 @@ func TestRejectedServiceStartReleasesGroupAndDiscardsPoolRecord(t *testing.T) {
 	}
 }
 
-func TestServiceStopTreatsAnAlreadyRemovedRuntimeGroupAsReleased(t *testing.T) {
+func TestServiceStopTreatsAnAlreadyRemovedSandboxAsReleased(t *testing.T) {
 	store, _ := records.New(t.TempDir())
 	record := testRecord("stale-pool")
-	record.LogicalServiceID, record.RuntimeGroupID, record.SandboxID = "core/example/service", "missing-group", "missing-sandbox"
+	record.LogicalServiceID, record.SandboxID = "core/example/service", "missing-sandbox"
 	record.WorkerIDs, record.State = []string{"missing-worker"}, "FAILED"
 	if err := store.Save(record.ServiceID, record); err != nil {
 		t.Fatal(err)
@@ -442,7 +442,7 @@ func TestRetireUnavailableRequiresNoRuntimeCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	record := testRecord("failed-pool")
-	record.LogicalServiceID, record.RuntimeGroupID, record.SandboxID = "core/example/service", "absent-group", "absent-sandbox"
+	record.LogicalServiceID, record.SandboxID = "core/example/service", "absent-sandbox"
 	record.WorkerIDs, record.State = []string{"absent-worker"}, "FAILED"
 	if err := store.Save(record.ServiceID, record); err != nil {
 		t.Fatal(err)
@@ -468,7 +468,7 @@ func (f *fakeWorkers) ServiceOpenAPI(context.Context, string, string) (map[strin
 func TestOpenAPIFailureDoesNotOverwriteAReplacementPool(t *testing.T) {
 	store, _ := records.New(t.TempDir())
 	original := testRecord("api-pool")
-	original.State, original.RuntimeGroupID, original.ReleaseID, original.Generation = "READY", "old-group", "old-release", 1
+	original.State, original.SandboxID, original.ReleaseID, original.Generation = "READY", "old-group", "old-release", 1
 	original.WorkerIDs = []string{"old-worker"}
 	if err := store.Save(original.ServiceID, original); err != nil {
 		t.Fatal(err)
@@ -486,7 +486,7 @@ func TestOpenAPIFailureDoesNotOverwriteAReplacementPool(t *testing.T) {
 	<-workersFake.started
 	unlock := manager.lock(original.ServiceID)
 	replacement := original
-	replacement.RuntimeGroupID, replacement.ReleaseID, replacement.Generation = "new-group", "new-release", 2
+	replacement.SandboxID, replacement.ReleaseID, replacement.Generation = "new-group", "new-release", 2
 	replacement.WorkerIDs = []string{"new-worker"}
 	if err := manager.save(replacement); err != nil {
 		unlock()
@@ -498,7 +498,7 @@ func TestOpenAPIFailureDoesNotOverwriteAReplacementPool(t *testing.T) {
 		t.Fatalf("OpenAPI error=%v", err)
 	}
 	current, err := manager.Inspect(original.ServiceID)
-	if err != nil || current.State != "READY" || current.RuntimeGroupID != "new-group" || current.Failure != "" {
+	if err != nil || current.State != "READY" || current.SandboxID != "new-group" || current.Failure != "" {
 		t.Fatalf("replacement=%#v err=%v", current, err)
 	}
 }
@@ -551,7 +551,7 @@ func TestPersistentModeUsesTheSamePrewarmedHTTPAndWebSocketWorkerPool(t *testing
 	if err := manager.ProxyWebSocket(context.Background(), record.ServiceID, httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://service/connect", nil), nil); err != nil {
 		t.Fatal(err)
 	}
-	if len(workersFake.websocketCalls) != 1 || workersFake.websocketCalls[0] != "group:chat" {
+	if len(workersFake.websocketCalls) != 1 || workersFake.websocketCalls[0] != "sbx-0123456789:chat" {
 		t.Fatalf("WebSocket calls = %#v", workersFake.websocketCalls)
 	}
 }
@@ -604,7 +604,7 @@ func TestServicePoolScaleStreamingDispatchAndStop(t *testing.T) {
 	if err := manager.ProxyWebSocket(context.Background(), "api", httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://service/events", nil), nil); err != nil {
 		t.Fatal(err)
 	}
-	if len(workersFake.websocketCalls) != 1 || workersFake.websocketCalls[0] != "group:api" {
+	if len(workersFake.websocketCalls) != 1 || workersFake.websocketCalls[0] != "sbx-0123456789:api" {
 		t.Fatalf("request-service WebSocket calls = %#v", workersFake.websocketCalls)
 	}
 	if stopped, err := manager.Stop(context.Background(), "api"); err != nil || !stopped {
@@ -672,7 +672,7 @@ func TestServiceStartRequiresCanonicalScalingPolicy(t *testing.T) {
 	}
 }
 
-func TestRuntimeGroupFailureMarksLiveServiceFailed(t *testing.T) {
+func TestSandboxFailureMarksLiveServiceFailed(t *testing.T) {
 	store, _ := records.New(t.TempDir())
 	coordinatorFake := &fakeCoordinator{}
 	workersFake := &fakeWorkers{}
@@ -681,7 +681,7 @@ func TestRuntimeGroupFailureMarksLiveServiceFailed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.FailGroup(record.RuntimeGroupID, "cgroup OOM"); err != nil {
+	if err := manager.FailSandbox(record.SandboxID, "cgroup OOM"); err != nil {
 		t.Fatal(err)
 	}
 	failed, _ := manager.Inspect(record.ServiceID)
@@ -949,5 +949,33 @@ func TestServiceDispatchRepairsFailedWorkerBeforeForwardingRequest(t *testing.T)
 	}
 	if len(workersFake.starts) != 2 || len(workersFake.stops) != 1 || workersFake.stops[0] != failedWorkerID {
 		t.Fatalf("starts=%d stops=%#v", len(workersFake.starts), workersFake.stops)
+	}
+}
+
+func TestServiceInstanceCollisionPreservesRetainedAllocation(t *testing.T) {
+	store, err := records.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := testRecord("srv-aaaaaaaaaa")
+	original.State = "STOPPED"
+	if err := store.Save(original.ServiceID, original); err != nil {
+		t.Fatal(err)
+	}
+	manager, err := New(&fakeCoordinator{}, &fakeWorkers{}, store, Policy{Strategy: model.GroupingOwner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := testOptions(0, 2, 1)
+	options.LogicalServiceID, options.ReleaseID = "another/service/name", original.ReleaseID
+	if _, err := manager.Start(context.Background(), original.ServiceID, original.Entrypoint, options); err == nil {
+		t.Fatal("foreign service allocation replaced retained record")
+	}
+	var actual Record
+	if err := store.Load(original.ServiceID, &actual); err != nil {
+		t.Fatal(err)
+	}
+	if actual.LogicalServiceID != original.LogicalServiceID || actual.State != "STOPPED" {
+		t.Fatalf("collision changed owner: %#v", actual)
 	}
 }

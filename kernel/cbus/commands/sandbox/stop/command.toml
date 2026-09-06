@@ -13,7 +13,7 @@ name = "sandbox_id"
 type = "string"
 position = 0
 required = true
-description = "Sandbox or runtime-group ID."
+description = "Sandbox ID."
 [[result]]
 name = "stopped"
 type = "boolean"

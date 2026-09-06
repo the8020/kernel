@@ -15,6 +15,8 @@ Parent DOX: [kernel/kernel/runtime DOX](../AGENTS.md).
 
 - Operations call handlers or managers directly; they never recurse through the
   public command registry.
+- `logs.query` strictly decodes the shared bounded log query and uses the same
+  local/exact-node adapter as `kernel.logs`. The file search remains in logd.
 - Targeted service refresh is exposed through the same typed implementation as
   its CBus command; it refreshes only the selected service's relevant sandboxes,
   never the complete runtime.
@@ -25,9 +27,11 @@ Parent DOX: [kernel/kernel/runtime DOX](../AGENTS.md).
   and session policy belongs exclusively to Deno packages.
 - `event.emit` queues local asynchronous package listeners using the caller's
   execution user. `program.run` submits an ordinary program with inherited or
-  selected user, sandbox group, and timeout, returning status/output/logs even
-  on execution failure. Program selection delegates to the package catalog.
-  Application schedule/history operations belong to the jobs Deno package.
+  selected user, sandbox group, and timeout, returning status/result, allocated
+  node/sandbox/Worker/job/context IDs, saved log position, and invocation times
+  even on execution failure. It returns no log messages. Program selection
+  delegates to the package catalog. Application schedule/history operations
+  belong to the jobs Deno package.
 
 # Child DOX Index
 

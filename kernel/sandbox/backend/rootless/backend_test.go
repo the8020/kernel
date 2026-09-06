@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+	"the8020/kernel/logging/records"
 	"the8020/kernel/sandbox/model"
 )
 
@@ -20,13 +22,18 @@ type fakeRunner struct {
 	mu      sync.Mutex
 	status  string
 	lastRun []string
+	fail    map[string]error
 }
 
-func (r *fakeRunner) Run(_ context.Context, _ string, arguments ...string) ([]byte, error) {
+func (r *fakeRunner) Run(_ context.Context, request Command) ([]byte, error) {
+	arguments := request.Arguments
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.lastRun = append([]string(nil), arguments...)
 	command := commandArgument(arguments)
+	if err := r.fail[command]; err != nil {
+		return nil, err
+	}
 	switch command {
 	case "run":
 		r.status = "running"
@@ -49,6 +56,26 @@ func (r *fakeRunner) Run(_ context.Context, _ string, arguments ...string) ([]by
 	}
 }
 
+func TestCreationRollbackKeepsOwnershipUntilNativeDeletionSucceeds(t *testing.T) {
+	value := testBackend(t)
+	spec := testSandbox(t)
+	runner := value.runner.(*fakeRunner)
+	runner.fail = map[string]error{"run": errors.New("start failed"), "delete": errors.New("cleanup failed")}
+	if _, err := value.Create(context.Background(), spec, testRawPaths(t)); err == nil || !strings.Contains(err.Error(), "cleanup failed") {
+		t.Fatalf("creation failure=%v", err)
+	}
+	if _, err := value.loadMetadata(spec.SandboxID); err != nil {
+		t.Fatal("rollback discarded native ownership before cleanup:", err)
+	}
+	delete(runner.fail, "delete")
+	if err := value.Delete(context.Background(), spec.SandboxID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := value.loadMetadata(spec.SandboxID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("confirmed cleanup retained live metadata: %v", err)
+	}
+}
+
 func commandArgument(arguments []string) string {
 	for _, argument := range arguments {
 		switch argument {
@@ -59,7 +86,7 @@ func commandArgument(arguments []string) string {
 	return ""
 }
 
-func TestMutableOwnerLabelsSupportSharedServiceGroups(t *testing.T) {
+func TestMutableOwnerLabelsSupportSharedServiceSandboxes(t *testing.T) {
 	if err := validateLabelUpdates(map[string]string{
 		labelOwner: "first", labelOwners: "first,second",
 		labelServices: "the8020/demo/api,the8020/demo/api",
@@ -67,7 +94,7 @@ func TestMutableOwnerLabelsSupportSharedServiceGroups(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateLabelUpdates(map[string]string{labelRuntimeGroup: "other"}); err == nil {
+	if err := validateLabelUpdates(map[string]string{labelInstance: "other"}); err == nil {
 		t.Fatal("reserved runtime identity label was mutable")
 	}
 }
@@ -99,7 +126,7 @@ func TestRootlessBackendBuildsRestrictedOCIAndRunsLifecycle(t *testing.T) {
 		t.Fatalf("environment=%s", environment)
 	}
 
-	observation, err := backend.Create(context.Background(), sandbox)
+	observation, err := backend.Create(context.Background(), sandbox, testRawPaths(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +165,7 @@ func TestRunscArgumentsOnlyOpenMountedHostSockets(t *testing.T) {
 func TestListOwnedReadsMetadataWithoutRunscStateProbe(t *testing.T) {
 	backend := testBackend(t)
 	sandbox := testSandbox(t)
-	if _, err := backend.Create(context.Background(), sandbox); err != nil {
+	if _, err := backend.Create(context.Background(), sandbox, testRawPaths(t)); err != nil {
 		t.Fatal(err)
 	}
 	runner := backend.runner.(*fakeRunner)
@@ -149,7 +176,7 @@ func TestListOwnedReadsMetadataWithoutRunscStateProbe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(owned) != 1 || owned[0].ContainerID != sandbox.SandboxID || owned[0].RuntimeGroupID != sandbox.RuntimeGroupID || owned[0].TaskStatus != "" {
+	if len(owned) != 1 || owned[0].SandboxID != sandbox.SandboxID || owned[0].TaskStatus != "" {
 		t.Fatalf("owned=%#v", owned)
 	}
 	runner.mu.Lock()
@@ -226,7 +253,7 @@ func testBackend(t *testing.T) *Backend {
 	}
 	value, err := New(Config{
 		RunscPath: runsc, RootFS: rootFS, StateRoot: filepath.Join(root, "state"), RuntimeRoot: filepath.Join(root, "runtime"),
-		LogRoot: filepath.Join(root, "logs"), InstanceUUID: "instance-one", KernelSocketPath: "/run/the8020/kernel.sock",
+		InstanceUUID: "nod-0123456789", KernelSocketPath: "/run/the8020/kernel.sock",
 		SupervisorHeartbeatInterval: time.Second, WorkerStopGrace: time.Second, Runner: &fakeRunner{},
 	})
 	if err != nil {
@@ -245,9 +272,21 @@ func testSandbox(t *testing.T) model.SandboxSpec {
 		t.Fatal(err)
 	}
 	return model.SandboxSpec{
-		SandboxID: "sandbox-one", RuntimeGroupID: "group-one", WorkloadType: model.WorkloadJob, GroupKey: "job:one", OwnerIDs: []string{"one"},
+		SandboxID: "sbx-0123456789", WorkloadType: model.WorkloadJob, GroupKey: "job:one", OwnerIDs: []string{"one"},
 		ImageDigest: digest, RuntimeProfile: profile, ProfileHash: hash, ResourceLimits: limits,
 		Network:     model.NetworkConfiguration{Mode: "netstack", NetworkName: "rootless-host", SandboxIP: "127.0.0.1", SupervisorPort: 18000, InspectorPort: 19229},
 		Permissions: profile.Permissions, DependencyMode: profile.DependencyMode, Lifecycle: model.LifecyclePolicy{StopGracePeriod: time.Second}, InternalToken: "0123456789abcdef0123456789abcdef",
 	}
+}
+
+func testRawPaths(t *testing.T) records.RawPaths {
+	t.Helper()
+	dir := t.TempDir()
+	paths := records.RawPaths{Stdout: filepath.Join(dir, "stdout"), Stderr: filepath.Join(dir, "stderr")}
+	for _, path := range []string{paths.Stdout, paths.Stderr} {
+		if err := unix.Mkfifo(path, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return paths
 }

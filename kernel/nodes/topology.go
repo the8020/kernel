@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,6 +21,7 @@ import (
 
 	"the8020/kernel/database"
 	"the8020/kernel/execution"
+	"the8020/kernel/identity"
 )
 
 type forwardingPathKey struct{}
@@ -29,8 +29,6 @@ type forwardingPathKey struct{}
 const capacityPath = "/__the8020/node/capacity"
 const workerInvokePath = "/__the8020/node/worker/invoke"
 const maximumWorkerInvocationBytes = 1 << 20
-
-var nodeIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 type Node struct {
 	ID               string `json:"id"`
@@ -74,6 +72,7 @@ type CapacityProvider interface {
 }
 
 type WorkerInvocationRequest struct {
+	ParentContextID       string         `json:"parent_context_id,omitempty"`
 	NodeID                string         `json:"node_id"`
 	SandboxID             string         `json:"sandbox_id"`
 	WorkerID              string         `json:"worker_id"`
@@ -81,6 +80,18 @@ type WorkerInvocationRequest struct {
 	Function              string         `json:"function"`
 	Input                 any            `json:"input"`
 	User                  execution.User `json:"user"`
+}
+
+// Validate checks the shared exact-target contract before local dispatch or
+// authenticated forwarding. Payload encoding and byte limits remain transport-owned.
+func (r WorkerInvocationRequest) Validate() error {
+	if !identity.Is(r.NodeID, "nod") || !identity.Is(r.SandboxID, "sbx") || !identity.Is(r.WorkerID, "wrk") ||
+		(r.PersistentExecutionID != "" && !identity.Is(r.PersistentExecutionID, "pex")) ||
+		(r.ParentContextID != "" && !identity.Is(r.ParentContextID, "ctx")) ||
+		r.Function == "" || len(r.Function) > 128 || !r.User.Valid() {
+		return errors.New("canonical Worker target, optional execution identities, registered function, and execution user are required")
+	}
+	return nil
 }
 
 type WorkerInvocationError struct {
@@ -117,13 +128,14 @@ type Manager struct {
 	http     *http.Client
 	capacity CapacityProvider
 	workers  WorkerInvoker
+	logs     LogReader
 }
 
 func New(store database.Store, localID, sharedSecret string) (*Manager, error) {
-	if store == nil || !nodeIDPattern.MatchString(localID) || sharedSecret == "" {
+	if store == nil || !identity.Is(localID, "nod") || sharedSecret == "" {
 		return nil, errors.New("database, valid local node ID, and shared forwarding secret are required")
 	}
-	manager := &Manager{database: store, secret: sharedSecret, localID: localID, nodes: map[string]Node{}, http: &http.Client{Transport: http.DefaultTransport, Timeout: 2 * time.Second}}
+	manager := &Manager{database: store, secret: sharedSecret, localID: localID, nodes: map[string]Node{}, http: &http.Client{Transport: http.DefaultTransport, Timeout: 2 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	if err := manager.Refresh(context.Background()); err != nil {
 		return nil, err
 	}
@@ -316,7 +328,7 @@ func (m *Manager) Set(ctx context.Context, node Node) (Node, error) {
 }
 
 func (m *Manager) Remove(ctx context.Context, id string) error {
-	if !nodeIDPattern.MatchString(id) {
+	if !identity.Is(id, "nod") {
 		return errors.New("valid node ID is required")
 	}
 	if id == m.localID {
@@ -487,6 +499,10 @@ func (m *Manager) availableNodes(ctx context.Context, visited map[string]bool) [
 
 func (m *Manager) recipientHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodPost && request.URL.Path == logQueryPath {
+			m.serveLogs(writer, request)
+			return
+		}
 		if request.Method == http.MethodGet && request.URL.Path == capacityPath {
 			capacity, err := m.localCapacity(request.Context())
 			if err != nil {
@@ -535,8 +551,8 @@ func workerInvocationFailure(code, message string) WorkerInvocationResult {
 }
 
 func encodeWorkerInvocation(input WorkerInvocationRequest) ([]byte, error) {
-	if input.NodeID == "" || input.SandboxID == "" || input.WorkerID == "" || input.Function == "" || len(input.Function) > 128 || !input.User.Valid() {
-		return nil, errors.New("exact Worker target and registered function are required")
+	if err := input.Validate(); err != nil {
+		return nil, err
 	}
 	data, err := json.Marshal(input)
 	if err != nil {
@@ -614,7 +630,7 @@ func (m *Manager) authorize(next http.Handler) http.Handler {
 }
 
 func validateNode(node Node) error {
-	if !nodeIDPattern.MatchString(node.ID) || strings.TrimSpace(node.RecipientAddress) == "" || node.RecipientPort < 1 || node.RecipientPort > 65535 {
+	if !identity.Is(node.ID, "nod") || strings.TrimSpace(node.RecipientAddress) == "" || node.RecipientPort < 1 || node.RecipientPort > 65535 {
 		return errors.New("node requires a valid ID, recipient address, and recipient port")
 	}
 	parsed, err := url.Parse(node.URL)

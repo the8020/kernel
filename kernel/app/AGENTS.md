@@ -27,19 +27,20 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   records node identity and node-local settings in `kernel.toml`; it never
   installs packages, tools, or images. `--init-only` exits after node creation.
 - Startup order is load the fixed layout → lock → private signing key → node
-  settings → logging → built-in command registry/socket → asynchronous database
-  connection and internal catalog initialization → database-backed global
-  settings, secrets, topology, packages and services → development manager →
-  network → authenticated console route → SSH listener → appliers →
-  runtime-image record validation and runtime diagnostics/composition → initial
-  terminal sandbox-history cleanup → configured fast inherited-sandbox
-  destruction or explicit reconciliation → service-record cleanup →
-  initialize/validate the database catalog → compose the non-durable job
-  runtime, shared-package program runner, and table evaluator → recover a
-  pending schema deployment or fully synchronize an uninitialized database →
-  index package commands, events, and hooks → run ordinary service-index hook
-  jobs and publish package fragments plus active-runtime-only maintenance →
-  heartbeat/OOM and hourly history-retention monitoring.
+  settings → asynchronous logd/producer and node logging applier → built-in
+  command registry/socket → asynchronous database connection and internal
+  catalog initialization → database-backed global settings, secrets, topology,
+  packages and services → development manager → network → authenticated console
+  route → SSH listener → appliers → runtime-image record validation and runtime
+  diagnostics/composition → initial terminal sandbox-history cleanup →
+  configured fast inherited-sandbox destruction or explicit reconciliation →
+  service-record cleanup → initialize/validate the database catalog → compose
+  the non-durable job runtime, shared-package program runner, and table
+  evaluator → recover a pending schema deployment or fully synchronize an
+  uninitialized database → index package commands, events, and hooks → run
+  ordinary service-index hook jobs and publish package fragments plus
+  active-runtime-only maintenance → heartbeat/OOM and hourly history-retention
+  monitoring.
 - The command socket publishes `runtime initialization is in progress` until one
   complete runtime dependency snapshot is ready; runtime commands fail safely
   during that interval while `kernel.*` recovery and lifecycle administration
@@ -63,6 +64,18 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Database pool limits are node-local runtime settings applied transactionally
   to the already running pool; backend, location, and credentials remain
   node-local restart settings.
+- The companion logd starts independently of runtime/database readiness. Kernel
+  stdout/stderr capture is enabled by `Main`; embedded `Run` callers do not
+  replace their host process descriptors. Tests supply a real companion binary.
+  Register all seven logging settings before administration starts, then let
+  global settings attach without replacing node logging policy.
+- Kernel boot/version, runtime readiness, and final exit events use the bounded
+  producer. logd has no parent-death kill signal and drains direct raw pipes on
+  kernel crash. Logging status and `kernel.logs` do not require a healthy
+  runtime or database.
+- Logging reopens inherited sandbox raw endpoints before asynchronous database
+  startup. Runtime lifecycle later authenticates their existing supervisor
+  tokens or removes the endpoints after confirmed native cleanup.
 - `sandbox.startup_policy` defaults to `destroy`, which enumerates
   instance-owned metadata and force-deletes inherited backend objects without
   task, network, or supervisor health probes. `reconcile` is the explicit
@@ -71,14 +84,20 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   sandboxes from explicit command or request demand; configured positive warm
   capacity remains available as an opt-in latency tradeoff.
 - `sandbox.history.retention` is node-local, restart-required, and defaults to
-  seven days. Runtime composition supplies mode-specific live log paths to the
-  separate history store and performs cleanup without adding history to live
-  sandbox scans; cleanup errors are logged without making live runtime
-  composition unavailable.
+  seven days. Runtime composition supplies a separate metadata history root and
+  performs cleanup without adding history to live sandbox scans. Log retention
+  remains independently owned by logd; history cleanup errors are logged without
+  making live runtime composition unavailable.
 - Restart restoration never rebinds a listener for an unavailable sandbox; debug
   listeners are always discarded because their token and Go handler are
   memory-only.
 - Ordinary jobs are memory-only and have no startup restoration phase.
+- Job composition supplies the persistent node ID and the logging manager's
+  cached reader-position getter; taking execution log references requires no
+  additional socket call.
+- Node composition registers the existing log reader before starting the
+  authenticated recipient listener. Remote log reads use the same bounded
+  logging API; local administrative reads remain available before that listener.
 - The event dispatcher starts its minute-aligned timer only after the complete
   runtime dependency snapshot is published. One `runtimeIndexer.Reindex` entry
   point refreshes commands and both handler indexes and package-scoped service
@@ -100,7 +119,7 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Persisted live service pools whose sandbox is absent from the reconciled
   healthy set are retired locally before service restoration, including pools
   already left `FAILED` by an earlier run; startup never waits on supervisor
-  calls to known-missing groups.
+  calls to known-missing sandboxes.
 - Service-record quarantine, failure propagation, and host-port restoration are
   best-effort per workload. Their errors are logged and isolated; only failure
   of a shared runtime prerequisite may make runtime composition unavailable.
@@ -141,6 +160,12 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Runtime composition supplies the kernel-owned database service to the
   authenticated supervisor callback. Neither the supervisor nor a Worker
   receives database credentials or direct database network permissions.
+- Runtime composition gives the sandbox lifecycle owner the existing logging
+  manager so authenticated log sources follow native creation and cleanup.
+- Full runtime readiness and task creation share the complete backend
+  configuration. The initial probe client closes after its read; the retained
+  doctor uses the live runtime backend once connected, never the retired probe
+  client.
 - Package composition injects only the secret store's narrow value resolver into
   the package manager; command services separately expose authenticated secret
   administration. Deno and application packages never receive the secret storage
@@ -152,8 +177,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   `/workspace/packages` and the runtime callback directory at `/run/the8020`,
   grant Workers read-only access to bundled `/opt/runtime` modules, unrestricted
   outbound network/imports, and writable `/tmp` and `/runtime-cache`, and keep
-  portable dependency mode in runtime-group compatibility. Durable shared
-  application data goes through the kernel database bridge.
+  portable dependency mode in sandbox compatibility. Durable shared application
+  data goes through the kernel database bridge.
 - Runtime composition derives the node temporary-storage budget when its
   node-local setting is zero, applies node Worker admission and the kernel-wide
   per-sandbox Worker maximum, and publishes local sandbox/Worker/execution-slot
@@ -173,11 +198,11 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   elapsed-time estimate: public HTTP, runtime initialization join, runtime
   controllers, runtime ports, runtime sandboxes, runtime backends,
   administrative socket and process resources.
-- Shutdown first drains command intake while retaining `kernel.status` and
-  idempotent `kernel.shutdown` and `kernel.restart`. SSH and console sessions
-  close before sandbox cleanup. Public HTTP draining and runtime
-  cancellation/join overlap; package-service, execution-service, job, and
-  warm-pool controllers stop concurrently after monitoring stops; ports then
+- Shutdown first drains command intake while retaining `kernel.status`,
+  `kernel.logs`, and idempotent `kernel.shutdown` and `kernel.restart`. SSH and
+  console sessions close before sandbox cleanup. Public HTTP draining and
+  runtime cancellation/join overlap; package-service, execution-service, job,
+  and warm-pool controllers stop concurrently after monitoring stops; ports then
   close before sandboxes; callback and sandbox backend endpoints close
   concurrently after sandbox cleanup. The administrative socket closes late,
   followed by logging and the instance lock.
@@ -217,12 +242,14 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 # Verification
 
-- `control_plane_test.go` proves the command socket remains usable while runtime
-  initialization is deliberately blocked, observes the atomic transition to
-  ready, then verifies live shutdown status and mutation rejection during
-  cleanup. `integration_test.go` covers socket readiness, status, both admin
-  modes, complete interactive help, compact/detailed settings lists, precedence,
-  live HTTP/SSH listener and logging changes, root alias redirection and
+- `main_test.go` builds the real logd companion once; disposable instance roots
+  must fit the Unix socket pathname bound. `control_plane_test.go` proves the
+  command socket remains usable while runtime initialization is deliberately
+  blocked, observes the atomic transition to ready, then verifies live shutdown
+  status and mutation rejection during cleanup. `integration_test.go` covers
+  socket readiness, status, both admin modes, complete interactive help,
+  compact/detailed settings lists, precedence, live HTTP/SSH listener and
+  logging changes, bounded log queries/continuation, root alias redirection and
   validation, occupied-port rollback, separate node/global persistence through
   the same commands, persistence across restart, unset, shutdown/restart
   instructions, and cleanup; `runtime_test.go` covers startup failure

@@ -49,8 +49,8 @@ import (
 	"the8020/kernel/cbus/core"
 	"the8020/kernel/debugging"
 	"the8020/kernel/execution/adminrun"
-	"the8020/kernel/execution/groups"
 	"the8020/kernel/execution/jobs"
+	"the8020/kernel/execution/pool"
 	"the8020/kernel/execution/supervisor"
 	"the8020/kernel/execution/workers"
 	workspacepackages "the8020/kernel/packages"
@@ -76,7 +76,7 @@ type fakeSandboxes struct{ *callRecorder }
 
 func (f fakeSandboxes) inspection() manager.Inspection {
 	return manager.Inspection{Spec: model.SandboxSpec{
-		SandboxID: "sandbox-1", RuntimeGroupID: "group-1", WorkloadType: model.WorkloadJob,
+		SandboxID: "sandbox-1", WorkloadType: model.WorkloadJob,
 		GroupKey: "job:test", ServiceIDs: []string{"the8020/demo/http"}, Network: model.NetworkConfiguration{SandboxIP: "10.88.0.2"}, InternalPorts: []int{8000, 9229}, Lifecycle: model.LifecyclePolicy{Warm: true},
 	}, Status: model.SandboxStatus{DesiredState: model.StateReady, ObservedState: model.StateReady, WorkerCount: 1}}
 }
@@ -86,11 +86,11 @@ func (f fakeSandboxes) List() ([]manager.Inspection, error) {
 }
 func (f fakeSandboxes) ListHistory(int, string) (history.Page, error) {
 	f.record("sandbox.history.list")
-	return history.Page{Sandboxes: []history.Summary{{HistoryID: "20260827T130405.123456789Z-sbx-ax9thsl3", SandboxID: "sbx-ax9thsl3", RuntimeGroupID: "group-1", WorkloadType: model.WorkloadJob, State: model.StateFailed, Reason: "heartbeat timeout", ArchivedAt: time.Unix(2, 0), ExpiresAt: time.Unix(3, 0)}}}, nil
+	return history.Page{Sandboxes: []history.Summary{{HistoryID: "20260827T130405.123456789Z-sbx-ax9thsl3", SandboxID: "sbx-ax9thsl3", WorkloadType: model.WorkloadJob, State: model.StateFailed, Reason: "heartbeat timeout", ArchivedAt: time.Unix(2, 0), ExpiresAt: time.Unix(3, 0)}}}, nil
 }
 func (f fakeSandboxes) InspectHistory(historyID string) (history.Inspection, error) {
 	f.record("sandbox.history.inspect")
-	return history.Inspection{Record: history.Record{HistoryID: historyID, Spec: f.inspection().Spec, Status: model.SandboxStatus{ObservedState: model.StateFailed, FailureReason: "heartbeat timeout"}}, Logs: []history.Log{{Name: "runtime.log", Size: 4, Content: "test"}}}, nil
+	return history.Inspection{Record: history.Record{HistoryID: historyID, Spec: f.inspection().Spec, Status: model.SandboxStatus{ObservedState: model.StateFailed, FailureReason: "heartbeat timeout", NodeID: "nod-abcdefghij", LogPosition: "saved-log-position"}}}, nil
 }
 func (f fakeSandboxes) Inspect(context.Context, string) (manager.Inspection, error) {
 	f.record("sandbox.inspect")
@@ -120,7 +120,7 @@ func (f fakeSandboxes) Delete(context.Context, string) error {
 type fakeWorkers struct{ *callRecorder }
 
 func (f fakeWorkers) recordValue() workers.Record {
-	return workers.Record{SandboxID: "sandbox-1", RuntimeGroupID: "group-1", WorkloadType: model.WorkloadJob, Worker: supervisor.WorkerStatus{WorkerID: "worker-1", WorkloadID: "job-1", OwnerID: "owner-1", State: "READY"}}
+	return workers.Record{SandboxID: "sandbox-1", WorkloadType: model.WorkloadJob, Worker: supervisor.WorkerStatus{WorkerID: "worker-1", WorkloadID: "job-1", OwnerID: "owner-1", State: "READY"}}
 }
 func (f fakeWorkers) List(context.Context, string) ([]workers.Record, error) {
 	f.record("worker.list")
@@ -154,7 +154,7 @@ func (f fakePackages) InspectPackage(string) (workspacepackages.Package, error) 
 type fakeWebServices struct{ *callRecorder }
 
 func (f fakeWebServices) status() webservices.Status {
-	return webservices.Status{ServiceID: "the8020/demo/http", PackageID: "the8020/demo", Entrypoint: "file:///workspace/packages/the8020/demo/services/http/service.ts", Description: "Example service", CanonicalBasePath: "/the8020/demo/http", Enabled: true, DesiredVersion: 1, LoadedVersion: 1, VersionCount: 1, State: webservices.StateReady, SandboxCount: 1, WorkerCount: 1, Sandboxes: []webservices.ServiceSandboxStatus{{Version: 1, SandboxID: "sandbox-1", RuntimeGroupID: "group-1"}}}
+	return webservices.Status{ServiceID: "the8020/demo/http", PackageID: "the8020/demo", Entrypoint: "file:///workspace/packages/the8020/demo/services/http/service.ts", Description: "Example service", CanonicalBasePath: "/the8020/demo/http", Enabled: true, DesiredVersion: 1, LoadedVersion: 1, VersionCount: 1, State: webservices.StateReady, SandboxCount: 1, WorkerCount: 1, Sandboxes: []webservices.ServiceSandboxStatus{{Version: 1, SandboxID: "sandbox-1"}}}
 }
 
 func (f fakeWebServices) Reconcile(context.Context, string) (webservices.Status, error) {
@@ -244,7 +244,7 @@ func (f fakePorts) Close(string) error {
 type fakeDebugging struct{ *callRecorder }
 
 func (f fakeDebugging) targetValue() debugging.Target {
-	return debugging.Target{ID: "target-1", Type: "node", Title: "job:owner:execution:worker", ExecutionID: "execution-1"}
+	return debugging.Target{ID: "target-1", Type: "node", Title: "job:owner:wrk-aaaaaaaaaa", WorkerID: "wrk-aaaaaaaaaa"}
 }
 func (f fakeDebugging) Targets(context.Context, model.SandboxSpec) ([]debugging.Target, error) {
 	f.record("debug.targets")
@@ -265,9 +265,9 @@ func (f fakePool) Resize(string, int) error {
 	f.record("pool.resize")
 	return nil
 }
-func (f fakePool) Status() []groups.PoolStatus {
+func (f fakePool) Status() []pool.PoolStatus {
 	f.record("pool.status")
-	return []groups.PoolStatus{{ProfileHash: "sha256:test", Desired: 1, Ready: 1}}
+	return []pool.PoolStatus{{ProfileHash: "sha256:test", Desired: 1, Ready: 1}}
 }
 func (f fakePool) Forget(string) error {
 	f.record("pool.forget")
@@ -448,14 +448,14 @@ func TestResourceListHandlersExposeOnlyReadableSummaryFields(t *testing.T) {
 		arguments  map[string]any
 		fields     []string
 	}{
-		{name: "sandboxes", collection: "sandboxes", handler: sandboxlist.New(serviceSet), fields: []string{"sandbox_id", "workload_type", "state", "worker_count", "warm", "runtime_group_id", "reason"}},
-		{name: "sandbox history", collection: "sandboxes", handler: sandboxhistorylist.New(serviceSet), fields: []string{"history_id", "sandbox_id", "runtime_group_id", "workload_type", "state", "reason", "archived_at", "expires_at", "log_files", "log_bytes"}},
+		{name: "sandboxes", collection: "sandboxes", handler: sandboxlist.New(serviceSet), fields: []string{"sandbox_id", "workload_type", "state", "worker_count", "warm", "reason"}},
+		{name: "sandbox history", collection: "sandboxes", handler: sandboxhistorylist.New(serviceSet), fields: []string{"history_id", "sandbox_id", "workload_type", "state", "reason", "archived_at", "expires_at"}},
 		{name: "workers", collection: "workers", handler: workerlist.New(serviceSet), fields: []string{"worker_id", "workload_type", "state", "workload_id", "owner_id", "sandbox_id", "in_flight"}},
 		{name: "jobs", collection: "executions", handler: joblist.New(serviceSet), fields: []string{"execution_id", "job_id", "state", "owner_id", "detached", "duration"}},
 		{name: "packages", collection: "packages", handler: packagelist.New(serviceSet), fields: []string{"package_id", "description", "valid"}},
 		{name: "services", collection: "services", handler: servicelist.New(serviceSet), fields: []string{"service_id", "package_id", "source_entrypoint", "description", "canonical_base_path", "state", "enabled", "version_count", "sandbox_count", "worker_count", "service_type", "access_mode"}},
 		{name: "ports", collection: "ports", handler: portlist.New(serviceSet), fields: []string{"lease_id", "protocol", "state", "bind_address", "host_port", "sandbox_id", "internal_port", "purpose"}},
-		{name: "debug targets", collection: "targets", handler: debugtargets.New(serviceSet), arguments: map[string]any{"sandbox_id": "sandbox-1"}, fields: []string{"id", "type", "title", "execution_id"}},
+		{name: "debug targets", collection: "targets", handler: debugtargets.New(serviceSet), arguments: map[string]any{"sandbox_id": "sandbox-1"}, fields: []string{"id", "type", "title", "worker_id"}},
 		{name: "warm pools", collection: "profiles", handler: poolstatus.New(serviceSet), fields: []string{"profile_hash", "desired_warm_count", "ready_warm_count", "creating_count", "reserved_count", "assigned_count", "failed_count", "replenish_count"}},
 	}
 	for _, test := range tests {
@@ -534,10 +534,10 @@ func TestAdministrativeExecutionHandlersUseConciseDefaultAndExplicitDetail(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if concise["state"] != "SUCCEEDED" || concise["duration"] != "1.25s" {
+	if concise["state"] != "SUCCEEDED" || concise["duration"] != "1.25s" || concise["execution_id"] != "execution-1" {
 		t.Fatalf("concise result = %#v", concise)
 	}
-	for _, internal := range []string{"execution", "execution_id", "resources"} {
+	for _, internal := range []string{"execution", "logs", "resources"} {
 		if _, exists := concise[internal]; exists {
 			t.Fatalf("concise result exposed %s: %#v", internal, concise)
 		}

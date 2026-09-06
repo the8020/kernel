@@ -27,6 +27,15 @@ Parent DOX: [kernel/kernel/cbus DOX](../AGENTS.md).
 - Unknown secure inputs and missing required secure inputs fail before dispatch.
   Unexpected errors become safe internal errors and are logged with request ID,
   never secure values.
+- Package dispatch may return an allocated `ExecutionReference` alongside its
+  result or error. The response preserves it in either case: canonical program,
+  job/node/sandbox/Worker/context IDs, parent context, saved log position and
+  invocation times. Failures before allocation omit it. Console messages never
+  appear in command response arrays; logd owns their bounded query path.
+- Request correlation IDs use shared `cor-` generation and propagate entropy
+  failures. The registry owns a `cat-` incarnation plus a monotonic revision;
+  the incarnation changes on registry creation, while revisions are counters,
+  not additional resource IDs. Clients retain correlation across catalog retry.
 - Extend protocol metadata only when command TOML generation and both clients
   can consume it generically.
 

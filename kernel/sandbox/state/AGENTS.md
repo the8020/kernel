@@ -2,19 +2,19 @@ Parent DOX: [kernel/kernel/sandbox DOX](../AGENTS.md).
 
 # Purpose
 
-- Persist small per-runtime-group recovery records atomically under
-  `node/kernel/runtime/groups/` and provide their process-local routing cache.
+- Persist small per-sandbox recovery records atomically under
+  `node/kernel/runtime/sandboxes/` and provide their process-local routing cache.
 
 # Ownership
 
-- Own group-directory layout, restrictive modes, atomic recovery writes, startup
+- Own sandbox-directory layout, restrictive modes, atomic recovery writes, startup
   preload, indexed resolution, revisioned in-memory supervisor snapshots,
   synchronized state transitions, enumeration, and record deletion.
 
 # Local Contracts
 
 - Public API: `Store`, `New`, `SaveSpec`, `SaveStatus`, `UpdateStatus`,
-  `Transition`, `TransitionIf`, `Load`, `Cached`, `Contains`, `Resolve`, `List`,
+  `Transition`, `TransitionIf`, `Load`, `Cached`, `Contains`, `List`,
   `Observe`, `Snapshot`, `ClaimStaleHeartbeats`, `RescheduleHeartbeat`,
   `ObserveMetrics`, and `Delete`.
 - `spec.json` stores desired immutable inputs, `state.json` stores observed
@@ -23,7 +23,7 @@ Parent DOX: [kernel/kernel/sandbox DOX](../AGENTS.md).
   remain intact.
 - Writes use same-directory temporary files, sync, rename, and `0600`;
   directories use `0700`.
-- `New` reads recovery files once. Cached sandbox/runtime indexes and tokens
+- `New` reads recovery files once. One sandbox index and cached tokens
   serve normal reads; absolute supervisor snapshots and diagnostic metrics
   remain memory-only and are reconstructed after restart.
 - `Cached` never falls back to recovery files, including on a miss.
@@ -34,7 +34,7 @@ Parent DOX: [kernel/kernel/sandbox DOX](../AGENTS.md).
   epochs cannot refresh a replacement's health.
 - Ready/active/draining records live in an indexed heartbeat deadline queue.
   Monitoring claims a bounded number of stale IDs directly from that queue, so a
-  periodic health pass never scans every cached runtime group.
+  periodic health pass never scans every cached sandbox.
 
 # Lifecycle
 
@@ -49,8 +49,8 @@ Parent DOX: [kernel/kernel/sandbox DOX](../AGENTS.md).
 
 # Concurrency
 
-- A small striped per-record lock serializes mutations of one runtime group;
-  unrelated groups proceed independently. One short RW lock protects process
+- A small striped per-record lock serializes mutations of one sandbox;
+  unrelated sandboxes proceed independently. One short RW lock protects process
   indexes and cached value copies and is never held across filesystem I/O.
 
 # Dependencies

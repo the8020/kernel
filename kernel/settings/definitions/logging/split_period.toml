@@ -6,4 +6,4 @@ environment = "THE8020_LOGGING_SPLIT_PERIOD"
 allowed = ["none", "minute", "hour", "day", "week", "month", "year"]
 runtime_mutable = true
 restart_required = false
-description = "UTC period used to split kernel log files."
+description = "UTC period used to split managed log files."

@@ -5,4 +5,4 @@ default = true
 environment = "THE8020_LOGGING_ENABLED"
 runtime_mutable = true
 restart_required = false
-description = "Whether routine kernel file logging is enabled."
+description = "Whether managed kernel and Deno logs are persisted. Existing logs remain readable when disabled."

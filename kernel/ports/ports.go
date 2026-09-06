@@ -15,9 +15,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"the8020/kernel/identity"
 	"time"
-
-	"the8020/kernel/sandbox/model"
 )
 
 type Request struct {
@@ -93,6 +92,7 @@ func (m *Manager) expose(ctx context.Context, request Request, handler http.Hand
 }
 
 func (m *Manager) exposeIdentity(ctx context.Context, request Request, handler http.Handler, leaseID string, createdAt time.Time) (Lease, error) {
+	newLease := leaseID == ""
 	if request.SandboxID == "" || net.ParseIP(request.SandboxIP) == nil || request.InternalPort < 1 || request.InternalPort > 65535 || request.HostPort < 0 || request.HostPort > 65535 {
 		return Lease{}, errors.New("sandbox identity, IP, and valid internal/host ports are required")
 	}
@@ -129,7 +129,7 @@ func (m *Manager) exposeIdentity(ctx context.Context, request Request, handler h
 		return Lease{}, fmt.Errorf("listen on requested host port: %w", err)
 	}
 	if leaseID == "" {
-		leaseID, err = model.NewID("port")
+		leaseID, err = identity.New("prt")
 		if err != nil {
 			_ = listener.Close()
 			return Lease{}, err
@@ -148,7 +148,7 @@ func (m *Manager) exposeIdentity(ctx context.Context, request Request, handler h
 	}
 	leaseContext, cancel := context.WithCancel(context.Background())
 	m.mu.Lock()
-	if err := m.write(lease); err != nil {
+	if err := m.register(lease, newLease); err != nil {
 		m.mu.Unlock()
 		cancel()
 		_ = listener.Close()
@@ -172,6 +172,22 @@ func (m *Manager) exposeIdentity(ctx context.Context, request Request, handler h
 		m.logger.Info("port exposed", "port_lease_id", lease.LeaseID, "sandbox_id", lease.SandboxID, "bind_address", lease.BindAddress, "host_port", lease.HostPort, "internal_port", lease.InternalPort)
 	}
 	return lease, nil
+}
+
+// register runs under the lease lock. A fresh ID may not replace live or
+// persisted ownership; restoration may reuse only its own inactive record.
+func (m *Manager) register(lease Lease, fresh bool) error {
+	if _, exists := m.leases[lease.LeaseID]; exists {
+		return fmt.Errorf("port lease %s is already active", lease.LeaseID)
+	}
+	if fresh {
+		if _, err := os.Lstat(m.path(lease.LeaseID)); err == nil {
+			return fmt.Errorf("port lease %s already exists", lease.LeaseID)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return m.write(lease)
 }
 
 func (m *Manager) List() []Lease {
@@ -404,17 +420,7 @@ func (m *Manager) write(lease Lease) error {
 
 func (m *Manager) path(leaseID string) string { return filepath.Join(m.root, leaseID+".json") }
 
-func safeLeaseID(value string) bool {
-	if !strings.HasPrefix(value, "port-") {
-		return false
-	}
-	for _, character := range value {
-		if !((character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') || character == '-') {
-			return false
-		}
-	}
-	return true
-}
+func safeLeaseID(value string) bool { return identity.Is(value, "prt") }
 
 func readLease(path string, lease *Lease) error {
 	data, err := os.ReadFile(path)

@@ -19,6 +19,7 @@ import (
 	"the8020/kernel/cbus/core"
 	platformconsole "the8020/kernel/console"
 	"the8020/kernel/execution"
+	"the8020/kernel/identity"
 	"the8020/kernel/sandbox/backend"
 	sshserver "the8020/kernel/ssh"
 )
@@ -60,7 +61,7 @@ func TestRootlessDevelopmentOverlayProbe(t *testing.T) {
 		SandboxRoot: filepath.Join(root, "sandboxes"), LogRoot: filepath.Join(root, "logs"),
 	})
 	start := SandboxStart{
-		UserID: "overlayprobe", SandboxID: "dev-overlayprobe", Packages: packages, RootFS: rootfs,
+		UserID: "overlayprobe", SandboxID: "sbx-0123456789", Packages: packages, RootFS: rootfs,
 		Mounts: []SandboxMount{
 			{MountDefinition: MountDefinition{ID: "packages", Target: "/workspace/packages", Behavior: MountSandboxSource, Writable: true}, HostSource: packages},
 			{MountDefinition: MountDefinition{ID: "temporary", Target: "/tmp", Behavior: MountEphemeral, Writable: true}},
@@ -163,7 +164,7 @@ func runDevelopmentE2E(t *testing.T, rootless bool) {
 	if sandbox.SourcePath != packages || !strings.HasPrefix(sandbox.SystemPath, filepath.Join(users, "developer", "dev-sandbox")) {
 		t.Fatalf("sandbox does not use shared lower and per-user system storage: %#v", sandbox)
 	}
-	if sandbox.SandboxID != "dev-developer" {
+	if !identity.Is(sandbox.SandboxID, "sbx") {
 		t.Fatalf("development sandbox ID = %q", sandbox.SandboxID)
 	}
 	proveInteractiveConsole(t, manager, sandbox.SandboxID)
@@ -190,7 +191,7 @@ func runDevelopmentE2E(t *testing.T, rootless bool) {
 	}
 	sandbox, _ = manager.Inspect(sandbox.UserID)
 	if sandbox.SandboxID != oldSandbox {
-		t.Fatal("restart changed the deterministic development sandbox identity")
+		t.Fatal("restart changed the retained development sandbox identity")
 	}
 	if _, err := os.Stat(oldLogMarker); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("restarted sandbox retained disposable logs: %v", err)

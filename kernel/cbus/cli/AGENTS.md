@@ -43,11 +43,13 @@ Parent DOX: [kernel/kernel/cbus DOX](../AGENTS.md).
   runtime state in stable preferred order before alphabetically ordered unknown
   fields.
 - Named `core.Result` maps render directly instead of passing through lossy JSON
-  normalization; execution summaries render state, result, logs, duration,
-  resources, and execution identity in that order when present.
+  normalization; execution summaries render state, result, duration, resources,
+  and execution identity in that order when present.
 - Text-mode command failures render their stable code and message followed by
   any structured error details; JSON mode retains the complete response
-  envelope.
+  envelope. Allocated package-command runs print one compact execution identity
+  line on success or failure; JSON includes the full reference with log position
+  and time range. Rendering never collects or queries console messages.
 - Extend syntax only through command metadata or shared client-local behavior.
 
 # Work Guidance

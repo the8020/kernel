@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-const ProtocolVersion = 3
+const ProtocolVersion = 4
 
 type MessageType string
 
@@ -59,7 +59,7 @@ var validMessageTypes = map[MessageType]bool{
 type Envelope struct {
 	ProtocolVersion int             `json:"protocol_version"`
 	MessageType     MessageType     `json:"message_type"`
-	RuntimeGroupID  string          `json:"runtime_group_id"`
+	SandboxID       string          `json:"sandbox_id"`
 	CorrelationID   string          `json:"correlation_id,omitempty"`
 	Payload         json.RawMessage `json:"payload,omitempty"`
 }
@@ -71,8 +71,8 @@ func (e Envelope) Validate() error {
 	if !validMessageTypes[e.MessageType] {
 		return fmt.Errorf("unknown runtime message type %q", e.MessageType)
 	}
-	if e.RuntimeGroupID == "" {
-		return fmt.Errorf("runtime_group_id is required")
+	if e.SandboxID == "" {
+		return fmt.Errorf("sandbox_id is required")
 	}
 	return nil
 }

@@ -1,4 +1,4 @@
-// Package pool provisions and assigns clean warm runtime groups.
+// Package pool provisions and assigns clean warm sandboxes.
 package pool
 
 import (
@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"the8020/kernel/identity"
 	"time"
 
-	"the8020/kernel/execution/groups"
 	"the8020/kernel/sandbox/manager"
 	"the8020/kernel/sandbox/model"
 )
@@ -31,7 +31,7 @@ type Template struct {
 }
 
 type Controller struct {
-	pool      *groups.WarmPool
+	pool      *WarmPool
 	sandboxes Sandboxes
 	templates map[string]Template
 	logger    *slog.Logger
@@ -47,7 +47,7 @@ func New(sandboxes Sandboxes, templates []Template, logger *slog.Logger) (*Contr
 	if sandboxes == nil || len(templates) == 0 {
 		return nil, errors.New("sandbox manager and at least one warm profile template are required")
 	}
-	controller := &Controller{pool: groups.NewWarmPool(), sandboxes: sandboxes, templates: map[string]Template{}, logger: logger, queue: make(chan string, len(templates)*2)}
+	controller := &Controller{pool: NewWarmPool(), sandboxes: sandboxes, templates: map[string]Template{}, logger: logger, queue: make(chan string, len(templates)*2)}
 	for _, template := range templates {
 		hash, err := template.Profile.Hash()
 		if err != nil {
@@ -79,19 +79,19 @@ func (c *Controller) Start(ctx context.Context, desired int) error {
 		if _, registered := c.templates[item.Spec.ProfileHash]; !registered {
 			continue
 		}
-		state := groups.WarmState("")
+		state := WarmState("")
 		switch {
 		case item.Spec.Lifecycle.Warm && item.Status.ObservedState == model.StateReady && item.Status.SupervisorHealthy && item.Status.WorkerCount == 0:
-			state = groups.WarmReady
+			state = WarmReady
 		case item.Spec.Lifecycle.Warm:
-			state = groups.WarmFailed
+			state = WarmFailed
 		case item.Spec.Labels["the8020.assigned_at"] != "":
-			state = groups.WarmAssigned
+			state = WarmAssigned
 		default:
 			continue
 		}
-		if err := c.pool.Restore(groups.WarmGroup{RuntimeGroupID: item.Spec.RuntimeGroupID, ProfileHash: item.Spec.ProfileHash, State: state}); err != nil {
-			return fmt.Errorf("restore warm-pool group %s: %w", item.Spec.RuntimeGroupID, err)
+		if err := c.pool.Restore(WarmSandbox{SandboxID: item.Spec.SandboxID, ProfileHash: item.Spec.ProfileHash, State: state}); err != nil {
+			return fmt.Errorf("restore warm-pool group %s: %w", item.Spec.SandboxID, err)
 		}
 	}
 	c.lifecycle.Lock()
@@ -126,14 +126,14 @@ func (c *Controller) Resize(profileHash string, count int) error {
 	return nil
 }
 
-func (c *Controller) Status() []groups.PoolStatus { return c.pool.Status() }
+func (c *Controller) Status() []PoolStatus { return c.pool.Status() }
 
-func (c *Controller) Forget(runtimeGroupID string) error {
-	for _, group := range c.pool.Groups("", "") {
-		if group.RuntimeGroupID != runtimeGroupID {
+func (c *Controller) Forget(sandboxID string) error {
+	for _, group := range c.pool.Sandboxes("", "") {
+		if group.SandboxID != sandboxID {
 			continue
 		}
-		if err := c.pool.Destroy(runtimeGroupID); err != nil {
+		if err := c.pool.Destroy(sandboxID); err != nil {
 			return err
 		}
 		c.trigger(group.ProfileHash)
@@ -150,13 +150,13 @@ func (c *Controller) Assign(ctx context.Context, profileHash, groupKey, ownerID 
 	if !ok {
 		return manager.Inspection{}, false, nil
 	}
-	assigned, err := c.sandboxes.AssignWarm(ctx, warm.RuntimeGroupID, groupKey, ownerID)
+	assigned, err := c.sandboxes.AssignWarm(ctx, warm.SandboxID, groupKey, ownerID)
 	if err != nil {
-		_ = c.pool.SetState(warm.RuntimeGroupID, groups.WarmFailed)
+		_ = c.pool.SetState(warm.SandboxID, WarmFailed)
 		c.trigger(profileHash)
 		return manager.Inspection{}, false, err
 	}
-	if err := c.pool.SetState(warm.RuntimeGroupID, groups.WarmAssigned); err != nil {
+	if err := c.pool.SetState(warm.SandboxID, WarmAssigned); err != nil {
 		return manager.Inspection{}, false, err
 	}
 	c.trigger(profileHash)
@@ -222,14 +222,14 @@ func (c *Controller) reconcileProfile(ctx context.Context, profileHash string) e
 		}
 		status = statusFor(c.pool.Status(), profileHash)
 	}
-	ready := c.pool.Groups(profileHash, groups.WarmReady)
+	ready := c.pool.Sandboxes(profileHash, WarmReady)
 	for len(ready) > status.Desired {
 		candidate := ready[len(ready)-1]
-		if err := c.sandboxes.Delete(ctx, candidate.RuntimeGroupID); err != nil {
-			_ = c.pool.SetState(candidate.RuntimeGroupID, groups.WarmFailed)
-			return fmt.Errorf("trim warm group %s: %w", candidate.RuntimeGroupID, err)
+		if err := c.sandboxes.Delete(ctx, candidate.SandboxID); err != nil {
+			_ = c.pool.SetState(candidate.SandboxID, WarmFailed)
+			return fmt.Errorf("trim warm sandbox %s: %w", candidate.SandboxID, err)
 		}
-		if err := c.pool.Destroy(candidate.RuntimeGroupID); err != nil {
+		if err := c.pool.Destroy(candidate.SandboxID); err != nil {
 			return err
 		}
 		ready = ready[:len(ready)-1]
@@ -238,27 +238,23 @@ func (c *Controller) reconcileProfile(ctx context.Context, profileHash string) e
 }
 
 func (c *Controller) create(ctx context.Context, profileHash string, template Template) error {
-	runtimeGroupID, err := model.NewRuntimeGroupID()
-	if err != nil {
-		return err
-	}
 	sandboxID, err := c.sandboxes.NewSandboxID()
 	if err != nil {
 		return err
 	}
 	defer c.sandboxes.ReleaseSandboxID(sandboxID)
-	token, err := model.NewID("token")
+	token, err := identity.NewToken()
 	if err != nil {
 		return err
 	}
-	if err := c.pool.Add(groups.WarmGroup{RuntimeGroupID: runtimeGroupID, ProfileHash: profileHash, State: groups.WarmCreating}); err != nil {
+	if err := c.pool.Add(WarmSandbox{SandboxID: sandboxID, ProfileHash: profileHash, State: WarmCreating}); err != nil {
 		return err
 	}
 	lifecycle := template.Lifecycle
 	lifecycle.Warm = true
 	lifecycle.DestroyWhenIdle = false
 	spec := model.SandboxSpec{
-		SandboxID: sandboxID, RuntimeGroupID: runtimeGroupID, WorkloadType: template.Profile.WorkloadType,
+		SandboxID: sandboxID, WorkloadType: template.Profile.WorkloadType,
 		ImageDigest: template.Profile.ImageDigest, RuntimeProfile: template.Profile, ProfileHash: profileHash,
 		ResourceLimits: template.Resources,
 		Network:        model.NetworkConfiguration{Mode: "netstack", NetworkName: template.Network, EgressEnabled: len(template.Profile.Permissions.EgressHosts()) > 0, AllowedHosts: template.Profile.Permissions.EgressHosts()},
@@ -267,20 +263,20 @@ func (c *Controller) create(ctx context.Context, profileHash string, template Te
 		Labels: map[string]string{"the8020.warm": "true", "the8020.created_at": time.Now().UTC().Format(time.RFC3339Nano)}, InternalToken: token,
 	}
 	if _, err := c.sandboxes.Create(ctx, spec); err != nil {
-		_ = c.pool.SetState(runtimeGroupID, groups.WarmFailed)
-		return fmt.Errorf("create warm runtime group: %w", err)
+		_ = c.pool.SetState(sandboxID, WarmFailed)
+		return fmt.Errorf("create warm sandbox: %w", err)
 	}
-	if err := c.pool.SetState(runtimeGroupID, groups.WarmReady); err != nil {
+	if err := c.pool.SetState(sandboxID, WarmReady); err != nil {
 		return err
 	}
 	return nil
 }
 
-func statusFor(statuses []groups.PoolStatus, profileHash string) groups.PoolStatus {
+func statusFor(statuses []PoolStatus, profileHash string) PoolStatus {
 	for _, status := range statuses {
 		if status.ProfileHash == profileHash {
 			return status
 		}
 	}
-	return groups.PoolStatus{ProfileHash: profileHash}
+	return PoolStatus{ProfileHash: profileHash}
 }

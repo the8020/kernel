@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"the8020/kernel/cbus/core"
 	"the8020/kernel/deployment"
@@ -69,7 +70,12 @@ func (f *fakePrograms) Run(_ context.Context, programID, expectedCommit string, 
 	for name, value := range secrets {
 		f.secrets[name] = value
 	}
-	return programrunner.Result{Value: map[string]any{"ok": true}}, f.err
+	return programrunner.Result{
+		ProgramID: programID, Value: map[string]any{"ok": true},
+		ExecutionID: "job-abcdefghij", NodeID: "nod-abcdefghij", SandboxID: "sbx-abcdefghij",
+		WorkerID: "wrk-abcdefghij", ContextID: "ctx-abcdefghij", ParentContextID: "ctx-0123456789",
+		LogPosition: "before-command", QueuedAt: time.Unix(123, 0).UTC(), FinishedAt: time.Unix(125, 0).UTC(),
+	}, f.err
 }
 
 func TestPackageCommandPreservesStructuredProgramErrors(t *testing.T) {
@@ -91,6 +97,9 @@ func TestPackageCommandPreservesStructuredProgramErrors(t *testing.T) {
 	})
 	if response.Error == nil || response.Error.Code != "invalid_arguments" || response.Error.Message != "invalid scale" || response.Error.Details["field"] != "maximum_workers" {
 		t.Fatalf("response = %#v", response)
+	}
+	if response.Execution == nil || response.Execution.ProgramID != "the8020/services/scale" || response.Execution.ExecutionID != "job-abcdefghij" || response.Execution.NodeID != "nod-abcdefghij" || response.Execution.SandboxID != "sbx-abcdefghij" || response.Execution.WorkerID != "wrk-abcdefghij" || response.Execution.ContextID != "ctx-abcdefghij" || response.Execution.ParentContextID != "ctx-0123456789" || response.Execution.LogPosition != "before-command" || !response.Execution.QueuedAt.Equal(time.Unix(123, 0)) || !response.Execution.FinishedAt.Equal(time.Unix(125, 0)) {
+		t.Fatalf("failed command lost allocated log reference: %#v", response.Execution)
 	}
 }
 
@@ -128,6 +137,9 @@ func TestReindexUsesExplicitNamesAndPreservesProgramDispatch(t *testing.T) {
 	})
 	if !response.Success {
 		t.Fatalf("response = %#v", response)
+	}
+	if response.Execution == nil || response.Execution.ExecutionID != "job-abcdefghij" {
+		t.Fatalf("successful command lost execution reference: %#v", response)
 	}
 	programs.mu.Lock()
 	defer programs.mu.Unlock()

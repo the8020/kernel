@@ -19,7 +19,9 @@ Parent DOX: [kernel/kernel/cbus/commands DOX](../../AGENTS.md).
   and `OperationError`.
 - Administrative eval/run responses share one concise default shape; the
   explicit detail view preserves the complete artifact, execution, and resource
-  record.
+  record. Both views expose the job-run ID for log queries; neither carries
+  bundled log messages. Detail includes the allocated identities, saved reader
+  position, and execution times.
 - User-facing runtime errors retain stable command-bus codes. Structured
   execution failures cross the supervisor boundary without transport text; Deno
   application argument errors retain their code without parsing error text, and

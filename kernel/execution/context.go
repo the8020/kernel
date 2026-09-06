@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"the8020/kernel/identity"
 	"the8020/kernel/sandbox/model"
 )
 
@@ -90,16 +91,23 @@ func (o Origin) ValidForWorkload(workload model.WorkloadType) bool {
 }
 
 type Caller struct {
-	ExecutionID string
-	Workload    model.WorkloadType
-	User        User
+	ContextID string
+	JobRunID  string
+	Workload  model.WorkloadType
+	User      User
+}
+
+func (c Caller) Valid() bool {
+	return identity.Is(c.ContextID, "ctx") &&
+		(c.JobRunID == "" || identity.Is(c.JobRunID, "job")) &&
+		c.Workload.Valid() && c.User.Valid()
 }
 
 // WithCaller records the validated runtime execution making a synchronous
 // kernel call. Schedulers use it to avoid making child work queue behind its
 // waiting parent.
 func WithCaller(ctx context.Context, caller Caller) context.Context {
-	if ctx == nil || caller.ExecutionID == "" || !caller.Workload.Valid() || !caller.User.Valid() {
+	if ctx == nil || !caller.Valid() {
 		return ctx
 	}
 	return context.WithValue(ctx, callerKey{}, caller)
@@ -110,5 +118,42 @@ func CallerFromContext(ctx context.Context) (Caller, bool) {
 		return Caller{}, false
 	}
 	caller, ok := ctx.Value(callerKey{}).(Caller)
-	return caller, ok && caller.ExecutionID != "" && caller.Workload.Valid() && caller.User.Valid()
+	return caller, ok && caller.Valid()
+}
+
+// Invocation identifies one application call. A job run owns a context that
+// survives its startup and invocation; a reused Worker receives another one.
+type Invocation struct {
+	ContextID       string `json:"contextId"`
+	ParentContextID string `json:"parentContextId,omitempty"`
+	JobRunID        string `json:"jobRunId,omitempty"`
+}
+
+type invocationKey struct{}
+
+func (i Invocation) Valid() bool {
+	return identity.Is(i.ContextID, "ctx") &&
+		(i.ParentContextID == "" || identity.Is(i.ParentContextID, "ctx")) &&
+		(i.JobRunID == "" || identity.Is(i.JobRunID, "job"))
+}
+
+func WithInvocation(ctx context.Context, invocation Invocation) context.Context {
+	return context.WithValue(ctx, invocationKey{}, invocation)
+}
+
+func InvocationFromContext(ctx context.Context) (Invocation, bool) {
+	value, ok := ctx.Value(invocationKey{}).(Invocation)
+	return value, ok && value.Valid()
+}
+
+func NewInvocation(parentContextID string) (Invocation, error) {
+	id, err := identity.New("ctx")
+	if err != nil {
+		return Invocation{}, err
+	}
+	value := Invocation{ContextID: id, ParentContextID: parentContextID}
+	if !value.Valid() {
+		return Invocation{}, errors.New("invalid parent execution context")
+	}
+	return value, nil
 }

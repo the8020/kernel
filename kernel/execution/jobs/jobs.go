@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"the8020/kernel/identity"
 	"time"
 
 	"the8020/kernel/execution"
@@ -32,10 +33,12 @@ type WorkerManager interface {
 	Start(context.Context, string, supervisor.StartWorkerRequest) (workers.Record, error)
 	List(context.Context, string) ([]workers.Record, error)
 	RunJob(context.Context, string, []any, map[string]string, []string) (supervisor.JobResult, error)
-	StopInGroup(context.Context, string, string, bool) error
+	StopInSandbox(context.Context, string, string, bool) error
 }
 
 type Policy struct {
+	NodeID               string
+	LogPosition          func() string
 	Strategy             model.GroupingStrategy
 	Profile              model.RuntimeProfile
 	Resources            model.ResourceLimits
@@ -71,18 +74,21 @@ type Options struct {
 	Origin            execution.Origin
 }
 
-// Record is an in-process view of one job. Result and Logs are returned to the
-// invoking caller but are never written to disk or retained after a one-time
-// invocation ends.
+// Record is an in-process view of one job. Results and log references return to
+// the caller; log messages belong exclusively to the node's logging service.
 type Record struct {
-	ExecutionID        string                       `json:"execution_id"`
-	JobID              string                       `json:"job_id"`
-	OwnerID            string                       `json:"owner_id"`
-	User               execution.User               `json:"user"`
-	Origin             execution.Origin             `json:"origin"`
-	ProfileHash        string                       `json:"profile_hash"`
-	Entrypoint         string                       `json:"entrypoint"`
-	RuntimeGroupID     string                       `json:"runtime_group_id,omitempty"`
+	NodeID          string           `json:"node_id"`
+	LogPosition     string           `json:"log_position,omitempty"`
+	ExecutionID     string           `json:"execution_id"`
+	ContextID       string           `json:"context_id"`
+	ParentContextID string           `json:"parent_context_id,omitempty"`
+	JobID           string           `json:"job_id"`
+	OwnerID         string           `json:"owner_id"`
+	User            execution.User   `json:"user"`
+	Origin          execution.Origin `json:"origin"`
+	ProfileHash     string           `json:"profile_hash"`
+	Entrypoint      string           `json:"entrypoint"`
+
 	SandboxID          string                       `json:"sandbox_id,omitempty"`
 	WorkerID           string                       `json:"worker_id"`
 	ReleaseID          string                       `json:"release_id"`
@@ -90,7 +96,6 @@ type Record struct {
 	Detached           bool                         `json:"detached"`
 	Reuse              bool                         `json:"reuse"`
 	Result             any                          `json:"result,omitempty"`
-	Logs               []supervisor.LogEvent        `json:"logs,omitempty"`
 	Failure            string                       `json:"failure,omitempty"`
 	QueuedAt           time.Time                    `json:"queued_at,omitempty"`
 	StartedAt          time.Time                    `json:"started_at"`
@@ -172,8 +177,16 @@ func (m *Manager) Run(ctx context.Context, jobID, entrypoint string, options Opt
 	if err != nil {
 		return Record{}, err
 	}
+	if hasCaller {
+		prepared.record.ParentContextID = caller.ContextID
+	}
 	if hasCaller && caller.Workload == model.WorkloadJob {
-		prepared.record.CallerExecutionID = caller.ExecutionID
+		prepared.record.CallerExecutionID = caller.JobRunID
+	}
+	// Capture the cached writer boundary before admission or runtime startup can
+	// emit this invocation's first record. This performs no logger RPC or I/O.
+	if m.policy.LogPosition != nil {
+		prepared.record.LogPosition = m.policy.LogPosition()
 	}
 	m.mu.Lock()
 	if m.closed {
@@ -192,9 +205,22 @@ func (m *Manager) Run(ctx context.Context, jobID, entrypoint string, options Opt
 		prepared.record.State = "QUEUED"
 		prepared.record.StartedAt = time.Time{}
 	}
+	if _, exists := m.records[prepared.record.ExecutionID]; exists {
+		m.mu.Unlock()
+		clearSecrets(prepared.secrets)
+		return prepared.record, errors.New("job run identity is already registered")
+	}
+	for _, active := range m.records {
+		if active.ContextID == prepared.record.ContextID {
+			m.mu.Unlock()
+			clearSecrets(prepared.secrets)
+			return prepared.record, errors.New("invocation context is already registered")
+		}
+	}
 	m.records[prepared.record.ExecutionID] = prepared.record
 	m.signalQueueLocked()
 	m.mu.Unlock()
+	m.logEvent(prepared.record, prepared.record.QueuedAt, "job_admitted", "job admitted", slog.LevelInfo)
 
 	if prepared.record.Detached {
 		initial := prepared.record
@@ -275,11 +301,15 @@ func (m *Manager) prepare(jobID, entrypoint string, options Options) (submission
 	if options.Reuse != nil {
 		reuse = *options.Reuse
 	}
-	executionID, err := model.NewID("execution")
+	executionID, err := identity.New("job")
 	if err != nil {
 		return submission{}, err
 	}
-	workerID, err := model.NewWorkerID()
+	contextID, err := identity.New("ctx")
+	if err != nil {
+		return submission{}, err
+	}
+	workerID, err := identity.New("wrk")
 	if err != nil {
 		return submission{}, err
 	}
@@ -301,7 +331,8 @@ func (m *Manager) prepare(jobID, entrypoint string, options Options) (submission
 		placementGroup = &value
 	}
 	record := Record{
-		ExecutionID: executionID, JobID: jobID, OwnerID: ownerID, User: user, Origin: origin,
+		NodeID:      m.policy.NodeID,
+		ExecutionID: executionID, ContextID: contextID, JobID: jobID, OwnerID: ownerID, User: user, Origin: origin,
 		ProfileHash: profileHash, Entrypoint: entrypoint, WorkerID: workerID,
 		ReleaseID: options.ReleaseID, State: "STARTING", Detached: options.Detached,
 		Reuse: reuse, Timeout: timeout, Parallelism: parallelism, Permissions: permissions,
@@ -339,7 +370,7 @@ func (m *Manager) start(ctx context.Context, prepared submission) (Record, error
 		if reusable, ok := m.reusableLocked(record); ok {
 			m.stopIdleTimerLocked(reusable.ExecutionID)
 			delete(m.records, reusable.ExecutionID)
-			record.RuntimeGroupID, record.SandboxID, record.WorkerID = reusable.RuntimeGroupID, reusable.SandboxID, reusable.WorkerID
+			record.SandboxID, record.WorkerID = reusable.SandboxID, reusable.WorkerID
 			record.State = "RUNNING"
 			m.records[record.ExecutionID] = record
 			m.mu.Unlock()
@@ -356,10 +387,10 @@ func (m *Manager) start(ctx context.Context, prepared submission) (Record, error
 		ExplicitGroupKey: prepared.groupKey, PlacementGroup: prepared.placementGroup, Strategy: m.policy.Strategy,
 		Profile: prepared.profile, ResourceLimits: m.policy.Resources, Lifecycle: m.policy.Lifecycle,
 	})
+	record.SandboxID = group.Spec.SandboxID
 	if err != nil {
-		return m.fail(record, err)
+		return m.fail(record, redactError(err, prepared.secrets))
 	}
-	record.RuntimeGroupID, record.SandboxID = group.Spec.RuntimeGroupID, group.Spec.SandboxID
 	m.mu.Lock()
 	current, ok = m.records[record.ExecutionID]
 	if !ok || current.State != "STARTING" {
@@ -370,20 +401,21 @@ func (m *Manager) start(ctx context.Context, prepared submission) (Record, error
 		}
 		return record, errors.Join(errors.New("job execution is no longer active"), cleanupErr)
 	}
+	m.records[record.ExecutionID] = record
 	m.mu.Unlock()
-	started, err := m.workers.Start(ctx, group.Spec.RuntimeGroupID, supervisor.StartWorkerRequest{
+	started, err := m.workers.Start(ctx, group.Spec.SandboxID, supervisor.StartWorkerRequest{
 		Metadata: supervisor.ExecutionMetadata{
-			WorkerID: record.WorkerID, ExecutionID: record.ExecutionID,
+			WorkerID:     record.WorkerID,
 			WorkloadType: model.WorkloadJob, OwnerID: record.OwnerID, WorkloadID: record.JobID,
 			ReleaseID: record.ReleaseID, Entrypoint: record.Entrypoint,
-			DebuggerName:   "job:" + record.OwnerID + ":" + record.ExecutionID + ":" + record.WorkerID,
+			DebuggerName:   string(record.Origin.Type) + ":" + record.Origin.ID + ":" + record.WorkerID,
 			DatabaseAccess: record.DatabaseAccess,
 			User:           record.User,
 			Origin:         record.Origin,
-		}, Permissions: record.Permissions,
+		}, Permissions: record.Permissions, Invocation: &execution.Invocation{ContextID: record.ContextID, ParentContextID: record.ParentContextID, JobRunID: record.ExecutionID},
 	})
 	if err != nil {
-		return m.fail(record, errors.Join(err, m.release(record)))
+		return m.fail(record, redactError(errors.Join(err, m.release(record)), prepared.secrets))
 	}
 	record.WorkerID = started.Worker.WorkerID
 	m.mu.Lock()
@@ -424,6 +456,7 @@ func (m *Manager) awaitQueued(ctx context.Context, prepared submission) (Record,
 			m.records[current.ExecutionID] = liveRecord(current)
 			m.signalQueueLocked()
 			m.mu.Unlock()
+			m.logEvent(current, current.FinishedAt, "job_cancelled", "job cancelled during shutdown", slog.LevelWarn)
 			return current, errors.New("job manager is closed")
 		}
 		head := current.ExecutionID
@@ -464,12 +497,13 @@ func queueLess(left, right Record) bool {
 
 func (m *Manager) execute(ctx context.Context, prepared submission) (Record, error) {
 	record := prepared.record
+	m.logEvent(record, m.now(), "job_started", "job started", slog.LevelInfo)
+	ctx = execution.WithInvocation(ctx, execution.Invocation{ContextID: record.ContextID, ParentContextID: record.ParentContextID, JobRunID: record.ExecutionID})
 	result, err := m.workers.RunJob(ctx, record.WorkerID, prepared.arguments, prepared.secrets, record.CheckModules)
 	if err != nil {
-		return m.failAndStop(record, redactError(err, prepared.secrets))
+		return m.failAndStop(record, err, prepared.secrets)
 	}
 	record.Result = redactValue(result.Result, prepared.secrets)
-	record.Logs = redactLogs(result.Logs, prepared.secrets)
 	record.ModuleDependencies = cloneDependencies(result.ModuleDependencies)
 	record.FinishedAt = m.now()
 	record.Duration = record.FinishedAt.Sub(record.StartedAt)
@@ -478,7 +512,7 @@ func (m *Manager) execute(ctx context.Context, prepared submission) (Record, err
 	} else {
 		record.State = "SUCCEEDED"
 		if cleanupErr := m.stopAndRelease(record, false); cleanupErr != nil {
-			return m.fail(record, fmt.Errorf("clean up completed job runtime: %w", cleanupErr))
+			return m.fail(record, redactError(fmt.Errorf("clean up completed job runtime: %w", cleanupErr), prepared.secrets))
 		}
 	}
 	m.mu.Lock()
@@ -495,6 +529,7 @@ func (m *Manager) execute(ctx context.Context, prepared submission) (Record, err
 	}
 	m.signalQueueLocked()
 	m.mu.Unlock()
+	m.logEvent(record, record.FinishedAt, "job_completed", "job completed", slog.LevelInfo)
 	return record, nil
 }
 
@@ -551,22 +586,30 @@ func (m *Manager) Cancel(ctx context.Context, executionID string) error {
 	}
 	record.State = "CANCELLED"
 	record.FinishedAt = m.now()
+	if !record.StartedAt.IsZero() {
+		record.Duration = record.FinishedAt.Sub(record.StartedAt)
+	}
 	m.mu.Lock()
+	published := false
 	if _, exists := m.records[executionID]; exists {
 		m.records[executionID] = liveRecord(record)
 		m.signalQueueLocked()
+		published = true
 	}
 	m.mu.Unlock()
+	if published {
+		m.logEvent(record, record.FinishedAt, "job_cancelled", "job cancelled", slog.LevelWarn)
+	}
 	return nil
 }
 
-// FailGroup marks live executions failed and retires live idle capacity.
-func (m *Manager) FailGroup(runtimeGroupID, reason string) error {
+// FailSandbox marks live executions failed and retires live idle capacity.
+func (m *Manager) FailSandbox(sandboxID, reason string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	changed := false
+	var failed []Record
 	for id, record := range m.records {
-		if record.RuntimeGroupID != runtimeGroupID {
+		if record.SandboxID != sandboxID {
 			continue
 		}
 		switch record.State {
@@ -575,6 +618,7 @@ func (m *Manager) FailGroup(runtimeGroupID, reason string) error {
 			record.FinishedAt = m.now()
 			record.Duration = record.FinishedAt.Sub(record.StartedAt)
 			m.records[id] = liveRecord(record)
+			failed = append(failed, record)
 			changed = true
 		case "IDLE":
 			m.stopIdleTimerLocked(id)
@@ -584,6 +628,10 @@ func (m *Manager) FailGroup(runtimeGroupID, reason string) error {
 	}
 	if changed {
 		m.signalQueueLocked()
+	}
+	m.mu.Unlock()
+	for _, record := range failed {
+		m.logEvent(record, record.FinishedAt, "job_failed", record.Failure, slog.LevelError)
 	}
 	return nil
 }
@@ -684,33 +732,38 @@ func (m *Manager) fail(record Record, cause error) (Record, error) {
 	record.FinishedAt = m.now()
 	record.Duration = record.FinishedAt.Sub(record.StartedAt)
 	m.mu.Lock()
+	published := false
 	if current, ok := m.records[record.ExecutionID]; ok && current.State != "STARTING" && current.State != "RUNNING" {
 		record = current
 	} else if ok {
 		m.records[record.ExecutionID] = liveRecord(record)
 		m.signalQueueLocked()
+		published = true
 	}
 	m.mu.Unlock()
+	if published {
+		m.logEvent(record, record.FinishedAt, "job_failed", record.Failure, slog.LevelError)
+	}
 	return record, cause
 }
 
-func (m *Manager) failAndStop(record Record, cause error) (Record, error) {
-	return m.fail(record, errors.Join(cause, m.stopAndRelease(record, true)))
+func (m *Manager) failAndStop(record Record, cause error, secrets map[string]string) (Record, error) {
+	return m.fail(record, redactError(errors.Join(cause, m.stopAndRelease(record, true)), secrets))
 }
 
 func (m *Manager) stopAndRelease(record Record, immediate bool) error {
-	if record.RuntimeGroupID == "" {
+	if record.SandboxID == "" {
 		return nil
 	}
-	stopErr := m.workers.StopInGroup(context.Background(), record.RuntimeGroupID, record.WorkerID, immediate)
+	stopErr := m.workers.StopInSandbox(context.Background(), record.SandboxID, record.WorkerID, immediate)
 	return errors.Join(stopErr, m.release(record))
 }
 
 func (m *Manager) release(record Record) error {
-	if record.RuntimeGroupID == "" {
+	if record.SandboxID == "" {
 		return nil
 	}
-	return m.coordinator.Release(context.Background(), record.RuntimeGroupID, record.WorkerID, "")
+	return m.coordinator.Release(context.Background(), record.SandboxID, record.WorkerID, "")
 }
 
 func (m *Manager) canStartLocked(record Record) bool {
@@ -777,7 +830,6 @@ func (m *Manager) signalQueueLocked() {
 func liveRecord(record Record) Record {
 	// Returned values may contain program output. The live registry never does.
 	record.Result = nil
-	record.Logs = nil
 	record.ModuleDependencies = nil
 	return record
 }
@@ -813,17 +865,6 @@ func redactError(err error, secrets map[string]string) error {
 		return &redacted
 	}
 	return errors.New(redactText(err.Error(), secrets))
-}
-
-func redactLogs(values []supervisor.LogEvent, secrets map[string]string) []supervisor.LogEvent {
-	result := make([]supervisor.LogEvent, len(values))
-	for index, value := range values {
-		result[index] = supervisor.LogEvent{Level: value.Level, Message: redactText(value.Message, secrets)}
-		if len(value.Fields) > 0 {
-			result[index].Fields = redactValue(value.Fields, secrets).(map[string]any)
-		}
-	}
-	return result
 }
 
 func redactValue(value any, secrets map[string]string) any {

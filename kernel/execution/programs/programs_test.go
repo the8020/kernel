@@ -44,7 +44,6 @@ func TestRunSubmitsSystemJobWithDefaultRuntimePolicy(t *testing.T) {
 	}
 	jobRunner := &fakeJobs{record: jobs.Record{
 		ExecutionID: "execution-one", Result: map[string]any{"created": true},
-		Logs: []supervisor.LogEvent{{Level: "info", Message: "created"}},
 	}}
 	runner, err := New(fakeResolver{program: program}, jobRunner)
 	if err != nil {
@@ -52,7 +51,7 @@ func TestRunSubmitsSystemJobWithDefaultRuntimePolicy(t *testing.T) {
 	}
 	user, _ := execution.UserForUsername("alice")
 	ctx := execution.WithCaller(context.Background(), execution.Caller{
-		ExecutionID: "parent-job", Workload: model.WorkloadJob, User: user,
+		ContextID: "ctx-aaaaaaaaaa", JobRunID: "job-pppppppppp", Workload: model.WorkloadJob, User: user,
 	})
 	arguments := []any{"Alice Smith", "--admin"}
 	secrets := map[string]string{"password": "test-password"}
@@ -71,7 +70,7 @@ func TestRunSubmitsSystemJobWithDefaultRuntimePolicy(t *testing.T) {
 	}
 	wantResult := Result{
 		ProgramID: program.ID, PackageID: program.PackageID, Commit: program.Commit,
-		ExecutionID: jobRunner.record.ExecutionID, Value: jobRunner.record.Result, Output: jobRunner.record.Logs,
+		ExecutionID: jobRunner.record.ExecutionID, Value: jobRunner.record.Result,
 	}
 	if !reflect.DeepEqual(result, wantResult) {
 		t.Fatalf("result=%#v want=%#v", result, wantResult)
@@ -123,13 +122,22 @@ func TestRunPreservesJobErrors(t *testing.T) {
 		context.Canceled,
 		&supervisor.ResponseError{Code: "invalid_arguments", Message: "invalid scale", Details: map[string]any{"field": "maximum_workers"}},
 	} {
-		jobRunner := &fakeJobs{err: failure}
+		jobRunner := &fakeJobs{err: failure, record: jobs.Record{
+			NodeID: "nod-0123456789", SandboxID: "sbx-0123456789", WorkerID: "wrk-0123456789",
+			ExecutionID: "job-0123456789", ContextID: "ctx-0123456789", ParentContextID: "ctx-abcdefghij",
+			LogPosition: "before-startup", StartedAt: time.Now().UTC(), FinishedAt: time.Now().UTC(),
+		}}
 		runner, _ := New(fakeResolver{program: workspacepackages.ProgramDefinition{
 			ID: "the8020/services/scale", PackageID: "the8020/services", Commit: "active",
 			EntrypointURL: "file:///workspace/packages/the8020/services/programs/scale/program.ts",
 		}}, jobRunner)
-		if _, err := runner.Run(context.Background(), "the8020/services/scale", "active", nil, nil); err != failure {
+		result, err := runner.Run(context.Background(), "the8020/services/scale", "active", nil, nil)
+		if err != failure {
 			t.Fatalf("job error identity lost: got %v, want %v", err, failure)
+		}
+		record := jobRunner.record
+		if result.NodeID != record.NodeID || result.SandboxID != record.SandboxID || result.WorkerID != record.WorkerID || result.ExecutionID != record.ExecutionID || result.ContextID != record.ContextID || result.ParentContextID != record.ParentContextID || result.LogPosition != record.LogPosition || !result.StartedAt.Equal(record.StartedAt) || !result.FinishedAt.Equal(record.FinishedAt) {
+			t.Fatalf("program failure lost log references: %#v", result)
 		}
 	}
 }

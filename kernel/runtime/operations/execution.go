@@ -69,6 +69,13 @@ func (d *Dispatcher) execution(ctx context.Context, operation string, input map[
 	if runErr != nil {
 		state, failure = "failed", runErr.Error()
 	}
-	// Execution failures retain their captured output for the Deno caller.
-	return map[string]any{"state": state, "failure": failure, "executionId": result.ExecutionID, "packageCommit": result.Commit, "result": result.Value, "logs": result.Output}, nil
+	// Allocated identity and the saved reader boundary survive execution failures.
+	return map[string]any{
+		"state": state, "failure": failure, "executionId": result.ExecutionID,
+		"packageCommit": result.Commit, "result": result.Value,
+		"nodeId": result.NodeID, "sandboxId": result.SandboxID, "workerId": result.WorkerID,
+		"contextId": result.ContextID, "parentContextId": result.ParentContextID,
+		"logPosition": result.LogPosition, "queuedAt": result.QueuedAt,
+		"startedAt": result.StartedAt, "finishedAt": result.FinishedAt,
+	}, nil
 }

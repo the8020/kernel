@@ -3,7 +3,7 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
 # Purpose
 
 - Provision, reserve, assign, trim, and asynchronously replenish clean warm
-  runtime groups.
+  sandboxes.
 
 # Ownership
 
@@ -16,7 +16,10 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
 # Local Contracts
 
 - Public API: `New`, `Controller.Start`, `Resize`, `Status`, `Assign`, `Forget`,
-  and `Close`, plus `Template` and narrow sandbox dependency contracts.
+  and `Close`, plus `Template`, `WarmPool`, `WarmSandbox`, `PoolStatus`, and
+  narrow sandbox dependency contracts. `WarmPool` serializes accounting with
+  one mutex; reservation is atomic and assigned supervisors are never reused
+  as clean capacity.
 - Warm sandboxes contain one healthy supervisor, no owners, no group key, and no
   Workers. Assignment is atomic at the pool boundary and immediately triggers
   creation of a new clean replacement.
@@ -28,9 +31,8 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
 - Desired capacity zero is the default lazy mode: no clean sandbox is created
   until a workload request reaches the coordinator. Positive capacity remains an
   explicit prewarming choice.
-- Warm provisioning requests compact collision-checked sandbox IDs from the
-  sandbox manager and compact `rgp-` runtime-group IDs from the shared model
-  generator.
+- Warm provisioning reserves one collision-checked sandbox ID from the sandbox
+  manager. Accounting, reservation, assignment, and destruction use that ID.
 
 # Work Guidance
 

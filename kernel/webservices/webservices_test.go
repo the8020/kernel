@@ -3,6 +3,7 @@ package webservices
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +24,7 @@ import (
 	"the8020/kernel/execution"
 	executionservices "the8020/kernel/execution/services"
 	executionworkers "the8020/kernel/execution/workers"
+	"the8020/kernel/identity"
 	workspacepackages "the8020/kernel/packages"
 )
 
@@ -69,7 +71,7 @@ func TestMinimumSandboxesUseOnlyIndexesAssignedToLocalNode(t *testing.T) {
 	})
 	pools, router := newFakePools(), &fakeRouter{}
 	manager := newTestManager(t, store, pools, router, filepath.Join(root, "node", "kernel", "services"))
-	manager.nodes = &fakeNodeRouter{local: "node-b", indexes: []int{1, 3, 5, 7}}
+	manager.nodes = &fakeNodeRouter{local: "nod-bbbbbbbbbb", indexes: []int{1, 3, 5, 7}}
 	status, err := manager.Reconcile(context.Background(), "the8020/demo/variables")
 	if err != nil || status.State != StateReady || status.SandboxCount != 2 || status.Sandboxes[0].Index != 1 || status.Sandboxes[1].Index != 3 {
 		t.Fatalf("status=%#v err=%v", status, err)
@@ -86,7 +88,7 @@ func TestReconcileMovesMinimumSandboxesWhenNodeAssignmentChanges(t *testing.T) {
 	})
 	pools, router := newFakePools(), &fakeRouter{}
 	manager := newTestManager(t, store, pools, router, filepath.Join(root, "node", "kernel", "services"))
-	nodes := &fakeNodeRouter{local: "node-a", indexes: []int{0, 2}}
+	nodes := &fakeNodeRouter{local: "nod-aaaaaaaaaa", indexes: []int{0, 2}}
 	manager.nodes = nodes
 	status, err := manager.Reconcile(context.Background(), "the8020/demo/variables")
 	if err != nil || len(status.Sandboxes) != 2 || status.Sandboxes[0].Index != 0 || status.Sandboxes[1].Index != 2 {
@@ -148,6 +150,8 @@ type fakePools struct {
 	options         map[string]executionservices.Options
 	events          []string
 	failVersion     map[uint64]error
+	failStartIndex  map[int]error
+	failScaleIndex  map[int]error
 	failStart       map[string]error
 	failScale       map[string]error
 	failStop        map[string]error
@@ -177,6 +181,8 @@ func newFakePools() *fakePools {
 		records:        map[string]executionservices.Record{},
 		options:        map[string]executionservices.Options{},
 		failVersion:    map[uint64]error{},
+		failStartIndex: map[int]error{},
+		failScaleIndex: map[int]error{},
 		failStart:      map[string]error{},
 		failScale:      map[string]error{},
 		failStop:       map[string]error{},
@@ -219,6 +225,9 @@ func (p *fakePools) Start(_ context.Context, serviceID, entrypoint string, optio
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.events = append(p.events, fmt.Sprintf("start:%s:%d", serviceID, options.Generation))
+	if err := p.failStartIndex[options.SandboxIndex]; err != nil {
+		return executionservices.Record{}, err
+	}
 	if err := p.failStart[serviceID]; err != nil {
 		return executionservices.Record{}, err
 	}
@@ -230,16 +239,36 @@ func (p *fakePools) Start(_ context.Context, serviceID, entrypoint string, optio
 	}
 	workers := make([]string, options.MinimumWorkers)
 	for index := range workers {
-		workers[index] = fmt.Sprintf("%s-worker-%d", serviceID, index)
+		workers[index] = fixtureWorkerID(serviceID, index)
 	}
 	groupKey := options.GroupKey
 	if groupKey == "" {
 		groupKey = "owner:" + serviceID
 	}
+	sandboxID, err := identity.New("sbx")
+	if err != nil {
+		return executionservices.Record{}, err
+	}
+	for id, candidate := range p.records {
+		if candidate.State != "READY" || p.options[id].GroupKey != groupKey {
+			continue
+		}
+		occupied := false
+		for _, allocation := range p.records {
+			if allocation.State == "READY" && allocation.SandboxID == candidate.SandboxID && allocation.LogicalServiceID == options.LogicalServiceID {
+				occupied = true
+				break
+			}
+		}
+		if !occupied {
+			sandboxID = candidate.SandboxID
+			break
+		}
+	}
 	record := executionservices.Record{
 		ServiceID: serviceID, LogicalServiceID: options.LogicalServiceID,
-		Entrypoint: entrypoint, RuntimeGroupID: "group:" + groupKey,
-		SandboxID: "sandbox:" + serviceID, WorkerIDs: workers, State: "READY",
+		Entrypoint: entrypoint,
+		SandboxID:  sandboxID, WorkerIDs: workers, State: "READY",
 		ReleaseID: options.ReleaseID, Generation: options.Generation, MaximumWorkers: options.MaximumWorkers,
 		ConcurrencyPerWorker: options.ConcurrencyPerWorker, ExecutionMode: options.ExecutionMode, SandboxIndex: options.SandboxIndex,
 	}
@@ -283,15 +312,25 @@ func (p *fakePools) Scale(_ context.Context, serviceID string, count int) (execu
 		return record, os.ErrNotExist
 	}
 	p.events = append(p.events, fmt.Sprintf("scale:%s:%d", serviceID, count))
+	if err := p.failScaleIndex[record.SandboxIndex]; err != nil {
+		return record, err
+	}
 	if err := p.failScale[serviceID]; err != nil {
 		return record, err
 	}
 	record.WorkerIDs = make([]string, count)
 	for index := range record.WorkerIDs {
-		record.WorkerIDs[index] = fmt.Sprintf("%s-worker-%d", serviceID, index)
+		record.WorkerIDs[index] = fixtureWorkerID(serviceID, index)
 	}
 	p.records[serviceID] = record
 	return record, nil
+}
+
+// Each fake pool has stable live Workers independent of its editable observed
+// record, allowing reconciliation tests to replace stale recorded identities.
+func fixtureWorkerID(serviceID string, index int) string {
+	digest := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", serviceID, index)))
+	return fmt.Sprintf("wrk-%x", digest[:5])
 }
 
 func (p *fakePools) EnsureCapacity(ctx context.Context, serviceID string, growthLimit, occupiedFloor int) (executionservices.Record, error) {
@@ -479,7 +518,7 @@ func TestReconcileRetriesPersistedStaleVersionPoolCleanup(t *testing.T) {
 		ReleaseID: "service-validation", Generation: 0, State: "STOPPED",
 	}
 	pools.failStop[staleID] = errors.New("temporary supervisor failure")
-	manager := newTestManager(t, store, pools, router, filepath.Join(root, "node", "kernel", "node-a", "services"))
+	manager := newTestManager(t, store, pools, router, filepath.Join(root, "node", "kernel", "nod-aaaaaaaaaa", "services"))
 
 	status, err := manager.Reconcile(context.Background(), "the8020/demo/variables")
 	if err == nil || status.State != StateReady || !strings.Contains(err.Error(), "temporary supervisor failure") {
@@ -514,7 +553,7 @@ func TestBackgroundReconciliationLeavesEnabledServiceIdleUntilFirstRequest(t *te
 		t.Fatal(err)
 	}
 	pools, router := newFakePools(), &fakeRouter{}
-	manager := newTestManager(t, store, pools, router, filepath.Join(root, "node", "kernel", "node-a", "services"))
+	manager := newTestManager(t, store, pools, router, filepath.Join(root, "node", "kernel", "nod-aaaaaaaaaa", "services"))
 	manager.StartReconciler(context.Background())
 	deadline := time.Now().Add(time.Second)
 	for {
@@ -577,21 +616,16 @@ func TestColdStartRollsBackFailedFirstWorkerAndRecoversOnRetry(t *testing.T) {
 	if status, err := manager.reconcileOne(context.Background(), serviceID); err != nil || status.State != StateIdle {
 		t.Fatalf("initial status=%#v err=%v", status, err)
 	}
-	definition, err := store.ReadService(serviceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	poolID := versionPoolID(serviceID, definition.Release, 0)
-	pools.failScale[poolID] = errors.New("sandbox Worker capacity is exhausted")
+	pools.failScaleIndex[0] = errors.New("sandbox Worker capacity is exhausted")
 	failed := httptest.NewRecorder()
 	manager.ServeHTTP(failed, httptest.NewRequest(http.MethodGet, "/the8020/demo/variables/fail", nil))
 	if failed.Code != http.StatusServiceUnavailable {
 		t.Fatalf("failed cold start status=%d body=%q", failed.Code, failed.Body.String())
 	}
-	if _, err := pools.Inspect(poolID); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("failed pool retained sandbox ownership: %v", err)
+	if len(pools.records) != 0 {
+		t.Fatalf("failed allocation retained ownership: %#v", pools.records)
 	}
-	delete(pools.failScale, poolID)
+	delete(pools.failScaleIndex, 0)
 	recovered := httptest.NewRecorder()
 	manager.ServeHTTP(recovered, httptest.NewRequest(http.MethodGet, "/the8020/demo/variables/recover", nil))
 	status, inspectErr := manager.Inspect(serviceID)
@@ -617,19 +651,22 @@ func TestTargetHeadroomFailureFallsBackToAvailableHardSlot(t *testing.T) {
 		Slots:    1,
 		Reason:   "target-utilization growth failed: sandbox Worker capacity is exhausted",
 	}
-	definition, _ := store.ReadService(serviceID)
-	newPoolID := versionPoolID(serviceID, definition.Release, 1)
-	pools.failScale[newPoolID] = errors.New("sandbox Worker capacity is exhausted")
+	pools.failScaleIndex[1] = errors.New("sandbox Worker capacity is exhausted")
 
 	response := httptest.NewRecorder()
 	manager.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/the8020/demo/variables/value", nil))
 	dispatched := <-pools.dispatched
+	// Dispatch may trigger another capacity attempt. Join it before asserting
+	// the final allocation inventory.
+	if err := manager.Close(); err != nil {
+		t.Fatal(err)
+	}
 	status, inspectErr := manager.Inspect(serviceID)
 	if response.Code != http.StatusOK || dispatched.poolID != existing.PoolID || inspectErr != nil || status.WorkerCount != 1 || status.SandboxCount != 1 {
 		t.Fatalf("response=%d dispatch=%#v status=%#v err=%v", response.Code, dispatched, status, inspectErr)
 	}
-	if _, err := pools.Inspect(newPoolID); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("failed headroom sandbox was not rolled back: %v", err)
+	if len(pools.records) != 1 {
+		t.Fatalf("failed headroom allocation was not rolled back: %#v", pools.records)
 	}
 }
 
@@ -676,9 +713,7 @@ func TestMinimumWorkersSpillIntoAnotherSandboxWhenWorkerLimitBlocksPacking(t *te
 	serviceID := "the8020/demo/variables"
 	store := writeCanonicalTestService(t, root, serviceID, 2, 4, 0, 4, "stateless")
 	pools, router := newFakePools(), &fakeRouter{}
-	definition, _ := store.ReadService(serviceID)
-	firstPoolID := versionPoolID(serviceID, definition.Release, 0)
-	pools.failScale[firstPoolID] = fmt.Errorf("%w: Worker limit is reached", executionworkers.ErrSandboxCapacity)
+	pools.failScaleIndex[0] = fmt.Errorf("%w: Worker limit is reached", executionworkers.ErrSandboxCapacity)
 	manager := newTestManager(t, store, pools, router, filepath.Join(root, "node", "kernel", "services"))
 
 	status, err := manager.Reconcile(context.Background(), serviceID)
@@ -696,7 +731,7 @@ func TestBackgroundMaintenanceDoesNotRediscoverPackageCatalog(t *testing.T) {
 	root := t.TempDir()
 	store := newTestServiceIndex(t, root, "the8020/demo/variables", nil)
 	pools, router := newFakePools(), &fakeRouter{}
-	manager := newTestManager(t, store, pools, router, filepath.Join(root, "node", "kernel", "node-a", "services"))
+	manager := newTestManager(t, store, pools, router, filepath.Join(root, "node", "kernel", "nod-aaaaaaaaaa", "services"))
 	manager.StartReconciler(context.Background())
 	deadline := time.Now().Add(time.Second)
 	for {
@@ -856,15 +891,9 @@ func TestColdStartUsesDegradedCapacityAndFillsMissingSandboxInPlace(t *testing.T
 	}); err != nil {
 		t.Fatal(err)
 	}
-	definition, err := store.ReadService("the8020/demo/variables")
-	if err != nil {
-		t.Fatal(err)
-	}
-	firstPoolID := versionPoolID(definition.Identity.ServiceID(), definition.Release, 0)
-	missingPoolID := versionPoolID(definition.Identity.ServiceID(), definition.Release, 1)
 	pools := newFakePools()
-	pools.failStart[missingPoolID] = errors.New("node CPU capacity exhausted")
-	manager := newTestManager(t, store, pools, &fakeRouter{}, filepath.Join(root, "node", "kernel", "node-a", "services"))
+	pools.failStartIndex[1] = errors.New("node CPU capacity exhausted")
+	manager := newTestManager(t, store, pools, &fakeRouter{}, filepath.Join(root, "node", "kernel", "nod-aaaaaaaaaa", "services"))
 
 	response := httptest.NewRecorder()
 	manager.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/the8020/demo/variables/value/6", nil))
@@ -872,9 +901,10 @@ func TestColdStartUsesDegradedCapacityAndFillsMissingSandboxInPlace(t *testing.T
 		t.Fatalf("degraded cold start status=%d body=%q", response.Code, response.Body.String())
 	}
 	degraded, err := manager.Inspect("the8020/demo/variables")
-	if err != nil || degraded.State != StateDegraded || len(degraded.Sandboxes) != 1 || degraded.Sandboxes[0].PoolID != firstPoolID {
+	if err != nil || degraded.State != StateDegraded || len(degraded.Sandboxes) != 1 || !identity.Is(degraded.Sandboxes[0].PoolID, "srv") {
 		t.Fatalf("degraded=%#v err=%v", degraded, err)
 	}
+	firstPoolID := degraded.Sandboxes[0].PoolID
 	if err := manager.ReconcileAll(context.Background()); err == nil || !strings.Contains(err.Error(), "CPU capacity") {
 		t.Fatalf("missing sandbox retry error=%v", err)
 	}
@@ -884,12 +914,12 @@ func TestColdStartUsesDegradedCapacityAndFillsMissingSandboxInPlace(t *testing.T
 		}
 	}
 
-	delete(pools.failStart, missingPoolID)
+	delete(pools.failStartIndex, 1)
 	if err := manager.ReconcileAll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	ready, err := manager.Inspect("the8020/demo/variables")
-	if err != nil || ready.State != StateReady || len(ready.Sandboxes) != 2 || ready.Sandboxes[0].PoolID != firstPoolID || ready.Sandboxes[1].PoolID != missingPoolID {
+	if err != nil || ready.State != StateReady || len(ready.Sandboxes) != 2 || ready.Sandboxes[0].PoolID != firstPoolID || !identity.Is(ready.Sandboxes[1].PoolID, "srv") || ready.Sandboxes[1].PoolID == firstPoolID {
 		t.Fatalf("ready=%#v err=%v", ready, err)
 	}
 }
@@ -902,7 +932,7 @@ func TestReconcileChecksWorkerHealthWhenRecordedCountStillMatches(t *testing.T) 
 		spec.Effective.Placement.WorkersPerSandbox = 2
 	})
 	pools := newFakePools()
-	manager := newTestManager(t, store, pools, &fakeRouter{}, filepath.Join(root, "node", "kernel", "node-a", "services"))
+	manager := newTestManager(t, store, pools, &fakeRouter{}, filepath.Join(root, "node", "kernel", "nod-aaaaaaaaaa", "services"))
 	started, err := manager.Reconcile(context.Background(), "the8020/demo/variables")
 	if err != nil {
 		t.Fatal(err)
@@ -944,7 +974,7 @@ func TestLifecyclePersistsVersionsRollsCapacityAndRetainsBrokenReplacement(t *te
 	root := t.TempDir()
 	store := newTestServiceIndex(t, root, "the8020/demo/variables", func(spec *Specification) { spec.Effective.Scaling.MinimumWorkers = 2 })
 	pools, router := newFakePools(), &fakeRouter{}
-	manager := newTestManager(t, store, pools, router, filepath.Join(root, "node", "kernel", "node-a", "services"))
+	manager := newTestManager(t, store, pools, router, filepath.Join(root, "node", "kernel", "nod-aaaaaaaaaa", "services"))
 	var logs bytes.Buffer
 	manager.logger = slog.New(slog.NewJSONHandler(&logs, nil))
 
@@ -1013,7 +1043,7 @@ func TestLifecyclePersistsVersionsRollsCapacityAndRetainsBrokenReplacement(t *te
 	if count := strings.Count(logs.String(), `"msg":"service stopped"`); count != 1 {
 		t.Fatalf("service stopped log count = %d; logs=%s", count, logs.String())
 	}
-	if _, err := os.Stat(filepath.Join(root, "node", "kernel", "node-a", "services", "the8020", "demo", "variables", "status.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, "node", "kernel", "nod-aaaaaaaaaa", "services", "the8020", "demo", "variables", "status.json")); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1107,6 +1137,8 @@ func TestCanonicalBoundaryReadsAcceptedIndexStripsPrefixAndUsesTrustedMetadata(t
 	request := httptest.NewRequest(http.MethodPatch, "http://example.test/the8020/demo/variables/orders/7?expand=yes", bytes.NewBufferString("stream me"))
 	request.Header.Set("the8020-internal-service-id", "attacker/service/value")
 	request.Header.Set("the8020-internal-client-ip-address", "198.51.100.99")
+	request.Header["ThE8020-InTeRnAl-CoNtExT-Id"] = []string{"ctx-ffffffffff"}
+	request.Header["ThE8020-InTeRnAl-PaReNt-CoNtExT-Id"] = []string{"ctx-pppppppppp"}
 	request.Header.Set("X-Custom", "preserved")
 	response := httptest.NewRecorder()
 	manager.ServeHTTP(response, request)
@@ -1114,6 +1146,9 @@ func TestCanonicalBoundaryReadsAcceptedIndexStripsPrefixAndUsesTrustedMetadata(t
 		t.Fatalf("response = %d %q", response.Code, response.Body.String())
 	}
 	dispatched := <-pools.dispatched
+	if id := dispatched.header.Get("the8020-internal-context-id"); !identity.Is(id, "ctx") || id == "ctx-ffffffffff" || dispatched.header.Get("the8020-internal-parent-context-id") != "" {
+		t.Fatalf("public headers supplied execution correlation: %#v", dispatched.header)
+	}
 	if dispatched.scheme != "http" || dispatched.host != "service" || dispatched.method != http.MethodPatch || dispatched.path != "/orders/7" || dispatched.query != "expand=yes" || dispatched.body != "stream me" || dispatched.header.Get("X-Custom") != "preserved" {
 		t.Fatalf("forwarded request = %#v", dispatched)
 	}
@@ -1299,12 +1334,17 @@ func TestRequestServiceWebSocketUsesCanonicalRoutingAndTrustedMetadata(t *testin
 	request.Header.Set("Sec-WebSocket-Protocol", "the8020.echo")
 	request.Header.Set("the8020-internal-auth-username", "attacker")
 	request.Header.Set("the8020-internal-username", "attacker")
+	request.Header["ThE8020-InTeRnAl-CoNtExT-Id"] = []string{"ctx-ffffffffff"}
+	request.Header["ThE8020-InTeRnAl-PaReNt-CoNtExT-Id"] = []string{"ctx-pppppppppp"}
 	response := httptest.NewRecorder()
 	manager.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || len(pools.websockets) != 1 {
 		t.Fatalf("request WebSocket status=%d proxies=%#v", response.Code, pools.websockets)
 	}
 	proxied := pools.websockets[0]
+	if id := proxied.header.Get("the8020-internal-context-id"); !identity.Is(id, "ctx") || id == "ctx-ffffffffff" || proxied.header.Get("the8020-internal-parent-context-id") != "" {
+		t.Fatalf("public WebSocket headers supplied execution correlation: %#v", proxied.header)
+	}
 	if proxied.path != "/echo/main" || proxied.query != "format=text" || proxied.header.Get("Sec-WebSocket-Protocol") != "the8020.echo" {
 		t.Fatalf("request WebSocket route = %#v", proxied)
 	}
@@ -1382,7 +1422,7 @@ func TestSessionServiceEstablishesHTTPRouteThenReconnectsWebSocketToExactSandbox
 	poolRecord := pools.records[initial.poolID]
 	staleToken, err := manager.signing.SignRoute(platformauth.RouteTarget{
 		NodeID: manager.nodeID, SandboxID: poolRecord.SandboxID,
-		WorkerID: "worker-from-before-kernel-restart", ExecutionID: "persistent-stale",
+		WorkerID: "wrk-ssssssssss", ExecutionID: "pex-ssssssssss",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1565,13 +1605,13 @@ func TestPersistentRouteReceivedByAnotherNodeForwardsToOwner(t *testing.T) {
 		spec.Access.Mode = "authenticated"
 	})
 	owner := newTestRouteSigner(t)
-	token, err := owner.SignRoute(platformauth.RouteTarget{NodeID: "node-a", SandboxID: "remote-sandbox", WorkerID: "remote-worker", ExecutionID: "persistent-remote"})
+	token, err := owner.SignRoute(platformauth.RouteTarget{NodeID: "nod-aaaaaaaaaa", SandboxID: "sbx-rrrrrrrrrr", WorkerID: "wrk-rrrrrrrrrr", ExecutionID: "pex-rrrrrrrrrr"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	pools, router := newFakePools(), &fakeRouter{}
-	nodeRouter := &fakeNodeRouter{local: "node-b"}
-	manager, err := New(Config{Index: store, Pools: pools, Router: router, ObservedRoot: filepath.Join(root, "node", "kernel", "services"), NodeID: "node-b", Signing: newTestRouteSigner(t), Nodes: nodeRouter})
+	nodeRouter := &fakeNodeRouter{local: "nod-bbbbbbbbbb"}
+	manager, err := New(Config{Index: store, Pools: pools, Router: router, ObservedRoot: filepath.Join(root, "node", "kernel", "services"), NodeID: "nod-bbbbbbbbbb", Signing: newTestRouteSigner(t), Nodes: nodeRouter})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1586,7 +1626,7 @@ func TestPersistentRouteReceivedByAnotherNodeForwardsToOwner(t *testing.T) {
 	request.AddCookie(&http.Cookie{Name: "the8020_auth", Value: "valid-jwt"})
 	response := httptest.NewRecorder()
 	manager.ServeHTTP(response, request)
-	if response.Code != http.StatusAccepted || nodeRouter.calls != 1 || nodeRouter.node != "node-a" {
+	if response.Code != http.StatusAccepted || nodeRouter.calls != 1 || nodeRouter.node != "nod-aaaaaaaaaa" {
 		t.Fatalf("status=%d router=%#v", response.Code, nodeRouter)
 	}
 }
@@ -1634,7 +1674,7 @@ func TestCanonicalIdentitiesCannotConflictAcrossNamespaceOrRepository(t *testing
 	}
 }
 
-func TestCompatibleServicesShareRuntimeGroupButKeepIndependentPoolsAndLifecycle(t *testing.T) {
+func TestCompatibleServicesShareSandboxButKeepIndependentPoolsAndLifecycle(t *testing.T) {
 	root := t.TempDir()
 	store := newTestServiceIndex(t, root, "the8020/demo/variables", nil)
 	newTestServiceIndex(t, root, "the8020/demo/variables-import", nil)
@@ -1649,8 +1689,8 @@ func TestCompatibleServicesShareRuntimeGroupButKeepIndependentPoolsAndLifecycle(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Sandboxes[0].RuntimeGroupID == second.Sandboxes[0].RuntimeGroupID {
-		t.Fatal("default service identities unexpectedly shared a runtime group")
+	if first.Sandboxes[0].SandboxID == second.Sandboxes[0].SandboxID {
+		t.Fatal("default service identities unexpectedly shared a sandbox")
 	}
 	shared := "shared-proof"
 	first, err = publishTestVersion(context.Background(), manager, first.ServiceID, func(spec *Specification) { spec.Effective.Placement.SandboxGroup = shared })
@@ -1661,7 +1701,7 @@ func TestCompatibleServicesShareRuntimeGroupButKeepIndependentPoolsAndLifecycle(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Sandboxes[0].RuntimeGroupID != second.Sandboxes[0].RuntimeGroupID || first.Sandboxes[0].PoolID == second.Sandboxes[0].PoolID {
+	if first.Sandboxes[0].SandboxID != second.Sandboxes[0].SandboxID || first.Sandboxes[0].PoolID == second.Sandboxes[0].PoolID {
 		t.Fatalf("first=%#v second=%#v", first.Sandboxes, second.Sandboxes)
 	}
 	for _, serviceID := range []string{first.ServiceID, second.ServiceID} {
@@ -2175,7 +2215,7 @@ func TestCanonicalBoundaryStreamsRequestAndResponseWithoutCompleteBuffering(t *t
 
 func newTestManager(t testing.TB, store *Index, pools *fakePools, router *fakeRouter, observed string) *Manager {
 	t.Helper()
-	manager, err := New(Config{Index: store, Pools: pools, Router: router, ObservedRoot: observed, Authenticator: "/p/the8020/users/mod.ts", ReconcileInterval: 10 * time.Millisecond, StartupTimeout: time.Second, Signing: newTestRouteSigner(t)})
+	manager, err := New(Config{Index: store, Pools: pools, Router: router, ObservedRoot: observed, Authenticator: "/p/the8020/users/mod.ts", ReconcileInterval: 10 * time.Millisecond, StartupTimeout: time.Second, NodeID: "nod-aaaaaaaaaa", Signing: newTestRouteSigner(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2366,5 +2406,42 @@ func TestRemovedServiceRetirementRetriesFailuresAndDrainingOnOrdinaryMaintenance
 	}
 	if len(manager.takeMaintenance(256)) != 0 {
 		t.Fatal("completed retirement stayed queued")
+	}
+}
+
+func TestOpaqueServiceAllocationRecoversByPlacement(t *testing.T) {
+	root := t.TempDir()
+	serviceID := "the8020/demo/variables"
+	store := writeCanonicalTestService(t, root, serviceID, 1, 2, 1, 2, "stateless")
+	pools := newFakePools()
+	firstManager := newTestManager(t, store, pools, &fakeRouter{}, filepath.Join(root, "first"))
+	first, err := firstManager.Reconcile(context.Background(), serviceID)
+	if err != nil || len(first.Sandboxes) != 1 {
+		t.Fatalf("first allocation: %#v %v", first, err)
+	}
+	id := first.Sandboxes[0].PoolID
+	if !identity.Is(id, "srv") {
+		t.Fatalf("allocation ID = %s", id)
+	}
+	secondManager := newTestManager(t, store, pools, &fakeRouter{}, filepath.Join(root, "second"))
+	before := len(pools.events)
+	second, err := secondManager.Reconcile(context.Background(), serviceID)
+	if err != nil || len(second.Sandboxes) != 1 || second.Sandboxes[0].PoolID != id {
+		t.Fatalf("restored allocation: %#v %v", second, err)
+	}
+	for _, event := range pools.events[before:] {
+		if strings.HasPrefix(event, "start:") {
+			t.Fatal("recovery created a duplicate service instance")
+		}
+	}
+	duplicate := pools.records[id]
+	duplicate.ServiceID = "srv-aaaaaaaaaa"
+	pools.records[duplicate.ServiceID] = duplicate
+	definition, err := store.ReadService(serviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := secondManager.poolForPlacement(definition, duplicate.SandboxIndex); err == nil {
+		t.Fatal("conflicting placement was accepted")
 	}
 }
