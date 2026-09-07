@@ -13,11 +13,13 @@ with htop.
 
 ## Phase 1 — persistent native terminals
 
-Status: complete and verified locally. The shared PTY owner, package service,
-browser client, and named SSH attachment are implemented. Native
-browser/OpenSSH/htop checks, cross-node attachment and orphan cleanup, and
-direct/retained measurements pass. Work stops here for the user's Phase 2
-revision. No live deployment or source commit was made by this work.
+Status: complete, verified, committed, and deployed to test5. The shared PTY
+owner, package service, browser client, and named SSH attachment are
+implemented. Native browser/OpenSSH/htop checks, cross-node attachment and
+orphan cleanup, and direct/retained measurements pass. Work stops here for the
+user's Phase 2 revision. The fresh test5 instance replaces test4 and serves HTTP
+on port 80 and SSH on port 22. Authenticated browser login/session establishment
+and native SSH execution pass; the welcome screen loads no terminal assets.
 
 - [x] Extend the shared kernel console owner with stable PTY identity and
       separate create, attach, detach, process-exit, and explicit-close
