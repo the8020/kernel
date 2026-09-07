@@ -141,6 +141,10 @@ relevant child AGENTS.md
   requires this initial user to exist. Bootstrap failure prints the last
   users-command error and kernel status so the underlying runtime failure is
   visible in container output.
+- The local `Dockerfile` builds the checked-out kernel release without build
+  arguments, deriving package compatibility from its Git tag. Dockerfiles own
+  image assembly and build-cache cleanup; the installer stays generic.
+  [Docker DOX](docker/AGENTS.md) owns the container-specific runtime payload.
 - Container startup prints a message before starting the kernel, waiting for
   package initialization and user commands, creating the initial user, and
   waiting for the public login service. Report the stage before its potentially
@@ -485,13 +489,15 @@ below.
 - [defaults/AGENTS.md](defaults/AGENTS.md): first-run configuration/node-setting
   templates and the canonical generic runtime definition, source, image tooling,
   and pinned versions under `defaults/config/runtime/`.
+- [docker/AGENTS.md](docker/AGENTS.md): container runtime assets, startup, and
+  Docker build qualification.
 - [kernel/AGENTS.md](kernel/AGENTS.md): the Go kernel architecture, authored
   source, declarative definitions, tests, and package-level DOX tree.
 
 - Root-owned paths include `.vscode/`, `go.mod`, `go.sum`, `.go-version`,
   `.gitignore`, `install.sh`, `run.sh`, `release-tag.sh`, release resolver
-  tests, `docker-entrypoint.sh`, `docker-entrypoint_test.sh`, and root-level
-  project documentation.
+  tests, `Dockerfile`, `.dockerignore`, `docker-entrypoint_test.sh`, and
+  root-level project documentation.
 
 # 80|20
 
