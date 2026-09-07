@@ -1,9 +1,17 @@
 // Resolved package-service indexing contract. Durations are JSON nanoseconds.
 // Application declarations, defaults, overrides, and storage are not kernel input.
+export interface PersistentServiceTarget {
+  nodeId: string;
+  sandboxId: string;
+  workerId: string;
+  persistentExecutionId: string;
+}
+
 export interface ServiceConfiguration {
   execution: { anonymous_user: string };
   lifecycle: {
     service_type: "stateless" | "session";
+    /** Zero retains a binding until explicit completion or owner destruction. */
     session_keep_alive: number;
   };
   scaling: {

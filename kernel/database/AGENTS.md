@@ -85,6 +85,16 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   streaming, savepoints, destructive automatic migration, and a generalized
   migration framework are intentionally deferred.
 
+# Work Guidance
+
+- Keep this layer limited to physical database authority and generic
+  execution-scoped access. New application schemas, semantic validation, and
+  query workflows belong in packages; extend the kernel only for a necessary
+  shared storage foundation.
+- Verify representation or transaction changes against the shared db
+  codec/driver and the affected application path, preserving query bounds,
+  short lock scopes, and connection cleanup.
+
 # Verification
 
 - Tests cover catalog readiness/idempotence/failure, existing-catalog startup

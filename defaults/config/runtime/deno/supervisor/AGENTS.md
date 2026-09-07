@@ -21,6 +21,12 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   and sandbox IDs; Worker admission validates the Worker ID before startup.
 - Worker/job/service-pool/drain controls use generated versioned envelopes and
   validate message type, sandbox identity, and correlation.
+- `Supervisor.serve` owns the HTTP listener used by `main.ts`. Deno's native
+  automatic compression runs once when a response leaves that listener, after
+  the Worker transfers its body stream. Services control exclusions through
+  response headers such as `Cache-Control: no-transform`; there is no separate
+  service configuration setting or application-specific compressor. Existing
+  content encodings and range responses retain their bytes and metadata.
 - Worker startup requires a canonical user and a workload-compatible service,
   job, or program origin. Exact job/program calls carry an explicit validated
   effective user; service requests use trusted per-request user metadata and
@@ -51,7 +57,10 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   Never recreate a binding for an existing route. Admission rechecks binding
   identity after any asynchronous capacity wait.
 - HTTP response streams, SSE, and WebSockets hold their bindings through
-  consumption/cancel/disconnect. Thereafter supervisor keepalive owns expiry.
+  consumption/cancel/disconnect. Thereafter positive supervisor keepalive owns
+  expiry. Explicit zero means no idle expiry or expiry wakeup; missing, blank,
+  and negative keepalive are invalid. Follow-ups cannot change the original
+  binding lifetime, and explicit completion still releases its capacity.
   `worker/streams.ts` shares stream completion accounting with RuntimeWorker.
   Explicit completion resolves inside this supervisor, idempotently removes only
   that Worker's exact binding, and publishes ordinary capacity snapshots. No Go
@@ -89,6 +98,10 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   Unix-socket connection so a restarted kernel can replace the socket without
   restarting the sandbox. Response reads complete at the declared HTTP body
   length and never depend on the sandbox transport propagating connection EOF.
+- Worker exit sends the supervisor-only `execution.releaseWorker` callback after
+  cancelling outstanding calls. It releases native attachment leases and leaked
+  database scopes without destroying retained PTYs. This cleanup also applies to
+  Workers with SQL access disabled and requires no database query.
 - Ordinary logs use one separate persistent framed connection to
   /run/the8020/logs.sock with the existing sandbox token. main.ts captures
   infrastructure console output, passes its bounded producer sink into Workers,
@@ -116,7 +129,8 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 
 # Public API
 
-- `Supervisor` is the test API and `main.ts` is the image entrypoint.
+- `Supervisor`, including its native HTTP listener, is the test API and
+  `main.ts` is the image entrypoint.
 
 # Dependencies
 
@@ -133,6 +147,9 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   time, concurrent idempotent lifecycle retries, bounded soft concurrency, logs,
   drain, bounds, cancellation, snapshot coalescing/recovery, and crash
   isolation.
+- HTTP listener tests exercise real Worker transfers, gzip/Brotli negotiation,
+  opt-outs, existing encodings, ranges, validators, streaming before completion,
+  and WebSocket upgrades through the same listener used by `main.ts`.
 
 # Child DOX Index
 

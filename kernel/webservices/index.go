@@ -214,8 +214,11 @@ func validateSpecification(spec Specification) error {
 	if value.Lifecycle.ServiceType != "stateless" && value.Lifecycle.ServiceType != "session" {
 		return errors.New("lifecycle must be stateless or session")
 	}
-	if value.Lifecycle.SessionKeepAlive <= 0 || value.Scaling.WorkerKeepAlive <= 0 || value.Timeouts.Request <= 0 || value.Timeouts.Drain <= 0 || value.Timeouts.Idle < 0 {
-		return errors.New("keepalives and request/drain timeouts must be positive; idle timeout cannot be negative")
+	if value.Lifecycle.SessionKeepAlive < 0 || value.Lifecycle.SessionKeepAlive > 0 && value.Lifecycle.SessionKeepAlive < time.Millisecond {
+		return errors.New("session keepalive must be zero or at least one millisecond")
+	}
+	if value.Scaling.WorkerKeepAlive <= 0 || value.Timeouts.Request <= 0 || value.Timeouts.Drain <= 0 || value.Timeouts.Idle < 0 {
+		return errors.New("Worker keepalive and request/drain timeouts must be positive; idle timeout cannot be negative")
 	}
 	if value.Scaling.MinimumWorkers < 0 || value.Scaling.MaximumWorkers < 0 || value.Scaling.MaximumWorkers > 0 && value.Scaling.MinimumWorkers > value.Scaling.MaximumWorkers {
 		return errors.New("worker bounds require minimum >= 0 and maximum = 0 or maximum >= minimum")

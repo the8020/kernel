@@ -1,6 +1,8 @@
 package nodes
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"io"
@@ -206,6 +208,59 @@ func TestForwardingRecipientRequiresSharedAuthentication(t *testing.T) {
 	var message string
 	if err := websocket.Message.Receive(socket, &message); err != nil || message != "forwarded-websocket" {
 		t.Fatalf("WebSocket credential forwarding: message=%q err=%v", message, err)
+	}
+}
+
+func TestForwardingPreservesEncodingNegotiationAndBytes(t *testing.T) {
+	manager, err := New(newTestNodeDatabase(t, t.TempDir()), "nod-aaaaaaaaaa", testSharedSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	plain := []byte(strings.Repeat("forwarded service response\n", 256))
+	var compressed bytes.Buffer
+	zipper := gzip.NewWriter(&compressed)
+	if _, err := zipper.Write(plain); err != nil {
+		t.Fatal(err)
+	}
+	if err := zipper.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, accept := range []string{"", "identity", "gzip", "br;q=1, gzip;q=0.5"} {
+		t.Run("accept="+accept, func(t *testing.T) {
+			body, encoding := plain, ""
+			if strings.Contains(accept, "gzip") {
+				body, encoding = compressed.Bytes(), "gzip"
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if got := request.Header.Get("Accept-Encoding"); got != accept {
+					t.Errorf("forwarded Accept-Encoding = %q, want %q", got, accept)
+				}
+				writer.Header().Set("Content-Type", "text/plain")
+				writer.Header().Set("Content-Length", strconv.Itoa(len(body)))
+				writer.Header().Set("Vary", "Accept-Encoding")
+				if encoding != "" {
+					writer.Header().Set("Content-Encoding", encoding)
+				}
+				_, _ = writer.Write(body)
+			}))
+			defer server.Close()
+			port := server.Listener.Addr().(*net.TCPAddr).Port
+			if _, err := manager.Set(context.Background(), Node{ID: "nod-bbbbbbbbbb", URL: server.URL, RecipientAddress: "127.0.0.1", RecipientPort: port, Enabled: true}); err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodGet, "http://public.example/asset", nil)
+			if accept != "" {
+				request.Header.Set("Accept-Encoding", accept)
+			}
+			recorder := httptest.NewRecorder()
+			if err := manager.Proxy("nod-bbbbbbbbbb", recorder, request); err != nil {
+				t.Fatal(err)
+			}
+			if recorder.Code != http.StatusOK || !bytes.Equal(recorder.Body.Bytes(), body) || recorder.Header().Get("Content-Encoding") != encoding || recorder.Header().Get("Content-Length") != strconv.Itoa(len(body)) || recorder.Header().Get("Vary") != "Accept-Encoding" {
+				t.Fatalf("forwarded status=%d encoding=%q bytes=%d", recorder.Code, recorder.Header().Get("Content-Encoding"), recorder.Body.Len())
+			}
+		})
 	}
 }
 

@@ -171,6 +171,8 @@ func New(config Config) (*Client, error) {
 	if config.HTTPClient == nil {
 		transport := http.DefaultTransport.(*http.Transport).Clone()
 		transport.Proxy = nil
+		// Preserve the caller's encoding negotiation and the service's wire bytes.
+		transport.DisableCompression = true
 		config.HTTPClient = &http.Client{Transport: transport}
 	}
 	if config.Endpoint == nil {
@@ -366,6 +368,13 @@ func (c *Client) DispatchService(ctx context.Context, spec model.SandboxSpec, se
 		return nil, fmt.Errorf("supervisor service dispatch returned %s: %s", response.Status, strings.TrimSpace(string(message)))
 	}
 	response.Header.Del("the8020-internal-service-response")
+	if original.Method == http.MethodHead {
+		// The private POST carries no HEAD body. Its HTTP listener's length
+		// describes that empty envelope, not the representation selected for GET.
+		// HEAD may omit Content-Length; never publish the envelope's zero instead.
+		response.Header.Del("Content-Length")
+		response.ContentLength = -1
+	}
 	return response, nil
 }
 

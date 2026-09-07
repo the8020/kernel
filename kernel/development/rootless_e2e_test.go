@@ -332,7 +332,11 @@ func proveSSHConsole(t *testing.T, root string, developmentManager *Manager) {
 		t.Fatal(err)
 	}
 	promptTranscript := readSSHUntil(t, output, []byte("/workspace"))
-	if bytes.Contains(promptTranscript, []byte("bash-")) || !bytes.Contains(promptTranscript, []byte("root@dev-developer")) ||
+	sandbox, err := developmentManager.Inspect("developer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(promptTranscript, []byte("bash-")) || !bytes.Contains(promptTranscript, []byte("root@"+sandbox.SandboxID)) ||
 		!bytes.Contains(promptTranscript, []byte("\x1b[1;32m")) || !bytes.Contains(promptTranscript, []byte("\x1b[1;34m")) {
 		t.Fatalf("initial SSH prompt is not contextual: %q", promptTranscript)
 	}

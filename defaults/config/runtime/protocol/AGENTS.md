@@ -53,6 +53,13 @@ Parent DOX: [kernel/defaults/config/runtime DOX](../AGENTS.md).
   authorization, or transport ownership; administrative and database
   command/result envelopes carry typed control messages only.
 
+# Work Guidance
+
+- Keep the protocol a minimal foundation shared by Go and Deno. New messages
+  must express reusable execution mechanisms, leave application semantics with
+  packages, and be verified across the schema, generated models, and consuming
+  runtime owners.
+
 # Verification
 
 - Generator tests validate deterministic output, byte-identical Go copies,

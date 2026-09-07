@@ -45,6 +45,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   disconnect keepalive, and releases them on expiry or explicit local
   completion. Cached absolute occupancy drives kernel capacity, draining, and
   retirement; there is no duplicate route lease or completion RPC back to Go.
+- The runtime index accepts zero session keepalive for explicit-completion
+  lifetime; positive values must be at least one millisecond. Worker keepalive
+  remains positive. The existing internal header carries zero explicitly.
 - Headers use lowercase `the8020-*` names in source. All private transport
   metadata uses `the8020-internal-`; stripping compares lowercase names even
   when net/http canonicalizes them. Worker responses cannot forge route headers
@@ -177,6 +180,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 # Verification
 
+- The authenticated-boundary test covers declared redirects before HTTP GET,
+  POST, and WebSocket dispatch with missing or invalid credentials.
 - `webservices_test.go` and `persistent_routes_test.go` cover canonical and
   authenticated routing, streaming, generic HTTP/WebSocket persistence, exact
   Worker reuse, signed exact-target routes, supervisor expiry, node forwarding,

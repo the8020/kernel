@@ -15,9 +15,6 @@ import { assert, assertEquals, assertMatch } from "@std/assert";
 type SameKeys<Left, Right> =
   [Exclude<keyof Left, keyof Right>, Exclude<keyof Right, keyof Left>] extends
     [never, never] ? true : false;
-type BundledString = ReturnType<
-  typeof import("./the8020_http.d.ts")["z"]["string"]
->;
 
 const requestMetadataKeysMatch: SameKeys<
   RequestMetadata,
@@ -27,13 +24,8 @@ const executionMetadataKeysMatch: SameKeys<
   RequestMetadata["execution"],
   BundledCurrentExecutionMetadata
 > = true;
-const bundledStringSupportsRegex: BundledString extends {
-  regex(pattern: RegExp): BundledString;
-} ? true
-  : false = true;
 void requestMetadataKeysMatch;
 void executionMetadataKeysMatch;
-void bundledStringSupportsRegex;
 
 Deno.test("portable self-types match source request metadata", () => {
   const source = context().meta;
@@ -49,6 +41,35 @@ Deno.test("portable self-types expose the source date schema class and output", 
   const date = new Date("2026-09-05T00:00:00Z");
   assert(factory() instanceof z.ZodDate);
   assertEquals(schema.parse(date), date);
+});
+
+Deno.test("portable self-types preserve the complete Zod API and schema identity", () => {
+  const bundled: typeof import("./the8020_http.d.ts").z = z;
+  const source: typeof z = bundled;
+  const shared = source.object({
+    name: source.string().trim().min(1).regex(/^[A-Za-z]+$/),
+  });
+  const extended = bundled.object({
+    ...shared.shape,
+    unused: bundled.boolean(),
+  })
+    .pick({ name: true })
+    .extend({ count: bundled.int().nonnegative(), data: bundled.json() })
+    .strict();
+  const ordinary: z.ZodType<{
+    name: string;
+    count: number;
+    data: z.infer<ReturnType<typeof z.json>>;
+  }> = extended;
+  assertEquals(ordinary.parse({ name: " Alice ", count: 2, data: [true] }), {
+    name: "Alice",
+    count: 2,
+    data: [true],
+  });
+  assertEquals(
+    ordinary.safeParse({ name: "Alice", count: -1, data: null }).success,
+    false,
+  );
 });
 
 function context(contextId = "request-1"): RuntimeServiceContext {

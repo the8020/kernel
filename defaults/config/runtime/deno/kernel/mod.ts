@@ -1,4 +1,15 @@
 export { isId, newId } from "../identity/mod.ts";
+import { terminalAPI } from "./terminals.ts";
+export { TerminalControlBusyError } from "./terminals.ts";
+export type {
+  TerminalAttachment,
+  TerminalBatch,
+  TerminalCreateInput,
+  TerminalEvent,
+  TerminalInfo,
+  TerminalSize,
+  TerminalViewRequest,
+} from "./terminals.ts";
 import {
   followLogs,
   type LogFollowOptions,
@@ -8,11 +19,13 @@ import {
 export { formatLogRecord } from "./logs.ts";
 export type { LogFollowOptions, LogPage, LogQuery, LogRecord } from "./logs.ts";
 export type {
+  PersistentServiceTarget,
   ServiceConfiguration,
   ServiceIndexScope,
   ServiceIndexState,
   ServiceSpecification,
 } from "./services.ts";
+import type { PersistentServiceTarget } from "./services.ts";
 import type {
   EventReceipt,
   ProgramRun,
@@ -356,6 +369,7 @@ export type KernelOperation =
   | "database.transaction.commit"
   | "database.transaction.rollback"
   | "worker.invoke"
+  | "execution.retainPersistent"
   | "execution.completePersistent";
 
 export type KernelInvoke = (
@@ -365,6 +379,9 @@ export type KernelInvoke = (
 ) => Promise<unknown>;
 
 export const kernelInvokeSymbol = Symbol.for("the8020.kernel.invoke");
+export const kernelPersistentRunSymbol = Symbol.for(
+  "the8020.kernel.persistentRun",
+);
 export const kernelSecretSymbol = Symbol.for("the8020.kernel.secret");
 export const kernelDatabaseBackendSymbol = Symbol.for(
   "the8020.kernel.databaseBackend",
@@ -618,6 +635,7 @@ function settingOperations(scope: "global" | "node") {
 }
 
 export const kernel = Object.freeze({
+  terminals: terminalAPI(executeRuntimeOperation),
   logs: Object.freeze({
     query(input: LogQuery = {}, signal?: AbortSignal): Promise<LogPage> {
       return executeRuntimeOperation("logs.query", { ...input }, signal);
@@ -666,6 +684,18 @@ export const kernel = Object.freeze({
     },
   }),
   execution: Object.freeze({
+    /** Retain the existing zero-keepalive service binding while this handler runs. */
+    runPersistent(handler: () => Promise<void>): Promise<void> {
+      const run = (globalThis as unknown as Record<symbol, unknown>)[
+        kernelPersistentRunSymbol
+      ];
+      if (typeof run !== "function" || typeof handler !== "function") {
+        return Promise.reject(
+          new TypeError("persistent execution handler is unavailable"),
+        );
+      }
+      return (run as (handler: () => Promise<void>) => Promise<void>)(handler);
+    },
     secret: executionSecret,
     optionalSecret(name: string): string | undefined {
       try {
@@ -702,6 +732,10 @@ export const kernel = Object.freeze({
     }),
   }),
   services: Object.freeze({
+    /** Reconstruct a signed descriptor; follow-up admission still proves the live binding and principal. */
+    route(target: PersistentServiceTarget): Promise<string> {
+      return executeRuntimeOperation("service.route", { ...target });
+    },
     list<Result = Record<string, unknown>>(): Promise<Result[]> {
       return runtimeOperationField("service.list", {}, "services");
     },

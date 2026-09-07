@@ -25,6 +25,12 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 - Handlers return standard web `Response` objects. Validation failures are
   stable `400` JSON responses and uncaught failures are generic `500` responses
   associated with request identity.
+- Response compression is negotiated by the supervisor's native Deno HTTP
+  server. Handlers return ordinary bodies; set `Content-Encoding` only when the
+  body is already encoded. A handler or existing service middleware can append
+  `no-transform` to `Cache-Control` to exclude its responses from compression.
+  Compression policy stays with response semantics, without a service-manifest
+  option or a custom response wrapper.
 - `service.websocket()` uses the same relative routes, middleware, parameters,
   query, and trusted request metadata as HTTP. It receives an abstract
   text/binary connection while the supervisor retains the physical socket. The
@@ -37,9 +43,10 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   configuration.
 - OpenAPI paths are relative, servers contain the canonical base path, and
   output order follows deterministic registration order.
-- The portable bundled module's self-types expose the Zod schema classes and
-  inference used by application packages, including dates; in-sandbox service
-  validation must match source-tree type checking.
+- The portable bundled module's self-types import and re-export the actual
+  pinned Zod namespace. Preserve its complete API, schema identity, and
+  inference; do not maintain a partial copy of dependency types. In-sandbox
+  service validation must match source-tree type checking.
 - `bundle-runtime.sh` publishes exactly `the8020_http.js` and
   `the8020_http.d.ts` in the generated HTTP output root and removes obsolete
   sibling build outputs before that root is staged into runtime images.
@@ -52,9 +59,10 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 
 # Verification
 
-- `http_test.ts` covers source/portable self-type metadata parity, methods,
-  route order/patterns, parameters, query/header/body validation, middleware,
-  standard and streaming responses, cancellation, structured errors, WebSocket
+- `http_test.ts` covers source/portable self-type metadata and full Zod API
+  parity, shared schema composition and inference, methods, route
+  order/patterns, parameters, query/header/body validation, middleware, standard
+  and streaming responses, cancellation, structured errors, WebSocket
   text/binary handling, and deterministic relative HTTP/WebSocket OpenAPI
   output.
 

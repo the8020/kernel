@@ -1,0 +1,7 @@
+=== RUN   TestWorkflowAnalysisRaces
+    workflow_races_test.go:51: capture-to-pause write: committed=true shared_retained=false private_retained=false
+    workflow_races_test.go:73: unrelated repository read blocked for entire 200ms schema-hook window
+    workflow_races_test.go:86: repository read released after 221.556834ms
+--- PASS: TestWorkflowAnalysisRaces (0.36s)
+PASS
+ok  	the8020/kernel/development	0.370s

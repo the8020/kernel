@@ -1,0 +1,161 @@
+ok  	the8020/kernel/admin	0.004s
+ok  	the8020/kernel/app	1.423s
+ok  	the8020/kernel/auth	0.043s
+ok  	the8020/kernel/cbus/cli	0.008s
+?   	the8020/kernel/cbus/client	[no test files]
+ok  	the8020/kernel/cbus/commands	0.016s
+ok  	the8020/kernel/cbus/commands/database	0.017s
+?   	the8020/kernel/cbus/commands/database/check	[no test files]
+?   	the8020/kernel/cbus/commands/database/sql	[no test files]
+?   	the8020/kernel/cbus/commands/database/table/compare	[no test files]
+?   	the8020/kernel/cbus/commands/database/table/definitions	[no test files]
+?   	the8020/kernel/cbus/commands/database/table/inspect	[no test files]
+?   	the8020/kernel/cbus/commands/database/table/list	[no test files]
+?   	the8020/kernel/cbus/commands/database/table/sync	[no test files]
+?   	the8020/kernel/cbus/commands/database/table/syncall	[no test files]
+?   	the8020/kernel/cbus/commands/database/table/trim	[no test files]
+?   	the8020/kernel/cbus/commands/debug/close	[no test files]
+?   	the8020/kernel/cbus/commands/debug/open	[no test files]
+?   	the8020/kernel/cbus/commands/debug/targets	[no test files]
+?   	the8020/kernel/cbus/commands/development/activate/preview	[no test files]
+?   	the8020/kernel/cbus/commands/development/activate/run	[no test files]
+?   	the8020/kernel/cbus/commands/development/image/status	[no test files]
+?   	the8020/kernel/cbus/commands/development/sandbox/create	[no test files]
+?   	the8020/kernel/cbus/commands/development/sandbox/delete	[no test files]
+?   	the8020/kernel/cbus/commands/development/sandbox/factory-reset	[no test files]
+?   	the8020/kernel/cbus/commands/development/sandbox/inspect	[no test files]
+?   	the8020/kernel/cbus/commands/development/sandbox/kill	[no test files]
+?   	the8020/kernel/cbus/commands/development/sandbox/list	[no test files]
+?   	the8020/kernel/cbus/commands/development/sandbox/reset-source	[no test files]
+?   	the8020/kernel/cbus/commands/development/sandbox/restart	[no test files]
+?   	the8020/kernel/cbus/commands/development/sandbox/shell	[no test files]
+?   	the8020/kernel/cbus/commands/development/sandbox/start	[no test files]
+?   	the8020/kernel/cbus/commands/development/sandbox/stop	[no test files]
+ok  	the8020/kernel/cbus/commands/development/shared	0.018s
+ok  	the8020/kernel/cbus/commands/internal/commandutil	0.017s
+?   	the8020/kernel/cbus/commands/job/cancel	[no test files]
+?   	the8020/kernel/cbus/commands/job/inspect	[no test files]
+?   	the8020/kernel/cbus/commands/job/list	[no test files]
+?   	the8020/kernel/cbus/commands/job/run	[no test files]
+?   	the8020/kernel/cbus/commands/logs	[no test files]
+?   	the8020/kernel/cbus/commands/node/list	[no test files]
+?   	the8020/kernel/cbus/commands/node/remove	[no test files]
+?   	the8020/kernel/cbus/commands/node/set	[no test files]
+ok  	the8020/kernel/cbus/commands/package	0.017s
+?   	the8020/kernel/cbus/commands/package/index/inspect	[no test files]
+?   	the8020/kernel/cbus/commands/package/index/list	[no test files]
+?   	the8020/kernel/cbus/commands/package/index/set	[no test files]
+?   	the8020/kernel/cbus/commands/package/inspect	[no test files]
+?   	the8020/kernel/cbus/commands/package/list	[no test files]
+?   	the8020/kernel/cbus/commands/package/local/create	[no test files]
+?   	the8020/kernel/cbus/commands/package/repository/checkout	[no test files]
+?   	the8020/kernel/cbus/commands/package/repository/init	[no test files]
+?   	the8020/kernel/cbus/commands/package/repository/inspect	[no test files]
+?   	the8020/kernel/cbus/commands/package/repository/list	[no test files]
+?   	the8020/kernel/cbus/commands/package/repository/pull	[no test files]
+?   	the8020/kernel/cbus/commands/package/repository/push	[no test files]
+?   	the8020/kernel/cbus/commands/package/repository/remote	[no test files]
+?   	the8020/kernel/cbus/commands/package/repository/status	[no test files]
+?   	the8020/kernel/cbus/commands/package/source/inspect	[no test files]
+?   	the8020/kernel/cbus/commands/package/synchronize	[no test files]
+?   	the8020/kernel/cbus/commands/package/version/list	[no test files]
+?   	the8020/kernel/cbus/commands/pool/resize	[no test files]
+?   	the8020/kernel/cbus/commands/pool/status	[no test files]
+?   	the8020/kernel/cbus/commands/port/close	[no test files]
+?   	the8020/kernel/cbus/commands/port/expose	[no test files]
+?   	the8020/kernel/cbus/commands/port/list	[no test files]
+?   	the8020/kernel/cbus/commands/runtime/doctor	[no test files]
+?   	the8020/kernel/cbus/commands/runtime/eval	[no test files]
+?   	the8020/kernel/cbus/commands/runtime/image/status	[no test files]
+?   	the8020/kernel/cbus/commands/runtime/run	[no test files]
+?   	the8020/kernel/cbus/commands/runtime/status	[no test files]
+ok  	the8020/kernel/cbus/commands/sandbox	0.017s
+?   	the8020/kernel/cbus/commands/sandbox/delete	[no test files]
+?   	the8020/kernel/cbus/commands/sandbox/history/inspect	[no test files]
+?   	the8020/kernel/cbus/commands/sandbox/history/list	[no test files]
+?   	the8020/kernel/cbus/commands/sandbox/inspect	[no test files]
+?   	the8020/kernel/cbus/commands/sandbox/kill	[no test files]
+?   	the8020/kernel/cbus/commands/sandbox/list	[no test files]
+?   	the8020/kernel/cbus/commands/sandbox/metrics	[no test files]
+?   	the8020/kernel/cbus/commands/sandbox/refresh	[no test files]
+?   	the8020/kernel/cbus/commands/sandbox/stop	[no test files]
+ok  	the8020/kernel/cbus/commands/secret	0.026s
+?   	the8020/kernel/cbus/commands/secret/get	[no test files]
+?   	the8020/kernel/cbus/commands/secret/list	[no test files]
+?   	the8020/kernel/cbus/commands/secret/set	[no test files]
+?   	the8020/kernel/cbus/commands/service	[no test files]
+?   	the8020/kernel/cbus/commands/service/inspect	[no test files]
+?   	the8020/kernel/cbus/commands/service/list	[no test files]
+?   	the8020/kernel/cbus/commands/service/openapi	[no test files]
+?   	the8020/kernel/cbus/commands/service/refresh	[no test files]
+?   	the8020/kernel/cbus/commands/service/request	[no test files]
+?   	the8020/kernel/cbus/commands/service/validate	[no test files]
+?   	the8020/kernel/cbus/commands/settings/get	[no test files]
+?   	the8020/kernel/cbus/commands/settings/list	[no test files]
+?   	the8020/kernel/cbus/commands/settings/set	[no test files]
+?   	the8020/kernel/cbus/commands/settings/unset	[no test files]
+ok  	the8020/kernel/cbus/commands/system/emit	0.009s
+ok  	the8020/kernel/cbus/commands/system/reindex	0.016s
+?   	the8020/kernel/cbus/commands/system/restart	[no test files]
+?   	the8020/kernel/cbus/commands/system/shutdown	[no test files]
+ok  	the8020/kernel/cbus/commands/system/signing	0.011s
+?   	the8020/kernel/cbus/commands/system/status	[no test files]
+?   	the8020/kernel/cbus/commands/worker/inspect	[no test files]
+?   	the8020/kernel/cbus/commands/worker/kill	[no test files]
+?   	the8020/kernel/cbus/commands/worker/list	[no test files]
+?   	the8020/kernel/cbus/commands/worker/stop	[no test files]
+ok  	the8020/kernel/cbus/core	0.002s
+ok  	the8020/kernel/cbus/discovery	0.025s
+ok  	the8020/kernel/cbus/gen	0.249s
+ok  	the8020/kernel/cbus/server	0.007s
+ok  	the8020/kernel/console	0.024s
+ok  	the8020/kernel/database	0.512s
+ok  	the8020/kernel/database/evaluator	0.661s
+ok  	the8020/kernel/debugging	0.005s
+?   	the8020/kernel/deployment	[no test files]
+ok  	the8020/kernel/development	3.040s
+ok  	the8020/kernel/events	0.007s
+ok  	the8020/kernel/execution	0.006s
+ok  	the8020/kernel/execution/adminrun	0.008s
+ok  	the8020/kernel/execution/coordinator	0.013s
+ok  	the8020/kernel/execution/jobs	0.030s
+ok  	the8020/kernel/execution/placement	0.007s
+ok  	the8020/kernel/execution/pool	0.006s
+ok  	the8020/kernel/execution/profile	0.007s
+ok  	the8020/kernel/execution/programs	0.007s
+ok  	the8020/kernel/execution/records	0.025s
+ok  	the8020/kernel/execution/services	0.122s
+ok  	the8020/kernel/execution/supervisor	0.014s
+ok  	the8020/kernel/execution/workers	0.037s
+ok  	the8020/kernel/identity	0.011s
+ok  	the8020/kernel/instance	0.022s
+ok  	the8020/kernel/lifecycle	0.006s
+ok  	the8020/kernel/logd	0.126s
+ok  	the8020/kernel/logging	9.271s
+ok  	the8020/kernel/logging/daemon	2.745s
+ok  	the8020/kernel/logging/records	0.029s
+ok  	the8020/kernel/network	0.011s
+ok  	the8020/kernel/nodes	2.152s
+ok  	the8020/kernel/packages	1.460s
+ok  	the8020/kernel/ports	0.050s
+ok  	the8020/kernel/runtime	0.010s
+ok  	the8020/kernel/runtime/callback	0.081s
+?   	the8020/kernel/runtime/operations	[no test files]
+?   	the8020/kernel/runtime/protocol	[no test files]
+ok  	the8020/kernel/sandbox/backend	0.006s
+ok  	the8020/kernel/sandbox/backend/containerd	0.009s
+ok  	the8020/kernel/sandbox/backend/rootless	0.102s
+ok  	the8020/kernel/sandbox/backend/runscconsole	0.027s
+ok  	the8020/kernel/sandbox/history	0.018s
+ok  	the8020/kernel/sandbox/manager	0.177s
+ok  	the8020/kernel/sandbox/model	0.011s
+ok  	the8020/kernel/sandbox/mounts	0.011s
+ok  	the8020/kernel/sandbox/network	0.014s
+ok  	the8020/kernel/sandbox/resources	0.006s
+ok  	the8020/kernel/sandbox/state	0.044s
+ok  	the8020/kernel/secrets	0.040s
+ok  	the8020/kernel/services	0.011s
+ok  	the8020/kernel/settings	0.018s
+ok  	the8020/kernel/settings/dbstore	0.045s
+ok  	the8020/kernel/ssh	0.035s
+ok  	the8020/kernel/webservices	0.290s

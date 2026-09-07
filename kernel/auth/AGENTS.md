@@ -64,6 +64,14 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Peer credentials use their existing separate transport; node forwarding
   preserves the end-user platform header and cookie.
 
+# Work Guidance
+
+- Treat cryptographic changes as protected kernel-foundation changes:
+  establish necessity, keep the contract generic, and verify its package
+  entrypoints. Account eligibility, login rules, and session policy remain in
+  users; reuse the shared runtime rather than adding an authentication
+  execution path.
+
 # Verification
 
 - Tests cover private key persistence/modes/replacement, safe invalid input,

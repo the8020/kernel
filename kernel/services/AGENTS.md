@@ -22,6 +22,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   image/workspace/activation operations, selected isolation diagnostics,
   low-level runtime pools, and exact operations used by current handlers/runtime
   bridges.
+- The platform snapshot exposes the shared console manager to typed terminal
+  operations; it introduces no second PTY broker.
 - Runtime dependencies expose the generic local event dispatcher, ordinary
   program runner, and program-catalog reader to the private operations bridge;
   the native event command uses the same dispatcher. `Reindex(ctx, packageIDs)`

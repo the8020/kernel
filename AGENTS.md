@@ -172,17 +172,19 @@ relevant child AGENTS.md
   environment variable uses the `THE8020_` prefix. Application-specific
   configuration is not a kernel setting and is never injected into generic
   request metadata.
-- Service manifests declare `stateless` or `session` lifecycle, positive session
-  keepalive, minimum/maximum Workers, concurrency and target utilization per
-  Worker, positive Worker keepalive, optional sandbox group, minimum warm
+- Service manifests declare `stateless` or `session` lifecycle, nonnegative
+  session keepalive, minimum/maximum Workers, concurrency and target utilization
+  per Worker, positive Worker keepalive, optional sandbox group, minimum warm
   sandboxes, and positive Workers per sandbox. Minimum and maximum Workers
   default to zero; zero minimum permits scale-to-zero and zero maximum is
   service-unlimited while kernel capacity still applies. Worker and session
-  keepalive default to two and ten minutes respectively. The Deno services
-  package owns declarations, defaults, overrides, and effective versions. Go
-  consumes only validated package-scoped runtime specifications in its derived
-  memory index; it never parses service TOML or queries application service
-  tables.
+  keepalive default to two and ten minutes respectively. Zero session keepalive
+  retains a logical execution until explicit completion or owner destruction; it
+  adds no idle timer. Positive values are at least one millisecond. The Deno
+  services package owns declarations, defaults, overrides, and effective
+  versions. Go consumes only validated package-scoped runtime specifications in
+  its derived memory index; it never parses service TOML or queries application
+  service tables.
 - Concurrency per Worker equal to one is strict. Larger values are balancing and
   autoscaling targets with at most one temporary extra request per Worker while
   scale-up catches up; kernel reservations are short-lived routing hints and
@@ -274,9 +276,9 @@ relevant child AGENTS.md
   and publishes the package set before the service plane becomes ready. Normal
   boots validate the existing catalog without writes and do not rescan table
   modules. Package changes stage and validate only candidate packages,
-  synchronize their schema, run pre/post activation hooks exactly once,
-  atomically switch source, and refresh only affected services. Hook and
-  deployment phases are durable and recoverable; PostgreSQL serializes
+  synchronize their schema, run pre/post activation hooks with durable attempt
+  tracking, atomically switch source, and refresh only affected services. Hook
+  and deployment phases are durable and recoverable; PostgreSQL serializes
   deployment through an advisory lock.
 - Global named secrets live only in `the8020__secrets__secrets`. Package records
   may retain one secret name but never its value. Kernel-owned Git operations
@@ -353,16 +355,15 @@ relevant child AGENTS.md
 - The kernel main HTTP listener binds all IPv4 interfaces so Docker and host
   port publication can reach it; administrative and internal runtime listeners
   remain private.
-- A user's single development sandbox exposes the complete package tree as a
-  writable gVisor-private overlay over shared packages. Explicit lifecycle
-  boundaries checkpoint package deltas beneath `users/<username>/dev-sandbox/`;
-  image-qualified writable system roots and root's home live beneath the same
-  durable root. Lifecycle must never periodically poll or run a background
-  filesystem scanner. Package content is scanned only by Git at an explicit
-  lifecycle checkpoint, activation preview, or activation run. Publication
-  creates package-level commits without pushing remotes, then recreates the
-  process under the same persisted opaque sandbox identity to clear its private
-  overlay.
+- Development activation must preserve the sandbox and its running processes.
+  Named terminal sessions must survive navigation, refresh, and logout until
+  explicitly closed or the sandbox is shut down; no idle expiry is requested
+  yet. Private source must follow shared updates only on untouched paths, merge
+  from actual originals, and remain recoverable and transportable without
+  periodic scanning. The current runtime still uses explicit overlay checkpoints
+  and activation recreation; the pending redesign and its evidence are owned by
+  [development DOX](kernel/development/AGENTS.md). Durable workspace and
+  system/home state remain beneath `users/<username>/dev-sandbox/`.
 - Development images keep Deno installed for developer commands but run no
   background runtime or filesystem scanner. Their `sandbox.sh` initializes the
   fresh runtime filesystem and replaces itself with `sleep`; persistence is a
@@ -387,15 +388,19 @@ relevant child AGENTS.md
   `/root/.ssh/authorized_keys` directly from its confined durable system root
   without creating or starting the sandbox. Ordinary remote commands execute
   through that sandbox's Bash login environment; commands beginning with the
-  reserved `the8020 [sandbox-id=<sbx-id>]` grammar select a terminal target
-  instead of executing. SSH uses the generic direct sandbox PTY path when
-  requested and a byte-transparent process stream for non-PTY exec, forwarding
-  all client behavior representable by that process/TTY boundary, including
-  environment, commands, raw control/function-key bytes, resize, cancellation,
-  distinct non-PTY stdout/stderr, real exit status, and canonical PTY EOF for
-  half-closed streamed exec input. SSH-only forwarding channels and subsystems
-  remain unavailable. SSH follows the same temporary all-authenticated-users
-  administrator policy as the browser console.
+  reserved `the8020 [sandbox-id=<sbx-id>] [terminal-id=<tty-id>]` grammar select
+  a terminal target instead of executing. SSH uses the generic direct sandbox
+  PTY path when requested and a byte-transparent process stream for non-PTY
+  exec, forwarding all client behavior representable by that process/TTY
+  boundary, including environment, commands, raw control/function-key bytes,
+  resize, cancellation, distinct non-PTY stdout/stderr, real exit status, and
+  canonical PTY EOF for half-closed streamed exec input. SSH-only forwarding
+  channels and subsystems remain unavailable. SSH follows the same temporary
+  all-authenticated-users administrator policy as the browser console.
+- A selected `terminal-id` requires a PTY and attaches an existing retained
+  process on that node. It never ensures a sandbox or replaces a missing ID.
+  Deno owns display recovery; SSH disconnect releases only the native
+  attachment.
 - Runtime resource IDs must use a type prefix plus ten random lowercase
   alphanumeric characters: `sbx-` for sandboxes, `uis-` for UUI sessions, `wrk-`
   for Workers. Cleaned terminal sandboxes leave the live catalog immediately;
@@ -528,6 +533,17 @@ below.
   file writing, retention and queries. Use upstream runtimes unchanged. Do not
   add runtime source patches, host-daemon logging utilities, profiling systems
   or benchmark infrastructure to complete logging edge cases.
+
+## Zen application
+
+- The kernel is holy. Change it only when absolutely necessary and with great
+  care, after establishing why an existing package or runtime contract cannot
+  provide the capability. No application logic belongs in Go or the generic Deno
+  runtime; both provide foundations for independently evolving packages.
+- Respect boundaries: package unrelated functionality as a standalone capability
+  with explicit dependencies. Reuse the shared service/job runtime and typed
+  bridge before adding a mechanism; new foundations must cooperate with existing
+  contracts and serve more than their first caller.
 
 ## Development Workflow
 

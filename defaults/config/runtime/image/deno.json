@@ -13,6 +13,7 @@
     "@the8020/kernel": "./kernel/mod.ts",
     "@the8020/protocol": "./protocol.ts",
     "/p/": "file:///workspace/packages/",
-    "kysely": "npm:kysely@0.29.4"
+    "kysely": "npm:kysely@0.29.4",
+    "zod": "npm:zod@4.1.5"
   }
 }

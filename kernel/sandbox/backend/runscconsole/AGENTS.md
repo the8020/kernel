@@ -23,6 +23,9 @@ Parent DOX: [kernel/kernel/sandbox/backend DOX](../AGENTS.md).
   process exit status. `OpenStreamConfigured` provides the same narrow pre-start
   process-configuration hook.
 - Closing the PTY ends only the exec process and never signals the sandbox.
+- Received PTY descriptors enter nonblocking mode before `os.NewFile` so Go's
+  poller can interrupt idle reads on close; transport teardown must not retain
+  the PTY through a blocked host read.
 
 # Work Guidance
 
@@ -33,6 +36,8 @@ Parent DOX: [kernel/kernel/sandbox/backend DOX](../AGENTS.md).
 
 - Rootless workload and development integration tests exercise the shared
   console against real runsc.
+- `TestReceivedConsoleCloseInterruptsIdleRead` verifies descriptor transfer and
+  closing an idle read while its peer remains open.
 
 # Child DOX Index
 

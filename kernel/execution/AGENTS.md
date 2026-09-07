@@ -44,11 +44,23 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - `Caller.Valid` requires a canonical `ctx-`, optional `job-`, workload, and
   principal. Runtime ingress rejects malformed callers before attaching them;
   invalid parent identities must never become an uncorrelated child invocation.
+- Runtime capability ingress also stamps the canonical sandbox/Worker pair in
+  `Caller`. Native replaceable resource leases use this pair, independent of
+  request or authentication-session lifetime. The optional pair is validated
+  together; kernel-originated callers need not invent Worker identities.
 - Newly generated sandbox IDs are `sbx-` plus ten random lowercase
   alphanumeric characters; newly generated Worker IDs are the equivalent `wrk-`
   format.
 
 # Work Guidance
+
+- Change execution foundations only for a necessary capability shared by
+  ordinary workloads. Keep application scheduling, authentication, session
+  protocols, and history in Deno packages.
+- Make transport, logical execution, Worker, and sandbox ownership explicit in
+  every lifecycle change. Preserve exact identity, bounded admission,
+  cancellation, and idempotent cleanup, and verify the affected service/job
+  path.
 
 - Express workload differences only through grouping, lifecycle, scaling,
   permissions, mounts, routing, and scheduling; never create separate runtime

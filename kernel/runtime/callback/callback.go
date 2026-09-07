@@ -72,6 +72,7 @@ type Server struct {
 	database        Database
 	workerInvoker   WorkerInvoker
 	operations      RuntimeOperations
+	releaseWorker   func(string, string)
 	mu              sync.Mutex
 	listener        net.Listener
 	httpServer      *http.Server
@@ -173,6 +174,14 @@ func (s *Server) SetWorkerInvoker(invoker WorkerInvoker) {
 func (s *Server) SetRuntimeOperations(operations RuntimeOperations) {
 	s.mu.Lock()
 	s.operations = operations
+	s.mu.Unlock()
+}
+
+// SetWorkerResourceReleaser connects generic Worker shutdown to native leases.
+// Database transaction scope cleanup is always performed at this boundary.
+func (s *Server) SetWorkerResourceReleaser(release func(string, string)) {
+	s.mu.Lock()
+	s.releaseWorker = release
 	s.mu.Unlock()
 }
 
@@ -281,7 +290,9 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	if wantType == protocol.MessageAdminCommand {
-		if request.URL.Path == "/v1/runtime/operation/execute" {
+		if request.URL.Path == "/v1/runtime/execution/release" {
+			s.handleWorkerRelease(writer, request, message, spec)
+		} else if request.URL.Path == "/v1/runtime/operation/execute" {
 			s.handleOperation(writer, request, message, spec)
 		} else {
 			s.handleAdministration(writer, request, message, spec)
@@ -336,7 +347,7 @@ func runtimeFailures(values []workerFailure) []model.RuntimeFailure {
 
 func validCallbackPath(path string) bool {
 	switch path {
-	case "/v1/runtime/register", "/v1/runtime/heartbeat", "/v1/runtime/admin/execute", "/v1/runtime/operation/execute", "/v1/runtime/database/info", "/v1/runtime/database/execute", "/v1/runtime/database/transaction", "/v1/runtime/database/scope", "/v1/runtime/worker/invoke":
+	case "/v1/runtime/register", "/v1/runtime/heartbeat", "/v1/runtime/admin/execute", "/v1/runtime/operation/execute", "/v1/runtime/execution/release", "/v1/runtime/database/info", "/v1/runtime/database/execute", "/v1/runtime/database/transaction", "/v1/runtime/database/scope", "/v1/runtime/worker/invoke":
 		return true
 	default:
 		return false
@@ -347,7 +358,7 @@ func callbackMessageType(path string) protocol.MessageType {
 	switch path {
 	case "/v1/runtime/register":
 		return protocol.MessageSupervisorRegistration
-	case "/v1/runtime/admin/execute", "/v1/runtime/operation/execute":
+	case "/v1/runtime/admin/execute", "/v1/runtime/operation/execute", "/v1/runtime/execution/release":
 		return protocol.MessageAdminCommand
 	case "/v1/runtime/database/info", "/v1/runtime/database/execute", "/v1/runtime/database/transaction", "/v1/runtime/database/scope":
 		return protocol.MessageDatabaseExecute
@@ -379,11 +390,6 @@ func (s *Server) handleDatabase(writer http.ResponseWriter, request *http.Reques
 		return
 	}
 	workerScope := databaseScope(spec.SandboxID, payload.WorkerID)
-	if request.URL.Path == "/v1/runtime/database/scope" && payload.ContextID == "" {
-		s.database.CloseScopePrefix(workerScope)
-		s.writeDatabaseResult(writer, message, spec, map[string]any{"closed": true})
-		return
-	}
 	if payload.ContextID == "" {
 		http.Error(writer, "runtime database execution context is required", http.StatusConflict)
 		return
@@ -555,7 +561,7 @@ func (s *Server) handleOperation(writer http.ResponseWriter, request *http.Reque
 		http.Error(writer, "invalid runtime operation payload", http.StatusBadRequest)
 		return
 	}
-	caller := execution.Caller{ContextID: payload.ContextID, JobRunID: payload.JobRunID, Workload: spec.WorkloadType, User: payload.User}
+	caller := execution.Caller{ContextID: payload.ContextID, JobRunID: payload.JobRunID, SandboxID: spec.SandboxID, WorkerID: payload.WorkerID, Workload: spec.WorkloadType, User: payload.User}
 	if !identity.Is(payload.WorkerID, "wrk") || !caller.Valid() {
 		http.Error(writer, "invalid runtime operation payload", http.StatusBadRequest)
 		return

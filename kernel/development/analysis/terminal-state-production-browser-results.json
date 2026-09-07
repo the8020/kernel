@@ -1,0 +1,976 @@
+{
+  "stateVersion": "the8020.xterm-5.5.0.1",
+  "equal": 242,
+  "total": 242,
+  "results": [
+    {
+      "name": "plain text",
+      "equal": true
+    },
+    {
+      "name": "UTF-8 split",
+      "equal": true
+    },
+    {
+      "name": "CSI split",
+      "equal": true
+    },
+    {
+      "name": "OSC split",
+      "equal": true
+    },
+    {
+      "name": "saved cursor",
+      "equal": true
+    },
+    {
+      "name": "scroll margins",
+      "equal": true
+    },
+    {
+      "name": "custom tab stops",
+      "equal": true
+    },
+    {
+      "name": "DEC line drawing",
+      "equal": true
+    },
+    {
+      "name": "alternate buffer",
+      "equal": true
+    },
+    {
+      "name": "modes",
+      "equal": true
+    },
+    {
+      "name": "wide and combining text",
+      "equal": true
+    },
+    {
+      "name": "wrapped cursor",
+      "equal": true
+    },
+    {
+      "name": "DCS split",
+      "equal": true
+    },
+    {
+      "name": "extended attributes",
+      "equal": true
+    },
+    {
+      "name": "cursor appearance",
+      "equal": true
+    },
+    {
+      "name": "hyperlink",
+      "equal": true
+    },
+    {
+      "name": "detached palette query",
+      "equal": true
+    },
+    {
+      "name": "palette reset after reconnect",
+      "equal": true
+    },
+    {
+      "name": "normal reflow wider",
+      "equal": true
+    },
+    {
+      "name": "normal reflow narrower",
+      "equal": true
+    },
+    {
+      "name": "alternate resize",
+      "equal": true
+    },
+    {
+      "name": "UTF-16 surrogate split",
+      "equal": true
+    },
+    {
+      "name": "protected cell erase",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 0",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 1",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 2",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 3",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 4",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 5",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 6",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 7",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 8",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 9",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 10",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 11",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 12",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 13",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 14",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 15",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 16",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 17",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 18",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 19",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 20",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 21",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 22",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 23",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 24",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 25",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 26",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 27",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 28",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 29",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 30",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 31",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 32",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 33",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 34",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 35",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 36",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 37",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 38",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 39",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 40",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 41",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 42",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 43",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 44",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 45",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 46",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 47",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 48",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 49",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 50",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 51",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 52",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 53",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 54",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 55",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 56",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 57",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 58",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 59",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 60",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 61",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 62",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 63",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 64",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 65",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 66",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 67",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 68",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 69",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 70",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 71",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 72",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 73",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 74",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 75",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 76",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 77",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 78",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 79",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 80",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 81",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 82",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 83",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 84",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 85",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 86",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 87",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 88",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 89",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 90",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 91",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 92",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 93",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 94",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 95",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 96",
+      "equal": true
+    },
+    {
+      "name": "mixed sequence byte split 97",
+      "equal": true
+    },
+    {
+      "name": "view: plain text",
+      "equal": true
+    },
+    {
+      "name": "view: UTF-8 split",
+      "equal": true
+    },
+    {
+      "name": "view: CSI split",
+      "equal": true
+    },
+    {
+      "name": "view: OSC split",
+      "equal": true
+    },
+    {
+      "name": "view: saved cursor",
+      "equal": true
+    },
+    {
+      "name": "view: scroll margins",
+      "equal": true
+    },
+    {
+      "name": "view: custom tab stops",
+      "equal": true
+    },
+    {
+      "name": "view: DEC line drawing",
+      "equal": true
+    },
+    {
+      "name": "view: alternate buffer",
+      "equal": true
+    },
+    {
+      "name": "view: modes",
+      "equal": true
+    },
+    {
+      "name": "view: wide and combining text",
+      "equal": true
+    },
+    {
+      "name": "view: wrapped cursor",
+      "equal": true
+    },
+    {
+      "name": "view: DCS split",
+      "equal": true
+    },
+    {
+      "name": "view: extended attributes",
+      "equal": true
+    },
+    {
+      "name": "view: cursor appearance",
+      "equal": true
+    },
+    {
+      "name": "view: hyperlink",
+      "equal": true
+    },
+    {
+      "name": "view: detached palette query",
+      "equal": true
+    },
+    {
+      "name": "view: palette reset after reconnect",
+      "equal": true
+    },
+    {
+      "name": "view: normal reflow wider",
+      "equal": true
+    },
+    {
+      "name": "view: normal reflow narrower",
+      "equal": true
+    },
+    {
+      "name": "view: alternate resize",
+      "equal": true
+    },
+    {
+      "name": "view: UTF-16 surrogate split",
+      "equal": true
+    },
+    {
+      "name": "view: protected cell erase",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 0",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 1",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 2",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 3",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 4",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 5",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 6",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 7",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 8",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 9",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 10",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 11",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 12",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 13",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 14",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 15",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 16",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 17",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 18",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 19",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 20",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 21",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 22",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 23",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 24",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 25",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 26",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 27",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 28",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 29",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 30",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 31",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 32",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 33",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 34",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 35",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 36",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 37",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 38",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 39",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 40",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 41",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 42",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 43",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 44",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 45",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 46",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 47",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 48",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 49",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 50",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 51",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 52",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 53",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 54",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 55",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 56",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 57",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 58",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 59",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 60",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 61",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 62",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 63",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 64",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 65",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 66",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 67",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 68",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 69",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 70",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 71",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 72",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 73",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 74",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 75",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 76",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 77",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 78",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 79",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 80",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 81",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 82",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 83",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 84",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 85",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 86",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 87",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 88",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 89",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 90",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 91",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 92",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 93",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 94",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 95",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 96",
+      "equal": true
+    },
+    {
+      "name": "view: mixed sequence byte split 97",
+      "equal": true
+    }
+  ],
+  "browser": "Chromium 151.0.7922.173 built on Debian GNU/Linux 12 (bookworm)"
+}

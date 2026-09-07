@@ -48,6 +48,10 @@ type Manager struct {
 	development    Provider
 	runtime        Provider
 	sessions       map[*session]struct{}
+	terminals      map[string]*Terminal
+	opening        int
+	lifetime       context.Context
+	cancel         context.CancelFunc
 	closed         bool
 }
 
@@ -57,6 +61,7 @@ type session struct {
 	provider Provider
 	socket   *websocket.Conn
 	console  backend.Console
+	cancel   context.CancelFunc
 	once     sync.Once
 }
 
@@ -102,28 +107,42 @@ func New(config Config) (*Manager, error) {
 	if config.Authentication == nil || config.Development == nil {
 		return nil, errors.New("console authentication and development provider are required")
 	}
+	lifetime, cancel := context.WithCancel(context.Background())
 	return &Manager{
 		authentication: config.Authentication,
 		development:    config.Development,
 		sessions:       make(map[*session]struct{}),
+		terminals:      make(map[string]*Terminal),
+		lifetime:       lifetime,
+		cancel:         cancel,
 	}, nil
 }
 
 // SetRuntime publishes or clears the ordinary runtime-sandbox provider.
 func (m *Manager) SetRuntime(provider Provider) {
 	m.mu.Lock()
+	previous := m.runtime
 	m.runtime = provider
 	closing := []*session{}
-	if provider == nil {
+	terminals := []*Terminal{}
+	if previous != provider {
 		for item := range m.sessions {
 			if item.kind == "runtime" {
 				closing = append(closing, item)
+			}
+		}
+		for _, item := range m.terminals {
+			if item.kind == "runtime" {
+				terminals = append(terminals, item)
 			}
 		}
 	}
 	m.mu.Unlock()
 	for _, item := range closing {
 		item.close()
+	}
+	for _, item := range terminals {
+		_ = item.Close()
 	}
 }
 
@@ -301,20 +320,27 @@ func (m *Manager) OpenConsole(ctx context.Context, kind, sandboxID string, optio
 }
 
 func (m *Manager) openConsole(ctx context.Context, kind, sandboxID string, options backend.ConsoleOptions, socket *websocket.Conn) (*session, error) {
-	provider, err := m.provider(kind)
+	provider, err := m.reserveProvider(kind)
 	if err != nil {
 		return nil, err
 	}
+	defer m.releaseOpening()
 	if err := backend.ValidateConsoleOptions(options); err != nil {
 		return nil, err
 	}
-	value, err := provider.OpenConsole(ctx, sandboxID, options)
+	openCtx, cancel := context.WithCancel(ctx)
+	stopCancel := context.AfterFunc(m.lifetime, cancel)
+	value, err := provider.OpenConsole(openCtx, sandboxID, options)
 	if err != nil {
+		stopCancel()
+		cancel()
 		return nil, err
 	}
-	active := &session{manager: m, kind: kind, provider: provider, socket: socket, console: value}
+	active := &session{manager: m, kind: kind, provider: provider, socket: socket, console: value,
+		cancel: func() { stopCancel(); cancel() }}
 	if err := m.register(active); err != nil {
 		_ = value.Close()
+		active.cancel()
 		return nil, err
 	}
 	return active, nil
@@ -362,19 +388,32 @@ func sendError(socket *websocket.Conn, err error) {
 	_ = websocket.Message.Send(socket, string(data))
 }
 
-func (m *Manager) provider(kind string) (Provider, error) {
+// Reserve before opening a backend process so concurrent callers cannot create
+// an unbounded number of processes while waiting to register their leases.
+func (m *Manager) reserveProvider(kind string) (Provider, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
 		return nil, errors.New("console broker is closed")
 	}
+	if len(m.sessions)+len(m.terminals)+m.opening >= maxSessions {
+		return nil, errors.New("console session limit reached")
+	}
 	if kind == "development" {
+		m.opening++
 		return m.development, nil
 	}
 	if kind == "runtime" && m.runtime != nil {
+		m.opening++
 		return m.runtime, nil
 	}
 	return nil, errors.New("runtime sandbox consoles are not available")
+}
+
+func (m *Manager) releaseOpening() {
+	m.mu.Lock()
+	m.opening--
+	m.mu.Unlock()
 }
 
 func (m *Manager) register(value *session) error {
@@ -386,7 +425,7 @@ func (m *Manager) register(value *session) error {
 	if value.kind == "runtime" && m.runtime != value.provider {
 		return errors.New("runtime sandbox consoles are not available")
 	}
-	if len(m.sessions) >= maxSessions {
+	if len(m.sessions)+len(m.terminals) >= maxSessions {
 		return errors.New("console session limit reached")
 	}
 	m.sessions[value] = struct{}{}
@@ -423,6 +462,9 @@ func (s *session) ExitStatus() uint32 {
 func (s *session) close() error {
 	var result error
 	s.once.Do(func() {
+		if s.cancel != nil {
+			s.cancel()
+		}
 		result = s.console.Close()
 		if s.socket != nil {
 			result = errors.Join(result, s.socket.Close())
@@ -443,13 +485,21 @@ func (m *Manager) Close() error {
 		return nil
 	}
 	m.closed = true
+	m.cancel()
 	sessions := make([]*session, 0, len(m.sessions))
 	for item := range m.sessions {
 		sessions = append(sessions, item)
 	}
+	terminals := make([]*Terminal, 0, len(m.terminals))
+	for _, item := range m.terminals {
+		terminals = append(terminals, item)
+	}
 	m.mu.Unlock()
 	for _, item := range sessions {
 		item.close()
+	}
+	for _, item := range terminals {
+		_ = item.Close()
 	}
 	return nil
 }

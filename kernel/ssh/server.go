@@ -53,6 +53,7 @@ type Development interface {
 type Consoles interface {
 	ResolveTarget(string) (string, error)
 	OpenConsole(context.Context, string, string, backend.ConsoleOptions) (backend.Console, error)
+	OpenTerminalView(context.Context, string, string, backend.ConsoleSize) (backend.Console, error)
 }
 
 type Config struct {
@@ -83,8 +84,9 @@ type Manager struct {
 }
 
 type selector struct {
-	sandboxID string
-	command   string
+	sandboxID  string
+	terminalID string
+	command    string
 }
 
 type terminal struct {
@@ -432,6 +434,25 @@ func (m *Manager) serveSession(ctx context.Context, username string, channel gos
 }
 
 func (m *Manager) launch(ctx context.Context, username string, selected selector, configuration terminal, environment map[string]string, channel gossh.Channel, requests <-chan *gossh.Request, start *gossh.Request) {
+	if selected.terminalID != "" {
+		if !configuration.allocated {
+			writeSessionError(channel, errors.New("terminal-id attachment requires a PTY; use ssh -t"))
+			reply(start, false)
+			return
+		}
+		view, err := m.consoles.OpenTerminalView(ctx, selected.terminalID, selected.sandboxID, configuration.size)
+		if err != nil {
+			m.logSessionFailure(username, "attach-terminal", err)
+			writeSessionError(channel, err)
+			reply(start, false)
+			return
+		}
+		if m.logger != nil {
+			m.logger.Info("SSH terminal attached", "username", username, "terminal_id", selected.terminalID)
+		}
+		relayConsole(ctx, view, channel, requests, start)
+		return
+	}
 	kind, sandboxID, err := m.resolveTarget(ctx, username, selected)
 	if err != nil {
 		m.logSessionFailure(username, "resolve-target", err)
@@ -477,10 +498,14 @@ func (m *Manager) launch(ctx context.Context, username string, selected selector
 		reply(start, false)
 		return
 	}
-	defer console.Close()
 	if m.logger != nil {
 		m.logger.Info("SSH session started", "username", username, "target_kind", kind, "sandbox_id", sandboxID, "command_bytes", len(selected.command))
 	}
+	relayConsole(ctx, console, channel, requests, start)
+}
+
+func relayConsole(ctx context.Context, console backend.Console, channel gossh.Channel, requests <-chan *gossh.Request, start *gossh.Request) {
+	defer console.Close()
 	reply(start, true)
 	go relayRequests(ctx, console, requests)
 
@@ -629,16 +654,29 @@ func parseExec(command string) (selector, error) {
 	selected := selector{}
 	for _, field := range fields[1:] {
 		name, value, ok := strings.Cut(field, "=")
-		if !ok || name != "sandbox-id" || value == "" {
+		if !ok || value == "" {
 			return selector{}, errors.New("unknown or malformed the8020 selector parameter")
 		}
-		if selected.sandboxID != "" {
-			return selector{}, errors.New("sandbox-id may be specified only once")
+		switch name {
+		case "sandbox-id":
+			if selected.sandboxID != "" {
+				return selector{}, errors.New("sandbox-id may be specified only once")
+			}
+			if !validSelectorSandboxID(value) {
+				return selector{}, errors.New("sandbox-id must be a canonical sbx- ID")
+			}
+			selected.sandboxID = value
+		case "terminal-id":
+			if selected.terminalID != "" {
+				return selector{}, errors.New("terminal-id may be specified only once")
+			}
+			if !identity.Is(value, "tty") {
+				return selector{}, errors.New("terminal-id must be a canonical tty- ID")
+			}
+			selected.terminalID = value
+		default:
+			return selector{}, errors.New("unknown or malformed the8020 selector parameter")
 		}
-		if !validSelectorSandboxID(value) {
-			return selector{}, errors.New("sandbox-id must be a canonical sbx- ID")
-		}
-		selected.sandboxID = value
 	}
 	return selected, nil
 }

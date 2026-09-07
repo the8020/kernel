@@ -143,6 +143,11 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   runtime sandbox manager only after asynchronous runtime startup, tracks
   browser and SSH PTY leases, closes runtime sessions when that provider is
   withdrawn, and closes all PTYs during kernel shutdown.
+- The same broker is published in the platform snapshot for Deno terminal
+  operations. Runtime callback composition connects Worker resource release to
+  attachment cleanup; it neither creates another broker nor owns display state.
+  The node manager receives the same operation dispatcher's physical terminal
+  closer so authenticated exact-node cleanup survives display-Worker loss.
 - SSH composition reads runtime-mutable `network.ssh_port`, registers the SSH
   manager as its transactional runtime applier, uses the private
   `node/kernel/ssh/host_ed25519` key, and starts only after authentication,

@@ -11,6 +11,7 @@ import {
   kernelDatabaseBackend,
   parseCommandArguments,
   requiredCommandArgument,
+  TerminalControlBusyError,
 } from "./mod.ts";
 
 const metadata: ServiceRequestMetadata = {
@@ -154,6 +155,139 @@ Deno.test("cryptographic operations use the existing request bridge", async () =
   }
 });
 
+Deno.test("terminal bytes cross the bridge intact and disconnect still permits detach", async () => {
+  const channel = new MessageChannel();
+  const bridge = createKernelBridge(channel.port1, workerMetadata);
+  const calls = createCallQueue(channel.port2);
+  const control = new AbortController();
+  const bytes = Uint8Array.from({ length: 65_536 }, (_, i) => i % 256);
+  const reply = (call: Record<string, unknown>, result: unknown) =>
+    bridge.handle({
+      type: "kernel_result",
+      correlationId: call.correlationId as string,
+      payload: { success: true, result },
+    });
+  try {
+    const written = bridge.withRequest(
+      metadata,
+      () => kernel.terminals.write("att-aaaaaaaaaa", bytes),
+      control.signal,
+    );
+    const write = await calls.next();
+    const payload = write.payload as {
+      arguments: { operation: string; input: { data: string } };
+    };
+    assertEquals(payload.arguments.operation, "terminal.write");
+    assertEquals(
+      Uint8Array.from(
+        atob(payload.arguments.input.data),
+        (c) => c.charCodeAt(0),
+      ),
+      bytes,
+    );
+    reply(write, null);
+    await written;
+    const reading = bridge.withRequest(
+      metadata,
+      () => kernel.terminals.read("att-bbbbbbbbbb", 7),
+      control.signal,
+    );
+    const read = await calls.next();
+    reply(read, {
+      events: [{ sequence: 8, data: payload.arguments.input.data }],
+      sequence: 8,
+      exited: false,
+    });
+    assertEquals((await reading).events[0]?.data, bytes);
+    const closing = bridge.withRequest(
+      metadata,
+      () =>
+        kernel.terminals.close({
+          terminalId: "tty-aaaaaaaaaa",
+          nodeId: "nod-bbbbbbbbbb",
+        }),
+    );
+    const close = await calls.next();
+    assertEquals((close.payload as { arguments: unknown }).arguments, {
+      operation: "terminal.close",
+      input: { terminalId: "tty-aaaaaaaaaa", nodeId: "nod-bbbbbbbbbb" },
+    });
+    reply(close, null);
+    await closing;
+    control.abort(new Error("terminal view disconnected"));
+    await assertRejects(
+      () =>
+        bridge.withRequest(
+          metadata,
+          () => kernel.terminals.write("att-aaaaaaaaaa", new Uint8Array([1])),
+          control.signal,
+        ),
+      Error,
+      "terminal view disconnected",
+    );
+    const detached = bridge.withRequest(
+      metadata,
+      () => kernel.terminals.detach("att-aaaaaaaaaa"),
+      control.signal,
+    );
+    // An already-aborted call can emit kernel_cancel, but must emit no input.
+    let detach = await calls.next();
+    if (detach.type === "kernel_cancel") detach = await calls.next();
+    assertEquals((detach.payload as { arguments: unknown }).arguments, {
+      operation: "terminal.detach",
+      input: { attachmentId: "att-aaaaaaaaaa" },
+    });
+    reply(detach, null);
+    await detached;
+  } finally {
+    bridge.close();
+    channel.port1.close();
+    channel.port2.close();
+  }
+});
+
+Deno.test("terminal control contention is typed and native display waits cancel through the bridge", async () => {
+  const channel = new MessageChannel();
+  const bridge = createKernelBridge(channel.port1, workerMetadata);
+  const calls = createCallQueue(channel.port2);
+  try {
+    const pending = bridge.withRequest(
+      metadata,
+      () => kernel.terminals.attach("tty-aaaaaaaaaa", "control"),
+    );
+    const call = await calls.next();
+    bridge.handle({
+      type: "kernel_result",
+      correlationId: call.correlationId as string,
+      payload: { success: true, result: { busy: true } },
+    });
+    await assertRejects(
+      () => pending,
+      TerminalControlBusyError,
+      "input controller",
+    );
+    const stop = new AbortController();
+    const waiting = bridge.withRequest(
+      metadata,
+      () => kernel.terminals.nextView("att-aaaaaaaaaa", stop.signal),
+    );
+    const next = await calls.next();
+    assertEquals((next.payload as { arguments: unknown }).arguments, {
+      operation: "terminal.view-next",
+      input: { attachmentId: "att-aaaaaaaaaa" },
+    });
+    stop.abort(new Error("native owner ended"));
+    await assertRejects(() => waiting, Error, "native owner ended");
+    const cancelled = await calls.next();
+    assertEquals(cancelled.type, "kernel_cancel");
+    assertEquals(cancelled.correlationId, next.correlationId);
+  } finally {
+    bridge.close();
+    channel.port1.close();
+    channel.port2.close();
+  }
+});
+
 Deno.test("authentication context is synchronous and never calls the kernel", () => {
   const channel = new MessageChannel();
   const bridge = createKernelBridge(channel.port1, workerMetadata);
@@ -169,6 +303,80 @@ Deno.test("authentication context is synchronous and never calls the kernel", ()
       bridge.withRequest(metadata, () => context.authenticated),
       false,
     );
+  } finally {
+    bridge.close();
+    channel.port1.close();
+    channel.port2.close();
+  }
+});
+
+Deno.test("persistent handlers retain approved identity while transport cancellation stays local", async () => {
+  const channel = new MessageChannel();
+  const bridge = createKernelBridge(channel.port1, workerMetadata);
+  const calls = createCallQueue(channel.port2);
+  const connection = new AbortController();
+  const ready = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const reply = (call: Record<string, unknown>, payload: unknown) =>
+    bridge.handle({
+      type: "kernel_result",
+      correlationId: call.correlationId as string,
+      payload,
+    });
+  try {
+    await assertRejects(
+      () =>
+        bridge.withRequest(
+          persistentMetadata,
+          () => kernel.execution.runPersistent(async () => {}),
+        ),
+      Error,
+      "zero-keepalive",
+    );
+    const running = bridge.withRequest({
+      ...persistentMetadata,
+      persistentKeepAliveMilliseconds: 0,
+    }, () =>
+      kernel.execution.runPersistent(async () => {
+        ready.resolve();
+        await release.promise;
+        assertEquals(context.userId, "user:system");
+        await kernel.terminals.inspect("tty-aaaaaaaaaa");
+      }), connection.signal);
+    const claim = await calls.next();
+    assertEquals(
+      (claim.payload as { operation: string }).operation,
+      "execution.retainPersistent",
+    );
+    reply(claim, { retained: true, contextId: "ctx-aaaaaaaaaa" });
+    await ready.promise;
+    connection.abort();
+    release.resolve();
+    const inspect = await calls.next();
+    assertEquals((inspect.payload as { arguments: unknown }).arguments, {
+      operation: "terminal.inspect",
+      input: { terminalId: "tty-aaaaaaaaaa" },
+    });
+    reply(inspect, { success: true, result: {} });
+    const cleanup = await calls.next();
+    const cleanupPayload = cleanup.payload as {
+      operation: string;
+      request: { contextId: string; parentContextId: string };
+    };
+    assertEquals(cleanupPayload.operation, "database.scope.close");
+    assertEquals(cleanupPayload.request.contextId, "ctx-aaaaaaaaaa");
+    assertEquals(
+      cleanupPayload.request.parentContextId,
+      persistentMetadata.contextId,
+    );
+    reply(cleanup, { closed: true });
+    const complete = await calls.next();
+    assertEquals(
+      (complete.payload as { operation: string }).operation,
+      "execution.completePersistent",
+    );
+    reply(complete, { completed: true });
+    await running;
   } finally {
     bridge.close();
     channel.port1.close();

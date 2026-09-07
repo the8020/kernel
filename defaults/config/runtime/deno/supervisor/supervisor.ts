@@ -1,4 +1,4 @@
-import { isId } from "../identity/mod.ts";
+import { isId, newId } from "../identity/mod.ts";
 import { runDeno } from "./subprocess.ts";
 import { trackStream } from "../worker/streams.ts";
 import type { LogSink } from "../logging/protocol.ts";
@@ -74,6 +74,7 @@ interface PersistentBinding {
   keepAliveMilliseconds: number;
   expiresAt: number;
   connections: number;
+  retained: boolean;
 }
 
 interface ServiceWorkerLease {
@@ -187,6 +188,12 @@ export class Supervisor {
     }
   }
 
+  serve(
+    options: Omit<Deno.ServeTcpOptions, "automaticCompression">,
+  ): Deno.HttpServer<Deno.NetAddr> {
+    return Deno.serve({ ...options, automaticCompression: true }, this.handler);
+  }
+
   async startWorker(options: StartWorkerOptions): Promise<RuntimeWorker> {
     if (this.#draining) throw new Error("sandbox is draining");
     if (!isId(options.metadata.workerId, "wrk")) {
@@ -269,14 +276,35 @@ export class Supervisor {
       now: this.options.now,
       onCapacityChange: () => this.#notifyCapacity(),
       onClose: () => {
-        if (metadata.databaseAccess === "none") return;
         void this.options.kernelCall?.({
-          operation: "database.scope.close",
+          operation: "execution.releaseWorker",
           arguments: {},
           workerId: metadata.workerId,
         }).catch(() => {});
       },
       kernelCall: async (call, signal) => {
+        if (call.operation === "execution.retainPersistent") {
+          const binding = call.persistentExecutionId === undefined
+            ? undefined
+            : this.#servicePools.get(metadata.workloadId)?.bindings.get(
+              call.persistentExecutionId,
+            );
+          if (
+            binding?.workerId !== metadata.workerId ||
+            binding.keepAliveMilliseconds !== 0
+          ) {
+            throw new Error(
+              "zero-keepalive persistent execution is unavailable",
+            );
+          }
+          if (binding.retained) {
+            throw new Error(
+              "persistent execution already has a retained handler",
+            );
+          }
+          binding.retained = true;
+          return { retained: true, contextId: newId("ctx") };
+        }
         if (call.operation === "execution.completePersistent") {
           if (call.persistentExecutionId === undefined) {
             throw new Error("persistent execution identity is required");
@@ -590,16 +618,20 @@ export class Supervisor {
     }
     const executionId =
       headers.get("the8020-internal-persistent-execution-id") ?? "";
-    const keepAliveMilliseconds = Number(
-      headers.get("the8020-internal-persistent-keep-alive-ms") ?? "0",
+    const keepAliveHeader = headers.get(
+      "the8020-internal-persistent-keep-alive-ms",
     );
+    const keepAliveMilliseconds = Number(keepAliveHeader);
     if (!isId(executionId, "pex")) {
       throw new TypeError("canonical persistent execution ID is required");
     }
     if (
-      !Number.isSafeInteger(keepAliveMilliseconds) || keepAliveMilliseconds < 1
+      keepAliveHeader === null || keepAliveHeader.trim() === "" ||
+      !Number.isSafeInteger(keepAliveMilliseconds) || keepAliveMilliseconds < 0
     ) {
-      throw new TypeError("persistent keepalive must be a positive integer");
+      throw new TypeError(
+        "persistent keepalive must be an explicit nonnegative integer",
+      );
     }
     const acquire = (): ServiceWorkerLease | undefined => {
       this.#sweepPersistentBindings(pool);
@@ -673,6 +705,7 @@ export class Supervisor {
         keepAliveMilliseconds,
         expiresAt: this.options.now() + keepAliveMilliseconds,
         connections: 0,
+        retained: false,
       };
       pool.bindings.set(executionId, binding);
       this.#notifyCapacity();
@@ -808,7 +841,7 @@ export class Supervisor {
     if (binding === undefined || binding !== lease.binding) return;
     if (successful) {
       binding.expiresAt = this.options.now() + lease.keepAliveMilliseconds;
-    } else if (lease.created) {
+    } else if (lease.created && !binding.retained) {
       pool!.bindings.delete(lease.executionId);
       this.#lastReservationRelease.set(
         lease.worker.metadata.workerId,
@@ -892,7 +925,10 @@ export class Supervisor {
   ): boolean {
     let changed = false;
     for (const [executionId, binding] of pool.bindings) {
-      if (binding.connections === 0 && binding.expiresAt <= now) {
+      if (
+        binding.keepAliveMilliseconds > 0 && binding.connections === 0 &&
+        binding.expiresAt <= now
+      ) {
         pool.bindings.delete(executionId);
         this.#lastReservationRelease.set(binding.workerId, now);
         changed = true;
@@ -910,7 +946,9 @@ export class Supervisor {
     const now = this.options.now();
     let delay: number | undefined;
     for (const binding of pool.bindings.values()) {
-      if (binding.connections !== 0) continue;
+      if (binding.connections !== 0 || binding.keepAliveMilliseconds === 0) {
+        continue;
+      }
       const remaining = Math.max(0, binding.expiresAt - now);
       delay = delay === undefined ? remaining : Math.min(delay, remaining);
     }
@@ -1650,7 +1688,7 @@ function trustedServiceMetadata(
       networkScope: clientNetworkScope(headers),
     },
     persistentExecutionId,
-    persistentKeepAliveMilliseconds: positiveIntegerHeader(
+    persistentKeepAliveMilliseconds: nonnegativeIntegerHeader(
       headers,
       "the8020-internal-persistent-keep-alive-ms",
     ),
@@ -1686,14 +1724,14 @@ function clientNetworkScope(
     : "special";
 }
 
-function positiveIntegerHeader(
+function nonnegativeIntegerHeader(
   headers: Headers,
   name: string,
 ): number | undefined {
   const raw = headers.get(name);
-  if (raw === null) return undefined;
+  if (raw === null || raw.trim() === "") return undefined;
   const value = Number(raw);
-  return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+  return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
 async function validateEntrypoints(entrypoints: string[]): Promise<void> {

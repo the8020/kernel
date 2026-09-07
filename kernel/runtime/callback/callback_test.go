@@ -277,7 +277,7 @@ func TestJobsAndServicesCanUseTypedRuntimeOperations(t *testing.T) {
 			if response.Code != http.StatusOK || operations.operation != "example.inspect" || operations.input["id"] != "one" {
 				t.Fatalf("status=%d body=%q operation=%#v", response.Code, response.Body.String(), operations)
 			}
-			if operations.caller.JobRunID != "job-1111111111" || operations.caller.Workload != workload {
+			if operations.caller.JobRunID != "job-1111111111" || operations.caller.Workload != workload || operations.caller.SandboxID != spec.SandboxID || operations.caller.WorkerID != "wrk-1111111111" {
 				t.Fatalf("runtime caller = %#v", operations.caller)
 			}
 			if response.Header().Get("Content-Length") != strconv.Itoa(response.Body.Len()) {
@@ -476,7 +476,13 @@ func TestDatabaseScopeCleanupUsesExactExecutionIdentity(t *testing.T) {
 	}
 	payload.ContextID = ""
 	response = runtimeControlCall(t, server, spec, "/v1/runtime/database/scope", protocol.MessageDatabaseExecute, payload)
-	if response.Code != http.StatusOK || len(databaseService.prefixes) != 1 || databaseService.prefixes[0] != wantedWorker {
+	if response.Code != http.StatusConflict {
+		t.Fatal("database scope cleanup accepted an absent request context")
+	}
+	var released string
+	server.SetWorkerResourceReleaser(func(sandboxID, workerID string) { released = databaseScope(sandboxID, workerID) })
+	response = runtimeControlCall(t, server, spec, "/v1/runtime/execution/release", protocol.MessageAdminCommand, map[string]any{"worker_id": payload.WorkerID})
+	if response.Code != http.StatusOK || len(databaseService.prefixes) != 1 || databaseService.prefixes[0] != wantedWorker || released != wantedWorker {
 		t.Fatalf("Worker cleanup status=%d database=%#v", response.Code, databaseService)
 	}
 }
@@ -648,7 +654,7 @@ func callbackFixtureForWorkload(t testing.TB, store *state.Store, workload model
 	digest := "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	profile := model.RuntimeProfile{WorkloadType: workload, ImageDigest: digest, DependencyMode: model.DependencyCachedOnly, NetworkMode: "netstack", ResourceClass: string(workload)}
 	hash, _ := profile.Hash()
-	spec := model.SandboxSpec{SandboxID: "sandbox", WorkloadType: workload, GroupKey: string(workload) + ":owner:test", OwnerIDs: []string{"test"}, ImageDigest: digest, RuntimeProfile: profile, ProfileHash: hash, ResourceLimits: model.ResourceLimits{PIDMaximum: 1, TmpfsMaximum: 1}, Network: model.NetworkConfiguration{Mode: "netstack", NetworkName: "the8020"}, DependencyMode: model.DependencyCachedOnly, Lifecycle: model.LifecyclePolicy{}, InternalToken: "0123456789abcdef0123456789abcdef"}
+	spec := model.SandboxSpec{SandboxID: "sbx-aaaaaaaaaa", WorkloadType: workload, GroupKey: string(workload) + ":owner:test", OwnerIDs: []string{"test"}, ImageDigest: digest, RuntimeProfile: profile, ProfileHash: hash, ResourceLimits: model.ResourceLimits{PIDMaximum: 1, TmpfsMaximum: 1}, Network: model.NetworkConfiguration{Mode: "netstack", NetworkName: "the8020"}, DependencyMode: model.DependencyCachedOnly, Lifecycle: model.LifecyclePolicy{}, InternalToken: "0123456789abcdef0123456789abcdef"}
 	status := model.SandboxStatus{DesiredState: model.StateReady, ObservedState: model.StateStarting}
 	if err := store.SaveSpec(spec); err != nil {
 		t.Fatal(err)

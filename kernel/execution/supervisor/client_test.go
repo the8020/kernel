@@ -1,12 +1,15 @@
 package supervisor
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -221,6 +224,106 @@ func TestServiceDispatchStreamsRequestAndResponse(t *testing.T) {
 	got, err := io.ReadAll(response.Body)
 	if err != nil || string(got) != body {
 		t.Fatalf("body=%q err=%v", got, err)
+	}
+}
+
+func TestServiceDispatchPreservesEncodingNegotiationAndBytes(t *testing.T) {
+	plain := []byte(strings.Repeat("service response\n", 256))
+	var compressed bytes.Buffer
+	zipper := gzip.NewWriter(&compressed)
+	if _, err := zipper.Write(plain); err != nil {
+		t.Fatal(err)
+	}
+	if err := zipper.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, accept := range []string{"", "identity", "gzip", "br;q=1, gzip;q=0.5"} {
+		t.Run("accept="+accept, func(t *testing.T) {
+			body, encoding := plain, ""
+			if strings.Contains(accept, "gzip") {
+				body, encoding = compressed.Bytes(), "gzip"
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if got := request.Header.Get("Accept-Encoding"); got != accept {
+					t.Errorf("upstream Accept-Encoding = %q, want %q", got, accept)
+				}
+				writer.Header().Set("Content-Type", "text/plain")
+				writer.Header().Set("Content-Length", strconv.Itoa(len(body)))
+				writer.Header().Set("Vary", "Accept-Encoding")
+				if encoding != "" {
+					writer.Header().Set("Content-Encoding", encoding)
+				}
+				_, _ = writer.Write(body)
+			}))
+			defer server.Close()
+			client, err := New(Config{ProtocolVersion: protocol.ProtocolVersion, Endpoint: func(model.SandboxSpec) (string, error) { return server.URL, nil }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.httpClient.CloseIdleConnections()
+			original := httptest.NewRequest(http.MethodGet, "http://public.example/asset", nil)
+			if accept != "" {
+				original.Header.Set("Accept-Encoding", accept)
+			}
+			response, err := client.DispatchService(context.Background(), testSpec(), "service-a", original)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			got, err := io.ReadAll(response.Body)
+			if err != nil || !bytes.Equal(got, body) || response.Uncompressed || response.Header.Get("Content-Encoding") != encoding || response.Header.Get("Content-Length") != strconv.Itoa(len(body)) || response.Header.Get("Vary") != "Accept-Encoding" {
+				t.Fatalf("response encoding=%q uncompressed=%v bytes=%d err=%v", response.Header.Get("Content-Encoding"), response.Uncompressed, len(got), err)
+			}
+		})
+	}
+}
+
+func TestServiceDispatchHeadOmitsPrivatePostBodyLength(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.Header.Get("the8020-internal-method") != http.MethodHead {
+			t.Errorf("unexpected HEAD transport: %s %v", request.Method, request.Header)
+		}
+		// The native Deno listener sees the private POST with an empty body,
+		// not the original HEAD, and adds this envelope length.
+		writer.Header().Set("Content-Length", "0")
+		writer.Header().Set("Content-Type", "text/javascript")
+		writer.Header().Set("ETag", `W/"asset"`)
+		writer.Header().Set("Vary", "Accept-Encoding")
+		writer.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		writer.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	client := testClient(t, upstream.URL)
+	public := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		response, err := client.DispatchService(request.Context(), testSpec(), "service-a", request)
+		if err != nil {
+			http.Error(writer, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer response.Body.Close()
+		for key, values := range response.Header {
+			writer.Header()[key] = values
+		}
+		writer.WriteHeader(response.StatusCode)
+		_, _ = io.Copy(writer, response.Body)
+	}))
+	defer public.Close()
+	request, err := http.NewRequest(http.MethodHead, public.URL+"/asset.js", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Accept-Encoding", "br, gzip")
+	response, err := public.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil || len(body) != 0 || response.StatusCode != http.StatusOK || response.Header.Get("Content-Length") != "" {
+		t.Fatalf("HEAD status=%d headers=%v body=%q err=%v", response.StatusCode, response.Header, body, err)
+	}
+	if response.Header.Get("ETag") != `W/"asset"` || response.Header.Get("Vary") != "Accept-Encoding" || response.Header.Get("Cache-Control") != "public, max-age=31536000, immutable" {
+		t.Fatalf("HEAD lost representation metadata: %v", response.Header)
 	}
 }
 

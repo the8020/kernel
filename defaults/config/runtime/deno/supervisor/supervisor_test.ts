@@ -5,6 +5,7 @@ import { serviceCheckArguments, Supervisor } from "./supervisor.ts";
 import type { ExecutionMetadata } from "../worker/contracts.ts";
 import { kernelCallbackRequest } from "./callback_request.ts";
 import { TestLogSink } from "../test/logs.ts";
+import { readHTTPResponse } from "./unix_http.ts";
 
 const token = "0123456789abcdef0123456789abcdef";
 const examples = new URL("../examples", import.meta.url).pathname;
@@ -91,7 +92,7 @@ Deno.test("service type checking uses supported dependency-mode arguments", () =
   );
 });
 
-Deno.test("closing a Worker requests transaction cleanup for its scope", async () => {
+Deno.test("closing a Worker releases its kernel resources", async () => {
   const calls: Array<Record<string, unknown>> = [];
   const supervisor = new Supervisor({
     nodeId: "nod-0000000001",
@@ -114,7 +115,7 @@ Deno.test("closing a Worker requests transaction cleanup for its scope", async (
   await supervisor.stopWorker(worker.metadata.workerId, true);
   assertEquals(
     calls.some((call) =>
-      call.operation === "database.scope.close" &&
+      call.operation === "execution.releaseWorker" &&
       call.contextId === undefined &&
       call.workerId === "wrk-0000000023" && call.serviceId === undefined
     ),
@@ -845,6 +846,178 @@ Deno.test("session reservation expiry starts an independent Worker idle clock", 
   }
 });
 
+Deno.test("HTTP serving compresses Worker streams and honors service responses", async () => {
+  const supervisor = new Supervisor({
+    nodeId: "nod-0000000001",
+    sandboxId: "sbx-0000000014",
+    workloadType: "service",
+    token,
+    supervisorVersion: "test",
+  });
+  const workerMetadata = metadata("wrk-0000000022");
+  workerMetadata.entrypoint = new URL(
+    "../examples/service_compression.ts",
+    import.meta.url,
+  ).href;
+  workerMetadata.service = {
+    serviceId: "example/compression/service",
+    generation: 1,
+    canonicalBasePath: "/example/compression/service",
+    executionMode: "stateless",
+  };
+  const worker = await supervisor.startWorker({
+    metadata: workerMetadata,
+    permissions: { read: [new URL("..", import.meta.url).pathname] },
+  });
+  supervisor.configureService("service-a", [worker.metadata.workerId], 2);
+  const server = supervisor.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    onListen() {},
+  });
+  const port = server.addr.port;
+  const text = "compressible service response ".repeat(1_024);
+  const headers = (path: string, accept?: string) => {
+    const result = new Headers({
+      authorization: `Bearer ${token}`,
+      "the8020-internal-url": `http://service${path}`,
+      "the8020-internal-context-id": newId("ctx"),
+      "the8020-internal-method": "GET",
+    });
+    if (accept !== undefined) result.set("accept-encoding", accept);
+    return result;
+  };
+  // Read the wire bytes directly: fetch() would silently decode gzip/Brotli.
+  const request = async (path: string, accept?: string) => {
+    const connection = await Deno.connect({ hostname: "127.0.0.1", port });
+    const timeout = setTimeout(() => connection.close(), 5_000);
+    try {
+      const lines = [...headers(path, accept)].map(([key, value]) =>
+        `${key}: ${value}`
+      );
+      const data = new TextEncoder().encode([
+        "POST /v1/services/service-a/dispatch HTTP/1.0",
+        `Host: 127.0.0.1:${port}`,
+        "Content-Length: 0",
+        "Connection: close",
+        ...lines,
+        "\r\n",
+      ].join("\r\n"));
+      let written = 0;
+      while (written < data.length) {
+        written += await connection.write(data.subarray(written));
+      }
+      const raw = await readHTTPResponse(connection);
+      const boundary = indexOfBytes(raw, new TextEncoder().encode("\r\n\r\n"));
+      assertEquals(boundary >= 0, true);
+      const head = new TextDecoder().decode(raw.subarray(0, boundary)).split(
+        "\r\n",
+      );
+      const status = Number(head.shift()!.split(" ")[1]);
+      const responseHeaders = new Headers(head.map((line): [string, string] => {
+        const split = line.indexOf(":");
+        return [line.slice(0, split), line.slice(split + 1).trim()];
+      }));
+      assertEquals(responseHeaders.has("transfer-encoding"), false);
+      const body = raw.slice(boundary + 4);
+      return { status, headers: responseHeaders, body };
+    } finally {
+      clearTimeout(timeout);
+      try {
+        connection.close();
+      } catch { /* Already closed by timeout. */ }
+    }
+  };
+  const abort = new AbortController();
+  try {
+    for (
+      const [path, accept, encoding] of [
+        ["/text", undefined, null],
+        ["/text", "", null],
+        ["/text", "identity", null],
+        ["/text", "gzip;q=0, br;q=0", null],
+        ["/text", "gzip", "gzip"],
+        ["/text", "gzip;q=0.5, br;q=1", "br"],
+        ["/text", "br;q=1, gzip;q=0, identity;q=0", "br"],
+        ["/no-transform", "gzip, br", null],
+        ["/range", "gzip, br", null],
+        ["/encoded", "gzip", "gzip"],
+        ["/encoded", "gzip;q=0.5, br;q=1", "gzip"],
+      ] as const
+    ) {
+      const response = await request(path, accept);
+      assertEquals(response.status, path === "/range" ? 206 : 200);
+      assertEquals(response.headers.get("content-encoding"), encoding);
+      let decoded = new Response(response.body);
+      if (encoding !== null) {
+        assertEquals(response.body.length < text.length, true);
+        decoded = new Response(decoded.body!.pipeThrough(
+          new DecompressionStream(encoding === "br" ? "brotli" : "gzip"),
+        ));
+      }
+      assertEquals(await decoded.text(), text);
+      const automatic = encoding !== null && path !== "/encoded";
+      assertEquals(
+        response.headers.get("etag"),
+        automatic ? 'W/"example"' : '"example"',
+      );
+      assertEquals(response.headers.get("vary")?.includes("Origin"), true);
+      if (automatic) {
+        assertEquals(
+          response.headers.get("vary")?.includes("Accept-Encoding"),
+          true,
+        );
+        assertEquals(response.headers.has("content-length"), false);
+      }
+      if (path === "/no-transform") {
+        assertEquals(
+          response.headers.get("cache-control"),
+          "private, no-transform",
+        );
+      }
+    }
+
+    // The client must receive data before the Worker closes the response.
+    const timeout = setTimeout(() => abort.abort(), 5_000);
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${port}/v1/services/service-a/dispatch`,
+        {
+          method: "POST",
+          headers: headers("/stream", "gzip"),
+          signal: abort.signal,
+        },
+      );
+      assertEquals(response.status, 200);
+      assertEquals(response.headers.get("content-encoding"), "gzip");
+      const reader = response.body!.getReader();
+      const first = await reader.read();
+      assertEquals(first.done, false);
+      assertEquals(first.value!.length > 0, true);
+      assertEquals(
+        text.startsWith(new TextDecoder().decode(first.value)),
+        true,
+      );
+      const finish = await request("/finish", "gzip");
+      assertEquals(finish.status, 204);
+      assertEquals(finish.body.length, 0);
+      let size = first.value!.length;
+      while (true) {
+        const next = await reader.read();
+        if (next.done) break;
+        size += next.value.length;
+      }
+      assertEquals(size, text.length);
+    } finally {
+      clearTimeout(timeout);
+    }
+  } finally {
+    abort.abort();
+    await supervisor.drain();
+    await server.shutdown();
+  }
+});
+
 Deno.test({
   name: "supervisor owns request-service WebSocket upgrades and message relay",
   sanitizeOps: false,
@@ -879,11 +1052,11 @@ Deno.test({
     supervisor.configureService("service-a", [worker.metadata.workerId], 32);
     let resolvePort!: (port: number) => void;
     const listening = new Promise<number>((resolve) => resolvePort = resolve);
-    const server = Deno.serve({
+    const server = supervisor.serve({
       hostname: "127.0.0.1",
       port: 0,
       onListen: ({ port }) => resolvePort(port),
-    }, supervisor.handler);
+    });
     const port = await listening;
     const connection = await Deno.connect({
       hostname: "127.0.0.1",
@@ -1355,7 +1528,10 @@ Deno.test("persistent follow-ups reject wrong owners and cannot revive completed
     token,
     supervisorVersion: "test",
     now: () => now,
-    kernelCall: () => {
+    kernelCall: (call) => {
+      if (call.operation === "execution.releaseWorker") {
+        return Promise.resolve({ released: true });
+      }
       throw new Error("completion must stay in its owning supervisor");
     },
   });
@@ -1453,6 +1629,150 @@ Deno.test("persistent follow-ups reject wrong owners and cannot revive completed
     await expect(dispatch("pex-0000000022", true), 204);
     assertEquals(supervisor.workers()[0]?.persistent_executions, 1);
   } finally {
+    await supervisor.stopWorker(target.workerId, true);
+  }
+});
+
+Deno.test("zero keepalive retains detached executions without timer activity until completion", async () => {
+  let now = 1_000;
+  const supervisor = new Supervisor({
+    nodeId: "nod-0000000001",
+    sandboxId: "sbx-0000000010",
+    workloadType: "service",
+    token,
+    supervisorVersion: "test",
+    now: () => now,
+  });
+  const target = metadata("wrk-0000000013");
+  target.workloadId = "retained-service";
+  target.entrypoint =
+    new URL("../examples/service_control.ts", import.meta.url).href;
+  target.service = {
+    serviceId: "service-a",
+    generation: 1,
+    canonicalBasePath: "/service-a",
+    executionMode: "persistent",
+  };
+  const worker = await supervisor.startWorker({
+    metadata: target,
+    permissions: { read: [examples] },
+  });
+  supervisor.configureService(target.workloadId, [target.workerId], 1);
+  const dispatch = (existing: boolean, keepAlive: string | null = "0") => {
+    const headers = new Headers({
+      authorization: `Bearer ${token}`,
+      "the8020-internal-url": "http://service/",
+      "the8020-internal-context-id": newId("ctx"),
+      "the8020-internal-persistent-execution-id": "pex-0000000020",
+      "the8020-internal-target-worker-id": target.workerId,
+      "the8020-internal-user-id": "user:alice",
+      "the8020-internal-username": "alice",
+    });
+    if (keepAlive !== null) {
+      headers.set("the8020-internal-persistent-keep-alive-ms", keepAlive);
+    }
+    if (existing) headers.set("the8020-internal-persistent-existing", "true");
+    return supervisor.handler(
+      new Request(`http://runtime/v1/services/${target.workloadId}/dispatch`, {
+        method: "POST",
+        headers,
+      }),
+    );
+  };
+  try {
+    for (const invalid of [null, "", "-1"]) {
+      const response = await dispatch(false, invalid);
+      assertEquals(response.status >= 400, true);
+      await response.body?.cancel();
+      assertEquals(supervisor.workers()[0]?.persistent_executions, 0);
+    }
+    const initial = await dispatch(false);
+    assertEquals(initial.status, 204);
+    await initial.body?.cancel();
+    now += 365 * 24 * 60 * 60 * 1_000;
+    assertEquals(supervisor.workers()[0]?.persistent_executions, 1);
+    assertEquals(supervisor.workers()[0]?.idle_since_ms, undefined);
+    // A follow-up cannot replace the lifetime chosen by its initial request.
+    const resumed = await dispatch(true, "1");
+    assertEquals(resumed.status, 204);
+    await resumed.body?.cancel();
+    now += 365 * 24 * 60 * 60 * 1_000;
+    assertEquals(supervisor.workers()[0]?.persistent_executions, 1);
+    const result = await supervisor.invokeWorker(
+      worker.metadata.workerId,
+      "example.complete-persistent",
+      null,
+      new AbortController().signal,
+      "pex-0000000020",
+      { userId: "user:alice", username: "alice" },
+      testInvocation(),
+    );
+    assertEquals(result.ok, true);
+    assertEquals(supervisor.workers()[0]?.persistent_executions, 0);
+    assertEquals(supervisor.workers()[0]?.idle_since_ms, now);
+    const stale = await dispatch(true);
+    assertEquals(stale.status, 409);
+    await stale.body?.cancel();
+  } finally {
+    await supervisor.stopWorker(target.workerId, true);
+  }
+});
+
+Deno.test("accepted persistent work survives loss of its establishment response", async () => {
+  const supervisor = new Supervisor({
+    nodeId: "nod-0000000001",
+    sandboxId: "sbx-0000000010",
+    workloadType: "service",
+    token,
+    supervisorVersion: "test",
+  });
+  const target = metadata("wrk-0000000013");
+  target.workloadId = "retained-creation";
+  target.entrypoint =
+    new URL("../examples/service_retained.ts", import.meta.url).href;
+  target.service = {
+    serviceId: "service-a",
+    generation: 1,
+    canonicalBasePath: "/service-a",
+    executionMode: "persistent",
+  };
+  target.databaseAccess = "none";
+  await supervisor.startWorker({
+    metadata: target,
+    permissions: { read: [examples] },
+  });
+  supervisor.configureService(target.workloadId, [target.workerId], 1);
+  const connection = new AbortController();
+  const signal = AbortSignal.timeout(5_000);
+  const first = supervisor.handler(
+    new Request(`http://runtime/v1/services/${target.workloadId}/dispatch`, {
+      method: "POST",
+      signal: connection.signal,
+      headers: {
+        authorization: `Bearer ${token}`,
+        "the8020-internal-url": "http://service/",
+        "the8020-internal-context-id": newId("ctx"),
+        "the8020-internal-persistent-execution-id": "pex-0000000020",
+        "the8020-internal-persistent-keep-alive-ms": "0",
+      },
+    }),
+  );
+  const invoke = (name: string) =>
+    supervisor.invokeWorker(target.workerId, name, null, signal, undefined, {
+      userId: "user:system",
+      username: "system",
+    }, testInvocation());
+  try {
+    assertEquals((await invoke("example.when-retained")).ok, true);
+    connection.abort();
+    const lost = await first;
+    await lost.body?.cancel();
+    assertEquals(supervisor.workers()[0]?.persistent_executions, 1);
+    assertEquals(supervisor.workers()[0]?.idle_since_ms, undefined);
+    assertEquals((await invoke("example.release")).ok, true);
+    assertEquals(supervisor.workers()[0]?.persistent_executions, 0);
+  } finally {
+    connection.abort();
     await supervisor.stopWorker(target.workerId, true);
   }
 });

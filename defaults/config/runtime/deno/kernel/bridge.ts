@@ -1,4 +1,4 @@
-import { newId } from "../identity/mod.ts";
+import { isId, newId } from "../identity/mod.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 // Preload the public module in the trusted bootstrap graph so applications can
 // import it without gaining read access to the runtime implementation.
@@ -19,6 +19,7 @@ import {
   kernelDatabaseBackendSymbol,
   type KernelInvoke,
   kernelInvokeSymbol,
+  kernelPersistentRunSymbol,
   kernelSecretSymbol,
 } from "./mod.ts";
 
@@ -28,6 +29,7 @@ export interface KernelExecutionContext {
   readonly jobRunId?: string;
   readonly serviceId: string;
   readonly persistentExecutionId?: string;
+  readonly persistentKeepAliveMilliseconds?: number;
   readonly user: ExecutionUserMetadata;
   readonly auth?: ServiceRequestMetadata["auth"];
   readonly secrets?: Record<string, string>;
@@ -81,6 +83,7 @@ export function createKernelBridge(
   });
   const databaseBackend: DatabaseBackend = worker.databaseBackend;
   const requestContext = new AsyncLocalStorage<KernelExecutionContext>();
+  const lifetime = new AbortController();
   const pending = new Map<string, Pending>();
   const releaseContextProvider = installContextProvider(() => {
     const active = requestContext.getStore();
@@ -114,7 +117,8 @@ export function createKernelBridge(
       );
     }
     if (
-      operation === "execution.completePersistent" &&
+      (operation === "execution.completePersistent" ||
+        operation === "execution.retainPersistent") &&
       request?.persistentExecutionId === undefined
     ) {
       return Promise.reject(
@@ -126,7 +130,10 @@ export function createKernelBridge(
       return Promise.reject(new Error("kernel correlation collision"));
     }
     const result = new Promise<unknown>((resolve, reject) => {
-      const signal = operation === "database.scope.close"
+      const cleanupOperation = operation === "database.scope.close" ||
+        operation === "runtime.operation" &&
+          input.operation === "terminal.detach";
+      const signal = cleanupOperation
         ? undefined
         : callSignal && request?.signal
         ? AbortSignal.any([callSignal, request.signal])
@@ -167,6 +174,57 @@ export function createKernelBridge(
   };
   (globalThis as unknown as Record<symbol, unknown>)[kernelInvokeSymbol] =
     invoke;
+  (globalThis as unknown as Record<symbol, unknown>)[
+    kernelPersistentRunSymbol
+  ] = (handler: () => Promise<void>): Promise<void> => {
+    const request = requestContext.getStore();
+    if (
+      worker.workloadType !== "service" ||
+      request?.persistentExecutionId === undefined ||
+      request.persistentKeepAliveMilliseconds !== 0
+    ) {
+      return Promise.reject(
+        new Error("runPersistent requires a zero-keepalive service execution"),
+      );
+    }
+    const retained = Object.freeze({ ...request, signal: lifetime.signal });
+    return requestContext.run(retained, async () => {
+      // Pin ownership before calling application code. A lost establishment
+      // response can no longer discard work the handler accepted.
+      const claim = await invoke("execution.retainPersistent", {}) as {
+        contextId: string;
+      };
+      try {
+        if (!isId(claim.contextId, "ctx")) {
+          throw new Error("retained execution requires a canonical context");
+        }
+        await requestContext.run(
+          Object.freeze({
+            ...retained,
+            contextId: claim.contextId,
+            parentContextId: request.contextId,
+          }),
+          async () => {
+            try {
+              await handler();
+            } finally {
+              if (
+                !lifetime.signal.aborted && metadata.databaseAccess !== "none"
+              ) {
+                // The retained scope is independent of the original HTTP scope.
+                // Abrupt Worker release repeats cleanup for every remaining scope.
+                await invoke("database.scope.close", {}).catch(() => {});
+              }
+            }
+          },
+        );
+      } finally {
+        if (!lifetime.signal.aborted) {
+          await invoke("execution.completePersistent", {});
+        }
+      }
+    });
+  };
   (globalThis as unknown as Record<symbol, unknown>)[kernelSecretSymbol] = (
     name: string,
   ): string | undefined => requestContext.getStore()?.secrets?.[name];
@@ -190,6 +248,8 @@ export function createKernelBridge(
           parentContextId: metadata.parentContextId,
           serviceId: metadata.serviceId,
           persistentExecutionId: metadata.persistentExecutionId,
+          persistentKeepAliveMilliseconds:
+            metadata.persistentKeepAliveMilliseconds,
           user: canonicalExecutionUser(metadata.user),
           auth: Object.freeze({ ...metadata.auth }),
           signal,
@@ -218,6 +278,10 @@ export function createKernelBridge(
       return true;
     },
     close(): void {
+      lifetime.abort(new Error("Worker lifetime ended"));
+      delete (globalThis as unknown as Record<symbol, unknown>)[
+        kernelPersistentRunSymbol
+      ];
       delete (globalThis as unknown as Record<symbol, unknown>)[
         kernelInvokeSymbol
       ];
@@ -247,6 +311,7 @@ function immutableKernelContext(
     jobRunId: value.jobRunId,
     serviceId: value.serviceId,
     persistentExecutionId: value.persistentExecutionId,
+    persistentKeepAliveMilliseconds: value.persistentKeepAliveMilliseconds,
     user: canonicalExecutionUser(value.user),
     auth: value.auth === undefined
       ? undefined

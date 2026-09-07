@@ -38,14 +38,15 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   default `PATH` includes the standard administrative `sbin` directories.
   Development targets default to the sandbox's real root identity and `/root`;
   the authenticated 80|20 username still selects and authorizes its sandbox.
-- A shell request opens the authenticated user's persistent development
-  sandbox, creating or starting it when needed.
+- A shell request opens the authenticated user's persistent development sandbox,
+  creating or starting it when needed.
 - An ordinary exec request runs through `[/bin/bash, -lc, <command>]` inside the
   authenticated user's development sandbox. Commands beginning with reserved
-  `the8020` use the structured `the8020 [sandbox-id=<id>]` selector grammar
-  instead; its optional parameter accepts a canonical `sbx-` ID. The shared
-  console broker resolves its registered owner; unavailable or conflicting
-  claims fail before opening a process. Malformed parameters are rejected.
+  `the8020` use the structured `the8020 [sandbox-id=<id>] [terminal-id=<id>]`
+  selector grammar instead; its optional parameter accepts a canonical `sbx-`
+  ID. The shared console broker resolves its registered owner; unavailable or
+  conflicting claims fail before opening a process. Malformed parameters are
+  rejected.
 - Only SSH `session` channels are accepted. Port, agent, X11, and socket
   forwarding and subsystems are unavailable.
 - Shell and selector sessions launch `[/bin/bash, -l]`; ordinary exec requests
@@ -62,9 +63,23 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   and remain unavailable without a sandbox-side SSH protocol endpoint.
 - The current temporary authorization policy permits every authenticated user to
   select any running sandbox.
+- `ssh -t user@node -p PORT 'the8020 terminal-id=tty-…'` attaches that node's
+  existing retained PTY. Optional `sandbox-id=sbx-…` must match its owner.
+  Unknown IDs, malformed/duplicate parameters, missing PTY requests, absent
+  display owners, and occupied input control fail without creating a sandbox or
+  process. Existing process environment and working directory are preserved.
+- Retained attachment uses the shared console owner's native display stream.
+  Deno supplies recovered VT display bytes; Go interprets no terminal state. SSH
+  EOF/disconnection releases the attachment without PTY EOF or hangup. Native
+  process exit drains the final display and returns the available status;
+  detached runsc PTYs expose no exit code. Browser Take control revokes the SSH
+  lease; accepted input remains ordered through the one physical writer.
 
 # Work Guidance
 
+- Keep retained attachment separate from ordinary connection-bound exec. The
+  latter retains stdin half-close, environment, signal, stderr, and exit status
+  semantics through the same existing relay.
 - Keep the reserved selector grammar parsed structurally and execute ordinary
   commands only inside the selected sandbox. Never place authentication secrets
   in errors, logs, permissions metadata, or session state.
@@ -81,6 +96,12 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   authentication, development-sandbox, console-broker, and runsc PTY path,
   including a contextual working-directory prompt and a plain-`xterm` Nano
   full-screen session.
+- `terminal_test.go` uses real SSH authentication/channels and the retained
+  broker to verify repeated attachment, selector rejection, raw input, and
+  disconnect without native EOF or process recreation. The sibling dev-core
+  native browser fixture also attaches OpenSSH to its running htop process and
+  returns to the browser; package tests qualify the VT display projection
+  separately.
 
 # Child DOX Index
 

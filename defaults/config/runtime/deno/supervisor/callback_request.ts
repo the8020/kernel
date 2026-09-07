@@ -17,6 +17,13 @@ export function kernelCallbackRequest(
     context_id: call.contextId,
   };
   switch (call.operation) {
+    case "execution.releaseWorker":
+      return {
+        path: "/v1/runtime/execution/release",
+        messageType: "admin_command",
+        responseMessageType: "admin_result",
+        payload: { worker_id: call.workerId },
+      };
     case "database.info":
       return {
         path: "/v1/runtime/database/info",
@@ -60,6 +67,7 @@ export function kernelCallbackRequest(
         },
       };
     case "execution.completePersistent":
+    case "execution.retainPersistent":
       throw new Error("persistent completion belongs to the local supervisor");
     case "admin.execute":
       return {

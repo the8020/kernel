@@ -18,6 +18,58 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 # Local Contracts
 
+## Requested workflow
+
+- Implement and verify persistent native terminals before filesystem/Git work.
+  Phase 2 starts only in disposable checkouts and instances; production adoption
+  requires demonstrated correctness, ordinary native-tool behavior, and low
+  overhead. Keep the completed terminal feature if no filesystem candidate
+  qualifies. Stop after Phase 1 is finished and verified. The user will revise
+  Phase 2 before authorizing its start; do not begin its experiments or
+  implementation automatically.
+  [WORKFLOW_IMPLEMENTATION.md](WORKFLOW_IMPLEMENTATION.md) tracks the ordered
+  implementation and verification gates.
+- The mounted workspace must support ordinary Linux filesystem behavior for
+  unmodified Git, Codex, Claude Code, editors, and build tools. Applications
+  must use normal paths and filesystem operations without knowing whether a file
+  is shared or private. Validate executable loading, mmap, locks, atomic saves,
+  links, open-handle behavior, and file watching; ordinary read/write tests
+  alone do not qualify a backend. Persistence bookkeeping stays below this
+  interface.
+- Activation must preserve running sandbox processes. Named terminal sessions
+  must survive navigation, refresh, switching views, and logout, with multiple
+  sessions selectable in the development-test program. Explicit session close
+  and sandbox shutdown end them; no idle expiry is requested yet.
+- Use unmodified htop for Phase 1 interactive compatibility checks: actual
+  rendering, keyboard shortcuts, scrolling, resizing, and recovery across
+  disconnects. The user waived separate Codex/Claude Code interface tests.
+  Retain the terminal protocol, input/paste, lifetime, and performance checks.
+- Prefer reusing the shared native console/PTY boundary beneath SSH and UUI for
+  persistent terminals. Give the PTY a lifetime independent of client sockets;
+  reconnect attaches to the existing process. Kernel owns the physical terminal,
+  and Deno packages own selection, workflow, and display recovery. The shared
+  retained owner and browser/SSH adapters are implemented and verified; the
+  checklist records the completed Phase 1 evidence and the Phase 2 hold.
+- Untouched paths follow shared publication immediately; private edits stay
+  isolated. Git must merge from each path's original observed version, preserve
+  non-overlapping changes, and reject real conflicts with a nonzero helper exit.
+  Conflicting paths, originals, both sides, and applicable text markers must
+  remain available inside the workspace for resolution and retry.
+- Private source must survive runtime loss and transfer to another sandbox as
+  readable/reapplicable state without periodic scanning or autosave. Publication
+  must preserve later writes, avoid long shared locks, and never reset the
+  sandbox to clear an overlay.
+- Reliability and low system overhead are acceptance gates. Benchmark actual
+  native-tool filesystem operations and concurrent developer activity against
+  the existing backend; fast Git candidate preparation alone does not qualify
+  workspace performance. Bound terminal history and replay work independently.
+- [analysis/REPORT.md](analysis/REPORT.md) records measured failures, design
+  recommendations, and filesystem qualification gates. The filesystem redesign
+  is pending; current activation still recreates the sandbox and does not meet
+  the process-preservation and publication requirements above.
+
+## Current implementation
+
 - The authenticated lowercase alphanumeric `user_id` is the only control-plane
   key. The shared kernel principal contract guarantees 3-32 characters. The
   sandbox has an opaque `sbx-` ID from the shared identity helper, persisted in
@@ -128,7 +180,12 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   exclusion, read-only helper mounting, repeated helper activation and clean
   overlay resets, source and factory reset, root identity, and absence of a
   developer account.
+- The opt-in `TestRootlessRetainedTerminals` uses disposable native gVisor PTYs
+  to check two independent shells across detach/reattach/switch, detached
+  output, explicit close, and process exit. Enable `THE8020_TERMINAL_E2E=1`. It
+  does not replace browser or htop display qualification.
 
 # Child DOX Index
 
-No child DOX documents. This document owns the entire local scope.
+- [analysis/AGENTS.md](analysis/AGENTS.md): disposable workflow experiments,
+  measurements, and recommendations; production behavior stays owned here.

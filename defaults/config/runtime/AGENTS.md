@@ -54,9 +54,10 @@ Parent DOX: [kernel/defaults DOX](../../AGENTS.md).
   `runsc` and every release-provided `gvisor-bin/` companion remain adjacent
   under `node/kernel/bin/` so runtime startup never downloads missing helpers.
 - The service image runs non-root and includes only pinned Deno, generic runtime
-  modules/protocol, the pinned Kysely dependency used by the database SDK, and
-  explicitly required administrator debugging tools. `stage-service-runtime.sh`
-  excludes tests, DOX files, examples, application source, and unrelated files.
+  modules/protocol, the pinned Kysely dependency used by the database SDK, the
+  pinned Zod dependency used by the HTTP self-types, and explicitly required
+  administrator debugging tools. `stage-service-runtime.sh` excludes tests, DOX
+  files, examples, application source, and unrelated files.
 - Service image staging and both build-input hashes include the shared identity
   and logging modules. Changes to those modules invalidate existing images.
 - The image import map exposes the activated read-only package tree through the
@@ -79,6 +80,14 @@ Parent DOX: [kernel/defaults DOX](../../AGENTS.md).
 
 # Work Guidance
 
+- Treat the generic Deno runtime as part of the protected kernel foundation.
+  Add a capability only when existing programs, services, jobs, hooks, events,
+  and bridge contracts cannot provide it; keep application modules and
+  dependencies in their own packages.
+- Verify necessary changes through the shared Go/Deno contract and the
+  affected workload, including identity, cancellation, stream bounds, and
+  cleanup. Package-specific semantics must remain opaque to the runtime.
+
 - Deno 2.9 Unix connect requires read/write and unix:<absolute-path> network
   permission. The shared process argument owner supplies all three exact grants
   for kernel.sock and logs.sock, including under restricted egress profiles.
@@ -95,6 +104,9 @@ Parent DOX: [kernel/defaults DOX](../../AGENTS.md).
 - Deno formatting, linting, type checking, and tests cover supervisor/Worker
   lifecycle, service/job contracts, streaming, persistent binding/completion,
   exact registered Worker invocation, cancellation, permissions, and crashes.
+- `bundle-runtime.sh` checks the published HTTP self-types and complete Zod API
+  against the image's pinned dependency using only cached dependencies before
+  either runtime image can be published.
 - Portable verification launches the staged rootfs as UID/GID 1993 through the
   pinned rootless runsc and imports the generic HTTP, kernel, and context
   modules before publishing image and smoke records. An enclosing Docker build

@@ -135,6 +135,8 @@ export type KernelOperation =
   | "database.transaction.commit"
   | "database.transaction.rollback"
   | "worker.invoke"
+  | "execution.releaseWorker"
+  | "execution.retainPersistent"
   | "execution.completePersistent";
 
 export interface KernelCallRequest {

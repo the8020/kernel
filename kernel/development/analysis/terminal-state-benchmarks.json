@@ -1,0 +1,176 @@
+{
+  "runtime": {
+    "deno": "2.9.4",
+    "v8": "15.0.245.2-rusty",
+    "typescript": "6.0.3"
+  },
+  "engine": "@xterm/headless@5.5.0",
+  "baseline": {
+    "rss": 66179072,
+    "heapTotal": 10510336,
+    "heapUsed": 6362744,
+    "external": 2165927
+  },
+  "idleTerminals": 8,
+  "idleUsage": {
+    "rss": 67805184,
+    "heapTotal": 11558912,
+    "heapUsed": 7835200,
+    "external": 2483885
+  },
+  "idleHeapDeltaPerTerminal": 184057,
+  "idleExternalDeltaPerTerminal": 39744.75,
+  "note": "GC-assisted component measurements in one Deno process; RSS is process-wide, and later cases share allocator history. Prototype JSON snapshots are not the production wire format.",
+  "samples": [
+    {
+      "cols": 80,
+      "rows": 24,
+      "retainedLines": 5024,
+      "bytes": 1007616,
+      "parseMs": 108.46079200000003,
+      "parseMiBPerSecond": 8.859768422122528,
+      "parseCPU": {
+        "user": 48545,
+        "system": 11921
+      },
+      "retained": {
+        "rss": 84824064,
+        "heapTotal": 18112512,
+        "heapUsed": 9533120,
+        "external": 7393200
+      },
+      "snapshotSamples": [
+        {
+          "captureMs": 55.73033300000003,
+          "encodeMs": 37.94524999999999,
+          "restoreMs": 5.679709000000003,
+          "jsonBytes": 7376915,
+          "gzipBytes": 63348,
+          "cpu": {
+            "user": 98239,
+            "system": 18753
+          }
+        },
+        {
+          "captureMs": 58.07320800000002,
+          "encodeMs": 20.078250000000025,
+          "restoreMs": 4.423917000000017,
+          "jsonBytes": 7376915,
+          "gzipBytes": 63348,
+          "cpu": {
+            "user": 81994,
+            "system": 11601
+          }
+        },
+        {
+          "captureMs": 46.38387499999999,
+          "encodeMs": 18.519124999999917,
+          "restoreMs": 3.8573750000000473,
+          "jsonBytes": 7376915,
+          "gzipBytes": 63348,
+          "cpu": {
+            "user": 73743,
+            "system": 5702
+          }
+        },
+        {
+          "captureMs": 45.81341699999996,
+          "encodeMs": 17.836499999999887,
+          "restoreMs": 4.03941599999996,
+          "jsonBytes": 7376915,
+          "gzipBytes": 63348,
+          "cpu": {
+            "user": 77973,
+            "system": 811
+          }
+        },
+        {
+          "captureMs": 45.03987499999994,
+          "encodeMs": 17.145083,
+          "restoreMs": 4.05925000000002,
+          "jsonBytes": 7376915,
+          "gzipBytes": 63348,
+          "cpu": {
+            "user": 75885,
+            "system": 1455
+          }
+        }
+      ]
+    },
+    {
+      "cols": 160,
+      "rows": 48,
+      "retainedLines": 5048,
+      "bytes": 1826816,
+      "parseMs": 123.33420899999999,
+      "parseMiBPerSecond": 14.125744301810053,
+      "parseCPU": {
+        "user": 37886,
+        "system": 0
+      },
+      "retained": {
+        "rss": 260440064,
+        "heapTotal": 81027072,
+        "heapUsed": 23040192,
+        "external": 29732355
+      },
+      "snapshotSamples": [
+        {
+          "captureMs": 92.829208,
+          "encodeMs": 32.92975000000001,
+          "restoreMs": 5.9244169999999485,
+          "jsonBytes": 14484146,
+          "gzipBytes": 109506,
+          "cpu": {
+            "user": 141148,
+            "system": 7819
+          }
+        },
+        {
+          "captureMs": 93.10504200000003,
+          "encodeMs": 33.16662500000007,
+          "restoreMs": 6.157708000000184,
+          "jsonBytes": 14484146,
+          "gzipBytes": 109506,
+          "cpu": {
+            "user": 142093,
+            "system": 11546
+          }
+        },
+        {
+          "captureMs": 90.00687500000004,
+          "encodeMs": 32.93412499999977,
+          "restoreMs": 5.635457999999971,
+          "jsonBytes": 14484146,
+          "gzipBytes": 109506,
+          "cpu": {
+            "user": 137196,
+            "system": 5733
+          }
+        },
+        {
+          "captureMs": 88.22837500000014,
+          "encodeMs": 31.938957999999957,
+          "restoreMs": 5.799125000000004,
+          "jsonBytes": 14484146,
+          "gzipBytes": 109506,
+          "cpu": {
+            "user": 141091,
+            "system": 4034
+          }
+        },
+        {
+          "captureMs": 86.82920800000011,
+          "encodeMs": 31.42970800000012,
+          "restoreMs": 6.192125000000033,
+          "jsonBytes": 14484146,
+          "gzipBytes": 109506,
+          "cpu": {
+            "user": 132808,
+            "system": 6515
+          }
+        }
+      ]
+    }
+  ]
+}

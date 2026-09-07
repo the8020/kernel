@@ -9,6 +9,7 @@ import (
 
 	"the8020/kernel/auth"
 	"the8020/kernel/cbus/core"
+	"the8020/kernel/console"
 	"the8020/kernel/database"
 	"the8020/kernel/debugging"
 	"the8020/kernel/development"
@@ -57,6 +58,7 @@ type Services struct {
 	Packages          PackageService
 	PackageManagement PackageManagementService
 	Development       DevelopmentService
+	Consoles          *console.Manager
 	Database          DatabaseService
 	platformMu        sync.RWMutex
 	runtimeMu         sync.RWMutex
@@ -71,6 +73,7 @@ type PlatformServices struct {
 	Secrets     SecretService
 	Packages    PackageService
 	Development DevelopmentService
+	Consoles    *console.Manager
 }
 
 func (s *Services) PublishPlatform(platform PlatformServices) {
@@ -83,6 +86,7 @@ func (s *Services) PublishPlatform(platform PlatformServices) {
 	s.Secrets = platform.Secrets
 	s.Packages = platform.Packages
 	s.Development = platform.Development
+	s.Consoles = platform.Consoles
 	s.PackageManagement, _ = platform.Packages.(PackageManagementService)
 	s.platformMu.Unlock()
 }
@@ -95,7 +99,7 @@ func (s *Services) PlatformSnapshot() PlatformServices {
 	defer s.platformMu.RUnlock()
 	return PlatformServices{
 		Network: s.Network, Nodes: s.Nodes, Secrets: s.Secrets,
-		Packages: s.Packages, Development: s.Development,
+		Packages: s.Packages, Development: s.Development, Consoles: s.Consoles,
 	}
 }
 

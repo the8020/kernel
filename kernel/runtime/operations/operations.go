@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"the8020/kernel/auth"
 
 	databasecheck "the8020/kernel/cbus/commands/database/check"
 	databasesql "the8020/kernel/cbus/commands/database/sql"
@@ -65,15 +67,17 @@ import (
 )
 
 type Dispatcher struct {
-	services *services.Services
-	handlers map[string]commandcore.Handler
+	services       *services.Services
+	handlers       map[string]commandcore.Handler
+	terminalMu     sync.Mutex
+	terminalOwners map[string]*terminalOwner
 }
 
 func New(serviceSet *services.Services) (*Dispatcher, error) {
 	if serviceSet == nil || serviceSet.Signing == nil {
 		return nil, errors.New("runtime operation services and signer are required")
 	}
-	return &Dispatcher{services: serviceSet, handlers: map[string]commandcore.Handler{
+	return &Dispatcher{services: serviceSet, terminalOwners: make(map[string]*terminalOwner), handlers: map[string]commandcore.Handler{
 		"database.check": databasecheck.New(serviceSet), "database.sql": databasesql.New(serviceSet),
 		"database.table.compare": databasecompare.New(serviceSet), "database.table.definitions": databasedefinitions.New(serviceSet),
 		"database.table.inspect": databaseinspect.New(serviceSet), "database.table.list": databaselist.New(serviceSet),
@@ -107,6 +111,17 @@ func (d *Dispatcher) Execute(ctx context.Context, operation string, input map[st
 			err = commandcore.NewError(commandcore.CodeInvalidArguments, fmt.Sprintf("invalid %s operation input", operation))
 		}
 	}()
+	if strings.HasPrefix(operation, "terminal.") {
+		return d.terminal(ctx, strings.TrimPrefix(operation, "terminal."), input)
+	}
+	if operation == "service.route" {
+		// A descriptor can select only an existing service/principal binding.
+		// Signing does not allocate, revive, authenticate, or authorize execution.
+		return d.services.Signing.SignRoute(auth.RouteTarget{
+			NodeID: input["nodeId"].(string), SandboxID: input["sandboxId"].(string),
+			WorkerID: input["workerId"].(string), ExecutionID: input["persistentExecutionId"].(string),
+		})
+	}
 	if strings.HasPrefix(operation, "crypto.") {
 		return d.crypto(operation, input)
 	}

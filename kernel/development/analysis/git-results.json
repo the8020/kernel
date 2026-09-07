@@ -1,0 +1,254 @@
+{
+  "environment": {
+    "kernel": "6.10.14-linuxkit",
+    "arch": "aarch64",
+    "cpus": 6,
+    "git": "git version 2.39.5"
+  },
+  "correctness": [
+    {
+      "case": "disjoint_lines",
+      "merge_exit": 0,
+      "pass": true
+    },
+    {
+      "case": "same_line",
+      "merge_exit": 1,
+      "pass": true
+    },
+    {
+      "case": "identical_edit",
+      "merge_exit": 0,
+      "pass": true
+    },
+    {
+      "case": "add_add",
+      "merge_exit": 1,
+      "pass": true
+    },
+    {
+      "case": "delete_modify",
+      "merge_exit": 1,
+      "pass": true
+    },
+    {
+      "case": "rename_edit",
+      "merge_exit": 0,
+      "pass": true
+    },
+    {
+      "case": "binary_conflict",
+      "merge_exit": 1,
+      "pass": true
+    },
+    {
+      "case": "executable_and_content",
+      "merge_exit": 0,
+      "pass": true
+    },
+    {
+      "case": "symlink_conflict",
+      "merge_exit": 1,
+      "pass": true
+    },
+    {
+      "case": "whitespace_filename",
+      "merge_exit": 1,
+      "pass": true
+    },
+    {
+      "case": "first_touch_after_shared_advance",
+      "pass": true
+    },
+    {
+      "case": "mixed_first_touch_bases_with_live_untouched_paths",
+      "pass": true
+    },
+    {
+      "case": "mixed_bases_retain_shared_rename_topology",
+      "pass": true
+    },
+    {
+      "case": "resolve_then_shared_advances",
+      "pass": true
+    },
+    {
+      "case": "stale_publication_compare_and_swap",
+      "pass": true
+    },
+    {
+      "case": "portable_plain_file_delta_without_original_sandbox_or_git_history",
+      "pass": true
+    },
+    {
+      "case": "portable_git_base_bundle_retains_shared_rename",
+      "pass": true,
+      "fixture_bundle_bytes": 428
+    }
+  ],
+  "benchmark": [
+    {
+      "tracked_files": 100,
+      "dirty_files": 1,
+      "bytes_per_file": 171,
+      "samples": {
+        "index_candidate_ms": [
+          3.688083030283451,
+          3.239208017475903,
+          3.1725409207865596,
+          3.31987498793751,
+          3.225749940611422
+        ],
+        "merge_tree_only_ms": [
+          0.6321670953184366,
+          0.6026250775903463,
+          0.6083750631660223,
+          0.6076249992474914,
+          0.6330839823931456
+        ],
+        "mixed_base_candidate_ms": [
+          6.818375084549189,
+          6.735375034622848,
+          6.6281670005992055,
+          6.489207968115807,
+          6.439124932512641
+        ],
+        "two_worktree_prepare_ms": [
+          13.067333959043026,
+          12.323125032708049,
+          12.048042030073702,
+          11.869542067870498,
+          11.629167012870312
+        ],
+        "worktree_cleanup_ms": [
+          1.6420410247519612,
+          1.7097919480875134,
+          1.6666250303387642,
+          1.6616249922662973,
+          1.66937499307096
+        ]
+      },
+      "median": {
+        "index_candidate_ms": 3.239208017475903,
+        "merge_tree_only_ms": 0.6083750631660223,
+        "mixed_base_candidate_ms": 6.6281670005992055,
+        "two_worktree_prepare_ms": 12.048042030073702,
+        "worktree_cleanup_ms": 1.6666250303387642
+      }
+    },
+    {
+      "tracked_files": 1000,
+      "dirty_files": 1,
+      "bytes_per_file": 171,
+      "samples": {
+        "index_candidate_ms": [
+          4.502458032220602,
+          7.7154579339548945,
+          4.237125045619905,
+          5.80254103988409,
+          4.617332946509123
+        ],
+        "merge_tree_only_ms": [
+          0.6834589876234531,
+          0.7821659091860056,
+          0.6572920829057693,
+          0.8652500109747052,
+          0.6738749798387289
+        ],
+        "mixed_base_candidate_ms": [
+          9.268124937079847,
+          11.47799997124821,
+          24.437582935206592,
+          9.923291043378413,
+          10.024624993093312
+        ],
+        "two_worktree_prepare_ms": [
+          56.845624931156635,
+          69.1277909791097,
+          80.02979191951454,
+          69.81862499378622,
+          53.8391669979319
+        ],
+        "worktree_cleanup_ms": [
+          9.95666696690023,
+          9.654541965574026,
+          12.035041931085289,
+          11.20570907369256,
+          9.24487505108118
+        ]
+      },
+      "median": {
+        "index_candidate_ms": 4.617332946509123,
+        "merge_tree_only_ms": 0.6834589876234531,
+        "mixed_base_candidate_ms": 10.024624993093312,
+        "two_worktree_prepare_ms": 69.1277909791097,
+        "worktree_cleanup_ms": 9.95666696690023
+      }
+    },
+    {
+      "tracked_files": 10000,
+      "dirty_files": 1,
+      "bytes_per_file": 171,
+      "samples": {
+        "index_candidate_ms": [
+          14.15958406869322,
+          12.257083086296916,
+          11.55804202426225,
+          11.840791092254221,
+          12.27858301717788
+        ],
+        "merge_tree_only_ms": [
+          0.818041036836803,
+          0.7427920354530215,
+          0.6882910383865237,
+          0.6952080875635147,
+          0.6939999293535948
+        ],
+        "mixed_base_candidate_ms": [
+          33.006542013026774,
+          23.080750019289553,
+          23.373167030513287,
+          22.680790978483856,
+          22.344040917232633
+        ],
+        "two_worktree_prepare_ms": [
+          465.9334591124207,
+          381.01875002030283,
+          394.92637501098216,
+          371.93975097034127,
+          391.91337500233203
+        ],
+        "worktree_cleanup_ms": [
+          82.13037496898323,
+          78.56075000017881,
+          77.55208294838667,
+          79.60904203355312,
+          78.69520806707442
+        ]
+      },
+      "median": {
+        "index_candidate_ms": 12.257083086296916,
+        "merge_tree_only_ms": 0.6952080875635147,
+        "mixed_base_candidate_ms": 23.080750019289553,
+        "two_worktree_prepare_ms": 391.91337500233203,
+        "worktree_cleanup_ms": 78.69520806707442
+      }
+    }
+  ],
+  "binary": {
+    "files": 10,
+    "bytes_per_file": 2097152,
+    "new_distinct_blobs_each_trial": true,
+    "candidate_ms": [
+      376.2577921152115,
+      347.30816702358425,
+      372.2119169542566
+    ],
+    "median_ms": 372.2119169542566
+  },
+  "git_subprocesses": {
+    "max_rss_kib": 77080,
+    "total_user_seconds": 2.218784,
+    "total_system_seconds": 2.630684
+  }
+}

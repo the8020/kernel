@@ -328,6 +328,11 @@ func registerTestActivationCommands(t *testing.T, registry *core.Registry, manag
 	}
 	if err := registry.Register(commands[1], func(ctx context.Context, request core.Request) (core.Result, error) {
 		result, err := manager.Activate(ctx, request.Arguments["user_id"].(string), decode(request))
+		// Match the production handler: a structured activation failure is a
+		// command result, while an error without a result is a command failure.
+		if result.Status != "" {
+			return core.Result{"activation": result}, nil
+		}
 		return core.Result{"activation": result}, err
 	}); err != nil {
 		t.Fatal(err)

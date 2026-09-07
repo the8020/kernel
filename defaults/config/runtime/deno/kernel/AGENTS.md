@@ -25,10 +25,39 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   creation owners; they perform no kernel call.
 - Public API is `kernel.crypto`, `kernel.admin.execute()`, `kernel.execution`,
   `kernel.secrets`, `kernel.packages`, `kernel.services`, `kernel.nodes`,
-  `kernel.development`, `kernel.settings`, `kernel.events`, `kernel.programs`,
-  `kernel.database.info()`, unified `kernel.database.execute()`,
-  `kernel.database.transaction`, `kernel.database.tables`,
-  `kernel.worker.invoke()`, and `kernel.execution.completePersistent()`.
+  `kernel.development`, `kernel.terminals`, `kernel.settings`, `kernel.events`,
+  `kernel.programs`, `kernel.database.info()`, unified
+  `kernel.database.execute()`, `kernel.database.transaction`,
+  `kernel.database.tables`, `kernel.worker.invoke()`, and
+  `kernel.execution.runPersistent()`/`completePersistent()`.
+- `terminals.ts` exposes native PTY
+  create/list/inspect/attach/read/write/respond/ resize/detach/close through
+  typed private operations. Creation atomically attaches the canonical output
+  processor. Binary data uses base64 only on the JSON bridge; the package API
+  uses Uint8Array. Read acknowledges the last applied output sequence; write
+  awaits native consumption of one bounded frame before the next. Uncertain
+  writes must not be replayed. Attachments belong to the exact calling Worker,
+  while PTYs have independent broker lifetime.
+- Use the pinned runtime's native Uint8Array Base64 conversion on terminal
+  frames; do not allocate a JavaScript string iterator and temporary number
+  collection for each output byte.
+- Canonical `terminals.respond` acknowledges bounded queue admission, so the
+  interpreter can keep consuming output while the process is not yet reading
+  stdin. Ordinary input acknowledgement still waits for native consumption.
+- `nextView` waits for an existing terminal's native display transport;
+  `writeView` sends one bounded frame and `finishView` ends that stream. Only
+  the exact canonical processor Worker may use them. Packages own rendering,
+  recovery allocation, slow-view limits, and asynchronous send queues. Control
+  attachment raises `TerminalControlBusyError` when occupied; `take-control`
+  explicitly revokes the prior browser or SSH lease.
+- `terminals.detach` remains callable during cancelled-request cleanup, as does
+  database scope cleanup. Input, resize, and process destruction retain normal
+  cancellation. Worker death releases all of that Worker's attachment roles.
+- `terminals.close(terminalId, signal?)` closes locally;
+  `terminals.close({terminalId, nodeId}, signal?)` addresses the exact physical
+  node. Close is idempotent for an absent terminal on a reachable owner and
+  requires no display Worker. An unavailable node fails without alternate-node
+  routing or retry.
 - `kernel.logs.query(query, signal?)` returns one bounded page using the same
   snake-case filters and opaque positions/cursors as `kernel.logs`. Optional
   node_id selects the exact owner; omission selects this node. Log records
@@ -74,11 +103,21 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   opens a database connection or receives credentials inside the sandbox.
 - The kernel injects the non-secret SQLite/PostgreSQL backend into Worker
   metadata before module import so database query compilation needs no bootstrap
-  callback. Every kernel operation requires an active service request or job
-  execution; evaluator Workers have database access disabled.
+  callback. Every kernel operation requires an active service request, retained
+  handler, or job execution; evaluator Workers have database access disabled.
 - `worker.invoke` requires exact node, sandbox, and Worker IDs plus a bounded
   function name and JSON input. It returns JSON or a structured generic error;
   it never knows which application registered the function.
+- `services.route(target)` reconstructs a signed descriptor from canonical
+  node/sandbox/Worker/persistent-execution references. It creates no binding;
+  later admission still verifies live service membership and the principal.
+- `execution.runPersistent(handler)` claims one handler for a zero-keepalive
+  service binding before invoking application work. It inherits the validated
+  identity, uses Worker lifetime instead of the HTTP signal, and owns a separate
+  `ctx-` database scope whose parent is the establishing request. Finishing the
+  handler closes that scope and completes the binding. Lost establishment
+  responses cannot discard a claimed handler; abrupt Worker release cleans its
+  remaining scopes and native attachments.
 - `completePersistent` identifies the active logical persistent execution from
   trusted context and carries no application reason or semantics. The existing
   Worker MessagePort resolves it in the owning supervisor; it sends no Go RPC.
@@ -117,6 +156,11 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 
 # Work Guidance
 
+- Add SDK surface only for a necessary shared kernel capability. Keep
+  application validation and orchestration in their owning packages; evolve the
+  typed bridge and its owner together, with bounds, cancellation, identity
+  isolation, and affected service/job coverage.
+
 - Keep the public module independent of direct Deno filesystem/network
   permissions and keep application data opaque. Application Workers use their
   private MessagePort and never receive the supervisor token or Unix socket.
@@ -125,8 +169,9 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 
 - `kernel_test.ts` covers crypto/admin/execution-secret/private
   operation/database calls, exact Worker invocation, persistent completion,
-  structured errors, interleaved and persistent request isolation, cancellation,
-  unavailable calls, bounds, and bridge cleanup.
+  retained-handler lifetime and separate scope cleanup, structured errors,
+  interleaved and persistent request isolation, cancellation, unavailable calls,
+  bounds, and bridge cleanup.
 
 # Child DOX Index
 

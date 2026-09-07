@@ -249,6 +249,12 @@ func receiveConsoleFile(connection *net.UnixConn) (*os.File, error) {
 		for _, extra := range files[1:] {
 			_ = unix.Close(extra)
 		}
+		// Donated descriptors are blocking. Register the terminal with Go's
+		// poller so Close interrupts an idle Read and releases the PTY master.
+		if err := unix.SetNonblock(files[0], true); err != nil {
+			_ = unix.Close(files[0])
+			return nil, fmt.Errorf("make runsc console pollable: %w", err)
+		}
 		return os.NewFile(uintptr(files[0]), "sandbox-console"), nil
 	}
 	return nil, errors.New("runsc did not provide a console descriptor")

@@ -47,8 +47,9 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 
 # Local Contracts
 
-- Every Go package has one responsibility and the smallest public API needed
-  now.
+- Every Go package has one responsibility and a small public API for a
+  necessary shared foundation. New concepts must cooperate with existing
+  contracts and serve more than their first application.
 - Kernel hot and periodic paths must be proportional to current work, never to
   total retained history or filesystem size. Use direct durable state, explicit
   events, bounded diagnostics, and narrow locks; reject polling scans,
@@ -212,11 +213,20 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 - Development sandboxes use the same selected rootful or rootless runsc mode as
   workload isolation but a distinct editable image and lifecycle. Their writable
   package view never grants direct publication into shared package repositories;
-  checkpointed private deltas, native durable system/home storage, and Git
-  activation remain separately owned. Sandbox lifecycle scans package content
-  only at explicit checkpoint boundaries and never polls it.
+  the current implementation separately owns checkpointed private deltas,
+  native durable system/home storage, and Git activation. Follow development DOX
+  for the requested process-preserving publication and durable workspace
+  redesign. Sandbox lifecycle never polls package content.
 
 # Work Guidance
+
+- The kernel is holy: change Go foundations only when absolutely necessary and
+  with great care. Establish why the capability requires node authority or
+  generic execution support; keep application policy and unrelated
+  functionality in standalone Deno packages.
+- Extend the smallest shared owner with an explicit reusable contract, then
+  verify its regression and the affected package path. Do not add a caller
+  workaround or parallel implementation to avoid fixing the owning foundation.
 
 - Prefer standard library behavior, deletion, explicit composition, compile-time
   registration, and shared parsing/validation.
@@ -247,8 +257,9 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   and credential transport.
 - [cbus/AGENTS.md](cbus/AGENTS.md): typed administrative command bus and
   generation hierarchy.
-- [console/AGENTS.md](console/AGENTS.md): transport-neutral sandbox PTY leases
-  and the authenticated local WebSocket relay.
+- [console/AGENTS.md](console/AGENTS.md): transport-neutral sandbox process
+  leases, retained physical PTYs and attachment ownership, and the authenticated
+  local WebSocket relay.
 - [database/AGENTS.md](database/AGENTS.md): connection pool, catalog, schema
   synchronization, runtime SQL, values, and transaction scopes.
 - [debugging/AGENTS.md](debugging/AGENTS.md): inspector-target mapping and
@@ -257,8 +268,8 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   schema-deployment handshake shared by package synchronization and development
   activation.
 - [development/AGENTS.md](development/AGENTS.md): the per-user development
-  sandbox, private package overlay checkpoints, package Git activation, and
-  reset behavior.
+  sandbox, private workspace durability, package Git activation, lifecycle, and
+  workflow analysis.
 - [events/AGENTS.md](events/AGENTS.md): asynchronous local package events,
   cached listeners, bounded dispatch, and minute-aligned notification.
 - [execution/AGENTS.md](execution/AGENTS.md): generic sandboxes, warm capacity,

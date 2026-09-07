@@ -118,24 +118,28 @@ type Status struct {
 }
 
 type Manager struct {
-	mu       sync.RWMutex
-	database database.Store
-	secret   string
-	localID  string
-	nodes    map[string]Node
-	server   *http.Server
-	listener net.Listener
-	http     *http.Client
-	capacity CapacityProvider
-	workers  WorkerInvoker
-	logs     LogReader
+	mu        sync.RWMutex
+	database  database.Store
+	secret    string
+	localID   string
+	nodes     map[string]Node
+	server    *http.Server
+	listener  net.Listener
+	http      *http.Client
+	capacity  CapacityProvider
+	workers   WorkerInvoker
+	logs      LogReader
+	terminals TerminalCloser
 }
 
 func New(store database.Store, localID, sharedSecret string) (*Manager, error) {
 	if store == nil || !identity.Is(localID, "nod") || sharedSecret == "" {
 		return nil, errors.New("database, valid local node ID, and shared forwarding secret are required")
 	}
-	manager := &Manager{database: store, secret: sharedSecret, localID: localID, nodes: map[string]Node{}, http: &http.Client{Transport: http.DefaultTransport, Timeout: 2 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	// Forward the client's negotiation without adding gzip or decoding responses.
+	transport.DisableCompression = true
+	manager := &Manager{database: store, secret: sharedSecret, localID: localID, nodes: map[string]Node{}, http: &http.Client{Transport: transport, Timeout: 2 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	if err := manager.Refresh(context.Background()); err != nil {
 		return nil, err
 	}
@@ -499,6 +503,10 @@ func (m *Manager) availableNodes(ctx context.Context, visited map[string]bool) [
 
 func (m *Manager) recipientHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodPost && request.URL.Path == terminalClosePath {
+			m.serveTerminalClose(writer, request)
+			return
+		}
 		if request.Method == http.MethodPost && request.URL.Path == logQueryPath {
 			m.serveLogs(writer, request)
 			return
@@ -602,6 +610,7 @@ func (m *Manager) fetchCapacity(ctx context.Context, node Node) (Capacity, error
 }
 
 func (m *Manager) Close() error {
+	defer m.http.CloseIdleConnections()
 	m.mu.Lock()
 	server, listener := m.server, m.listener
 	m.server, m.listener = nil, nil

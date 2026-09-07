@@ -78,16 +78,23 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 - HTTP and WebSocket dispatch use the same invocation validator as jobs and
   exact control before claiming their context. Both context and optional parent
   must be canonical `ctx-*` IDs; malformed metadata cannot enter the Worker.
+- The SDK may retain one application handler in an existing zero-keepalive
+  service binding. The supervisor claims it before work starts and allocates a
+  separate canonical database context. Request cancellation/completion releases
+  only the transport scope; handler completion or Worker destruction owns the
+  retained scope. This is the same service workload and bridge, not another
+  execution backend.
 - Execution context and state reset between compatible reused invocations.
   Console capture sends bounded records with capture-time context and username
   through a byte/slot-credited MessagePort. RuntimeWorker stamps trusted fixed
   identities, forwards to the supervisor log sink and keeps no log array. Policy
   messages coalesce with one outstanding acknowledgment. Secure-input maps are
   execution-local and cleared in `finally`, including failures. Finalization
-  closes the request/job database scope; Worker shutdown also requests prefix
-  cleanup as a leak-safe fallback. A Worker with database access set to `none`
-  never opens or closes a database scope, keeping schema evaluation independent
-  of the database being initialized.
+  closes the request/job database scope. Supervisor-owned Worker shutdown
+  releases native leases and any leaked database scopes through the generic
+  Worker resource callback. A Worker with SQL access set to `none` never opens
+  an execution database scope; resource cleanup needs no SQL or initialized
+  application schema. Workers cannot invoke the supervisor-only release call.
 - Jobs and service requests share this execution-scoped database path; every job
   invocation has a distinct `ctx-` ID and closes only its own scope.
 - Structured command errors raised by the kernel SDK retain their code, message,

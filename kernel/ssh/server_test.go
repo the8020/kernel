@@ -76,6 +76,10 @@ type openedConsole struct {
 
 type fakeConsoles struct{ opened chan openedConsole }
 
+func (c *fakeConsoles) OpenTerminalView(context.Context, string, string, backend.ConsoleSize) (backend.Console, error) {
+	return nil, errors.New("terminal is unavailable")
+}
+
 func (c *fakeConsoles) ResolveTarget(id string) (string, error) {
 	switch id {
 	case "sbx-aaaaaaaaaa":

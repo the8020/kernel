@@ -1279,10 +1279,29 @@ func TestAuthenticatedBoundaryRejectsOrRedirectsBeforeDispatchAndAttachesTrusted
 		t.Fatal(err)
 	}
 
-	redirected := httptest.NewRecorder()
-	manager.ServeHTTP(redirected, httptest.NewRequest(http.MethodGet, "/the8020/demo/protected/value?return=https://attacker.test", nil))
-	if redirected.Code != 307 || redirected.Header().Get("Location") != "https://identity.example.test/login?return=fixed" {
-		t.Fatalf("redirect response=%d location=%q", redirected.Code, redirected.Header().Get("Location"))
+	for _, transport := range []string{"get", "post", "websocket"} {
+		for _, cookie := range []string{"", "invalid-jwt"} {
+			t.Run(transport+"/"+cookie, func(t *testing.T) {
+				const path = "/the8020/demo/protected/value?return=https://attacker.test"
+				request := httptest.NewRequest(http.MethodGet, path, nil)
+				if transport == "post" {
+					request.Method = http.MethodPost
+				} else if transport == "websocket" {
+					request = websocketRequest(path, "")
+				}
+				if cookie != "" {
+					request.AddCookie(&http.Cookie{Name: platformauth.TokenCookie, Value: cookie})
+				}
+				redirected := httptest.NewRecorder()
+				manager.ServeHTTP(redirected, request)
+				if redirected.Code != 307 || redirected.Header().Get("Location") != "https://identity.example.test/login?return=fixed" || redirected.Header().Get("Cache-Control") != "no-store" {
+					t.Fatalf("redirect response=%d headers=%v", redirected.Code, redirected.Header())
+				}
+				if len(pools.websockets) != 0 {
+					t.Fatal("redirected upgrade reached a Worker")
+				}
+			})
+		}
 	}
 	select {
 	case request := <-pools.dispatched:

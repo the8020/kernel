@@ -95,3 +95,25 @@ func TestRuntimeIndexReleaseIncludesResolvedConfigurationAndHookCode(t *testing.
 		t.Fatal("caller mutated the accepted index")
 	}
 }
+
+func TestRuntimeIndexSessionKeepAliveAllowsExplicitCompletionLifetime(t *testing.T) {
+	spec := indexedTestSpecification("acme/api/one")
+	spec.Effective.Lifecycle.ServiceType = "session"
+	for _, duration := range []time.Duration{0, time.Millisecond, time.Minute} {
+		spec.Effective.Lifecycle.SessionKeepAlive = duration
+		if err := validateSpecification(spec); err != nil {
+			t.Fatalf("keepalive %s: %v", duration, err)
+		}
+	}
+	for _, duration := range []time.Duration{-time.Second, time.Nanosecond} {
+		spec.Effective.Lifecycle.SessionKeepAlive = duration
+		if err := validateSpecification(spec); err == nil {
+			t.Fatalf("accepted invalid keepalive %s", duration)
+		}
+	}
+	spec.Effective.Lifecycle.SessionKeepAlive = 0
+	spec.Effective.Scaling.WorkerKeepAlive = 0
+	if err := validateSpecification(spec); err == nil {
+		t.Fatal("Worker idle cleanup still requires a positive keepalive")
+	}
+}

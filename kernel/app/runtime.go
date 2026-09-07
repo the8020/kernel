@@ -587,6 +587,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		return runtimeServices, closeRuntime
 	}
 	callbackServer.SetRuntimeOperations(operationDispatcher)
+	callbackServer.SetWorkerResourceReleaser(operationDispatcher.ReleaseWorker)
 	indexFollower, err := workspacepackages.NewIndexRevisionFollower(ctx, systemDatabase)
 	if err != nil {
 		runtimeServices.Failure = "initialize index convergence: " + err.Error()
@@ -609,6 +610,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	}
 	workerManager.SetNodeRouter(nodeManager)
 	nodeManager.SetWorkerInvoker(workerManager)
+	nodeManager.SetTerminalCloser(operationDispatcher)
 	nodeManager.SetLogReader(serviceSet.Logging)
 	cleanup.nodes = nodeManager
 	developmentRunsc := developmentRunscConfig(ctx, root, paths, settingManager)
@@ -719,7 +721,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	}
 	serviceSet.PublishPlatform(services.PlatformServices{
 		Network: publicNetwork, Nodes: nodeManager, Secrets: secretManager,
-		Packages: packageStore, Development: developmentManager,
+		Packages: packageStore, Development: developmentManager, Consoles: consoleManager,
 	})
 	cleanup.webservices, runtimeServices.Services = webServiceManager, webServiceManager
 	indexer.runtime = webServiceManager

@@ -35,6 +35,15 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
 - Service request and response bodies remain streams and are never converted to
   JSON or fully buffered; service redirects are returned unchanged and are never
   followed on the private supervisor hop.
+- The default HTTP transport disables automatic gzip negotiation/decompression.
+  Forward the caller's `Accept-Encoding` and the response's encoded bytes,
+  `Content-Encoding`, length, and validators unchanged. Deno owns compression;
+  Go never adds an encoding preference on the caller's behalf. Injected clients
+  must preserve this same transport contract.
+- HEAD returns no representation length from the private POST response: Deno's
+  listener measures that empty transport body, not the representation selected
+  for GET. The client removes this envelope length before public forwarding and
+  preserves the service's validators and cache headers.
 - Service WebSocket proxying preserves the original relative URL, subprotocols,
   and trusted metadata while authenticating the private supervisor upgrade with
   the sandbox token. The caller may modify the upstream response before public
@@ -71,6 +80,10 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
   Worker invocation, job/service routes, streaming bodies, unchanged redirects,
   WebSocket URL/authentication preservation, bounds, typed remote rejection
   errors, and cancellation.
+- Encoding tests cover absent/explicit client preferences and preservation of
+  compressed response bytes and headers on the private supervisor hop. HEAD
+  regression coverage includes a public HTTP listener to ensure the empty
+  private POST cannot advertise a zero-length asset to public caches.
 
 # Child DOX Index
 

@@ -8,7 +8,7 @@ export function assertEquals(actual: unknown, expected: unknown): void {
 
 export async function assertRejects(
   operation: () => Promise<unknown>,
-  constructor: typeof Error,
+  constructor: abstract new (...args: never[]) => Error,
   includes: string,
 ): Promise<void> {
   try {

@@ -143,7 +143,7 @@ const heartbeatInterval = Number(
 if (!Number.isSafeInteger(heartbeatInterval) || heartbeatInterval < 100) {
   throw new Error("HEARTBEAT_INTERVAL_MS must be an integer of at least 100");
 }
-const server = Deno.serve({ hostname: host, port }, supervisor.handler);
+const server = supervisor.serve({ hostname: host, port });
 
 let heartbeat: ReturnType<typeof setInterval> | undefined;
 let stopping: Promise<void> | undefined;

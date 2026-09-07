@@ -93,6 +93,8 @@ func (o Origin) ValidForWorkload(workload model.WorkloadType) bool {
 type Caller struct {
 	ContextID string
 	JobRunID  string
+	SandboxID string
+	WorkerID  string
 	Workload  model.WorkloadType
 	User      User
 }
@@ -100,6 +102,7 @@ type Caller struct {
 func (c Caller) Valid() bool {
 	return identity.Is(c.ContextID, "ctx") &&
 		(c.JobRunID == "" || identity.Is(c.JobRunID, "job")) &&
+		(c.SandboxID == "" && c.WorkerID == "" || identity.Is(c.SandboxID, "sbx") && identity.Is(c.WorkerID, "wrk")) &&
 		c.Workload.Valid() && c.User.Valid()
 }
 

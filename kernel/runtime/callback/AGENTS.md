@@ -58,9 +58,14 @@ Parent DOX: [kernel/kernel/runtime DOX](../AGENTS.md).
   exact scope; Worker termination closes its scope prefix, rolling back leaked
   transactions. These checks are in memory and never validate Worker liveness.
   Evaluator Workers have database calls disabled.
-- Database metadata access and whole-Worker scope cleanup allow an absent
-  context. Any provided Worker, context, or job-run ID must be canonical; other
-  database operations require an execution context.
+- Database metadata access allows an absent context. Any provided Worker,
+  context, or job-run ID must be canonical; other database operations require
+  an execution context.
+- Supervisor-only `/v1/runtime/execution/release` accepts an exact canonical
+  Worker ID under the authenticated sandbox envelope, releases native resource
+  leases, and closes any leaked Worker database scopes. It requires no active
+  invocation or SQL. Typed operation ingress stamps the sandbox/Worker pair in
+  the trusted caller context so packages cannot select another attachment owner.
 - Worker invocation applies a five-second context and forwards one exact
   node/sandbox/Worker, the caller's context and validated effective user, and an optional
   persistent-execution target while treating the registered function and JSON as

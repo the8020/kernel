@@ -22,6 +22,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Runtime composition registers the local log reader through `SetLogReader`.
   `QueryLogs` selects one exact node and uses the same authenticated recipient
   listener. The target delegates to logd and never reads files in the kernel.
+- Runtime composition registers physical terminal cleanup through
+  `SetTerminalCloser`. Exact-node close uses that same private recipient
+  transport and does not require a surviving display Worker.
 
 # Local Contracts
 
@@ -33,6 +36,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   service routing. The deployment signing key is separate from peer credentials.
 - Recipient listeners accept only the shared authenticated kernel transport and
   proxy both HTTP and WebSocket traffic without interpreting service protocols.
+- Node forwarding preserves client encoding preferences and encoded response
+  bytes/headers. Its owned HTTP transport disables automatic gzip negotiation
+  and decompression, so forwarding adds no compressor or decoder between the
+  Deno HTTP server and the client.
 - Exact Worker forwarding validates the target node and bounded envelope,
   including its canonical effective user, parent context, and optional
   persistent-execution target, dispatches directly to the registered local
@@ -67,6 +74,11 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   2.5 seconds and response writes to five seconds. These deadlines do not apply
   to forwarded application streams. A stalled request cannot retain a reader or
   response indefinitely.
+- Terminal close validates canonical node/terminal IDs and the exact responding
+  owner. Requests and acknowledgements are at most one KiB; body reads have a
+  two-second deadline and the operation/response a ten-second deadline. It
+  neither follows redirects nor retries another node. Application ownership,
+  authorization, and metadata remain in Deno.
 
 # Work Guidance
 
@@ -78,6 +90,11 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Package tests cover deterministic database persistence, validation,
   authentication, capacity-aware service forwarding, exact local/cross-node
   Worker invocation and bounds, status collection, and allocation partitioning.
+- Forwarding tests cover absent/explicit encoding preferences and unchanged
+  compressed response bytes, lengths, and negotiation headers.
+- Terminal tests cover authenticated exact-node close without a Worker,
+  cancellation, malformed or oversized control, unavailable nodes, and bounded
+  acknowledgements matching the requested identity.
 
 # Child DOX Index
 
