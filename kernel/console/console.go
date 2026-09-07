@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"golang.org/x/net/websocket"
 
@@ -38,21 +39,24 @@ type Provider interface {
 }
 
 type Config struct {
-	Authentication Authentication
-	Development    Provider
+	Authentication     Authentication
+	Development        Provider
+	AcquireDevelopment func(string) (func(), error)
 }
 
 type Manager struct {
-	mu             sync.Mutex
-	authentication Authentication
-	development    Provider
-	runtime        Provider
-	sessions       map[*session]struct{}
-	terminals      map[string]*Terminal
-	opening        int
-	lifetime       context.Context
-	cancel         context.CancelFunc
-	closed         bool
+	mu                 sync.Mutex
+	authentication     Authentication
+	development        Provider
+	runtime            Provider
+	sessions           map[*session]struct{}
+	terminals          map[string]*Terminal
+	opening            int
+	lifetime           context.Context
+	cancel             context.CancelFunc
+	closed             bool
+	acquireDevelopment func(string) (func(), error)
+	idleTimeout        atomic.Int64
 }
 
 type session struct {
@@ -63,6 +67,7 @@ type session struct {
 	console  backend.Console
 	cancel   context.CancelFunc
 	once     sync.Once
+	release  func()
 }
 
 type openMessage struct {
@@ -109,12 +114,13 @@ func New(config Config) (*Manager, error) {
 	}
 	lifetime, cancel := context.WithCancel(context.Background())
 	return &Manager{
-		authentication: config.Authentication,
-		development:    config.Development,
-		sessions:       make(map[*session]struct{}),
-		terminals:      make(map[string]*Terminal),
-		lifetime:       lifetime,
-		cancel:         cancel,
+		authentication:     config.Authentication,
+		development:        config.Development,
+		sessions:           make(map[*session]struct{}),
+		terminals:          make(map[string]*Terminal),
+		lifetime:           lifetime,
+		cancel:             cancel,
+		acquireDevelopment: config.AcquireDevelopment,
 	}, nil
 }
 
@@ -328,6 +334,16 @@ func (m *Manager) openConsole(ctx context.Context, kind, sandboxID string, optio
 	if err := backend.ValidateConsoleOptions(options); err != nil {
 		return nil, err
 	}
+	release, err := m.acquireSandbox(kind, sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	retained := false
+	defer func() {
+		if !retained {
+			release()
+		}
+	}()
 	openCtx, cancel := context.WithCancel(ctx)
 	stopCancel := context.AfterFunc(m.lifetime, cancel)
 	value, err := provider.OpenConsole(openCtx, sandboxID, options)
@@ -337,12 +353,13 @@ func (m *Manager) openConsole(ctx context.Context, kind, sandboxID string, optio
 		return nil, err
 	}
 	active := &session{manager: m, kind: kind, provider: provider, socket: socket, console: value,
-		cancel: func() { stopCancel(); cancel() }}
+		cancel: func() { stopCancel(); cancel() }, release: release}
 	if err := m.register(active); err != nil {
 		_ = value.Close()
 		active.cancel()
 		return nil, err
 	}
+	retained = true
 	return active, nil
 }
 
@@ -471,6 +488,9 @@ func (s *session) close() error {
 		}
 		if s.manager != nil {
 			s.manager.unregister(s)
+		}
+		if s.release != nil {
+			s.release()
 		}
 	})
 	return result

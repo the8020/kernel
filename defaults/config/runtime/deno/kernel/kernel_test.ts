@@ -11,6 +11,7 @@ import {
   kernelDatabaseBackend,
   parseCommandArguments,
   requiredCommandArgument,
+  TerminalClosedError,
   TerminalControlBusyError,
 } from "./mod.ts";
 
@@ -281,6 +282,38 @@ Deno.test("terminal control contention is typed and native display waits cancel 
     const cancelled = await calls.next();
     assertEquals(cancelled.type, "kernel_cancel");
     assertEquals(cancelled.correlationId, next.correlationId);
+  } finally {
+    bridge.close();
+    channel.port1.close();
+    channel.port2.close();
+  }
+});
+
+Deno.test("terminal destruction is typed through the Worker bridge", async () => {
+  const channel = new MessageChannel();
+  const bridge = createKernelBridge(channel.port1, workerMetadata);
+  const calls = createCallQueue(channel.port2);
+  try {
+    for (
+      const operation of [
+        () => kernel.terminals.read("att-aaaaaaaaaa", 0),
+        () => kernel.terminals.nextView("att-aaaaaaaaaa"),
+        () => kernel.terminals.respond("att-aaaaaaaaaa", new Uint8Array([65])),
+      ]
+    ) {
+      const pending = bridge.withRequest<Promise<unknown>>(metadata, operation);
+      const call = await calls.next();
+      bridge.handle({
+        type: "kernel_result",
+        correlationId: call.correlationId as string,
+        payload: { success: true, result: { closed: true } },
+      });
+      await assertRejects(
+        () => pending,
+        TerminalClosedError,
+        "Terminal closed",
+      );
+    }
   } finally {
     bridge.close();
     channel.port1.close();

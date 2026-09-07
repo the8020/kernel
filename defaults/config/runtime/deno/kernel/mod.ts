@@ -1,6 +1,6 @@
 export { isId, newId } from "../identity/mod.ts";
 import { terminalAPI } from "./terminals.ts";
-export { TerminalControlBusyError } from "./terminals.ts";
+export { TerminalClosedError, TerminalControlBusyError } from "./terminals.ts";
 export type {
   TerminalAttachment,
   TerminalBatch,

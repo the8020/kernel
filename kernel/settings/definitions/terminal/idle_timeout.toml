@@ -1,0 +1,9 @@
+key = "terminal.idle_timeout"
+type = "duration"
+storage = "node"
+default = "36h"
+minimum = 1000000
+environment = "THE8020_TERMINAL_IDLE_TIMEOUT"
+runtime_mutable = true
+restart_required = false
+description = "Close retained terminals after this duration without SSH or browser attachments. Output and the display processor do not reset the deadline."

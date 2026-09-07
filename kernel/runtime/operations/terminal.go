@@ -108,7 +108,15 @@ func (d *Dispatcher) retainTerminalAttachment(owner *terminalOwner, terminalID s
 	return nil
 }
 
-func (d *Dispatcher) terminal(ctx context.Context, action string, input map[string]any) (any, error) {
+func (d *Dispatcher) terminal(ctx context.Context, action string, input map[string]any) (result any, err error) {
+	var attachment *console.TerminalAttachment
+	defer func() {
+		// Destruction differs from an exited process or a lost Worker lease.
+		if err != nil && ((attachment == nil && errors.Is(err, console.ErrTerminalGone)) ||
+			(attachment != nil && attachment.TerminalClosed())) {
+			result, err = map[string]any{"closed": true}, nil
+		}
+	}()
 	caller, ok := execution.CallerFromContext(ctx)
 	if !ok || caller.WorkerID == "" || caller.SandboxID == "" {
 		return nil, errors.New("terminal operation requires a trusted Worker")
@@ -254,6 +262,7 @@ func (d *Dispatcher) terminal(ctx context.Context, action string, input map[stri
 			}
 			return nil, console.ErrTerminalDetached
 		}
+		attachment = a
 		switch action {
 		case "view-next":
 			return a.NextView(ctx)

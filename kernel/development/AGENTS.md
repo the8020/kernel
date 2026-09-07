@@ -39,7 +39,7 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Activation must preserve running sandbox processes. Named terminal sessions
   must survive navigation, refresh, switching views, and logout, with multiple
   sessions selectable in the development-test program. Explicit session close
-  and sandbox shutdown end them; no idle expiry is requested yet.
+  and sandbox shutdown end them; kernel-owned idle deadlines also apply.
 - Use unmodified htop for Phase 1 interactive compatibility checks: actual
   rendering, keyboard shortcuts, scrolling, resizing, and recovery across
   disconnects. The user waived separate Codex/Claude Code interface tests.
@@ -84,8 +84,19 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - `/workspace/packages` is a gVisor-private writable overlay over the shared
   package tree. The live gVisor filestore is disposable; explicit lifecycle
   boundaries checkpoint private package deltas beneath `dev-sandbox/runtime/`
-  and restore them on start. There is no timer, autosave loop, filesystem
-  scanner, full-tree copy, or serialized file-content format.
+  and restore them on start. There is no periodic checkpoint timer, autosave
+  loop, filesystem scanner, full-tree copy, or serialized file-content format.
+- Node-local `development.idle_timeout` defaults to two hours with no ordinary
+  consoles, pending opens, retained terminals, or active shell commands. A
+  detached or exited retained terminal still protects its sandbox until the
+  terminal is destroyed. The last release starts the interval; new admission
+  cancels it. An unused newly started sandbox is idle immediately.
+- The active ownership index holds per-sandbox usage and one idle deadline;
+  timers never enumerate user records. Admission and idle stop share the
+  per-user lifecycle lock, and old releases cannot affect replacement sandboxes.
+  Runtime setting changes retain each original idle start. Expiry uses ordinary
+  checkpoint/stop; checkpoint failure preserves the sandbox, logs the failure,
+  and retries after another idle interval. No application package owns a timer.
 - The writable OCI system root, including `/root`, is initialized from the
   current development image only when the sandbox is first created or after a
   confirmed factory reset. Its recorded image-qualified path and image
@@ -184,6 +195,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   to check two independent shells across detach/reattach/switch, detached
   output, explicit close, and process exit. Enable `THE8020_TERMINAL_E2E=1`. It
   does not replace browser or htop display qualification.
+- Short-timeout unit tests cover last-console release, reconnect, running shell
+  protection, checkpoint failure, and private-file restoration. The dev-core
+  `test:native-idle` harness checks the real browser/SSH/metadata path with
+  seconds-long deadlines and subsequent sandbox shutdown.
 
 # Child DOX Index
 

@@ -357,13 +357,15 @@ relevant child AGENTS.md
   remain private.
 - Development activation must preserve the sandbox and its running processes.
   Named terminal sessions must survive navigation, refresh, and logout until
-  explicitly closed or the sandbox is shut down; no idle expiry is requested
-  yet. Private source must follow shared updates only on untouched paths, merge
-  from actual originals, and remain recoverable and transportable without
-  periodic scanning. The current runtime still uses explicit overlay checkpoints
-  and activation recreation; the pending redesign and its evidence are owned by
-  [development DOX](kernel/development/AGENTS.md). Durable workspace and
-  system/home state remain beneath `users/<username>/dev-sandbox/`.
+  explicitly closed, their kernel-owned idle deadline expires, or the sandbox is
+  shut down. Sandbox idle shutdown follows the last ordinary console or retained
+  terminal's destruction. Private source must follow shared updates only on
+  untouched paths, merge from actual originals, and remain recoverable and
+  transportable without periodic scanning. The current runtime still uses
+  explicit overlay checkpoints and activation recreation; the pending redesign
+  and its evidence are owned by [development DOX](kernel/development/AGENTS.md).
+  Durable workspace and system/home state remain beneath
+  `users/<username>/dev-sandbox/`.
 - Development images keep Deno installed for developer commands but run no
   background runtime or filesystem scanner. Their `sandbox.sh` initializes the
   fresh runtime filesystem and replaces itself with `sleep`; persistence is a

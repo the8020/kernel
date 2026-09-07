@@ -70,11 +70,22 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   responses. Browser reads never acknowledge its credit. Processor detach
   releases backpressure and keeps the PTY draining; missing interpreter history
   is an explicit gap, never claimed as recovered screen state.
-- Process EOF retains bounded final output until explicit terminal close. Exit
-  status is optional because the native detached runsc PTY exposes EOF but no
-  status. Explicit close unregisters the identity; provider replacement or
-  broker close terminates its PTYs. There is no idle expiry or cross-kernel,
+- Process EOF retains bounded final output until explicit or idle terminal
+  close. Exit status is optional because the native detached runsc PTY exposes
+  EOF but no status. Explicit close unregisters the identity; provider
+  replacement or broker close terminates its PTYs. There is no cross-kernel,
   sandbox-destruction, or host-reboot process restoration.
+- Node-local `terminal.idle_timeout` defaults to 36 hours. The last user
+  attachment's departure starts its deadline; reattachment cancels it and the
+  next detach starts a full interval. The processor, output, and heartbeat
+  traffic do not count. A new terminal without user attachments is already idle.
+  Runtime changes recalculate existing deadlines from the original detach time.
+  Expiry claims destruction under the attachment lock and uses ordinary close.
+- Development console admission reserves sandbox lifetime before provider I/O.
+  Failed opens release it; ordinary consoles release on close, retained
+  terminals only on physical destruction. Process EOF and detached retained
+  views do not release that reservation. The development manager owns sandbox
+  shutdown.
 - Direct leases, retained terminals, and pending process openings share the
   32-console bound. Reserve capacity before provider I/O and cancel pending
   openings on broker shutdown.
@@ -106,6 +117,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Native display tests cover exclusive processor access, canonical display
   bytes, controller takeover, slow-writer cancellation, processor loss, and
   detach without EOF or physical destruction.
+- Short-timeout tests cover processor/output exclusion, observers, reattachment,
+  live deadline changes, and pending-open lifetime release. Run with `-race`.
 - `THE8020_TERMINAL_E2E=1 go test ./kernel/development -run
   '^TestRootlessRetainedTerminals$'`
   from the repository root exercises real gVisor PTYs: two shells, twenty

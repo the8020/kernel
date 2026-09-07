@@ -647,12 +647,34 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
 	}
-	consoleManager, err := platformconsole.New(platformconsole.Config{Authentication: authentication, Development: developmentManager})
+	consoleManager, err := platformconsole.New(platformconsole.Config{
+		Authentication: authentication, Development: developmentManager,
+		AcquireDevelopment: developmentManager.AcquireConsole,
+	})
 	if err != nil {
 		runtimeServices.Failure = "initialize sandbox console broker: " + err.Error()
 		return runtimeServices, closeRuntime
 	}
 	cleanup.console = consoleManager
+	for _, owner := range []struct {
+		key     string
+		applier settings.Applier
+	}{
+		{"terminal.idle_timeout", consoleManager},
+		{"development.idle_timeout", developmentManager},
+	} {
+		prepared, err := owner.applier.Prepare(ctx, settingManager.Snapshot())
+		if err != nil {
+			runtimeServices.Failure = err.Error()
+			return runtimeServices, closeRuntime
+		}
+		if err := settingManager.RegisterApplier([]string{owner.key}, owner.applier); err != nil {
+			prepared.Discard()
+			runtimeServices.Failure = err.Error()
+			return runtimeServices, closeRuntime
+		}
+		prepared.Commit()
+	}
 	consoleManager.SetRuntime(sandboxManager)
 	if err := publicNetwork.RegisterRoute(platformconsole.Route, consoleManager); err != nil {
 		runtimeServices.Failure = "register sandbox console route: " + err.Error()

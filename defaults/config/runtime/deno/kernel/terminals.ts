@@ -53,6 +53,12 @@ export class TerminalControlBusyError extends Error {
   }
 }
 
+export class TerminalClosedError extends Error {
+  constructor() {
+    super("Terminal closed");
+  }
+}
+
 type Operation = <T>(
   operation: string,
   input: Record<string, unknown>,
@@ -67,7 +73,25 @@ function encode(data: Uint8Array): string {
 }
 
 /** @internal Installed by the kernel SDK over its trusted Worker bridge. */
-export function terminalAPI(operation: Operation) {
+export function terminalAPI(callOperation: Operation) {
+  const operation: Operation = async <T>(
+    name: string,
+    input: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<T> => {
+    const result = await callOperation<T | { closed: true }>(
+      name,
+      input,
+      signal,
+    );
+    if (
+      result && typeof result === "object" && "closed" in result &&
+      result.closed === true
+    ) {
+      throw new TerminalClosedError();
+    }
+    return result as T;
+  };
   return Object.freeze({
     create(
       input: TerminalCreateInput,

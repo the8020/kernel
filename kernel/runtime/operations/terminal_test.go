@@ -276,3 +276,46 @@ func TestTerminalRuntimeWorkerReleaseCancelsPendingNativeOpen(t *testing.T) {
 		t.Fatal("cancelled creation leaked owner or process state")
 	}
 }
+
+func TestTerminalDestructionReachesBlockedProcessorAsTypedClosure(t *testing.T) {
+	p := &terminalTestProvider{opened: make(chan net.Conn, 1)}
+	d, m, ctx := terminalTestDispatcher(t, p)
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	created, err := d.Execute(ctx, "terminal.create", terminalCreateArguments())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := created.(map[string]any)
+	info := result["terminal"].(console.TerminalInfo)
+	processor := result["attachmentId"].(string)
+	defer (<-p.opened).Close()
+	type outcome struct {
+		value any
+		err   error
+	}
+	waiting := make(chan outcome, 2)
+	for _, operation := range []string{"terminal.read", "terminal.view-next"} {
+		go func() {
+			value, err := d.Execute(ctx, operation, map[string]any{"attachmentId": processor})
+			waiting <- outcome{value, err}
+		}()
+	}
+	terminal, err := m.Terminal(info.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = terminal.Close() // Kernel lifecycle destruction, without dispatcher assistance.
+	for range 2 {
+		got := <-waiting
+		if got.err != nil || got.value.(map[string]any)["closed"] != true {
+			t.Fatalf("closure=%#v error=%v", got.value, got.err)
+		}
+	}
+	if _, err := d.Execute(ctx, "terminal.detach", map[string]any{"attachmentId": processor}); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.terminalOwners) != 0 {
+		t.Fatal("expired processor cleanup retained Worker references")
+	}
+}

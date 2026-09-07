@@ -157,7 +157,7 @@ func (m *Manager) resetOverlayLocked(ctx context.Context, sandbox *Sandbox) erro
 		if err := m.driver.Delete(ctx, sandbox.SandboxID); err != nil {
 			return err
 		}
-		m.owned.Delete(sandbox.SandboxID)
+		m.forgetSandbox(sandbox.SandboxID)
 		_ = removeDevelopmentFilestore(m.config.PackagesRoot, sandbox.SandboxID)
 	}
 	return m.startLocked(ctx, sandbox)

@@ -28,7 +28,11 @@ and native SSH execution pass; the welcome screen loads no terminal assets.
       environment, and status.
 - [x] Give each terminal one input/resize controller. Detached output continues
       draining; history and transport memory are bounded; a slow view cannot
-      block the owner. There is no idle expiry.
+      block the owner. Kernel-owned idle expiry follows the last user detach.
+- [x] Apply kernel-owned 36-hour detached-terminal and two-hour empty-sandbox
+      defaults. Reattachment cancels expiry; retained terminals protect the
+      sandbox until destruction. Verify with seconds-long settings, including
+      ordinary SSH, metadata completion, and checkpoint restoration.
 - [x] Deno owns names, selection, and terminal display state independently of
       browser, UUI, and authentication sessions. Development provides multiple
       terminals with create/list/select/rename/close.
@@ -97,7 +101,10 @@ browser or SSH connection releases its input/resize lease without EOF or process
 recreation. One controller owns input and geometry; the canonical Deno processor
 continues consuming output and answering queries while clients are detached.
 History, input, recovery allocations, and browser/native output queues are
-bounded. There is no idle expiry.
+bounded. `terminal.idle_timeout` defaults to 36 hours after the last user
+attachment leaves; the canonical processor and output do not reset it.
+`development.idle_timeout` then allows two hours after the last ordinary console
+or retained terminal closes before checkpointing and stopping the sandbox.
 
 Named SSH attachment uses
 `ssh -tt -p <port> <user>@<owning-node> the8020 terminal-id=<tty-id>` with an
@@ -130,13 +137,23 @@ matching acknowledgements, without node fallback or retry. The Deno service
 retains metadata if native close fails. See
 `/tmp/8020-terminal-native-resilience-remote-close.log`.
 
-Twenty terminal engine/owner/recovery/service tests and 18 generic SDK bridge
-tests pass. The earlier complete Go suite passed; the final native close change
-also passes focused node, operation, console, callback, and app tests, plus the
-node/operation/console/callback race checks. Package checks and the affected DOX
-format/link checks pass. The native harness stages disposable package copies and
-nodes; configured recipient listeners are restarted before terminal creation. No
-real developer sandbox was used for lifecycle destruction.
+Twenty-one terminal engine/owner/recovery/service tests and 19 generic SDK
+bridge tests pass. The earlier complete Go suite passed; the final native close
+change also passes focused node, operation, console, callback, and app tests,
+plus the node/operation/console/callback race checks. Package checks and the
+affected DOX format/link checks pass. The native harness stages disposable
+package copies and nodes; configured recipient listeners are restarted before
+terminal creation. No real developer sandbox was used for lifecycle destruction.
+
+The 0.4.1 idle-lifecycle fixture passed with a rebuilt kernel and disposable
+runtime using eight-second terminal and two-second sandbox deadlines. Browser
+and repeated named SSH attachment preserved Bash PID 3; continuing detached
+output did not prevent expiry. Physical closure removed package metadata, then
+the sandbox stopped after its separate deadline. Ordinary SSH restarted it,
+restored a private package file, kept it running while connected, and triggered
+idle stop after disconnect. See `/tmp/8020-idle-native-verified.log`. The full
+Go suite, focused lifecycle race tests, all 105 generic-runtime tests, and all
+12 package checks pass. Phase 2 remains on hold.
 
 Matching xterm 5.5.0 headless and browser engines use the package-owned state
 component. Stock framebuffer serialization omitted parser continuation, partial

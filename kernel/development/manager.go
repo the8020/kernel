@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -58,6 +59,9 @@ type Manager struct {
 	endpoint       string
 	cleanupCancel  context.CancelFunc
 	cleanupDone    chan struct{}
+	idleTimeout    atomic.Int64
+	closed         atomic.Bool
+	idleContext    context.Context
 }
 
 func (m *Manager) SetSchemaDeployment(hook deployment.SchemaHook) {
@@ -135,6 +139,7 @@ func New(config Config) (*Manager, error) {
 	go func() { _ = m.server.Serve(listener) }()
 	cleanupContext, cleanupCancel := context.WithCancel(context.Background())
 	m.cleanupCancel = cleanupCancel
+	m.idleContext = cleanupContext
 	go func() {
 		defer close(m.cleanupDone)
 		m.destroyInheritedSandboxes(cleanupContext)
@@ -174,6 +179,7 @@ func (m *Manager) destroyInheritedSandboxes(parent context.Context) {
 }
 
 func (m *Manager) Close(ctx context.Context) error {
+	m.closed.Store(true)
 	if m.cleanupCancel != nil {
 		m.cleanupCancel()
 	}
@@ -188,11 +194,11 @@ func (m *Manager) Close(ctx context.Context) error {
 	type activeSandbox struct{ sandboxID, userID string }
 	active := []activeSandbox{}
 	m.owned.Range(func(key, value any) bool {
-		sandboxID, sandboxOK := key.(string)
-		userID, userOK := value.(string)
-		if sandboxOK && userOK {
-			active = append(active, activeSandbox{sandboxID: sandboxID, userID: userID})
-		}
+		use := value.(*sandboxUse)
+		use.mu.Lock()
+		m.armIdleLocked(use)
+		use.mu.Unlock()
+		active = append(active, activeSandbox{sandboxID: key.(string), userID: use.userID})
 		return true
 	})
 	for _, item := range active {
@@ -212,7 +218,7 @@ func (m *Manager) Close(ctx context.Context) error {
 			continue
 		}
 		_ = removeDevelopmentFilestore(m.config.PackagesRoot, item.sandboxID)
-		m.owned.Delete(item.sandboxID)
+		m.forgetSandbox(item.sandboxID)
 		sandbox.State = StateStopped
 		sandbox.ActivationActive, sandbox.WritesPaused = false, false
 		sandbox.UpdatedAt = time.Now().UTC()
@@ -391,13 +397,16 @@ func (m *Manager) Start(ctx context.Context, userID string) (Sandbox, error) {
 }
 
 func (m *Manager) startLocked(ctx context.Context, sandbox *Sandbox) error {
+	if m.closed.Load() {
+		return errors.New("development manager is closed")
+	}
 	if m.driver == nil {
 		return errors.New("development sandbox driver is unavailable")
 	}
 	unlockSandbox := m.lockSandbox(sandbox.SandboxID)
 	defer unlockSandbox()
 	if owner, active := m.owned.Load(sandbox.SandboxID); active {
-		if owner != sandbox.UserID {
+		if owner.(*sandboxUse).userID != sandbox.UserID {
 			return errors.New("development sandbox ID is owned by another user")
 		}
 		running, err := m.driver.Running(ctx, sandbox.SandboxID)
@@ -408,7 +417,7 @@ func (m *Manager) startLocked(ctx context.Context, sandbox *Sandbox) error {
 			return fmt.Errorf("delete previous development sandbox %s: %w", sandbox.SandboxID, err)
 		}
 		_ = removeDevelopmentFilestore(m.config.PackagesRoot, sandbox.SandboxID)
-		m.owned.Delete(sandbox.SandboxID)
+		m.forgetSandbox(sandbox.SandboxID)
 	}
 	var image ImageStatus
 	err := func() error {
@@ -443,7 +452,8 @@ func (m *Manager) startLocked(ctx context.Context, sandbox *Sandbox) error {
 	if err := m.driver.Start(ctx, SandboxStart{UserID: sandbox.UserID, SandboxID: sandbox.SandboxID, Packages: sandbox.SourcePath, RootFS: sandbox.SystemPath, Endpoint: m.endpoint, Token: sandbox.Token, Mounts: mounts}); err != nil {
 		return err
 	}
-	m.owned.Store(sandbox.SandboxID, sandbox.UserID)
+	use := &sandboxUse{userID: sandbox.UserID, sandboxID: sandbox.SandboxID}
+	m.owned.Store(sandbox.SandboxID, use)
 	if err := m.restoreOverlayLocked(ctx, sandbox); err != nil {
 		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -452,7 +462,7 @@ func (m *Manager) startLocked(ctx context.Context, sandbox *Sandbox) error {
 			return errors.Join(err, deleteErr)
 		}
 		_ = removeDevelopmentFilestore(m.config.PackagesRoot, sandbox.SandboxID)
-		m.owned.Delete(sandbox.SandboxID)
+		m.forgetSandbox(sandbox.SandboxID)
 		return err
 	}
 	sandbox.State = StateReady
@@ -461,6 +471,9 @@ func (m *Manager) startLocked(ctx context.Context, sandbox *Sandbox) error {
 	if err := m.saveSandbox(*sandbox); err != nil {
 		return err
 	}
+	use.mu.Lock()
+	m.armIdleLocked(use)
+	use.mu.Unlock()
 	m.log("development sandbox started", *sandbox, "result_state", sandbox.State)
 	return nil
 }
@@ -534,6 +547,10 @@ func (m *Manager) Kill(ctx context.Context, userID string) (Sandbox, error) {
 func (m *Manager) stop(ctx context.Context, userID string, kill bool) (Sandbox, error) {
 	unlock := m.lockUser(userID)
 	defer unlock()
+	return m.stopLocked(ctx, userID, kill)
+}
+
+func (m *Manager) stopLocked(ctx context.Context, userID string, kill bool) (Sandbox, error) {
 	sandbox, err := m.loadSandbox(userID)
 	if err != nil {
 		return Sandbox{}, err
@@ -558,7 +575,7 @@ func (m *Manager) stop(ctx context.Context, userID string, kill bool) (Sandbox, 
 		return sandbox, err
 	}
 	_ = removeDevelopmentFilestore(m.config.PackagesRoot, sandbox.SandboxID)
-	m.owned.Delete(sandbox.SandboxID)
+	m.forgetSandbox(sandbox.SandboxID)
 	sandbox.State, sandbox.UpdatedAt = StateStopped, time.Now().UTC()
 	err = m.saveSandbox(sandbox)
 	m.log("development sandbox stopped", sandbox, "result_state", sandbox.State)
@@ -581,7 +598,7 @@ func (m *Manager) Restart(ctx context.Context, userID string) (Sandbox, error) {
 			return sandbox, err
 		}
 		_ = removeDevelopmentFilestore(m.config.PackagesRoot, sandbox.SandboxID)
-		m.owned.Delete(sandbox.SandboxID)
+		m.forgetSandbox(sandbox.SandboxID)
 	}
 	if err := m.startLocked(ctx, &sandbox); err != nil {
 		return sandbox, err
@@ -602,7 +619,7 @@ func (m *Manager) Delete(ctx context.Context, userID string) error {
 			return err
 		}
 		_ = removeDevelopmentFilestore(m.config.PackagesRoot, sandbox.SandboxID)
-		m.owned.Delete(sandbox.SandboxID)
+		m.forgetSandbox(sandbox.SandboxID)
 	}
 	return os.RemoveAll(m.sandboxRoot(sandbox))
 }
@@ -615,10 +632,17 @@ func (m *Manager) Shell(ctx context.Context, userID, command string) (ShellResul
 		lock.Unlock()
 		return ShellResult{}, err
 	}
-	if _, active := m.owned.Load(sandbox.SandboxID); !active {
+	use, active := m.owned.Load(sandbox.SandboxID)
+	if !active {
 		lock.Unlock()
 		return ShellResult{}, errors.New("development sandbox is not running")
 	}
+	release, err := m.acquireConsoleLocked(use.(*sandboxUse))
+	if err != nil {
+		lock.Unlock()
+		return ShellResult{}, err
+	}
+	defer release()
 	sandbox.State, sandbox.UpdatedAt = StateBusy, time.Now().UTC()
 	if err := m.saveSandbox(sandbox); err != nil {
 		lock.Unlock()
@@ -641,11 +665,11 @@ func (m *Manager) OpenConsole(ctx context.Context, sandboxID string, options bac
 	if !ok {
 		return nil, errors.New("development sandbox is not ready")
 	}
-	userID, ok := owned.(string)
+	use, ok := owned.(*sandboxUse)
 	if !ok {
 		return nil, errors.New("development sandbox ownership is unavailable")
 	}
-	sandbox, err := m.loadSandbox(userID)
+	sandbox, err := m.loadSandbox(use.userID)
 	if err != nil || sandbox.SandboxID != sandboxID || (sandbox.State != StateReady && sandbox.State != StateConflicted) {
 		return nil, errors.New("development sandbox is not ready")
 	}
@@ -674,7 +698,7 @@ func (m *Manager) ResetSource(ctx context.Context, userID string, confirmed bool
 			return sandbox, err
 		}
 		_ = removeDevelopmentFilestore(m.config.PackagesRoot, sandbox.SandboxID)
-		m.owned.Delete(sandbox.SandboxID)
+		m.forgetSandbox(sandbox.SandboxID)
 	}
 	if err := os.RemoveAll(m.overlayRoot(sandbox)); err != nil {
 		return sandbox, err
@@ -702,7 +726,7 @@ func (m *Manager) FactoryReset(ctx context.Context, userID string, confirmed boo
 			return Sandbox{}, err
 		}
 		_ = removeDevelopmentFilestore(m.config.PackagesRoot, old.SandboxID)
-		m.owned.Delete(old.SandboxID)
+		m.forgetSandbox(old.SandboxID)
 	}
 	if err := os.RemoveAll(m.sandboxRoot(old)); err != nil {
 		return Sandbox{}, err
@@ -759,7 +783,7 @@ func (m *Manager) loadSandbox(userID string) (Sandbox, error) {
 		return Sandbox{}, fmt.Errorf("unsupported development sandbox schema %d", sandbox.Schema)
 	}
 	owner, owned := m.owned.Load(sandbox.SandboxID)
-	if owned && owner != userID {
+	if owned && owner.(*sandboxUse).userID != userID {
 		return Sandbox{}, errors.New("development sandbox ID is owned by another user")
 	}
 	if !owned && sandbox.State != StateStopped && sandbox.State != StateFailed {

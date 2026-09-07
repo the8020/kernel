@@ -18,6 +18,9 @@ Parent DOX: [kernel/kernel/settings DOX](../AGENTS.md).
   job policy; `database/` owns node-local backend, location, credentials,
   connection-pool, and result-limit settings required before shared state can be
   loaded.
+- `terminal/` owns retained-PTY idle expiry and `development/` owns idle
+  development-sandbox shutdown. Both are node-local, runtime mutable durations
+  with a one-millisecond minimum, applied by their existing kernel owners.
 - No definition subtree or setting may describe an application protocol,
   application program, application state schema, or UUI behavior.
 

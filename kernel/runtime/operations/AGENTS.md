@@ -34,6 +34,9 @@ Parent DOX: [kernel/kernel/runtime DOX](../AGENTS.md).
   canonical processor lease. Streams share the retained attachment bound and
   expose only opaque bytes and physical sequence/geometry. Control contention
   returns a typed SDK outcome; explicit takeover revokes the prior transport.
+- Physical destruction returns a typed closed outcome to blocked processors and
+  other attachment operations, so package owners can complete their lifecycle.
+  Process EOF and Worker/attachment loss remain distinct from destruction.
 - `service.route` validates exact infrastructure references and uses the
   deployment signer without creating a binding or consulting application
   metadata. The service router and supervisor enforce live ownership and the

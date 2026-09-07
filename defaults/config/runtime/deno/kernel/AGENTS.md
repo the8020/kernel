@@ -50,6 +50,10 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   recovery allocation, slow-view limits, and asynchronous send queues. Control
   attachment raises `TerminalControlBusyError` when occupied; `take-control`
   explicitly revokes the prior browser or SSH lease.
+- Physical destruction raises `TerminalClosedError`, including on pending
+  processor reads and native-view waits. It is distinct from process EOF or a
+  lost attachment. Package owners use it to complete their handler and metadata
+  cleanup; terminal idle policy remains in the kernel.
 - `terminals.detach` remains callable during cancelled-request cleanup, as does
   database scope cleanup. Input, resize, and process destruction retain normal
   cancellation. Worker death releases all of that Worker's attachment roles.

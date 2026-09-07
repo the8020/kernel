@@ -1,0 +1,9 @@
+key = "development.idle_timeout"
+type = "duration"
+storage = "node"
+default = "2h"
+minimum = 1000000
+environment = "THE8020_DEVELOPMENT_IDLE_TIMEOUT"
+runtime_mutable = true
+restart_required = false
+description = "Checkpoint and stop a development sandbox after this duration with no ordinary consoles or retained terminals."

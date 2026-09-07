@@ -6,6 +6,7 @@ import (
 	"io"
 	"sort"
 	"sync"
+	"time"
 
 	"the8020/kernel/identity"
 	"the8020/kernel/sandbox/backend"
@@ -83,6 +84,9 @@ type Terminal struct {
 	input        chan terminalInput
 	inputError   error
 	done         chan struct{}
+	release      func()
+	idleSince    time.Time
+	idleTimer    *time.Timer
 }
 
 type terminalInput struct {
@@ -116,6 +120,11 @@ func (m *Manager) CreateTerminalWithProcessor(ctx context.Context, kind, sandbox
 	if err != nil {
 		return nil, nil, err
 	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed {
+		return nil, nil, ErrTerminalGone
+	}
 	return t, t.processor, nil
 }
 
@@ -135,6 +144,16 @@ func (m *Manager) createTerminal(ctx context.Context, kind, sandboxID string, op
 		return nil, err
 	}
 	defer m.releaseOpening()
+	release, err := m.acquireSandbox(kind, sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	retained := false
+	defer func() {
+		if !retained {
+			release()
+		}
+	}()
 	ownerCtx, cancel := context.WithCancel(m.lifetime)
 	stopCancel := context.AfterFunc(ctx, cancel)
 	value, err := provider.OpenConsole(ownerCtx, sandboxID, options)
@@ -153,6 +172,7 @@ func (m *Manager) createTerminal(ctx context.Context, kind, sandboxID string, op
 		cancel: cancel, size: options.Size, changed: make(chan struct{}),
 		attachments: make(map[*TerminalAttachment]struct{}),
 		input:       make(chan terminalInput, terminalInputFrames), done: make(chan struct{}),
+		release: release,
 	}
 	if processOutput {
 		if _, err := terminal.AttachProcessor(0); err != nil {
@@ -180,6 +200,10 @@ func (m *Manager) createTerminal(ctx context.Context, kind, sandboxID string, op
 		_ = value.Close()
 		return nil, err
 	}
+	retained = true
+	terminal.mu.Lock()
+	terminal.updateIdleLocked()
+	terminal.mu.Unlock()
 	go terminal.readOutput()
 	go terminal.writeInput()
 	return terminal, nil
@@ -291,6 +315,9 @@ func (t *Terminal) attach(control, processor bool, after uint64, takeover bool) 
 			}
 		}
 	}
+	if !processor {
+		t.updateIdleLocked()
+	}
 	return value, nil
 }
 
@@ -327,6 +354,9 @@ func (a *TerminalAttachment) closeLocked() {
 	}
 	close(a.detached)
 	t.notifyLocked()
+	if !a.processor {
+		t.updateIdleLocked()
+	}
 }
 
 // Read waits for new sequenced events without polling. A lagging consumer gets
@@ -634,13 +664,16 @@ func (t *Terminal) finish() {
 }
 
 // Close explicitly destroys this terminal and unregisters its identity. Exited
-// terminals retain their bounded final output until explicit close; no timer
-// silently removes a terminal or starts a replacement process.
+// terminals retain their bounded final output until close or detached expiry.
 func (t *Terminal) Close() error {
 	var err error
 	t.closeOnce.Do(func() {
 		t.mu.Lock()
 		t.closed = true
+		if t.idleTimer != nil {
+			t.idleTimer.Stop()
+			t.idleTimer = nil
+		}
 		for a := range t.attachments {
 			a.closeLocked()
 		}
@@ -654,8 +687,18 @@ func (t *Terminal) Close() error {
 		t.manager.mu.Lock()
 		delete(t.manager.terminals, t.id)
 		t.manager.mu.Unlock()
+		if t.release != nil {
+			t.release()
+		}
 	})
 	return err
+}
+
+// TerminalClosed distinguishes physical destruction from an attachment loss.
+func (a *TerminalAttachment) TerminalClosed() bool {
+	a.terminal.mu.Lock()
+	defer a.terminal.mu.Unlock()
+	return a.terminal.closed
 }
 
 // Keep the byte-stream contract explicit: EOF must never be synthesized by a
