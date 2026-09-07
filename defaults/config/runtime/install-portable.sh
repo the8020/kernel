@@ -113,7 +113,7 @@ if [[ "$RUNSC_DESTINATION" != "$GVISOR_ROOT/runsc" ]]; then
 fi
 
 SOURCE_INPUT=$(
-  find "$RUNTIME_SOURCE/deno/supervisor" "$RUNTIME_SOURCE/deno/worker" "$RUNTIME_SOURCE/deno/kernel" "$RUNTIME_SOURCE/deno/context" "$RUNTIME_SOURCE/deno/identity" "$RUNTIME_SOURCE/deno/logging" "$RUNTIME_SOURCE/deno/http" -maxdepth 1 -type f \( -name '*.ts' -o -name '*.d.ts' \) ! -name '*_test.ts' -print0 | sort -z | xargs -0 sha256sum
+  "$RUNTIME_SOURCE/stage-service-runtime.sh" "$SOURCE_ROOT" --sources | xargs -0 sha256sum
   sha256sum "$RUNTIME_SOURCE/deno/deno.json" "$RUNTIME_SOURCE/deno/deno.lock" "$CONTAINERFILE" "$BUILD_SCRIPT" "$RUNTIME_DEFINITION" "$RUNTIME_LOCK" "$MANIFEST" "$RUNTIME_SOURCE/install-portable.sh" "$RUNTIME_SOURCE/materialize-oci-rootfs.sh" "$RUNTIME_SOURCE/run-rootfs-build.sh" "$RUNTIME_SOURCE/stage-service-runtime.sh" "$RUNTIME_SOURCE/bundle-runtime.sh" "$PROTOCOL_SOURCE" "$GVISOR_ROOT/runsc"
   printf '%s\n' "$BASE_MANIFEST" "$ARCHITECTURE"
 )
@@ -144,8 +144,19 @@ install -m 0444 "$RUNTIME_DEFINITION" "$ROOTFS_STAGE/opt/runtime/deno.json"
 install -m 0444 "$RUNTIME_LOCK" "$ROOTFS_STAGE/opt/runtime/deno.lock"
 install -m 0444 "$PROTOCOL_SOURCE" "$ROOTFS_STAGE/opt/runtime/protocol.ts"
 echo "runtime image [2/4]: installing declared packages and bundling generic modules" >&2
-"$RUNTIME_SOURCE/run-rootfs-build.sh" "$SOURCE_ROOT" "$RUNTIME_ROOT" "$ROOTFS_STAGE" /bin/sh -c \
-  '/bin/bash /the8020-image-build.sh && /bin/bash /opt/runtime/bundle-runtime.sh /opt/runtime/http-source /opt/runtime/http && rm -rf /the8020-image-build.sh /opt/runtime/bundle-runtime.sh /opt/runtime/http-source'
+if [[ "$SMOKE_RUNTIME" == outer-container-build ]]; then
+  "$RUNTIME_SOURCE/run-rootfs-build.sh" "$SOURCE_ROOT" "$RUNTIME_ROOT" "$ROOTFS_STAGE" /bin/bash /the8020-image-build.sh
+  # BuildKit supplies /proc, but its unprivileged chroot cannot mount it.
+  # Run the image's pinned compiler in the enclosing build container instead.
+  DENO_DIR="$ROOTFS_STAGE/tmp/deno-cache" DENO_NO_UPDATE_CHECK=1 DENO_NO_PROMPT=1 \
+    bash "$RUNTIME_SOURCE/bundle-runtime.sh" "$ROOTFS_STAGE/opt/runtime/http-source" \
+      "$ROOTFS_STAGE/opt/runtime/http" "$ROOTFS_STAGE/usr/bin/deno"
+  chown -R 1993:1993 "$ROOTFS_STAGE/tmp/deno-cache"
+else
+  "$RUNTIME_SOURCE/run-rootfs-build.sh" "$SOURCE_ROOT" "$RUNTIME_ROOT" "$ROOTFS_STAGE" /bin/sh -c \
+    '/bin/bash /the8020-image-build.sh && /bin/bash /opt/runtime/bundle-runtime.sh /opt/runtime/http-source /opt/runtime/http'
+fi
+rm -rf -- "$ROOTFS_STAGE/the8020-image-build.sh" "$ROOTFS_STAGE/opt/runtime/bundle-runtime.sh" "$ROOTFS_STAGE/opt/runtime/http-source"
 
 SMOKE_STAGE=""
 if [[ "$SMOKE_RUNTIME" == outer-container-build ]]; then

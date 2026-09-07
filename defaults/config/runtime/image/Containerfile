@@ -6,18 +6,11 @@ ENV DENO_NO_UPDATE_CHECK=1 \
     DENO_DIR=/runtime-cache
 
 USER root
-COPY build.sh /tmp/the8020-image-build.sh
-RUN /bin/bash /tmp/the8020-image-build.sh && \
-    rm -f /tmp/the8020-image-build.sh
+COPY build/ /tmp/the8020-image-build/
+RUN /bin/bash /tmp/the8020-image-build/build.sh && \
+    rm -rf /tmp/the8020-image-build
 
-COPY --chown=deno:deno supervisor /opt/runtime/supervisor
-COPY --chown=deno:deno worker /opt/runtime/worker
-COPY --chown=deno:deno kernel /opt/runtime/kernel
-COPY --chown=deno:deno http-source /opt/runtime/http-source
-COPY --chown=deno:deno bundle-runtime.sh /opt/runtime/bundle-runtime.sh
-COPY --chown=deno:deno deno.json /opt/runtime/deno.json
-COPY --chown=deno:deno deno.lock /opt/runtime/deno.lock
-COPY --chown=deno:deno protocol.ts /opt/runtime/protocol.ts
+COPY --chown=deno:deno runtime/ /opt/runtime/
 
 RUN /bin/bash /opt/runtime/bundle-runtime.sh /opt/runtime/http-source /opt/runtime/http && \
     rm -rf /opt/runtime/http-source /opt/runtime/bundle-runtime.sh

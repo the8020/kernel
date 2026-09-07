@@ -141,6 +141,10 @@ relevant child AGENTS.md
   requires this initial user to exist. Bootstrap failure prints the last
   users-command error and kernel status so the underlying runtime failure is
   visible in container output.
+- The local `Dockerfile` builds the checked-out kernel release without build
+  arguments, deriving package compatibility from its Git tag. Dockerfiles own
+  image assembly and build-cache cleanup; the installer stays generic.
+  [Docker DOX](docker/AGENTS.md) owns the container-specific runtime payload.
 - Container startup prints a message before starting the kernel, waiting for
   package initialization and user commands, creating the initial user, and
   waiting for the public login service. Report the stage before its potentially
@@ -492,13 +496,15 @@ below.
 - [defaults/AGENTS.md](defaults/AGENTS.md): first-run configuration/node-setting
   templates and the canonical generic runtime definition, source, image tooling,
   and pinned versions under `defaults/config/runtime/`.
+- [docker/AGENTS.md](docker/AGENTS.md): container runtime assets, startup, and
+  Docker build qualification.
 - [kernel/AGENTS.md](kernel/AGENTS.md): the Go kernel architecture, authored
   source, declarative definitions, tests, and package-level DOX tree.
 
 - Root-owned paths include `.vscode/`, `go.mod`, `go.sum`, `.go-version`,
   `.gitignore`, `install.sh`, `run.sh`, `release-tag.sh`, release resolver
-  tests, `docker-entrypoint.sh`, `docker-entrypoint_test.sh`, and root-level
-  project documentation.
+  tests, `Dockerfile`, `.dockerignore`, `docker-entrypoint_test.sh`, and
+  root-level project documentation.
 
 # 80|20
 
@@ -570,16 +576,17 @@ below.
   helper scripts, and materializes verified service and development images under
   `node/kernel/runtime/images/`. Complete generic image-input digests make
   unchanged installs fast; required packages and Deno bundling execute inside
-  the pinned gVisor image build. The default verification gate runs Go and
-  generic runtime checks only. `--skip-runtime-host` prevents full-mode host
-  mutation while retaining rootless gVisor, and `--skip-verification` skips only
-  test gates. Installation checks Git and stages the source-owned bootstrap
-  package set as clean Git repositories only for a fresh fixed-layout instance;
-  first kernel boot publishes it transactionally in the database. It never
-  builds, formats, lints, type-checks, or tests application packages and never
-  runs a UUI build or browser E2E. `THE8020_RELEASE_VERSION=<major.minor>` is an
-  installer-only release input: it disables sibling-source snapshots and stages
-  every bootstrap package from its compatible resolved Git tag.
+  the isolated image build as defined by the runtime DOX. The default
+  verification gate runs Go and generic runtime checks only.
+  `--skip-runtime-host` prevents full-mode host mutation while retaining
+  rootless gVisor, and `--skip-verification` skips only test gates. Installation
+  checks Git and stages the source-owned bootstrap package set as clean Git
+  repositories only for a fresh fixed-layout instance; first kernel boot
+  publishes it transactionally in the database. It never builds, formats, lints,
+  type-checks, or tests application packages and never runs a UUI build or
+  browser E2E. `THE8020_RELEASE_VERSION=<major.minor>` is an installer-only
+  release input: it disables sibling-source snapshots and stages every bootstrap
+  package from its compatible resolved Git tag.
 - `run.sh` may be invoked from any directory. It treats that current directory
   as the instance root and runs `install.sh --skip-verification`, which
   refreshes all three binaries, initializes the default layout when absent, and

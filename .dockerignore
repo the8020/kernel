@@ -1,10 +1,13 @@
-/.git
 /.development
-/.env
+**/.env
+**/.env.*
+**/node_modules
 /.DS_Store
 /config
 /database
 /node
 /packages
+/scripts
 /state
 /users
+/kernel.toml

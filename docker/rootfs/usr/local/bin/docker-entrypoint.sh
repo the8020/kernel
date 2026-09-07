@@ -4,7 +4,7 @@ set -euo pipefail
 readonly INSTANCE_ROOT=/8020
 readonly KERNEL=/usr/local/bin/kernel
 readonly ADMIN=/usr/local/bin/admin
-readonly PORTABLE_SMOKE=/usr/local/lib/the8020/smoke-portable.sh
+readonly PORTABLE_SMOKE="$INSTANCE_ROOT/node/kernel/runtime/definitions/smoke-portable.sh"
 
 if (( $# > 0 )); then
   if (( $# != 1 )) || [[ "$1" != "serve" ]]; then
@@ -28,7 +28,7 @@ initial_password=${THE8020_PASSWORD:-admin}
 # consulted only by this entrypoint while completing the first boot.
 unset THE8020_USERNAME THE8020_PASSWORD || true
 
-"$PORTABLE_SMOKE" \
+bash "$PORTABLE_SMOKE" \
   "$INSTANCE_ROOT/node/kernel/bin/runsc" \
   "$INSTANCE_ROOT/node/kernel/runtime/images/rootless/rootfs" \
   "$INSTANCE_ROOT/node/kernel/runtime/images/rootless/image.json" \

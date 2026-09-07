@@ -57,7 +57,7 @@ prepare() {
       readonly\ PORTABLE_SMOKE=*) printf 'readonly PORTABLE_SMOKE=%q\n' "$TEST_ROOT/bin/smoke" ;;
       *) printf '%s\n' "$line" ;;
     esac
-  done < "$SOURCE_ROOT/docker-entrypoint.sh" > "$CASE_ROOT/entrypoint.sh"
+  done < "$SOURCE_ROOT/docker/rootfs/usr/local/bin/docker-entrypoint.sh" > "$CASE_ROOT/entrypoint.sh"
   printf '%s\n' 503 > "$CASE_ROOT/http-status"
 }
 

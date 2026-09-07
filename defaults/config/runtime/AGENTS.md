@@ -39,17 +39,21 @@ Parent DOX: [kernel/defaults DOX](../../AGENTS.md).
   `node/kernel/runtime/definitions/`, hashes the complete generic image input
   set before build, and publishes only verified artifacts under
   `node/kernel/runtime/images/`. Unchanged verified digests are reused.
-- Deno dependency preparation and generic HTTP bundling execute inside the
-  pinned isolated image build after a digest miss. Normal startup has no
-  host-side Deno or image-build process, and the Go kernel never invokes these
-  scripts.
+- Deno dependency preparation and generic HTTP bundling use the pinned image's
+  Deno inside isolated image-build execution after a digest miss. Normal startup
+  has no host-side Deno or image-build process, and the Go kernel never invokes
+  these scripts.
 - Portable construction materializes the pinned OCI base without copying host
   executables, libraries, package metadata, certificates, or terminal data.
   Declared packages install inside rootless gVisor on an ordinary host; during
   construction of the enclosing Docker image they install through `chroot`
   inside that existing isolated build sandbox, avoiding a forbidden nested user
-  namespace. Full construction uses the same staged generic runtime and pinned
-  image definition through BuildKit when host authority exists.
+  namespace. Deno compilation and type verification run outside that chroot in
+  the enclosing build container, where `/proc/self/maps` is available, using the
+  staged image's Deno binary and keeping output/cache in the staged image. The
+  subsequent non-root chroot smoke verifies installed runtime imports. Full
+  construction uses the same staged generic runtime and pinned image definition
+  through BuildKit when host authority exists.
 - Portable installation publishes the complete pinned gVisor execution payload:
   `runsc` and every release-provided `gvisor-bin/` companion remain adjacent
   under `node/kernel/bin/` so runtime startup never downloads missing helpers.
@@ -58,8 +62,11 @@ Parent DOX: [kernel/defaults DOX](../../AGENTS.md).
   pinned Zod dependency used by the HTTP self-types, and explicitly required
   administrator debugging tools. `stage-service-runtime.sh` excludes tests, DOX
   files, examples, application source, and unrelated files.
-- Service image staging and both build-input hashes include the shared identity
-  and logging modules. Changes to those modules invalidate existing images.
+- `stage-service-runtime.sh --sources` lists production TypeScript recursively,
+  excluding `examples/`, `test/`, and `*_test.ts`. Staging and both image hashes
+  consume that same list, so added modules and nested sources participate
+  automatically. HTTP sources stage under `http-source/` for bundling. Full
+  image construction copies the complete staged `runtime/` directory.
 - The image import map exposes the activated read-only package tree through the
   single `/p/` prefix. Package imports include their namespace, package, file,
   and extension, for example `/p/the8020/db/mod.ts`. Never add package-specific
@@ -80,13 +87,13 @@ Parent DOX: [kernel/defaults DOX](../../AGENTS.md).
 
 # Work Guidance
 
-- Treat the generic Deno runtime as part of the protected kernel foundation.
-  Add a capability only when existing programs, services, jobs, hooks, events,
-  and bridge contracts cannot provide it; keep application modules and
-  dependencies in their own packages.
-- Verify necessary changes through the shared Go/Deno contract and the
-  affected workload, including identity, cancellation, stream bounds, and
-  cleanup. Package-specific semantics must remain opaque to the runtime.
+- Treat the generic Deno runtime as part of the protected kernel foundation. Add
+  a capability only when existing programs, services, jobs, hooks, events, and
+  bridge contracts cannot provide it; keep application modules and dependencies
+  in their own packages.
+- Verify necessary changes through the shared Go/Deno contract and the affected
+  workload, including identity, cancellation, stream bounds, and cleanup.
+  Package-specific semantics must remain opaque to the runtime.
 
 - Deno 2.9 Unix connect requires read/write and unix:<absolute-path> network
   permission. The shared process argument owner supplies all three exact grants
@@ -106,7 +113,12 @@ Parent DOX: [kernel/defaults DOX](../../AGENTS.md).
   exact registered Worker invocation, cancellation, permissions, and crashes.
 - `bundle-runtime.sh` checks the published HTTP self-types and complete Zod API
   against the image's pinned dependency using only cached dependencies before
-  either runtime image can be published.
+  either runtime image can be published. Dependency installation consumes the
+  image's import map and frozen lockfile, without a second dependency/version
+  list in the build script.
+- `bash defaults/config/runtime/stage-service-runtime_test.sh` verifies that a
+  newly added nested module is staged and hashed while tests, examples, and DOX
+  stay out of the image.
 - Portable verification launches the staged rootfs as UID/GID 1993 through the
   pinned rootless runsc and imports the generic HTTP, kernel, and context
   modules before publishing image and smoke records. An enclosing Docker build

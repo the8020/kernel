@@ -57,7 +57,7 @@ BASE_DIGEST=$(toml_value deno base_image_digest)
 NAMESPACE="the8020-$INSTANCE_UUID"
 
 SOURCE_HASH=$(
-  find "$RUNTIME_SOURCE/deno/supervisor" "$RUNTIME_SOURCE/deno/worker" "$RUNTIME_SOURCE/deno/kernel" "$RUNTIME_SOURCE/deno/context" "$RUNTIME_SOURCE/deno/identity" "$RUNTIME_SOURCE/deno/logging" "$RUNTIME_SOURCE/deno/http" -maxdepth 1 -type f \( -name '*.ts' -o -name '*.d.ts' \) ! -name '*_test.ts' -print0 | sort -z | xargs -0 sha256sum
+  "$RUNTIME_SOURCE/stage-service-runtime.sh" "$SOURCE_ROOT" --sources | xargs -0 sha256sum
   sha256sum "$RUNTIME_SOURCE/deno/deno.json" "$RUNTIME_SOURCE/deno/deno.lock" "$MANIFEST" "$IMAGE_DEFINITION/Containerfile" "$IMAGE_DEFINITION/build.sh" "$IMAGE_DEFINITION/deno.json" "$IMAGE_DEFINITION/deno.lock" "$RUNTIME_SOURCE/build-image.sh" "$RUNTIME_SOURCE/stage-service-runtime.sh" "$RUNTIME_SOURCE/bundle-runtime.sh" "$RUNTIME_SOURCE/protocol/generated.ts"
   printf '%s\n' "$BASE_MANIFEST"
 )
@@ -88,12 +88,13 @@ fi
 
 rm -rf -- "$CONTEXT_ROOT"
 install -d -m 0700 "$CONTEXT_ROOT"
-"$RUNTIME_SOURCE/stage-service-runtime.sh" "$SOURCE_ROOT" "$CONTEXT_ROOT"
-install -m 0444 "$IMAGE_DEFINITION/deno.json" "$CONTEXT_ROOT/deno.json"
-install -m 0444 "$IMAGE_DEFINITION/deno.lock" "$CONTEXT_ROOT/deno.lock"
-install -m 0444 "$IMAGE_DEFINITION/build.sh" "$CONTEXT_ROOT/build.sh"
-install -m 0555 "$RUNTIME_SOURCE/bundle-runtime.sh" "$CONTEXT_ROOT/bundle-runtime.sh"
-install -m 0444 "$RUNTIME_SOURCE/protocol/generated.ts" "$CONTEXT_ROOT/protocol.ts"
+"$RUNTIME_SOURCE/stage-service-runtime.sh" "$SOURCE_ROOT" "$CONTEXT_ROOT/runtime"
+install -m 0444 "$IMAGE_DEFINITION/deno.json" "$CONTEXT_ROOT/runtime/deno.json"
+install -m 0444 "$IMAGE_DEFINITION/deno.lock" "$CONTEXT_ROOT/runtime/deno.lock"
+install -d -m 0755 "$CONTEXT_ROOT/build"
+install -m 0444 "$IMAGE_DEFINITION/build.sh" "$CONTEXT_ROOT/build/build.sh"
+install -m 0555 "$RUNTIME_SOURCE/bundle-runtime.sh" "$CONTEXT_ROOT/runtime/bundle-runtime.sh"
+install -m 0444 "$RUNTIME_SOURCE/protocol/generated.ts" "$CONTEXT_ROOT/runtime/protocol.ts"
 
 OCI_ARCHIVE="$IMAGE_ROOT/deno-runtime.oci.tar"
 DIGEST_FILE="$IMAGE_ROOT/deno-runtime.digest"
