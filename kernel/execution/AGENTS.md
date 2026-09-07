@@ -26,9 +26,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   Worker per execution behind a bounded in-memory FIFO admission queue and leave
   no execution history after completion.
 - Every Worker starts with a validated execution user and an outer origin of
-  service, job, or package program. Runtime calls carry that user with their
-  caller execution through Go context; child jobs inherit it. Jobs without a
-  caller require explicit assignment. Kernel-owned operations assign `system`
+  service, direct module, or package program. Runtime calls carry that user with
+  their caller execution through Go context; child jobs inherit it. Jobs without
+  a caller require explicit assignment. Kernel-owned operations assign `system`
   explicitly, including package CBus commands regardless of their caller.
   Canonical principal validation is independent of account tables for every
   username, including system. No manager queries account state or invents a

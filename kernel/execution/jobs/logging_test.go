@@ -73,7 +73,7 @@ func TestJobLifecycleLogsFollowEachReusedInvocation(t *testing.T) {
 		for offset, event := range []string{"job_admitted", "job_started", "job_completed"} {
 			entry := entries[index*3+offset]
 			fields := eventFields(entry)
-			if fields["event"] != event || fields["execution_id"] != run.ExecutionID || fields["context_id"] != run.ContextID || fields["parent_context_id"] != "ctx-abcdefghij" || fields["username"] != "system" || fields["object"] != "job:example/job" {
+			if fields["event"] != event || fields["execution_id"] != run.ExecutionID || fields["context_id"] != run.ContextID || fields["parent_context_id"] != "ctx-abcdefghij" || fields["username"] != "system" || fields["object"] != "module:example/job" {
 				t.Fatalf("event attribution: %#v", fields)
 			}
 			if offset > 0 && (fields["sandbox_id"] != run.SandboxID || fields["worker_id"] != run.WorkerID) {

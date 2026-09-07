@@ -67,12 +67,12 @@ type OriginType string
 
 const (
 	OriginService OriginType = "service"
-	OriginJob     OriginType = "job"
+	OriginModule  OriginType = "module"
 	OriginProgram OriginType = "program"
 )
 
 func (t OriginType) Valid() bool {
-	return t == OriginService || t == OriginJob || t == OriginProgram
+	return t == OriginService || t == OriginModule || t == OriginProgram
 }
 
 type Origin struct {
@@ -87,7 +87,7 @@ func (o Origin) ValidForWorkload(workload model.WorkloadType) bool {
 		return false
 	}
 	return workload == model.WorkloadService && o.Type == OriginService ||
-		workload == model.WorkloadJob && (o.Type == OriginJob || o.Type == OriginProgram)
+		workload == model.WorkloadJob && (o.Type == OriginModule || o.Type == OriginProgram)
 }
 
 type Caller struct {

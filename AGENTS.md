@@ -248,14 +248,14 @@ relevant child AGENTS.md
   owning layer when a real capability is missing.
 - Services and jobs have the same `@the8020/kernel` API through their private
   Worker MessagePort and the same immutable invocation-scoped `@the8020/context`
-  API. Every Worker starts with one validated user and outer service/job/program
-  origin; authenticated requests use their authenticated user, while anonymous
-  requests use the service's configured `anonymous_user` (default `system`).
-  Jobs require an explicit or inherited user. Kernel-owned operations explicitly
-  assign `system` when there is no caller. Every principal, including `system`,
-  is a structural kernel identity independent of account rows. Creating,
-  disabling, deleting, or losing a users table never changes execution
-  eligibility. Deno users-package authentication alone applies
+  API. Every Worker starts with one validated user and outer
+  service/module/program origin; authenticated requests use their authenticated
+  user, while anonymous requests use the service's configured `anonymous_user`
+  (default `system`). Jobs require an explicit or inherited user. Kernel-owned
+  operations explicitly assign `system` when there is no caller. Every
+  principal, including `system`, is a structural kernel identity independent of
+  account rows. Creating, disabling, deleting, or losing a users table never
+  changes execution eligibility. Deno users-package authentication alone applies
   enabled/password/session rules to interactive login. Package-local identities
   such as a UUI session remain package-owned. The trusted supervisor stamps
   execution identity and alone holds the per-sandbox token and node-private
@@ -413,9 +413,9 @@ relevant child AGENTS.md
   APIs and diagnostics. When standardizing execution-context and node identity,
   use `ctx-` and `nod-`; reserve `job-` and `srv-` for actual job and service
   runtime instances. Declared objects retain their canonical names, displayed as
-  `job:<name>`, `service:<name>`, or `program:<name>`. Identity changes belong
-  to the owning shared contract; never invent log-only aliases or additional
-  runtime objects merely to label logs.
+  `module:<name>`, `service:<name>`, or `program:<name>`. Identity changes
+  belong to the owning shared contract; never invent log-only aliases or
+  additional runtime objects merely to label logs.
 - Authenticated session-shell theme preferences must remain browser-only:
   `sessionStorage` owns the current session override and `localStorage` seeds
   future tabs. The shell HTML starts dark and a CSP-nonced head initializer

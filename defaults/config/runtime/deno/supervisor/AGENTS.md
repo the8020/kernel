@@ -28,10 +28,10 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   service configuration setting or application-specific compressor. Existing
   content encodings and range responses retain their bytes and metadata.
 - Worker startup requires a canonical user and a workload-compatible service,
-  job, or program origin. Exact job/program calls carry an explicit validated
-  effective user; service requests use trusted per-request user metadata and
-  otherwise retain the Worker's configured execution user. No username has
-  special treatment inside the runtime.
+  module, or program origin. Exact module/program calls carry an explicit
+  validated effective user; service requests use trusted per-request user
+  metadata and otherwise retain the Worker's configured execution user. No
+  username has special treatment inside the runtime.
 - Job control errors preserve bounded structured command failures while keeping
   ordinary runtime failures as plain messages.
 - Service validation invokes pinned in-sandbox Deno with the configured

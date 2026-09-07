@@ -61,8 +61,9 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
   runtime caller. Account rows, enabled state, passwords, and sessions are
   outside admission. System and other principals follow the same structural
   validation. Queued and reused jobs retain their principal independently of
-  account changes. The immutable origin is the job ID or the resolved package
-  program ID.
+  account changes. Direct entrypoints receive `module` origin with the supplied
+  logical ID; the program runner supplies `program` origin with the resolved
+  package program ID.
 - Compatible Worker reuse includes user and origin identity; work from different
   users or origins never shares a reusable Worker.
 - `Options.CheckModules` asks the supervisor to type-check a bounded module list

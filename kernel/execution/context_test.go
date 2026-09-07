@@ -48,7 +48,13 @@ func TestExecutionIdentityValidation(t *testing.T) {
 	if !(Origin{Type: OriginProgram, ID: "example/tool"}).ValidForWorkload(model.WorkloadJob) {
 		t.Fatal("rejected program job origin")
 	}
-	if (Origin{Type: OriginJob, ID: "example/job"}).ValidForWorkload(model.WorkloadService) {
-		t.Fatal("accepted a job origin for a service Worker")
+	if OriginModule != "module" || !(Origin{Type: OriginModule, ID: "evaluator"}).ValidForWorkload(model.WorkloadJob) {
+		t.Fatal("rejected direct module origin")
+	}
+	if (Origin{Type: OriginModule, ID: "evaluator"}).ValidForWorkload(model.WorkloadService) {
+		t.Fatal("accepted a module origin for a service Worker")
+	}
+	if (Origin{Type: "job", ID: "evaluator"}).Valid() {
+		t.Fatal("accepted the obsolete job origin")
 	}
 }

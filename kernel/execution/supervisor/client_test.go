@@ -30,7 +30,7 @@ func TestMalformedWorkerIdentityDoesNotReachSupervisor(t *testing.T) {
 	t.Cleanup(server.Close)
 	client := testClient(t, server.URL)
 	for _, id := range []string{"worker", "sbx-aaaaaaaaaa", "wrk-short", "wrk-AAAAAAAAAA"} {
-		request := StartWorkerRequest{Metadata: ExecutionMetadata{WorkerID: id, WorkloadType: model.WorkloadJob, User: execution.SystemUser(), Origin: execution.Origin{Type: execution.OriginJob, ID: "example/job"}}}
+		request := StartWorkerRequest{Metadata: ExecutionMetadata{WorkerID: id, WorkloadType: model.WorkloadJob, User: execution.SystemUser(), Origin: execution.Origin{Type: execution.OriginModule, ID: "example/job"}}}
 		if _, err := client.StartWorker(context.Background(), testSpec(), request); err == nil {
 			t.Fatalf("start accepted %q", id)
 		}
@@ -117,7 +117,7 @@ func TestStatusWorkersAndControlRoutes(t *testing.T) {
 	if err != nil || len(workers) != 1 || workers[0].WorkerID != "wrk-aaaaaaaaaa" || workers[0].IdleSinceMS != 1700000000000 || workers[0].State != "failed" || workers[0].Failure != "boom" {
 		t.Fatalf("workers=%#v err=%v", workers, err)
 	}
-	request := StartWorkerRequest{Metadata: ExecutionMetadata{WorkerID: "wrk-aaaaaaaaaa", WorkloadType: model.WorkloadJob, OwnerID: "owner", WorkloadID: "job", Entrypoint: "file:///artifacts/job.ts", DebuggerName: "job:execution", User: execution.SystemUser(), Origin: execution.Origin{Type: execution.OriginJob, ID: "job"}}}
+	request := StartWorkerRequest{Metadata: ExecutionMetadata{WorkerID: "wrk-aaaaaaaaaa", WorkloadType: model.WorkloadJob, OwnerID: "owner", WorkloadID: "job", Entrypoint: "file:///artifacts/job.ts", DebuggerName: "job:execution", User: execution.SystemUser(), Origin: execution.Origin{Type: execution.OriginModule, ID: "job"}}}
 	if worker, err := client.StartWorker(context.Background(), spec, request); err != nil || worker.WorkerID != "wrk-aaaaaaaaaa" {
 		t.Fatalf("start=%#v err=%v", worker, err)
 	}

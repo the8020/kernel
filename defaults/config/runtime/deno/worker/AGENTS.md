@@ -61,8 +61,8 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   read-only database status is also available before execution, while all
   contextual kernel calls require an active request or job.
 - `@the8020/context` reads that same frozen asynchronous context and exposes the
-  validated user, outer service/job/program identity, and infrastructure IDs. It
-  identifies the outer UUI service, not package-owned UUI session IDs.
+  validated user, outer service/module/program identity, and infrastructure IDs.
+  It identifies the outer UUI service, not package-owned UUI session IDs.
 - An entrypoint may export a validated `workerFunctions` map. Only those named
   functions receive bounded JSON input and generic execution context. Exact
   control may carry its supervisor-validated persistent-execution identity so

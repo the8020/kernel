@@ -55,7 +55,7 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
   validated effective user plus JSON input/output without scanning, interpreting
   the name, or exposing the private endpoint publicly.
 - `ExecutionMetadata.Valid` owns startup Worker ID, canonical user, and
-  workload-compatible service/job/program origin validation. Exact invocation
+  workload-compatible service/module/program origin validation. Exact invocation
   also rejects malformed Worker and optional persistent-execution IDs before
   contacting the supervisor.
 - Non-success control responses retain their bounded HTTP status in

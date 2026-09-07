@@ -186,7 +186,7 @@ func TestOneTimeJobReturnsOutputWithoutRetainingHistory(t *testing.T) {
 	if record.State != "SUCCEEDED" || !reflect.DeepEqual(record.Result, []any{"Alice Smith", "--admin"}) {
 		t.Fatalf("record = %#v", record)
 	}
-	if record.User != execution.SystemUser() || record.Origin != (execution.Origin{Type: execution.OriginJob, ID: "job"}) {
+	if record.User != execution.SystemUser() || record.Origin != (execution.Origin{Type: execution.OriginModule, ID: "job"}) {
 		t.Fatalf("execution identity = user %#v origin %#v", record.User, record.Origin)
 	}
 	items, err := manager.List()

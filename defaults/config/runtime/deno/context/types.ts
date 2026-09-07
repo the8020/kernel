@@ -1,4 +1,4 @@
-export type ExecutionContextType = "service" | "job" | "program";
+export type ExecutionContextType = "service" | "module" | "program";
 
 export interface ExecutionContext {
   readonly type: ExecutionContextType;

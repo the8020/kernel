@@ -38,8 +38,8 @@ Parent DOX: [kernel/defaults/config/runtime DOX](../AGENTS.md).
   bridge binds calls to trusted current request/execution identity without
   cookies or route tokens.
 - `@the8020/context` exposes a frozen invocation-local snapshot of the validated
-  user, outer service/job/program origin, node, sandbox, Worker, execution, and
-  request identities. Package-local identities remain package-owned.
+  user, outer service/module/program origin, node, sandbox, Worker, execution,
+  and request identities. Package-local identities remain package-owned.
 - Current service metadata exposes package-neutral node, sandbox, Worker, and
   execution identity plus the kernel-observed client IP address and network
   scope. No application settings map is transported.

@@ -111,7 +111,7 @@ func (m *Manager) Start(ctx context.Context, sandboxID string, request superviso
 		return Record{}, errors.New("Worker workload type does not match sandbox")
 	}
 	if request.Metadata.DebuggerName == "" {
-		request.Metadata.DebuggerName = fmt.Sprintf("%s:%s:%s", request.Metadata.WorkloadType, request.Metadata.OwnerID, request.Metadata.WorkerID)
+		request.Metadata.DebuggerName = fmt.Sprintf("%s:%s:%s", request.Metadata.Origin.Type, request.Metadata.Origin.ID, request.Metadata.WorkerID)
 	}
 	request.Metadata.DatabaseBackend = m.databaseBackend
 	if err := validateEntrypoint(inspection.Spec, request.Metadata.Entrypoint); err != nil {

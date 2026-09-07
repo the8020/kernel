@@ -2,6 +2,7 @@ import { isId, newId } from "../identity/mod.ts";
 import { assertEquals, assertRejects } from "../test/assert.ts";
 import { RuntimeWorker, WorkerExecutionError } from "./runtime_worker.ts";
 import { TestLogSink } from "../test/logs.ts";
+import { canonicalExecutionOrigin } from "./contracts.ts";
 import type {
   ExecutionMetadata,
   KernelCallRequest,
@@ -28,7 +29,10 @@ function metadata(
     ownerId: `owner-${suffix}`,
     workloadId: `workload-${suffix}`,
     user: { userId: "user:system", username: "system" },
-    origin: { type: workloadType, id: `owner-${suffix}` },
+    origin: {
+      type: workloadType === "service" ? "service" : "module",
+      id: `owner-${suffix}`,
+    },
     releaseId: "test",
     databaseBackend: "sqlite",
     entrypoint,
@@ -139,7 +143,15 @@ Deno.test("Worker startup failure and forced cancellation emit one terminal life
   }
 });
 
-Deno.test("job Worker exposes its immutable system execution context", async () => {
+Deno.test("direct module exposes its immutable system execution context", async () => {
+  await assertRejects(
+    () =>
+      Promise.resolve(
+        canonicalExecutionOrigin({ type: "job", id: "owner-context" }, "job"),
+      ),
+    TypeError,
+    "execution origin is invalid",
+  );
   const worker = new RuntimeWorker({
     metadata: metadata("job", example("job_context"), "context"),
     permissions: { read: [new URL("../examples", import.meta.url).pathname] },
@@ -169,7 +181,8 @@ Deno.test("job Worker exposes its immutable system execution context", async () 
     assertEquals(next.workerId, value.workerId);
     assertEquals(next.contextId === value.contextId, false);
     assertEquals(next.parentContextId, undefined);
-    assertEquals(value.type, "job");
+    assertEquals(value.type, "module");
+    assertEquals(next.type, "module");
     assertEquals(value.id, "owner-context");
     assertEquals(value.userId, "user:system");
     assertEquals(value.username, "system");

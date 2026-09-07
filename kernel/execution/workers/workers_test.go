@@ -83,7 +83,7 @@ func jobMetadata(workerID, executionID string) supervisor.ExecutionMetadata {
 	return supervisor.ExecutionMetadata{
 		WorkerID: workerID, WorkloadType: model.WorkloadJob,
 		OwnerID: "job", Entrypoint: "file:///programs/main.ts",
-		User: execution.SystemUser(), Origin: execution.Origin{Type: execution.OriginJob, ID: "job"},
+		User: execution.SystemUser(), Origin: execution.Origin{Type: execution.OriginModule, ID: "job"},
 	}
 }
 
@@ -135,11 +135,12 @@ func TestWorkerValidationLookupAndTermination(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := supervisor.StartWorkerRequest{Metadata: jobMetadata("wrk-nnnnnnnnnn", "new-execution"), Permissions: supervisor.WorkerPermissions{Read: []string{"/programs/module"}, Write: []string{"/data/file"}, Sys: []string{"hostname"}}}
+	request.Metadata.OwnerID = "package-owner"
 	started, err := manager.Start(context.Background(), "sandbox", request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if started.Worker.WorkerID != "wrk-nnnnnnnnnn" || !strings.HasPrefix(control.started.Metadata.DebuggerName, "job:job:wrk-nnnnnnnnnn") || control.started.Metadata.DatabaseBackend != "sqlite" {
+	if started.Worker.WorkerID != "wrk-nnnnnnnnnn" || control.started.Metadata.DebuggerName != "module:job:wrk-nnnnnnnnnn" || control.started.Metadata.DatabaseBackend != "sqlite" {
 		t.Fatalf("started=%#v request=%#v", started, control.started)
 	}
 	items, err := manager.List(context.Background(), "sandbox")

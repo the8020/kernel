@@ -235,7 +235,7 @@ Deno.test("supervisor authenticates health/status and rejects cross-type Workers
     "execution user is invalid",
   );
   const invalidOrigin = metadata("wrk-0000000005");
-  invalidOrigin.origin = { type: "job", id: "job" };
+  invalidOrigin.origin = { type: "module", id: "job" };
   await assertRejects(
     () =>
       supervisor.startWorker({
@@ -1330,7 +1330,7 @@ Deno.test("job dispatch forwards console logs and returns execution metadata wit
   const job = metadata("wrk-0000000018");
   job.workloadType = "job";
   job.workloadId = "job-a";
-  job.origin = { type: "job", id: "job-a" };
+  job.origin = { type: "module", id: "job-a" };
   job.entrypoint = new URL("../examples/job.ts", import.meta.url).href;
   await supervisor.startWorker({
     metadata: job,
@@ -1392,7 +1392,7 @@ Deno.test("job dispatch preserves structured command failures", async () => {
   const job = metadata("wrk-0000000019");
   job.workloadType = "job";
   job.workloadId = "job-error";
-  job.origin = { type: "job", id: "job-error" };
+  job.origin = { type: "module", id: "job-error" };
   job.entrypoint = new URL("../examples/job_error.ts", import.meta.url).href;
   await supervisor.startWorker({
     metadata: job,

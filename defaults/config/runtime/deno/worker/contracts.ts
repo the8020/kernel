@@ -1,3 +1,4 @@
+import type { ExecutionContextType } from "../context/types.ts";
 import { isId } from "../identity/mod.ts";
 
 export type WorkloadType = "service" | "job";
@@ -8,7 +9,7 @@ export interface ExecutionUserMetadata {
 }
 
 export interface ExecutionOriginMetadata {
-  readonly type: "service" | "job" | "program";
+  readonly type: ExecutionContextType;
   readonly id: string;
 }
 
@@ -38,7 +39,7 @@ export function canonicalExecutionOrigin(
   const origin = value as Record<string, unknown>;
   const validType = workloadType === "service"
     ? origin.type === "service"
-    : origin.type === "job" || origin.type === "program";
+    : origin.type === "module" || origin.type === "program";
   if (!validType || typeof origin.id !== "string" || origin.id.length === 0) {
     throw new TypeError("execution origin is invalid");
   }

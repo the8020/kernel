@@ -285,7 +285,7 @@ func (m *Manager) prepare(jobID, entrypoint string, options Options) (submission
 	}
 	origin := options.Origin
 	if origin == (execution.Origin{}) {
-		origin = execution.Origin{Type: execution.OriginJob, ID: jobID}
+		origin = execution.Origin{Type: execution.OriginModule, ID: jobID}
 	}
 	if !origin.ValidForWorkload(model.WorkloadJob) {
 		return submission{}, errors.New("job execution origin is invalid")

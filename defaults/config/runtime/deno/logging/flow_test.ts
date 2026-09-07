@@ -17,13 +17,13 @@ const metadata: ExecutionMetadata = {
   workerId: "wrk-0123456789",
   workloadType: "job",
   workloadId: "job-0123456789",
-  ownerId: "job:acme/example/run",
+  ownerId: "module:acme/example/run",
   releaseId: "commit",
   entrypoint: "file:///job.ts",
   debuggerName: "job",
   databaseBackend: "sqlite",
   user: { userId: "user:alice", username: "alice" },
-  origin: { type: "job", id: "acme/example/run" },
+  origin: { type: "module", id: "acme/example/run" },
 };
 
 Deno.test("failed logging sends preserve credit and losses without throwing into the Worker", () => {
@@ -169,7 +169,7 @@ Deno.test("supervisor binds fixed identities and policies skip formatting", () =
   packet.record.node_id = "nod-other00000";
   const bound = bindWorkerRecord(encodePacket(packet), metadata);
   assertEquals(bound.worker_id, metadata.workerId);
-  assertEquals(bound.object, "job:acme/example/run");
+  assertEquals(bound.object, "module:acme/example/run");
   assertEquals(bound.node_id, metadata.nodeId);
   assertEquals(bound.username, undefined);
   const sink = new TestLogSink();

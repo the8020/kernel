@@ -23,8 +23,12 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 - Package code receives getters and frozen snapshots only. Installing or
   replacing the provider is an internal runtime operation.
 - `type` and `id` identify the outer platform execution that entered the Worker:
-  service, job, or standalone package program. Package-local concepts such as a
-  UUI session remain owned by their package.
+  `service` for a service, `module` for a direct module entrypoint, or `program`
+  for a standalone package program resolved by ID. `job` is not a context type.
+  Imports and ordinary function calls retain the outer context, including UUI
+  programs inside their session service and hooks inside their module
+  dispatcher. Package-local scheduling and run history remain owned by
+  `the8020/jobs`.
 - Every active context has a user validated by the kernel. Anonymous requests
   use the service's assigned user; jobs use an explicit or inherited identity.
   The runtime never supplies a default user for missing metadata.
@@ -35,7 +39,7 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 # Verification
 
 - Kernel bridge and RuntimeWorker tests cover isolation, immutability, service
-  users, job users, and program origins.
+  users, module users, program origins, and rejection of obsolete job origins.
 
 # Child DOX Index
 

@@ -22,6 +22,8 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
 - Worker permissions must be a subset of the parent sandbox envelope.
   Cached-only groups accept local file entrypoints; online entrypoints still
   require an explicitly allowed import host.
+- Default debugger names use the validated origin type, origin ID, and Worker
+  ID, matching execution context and log attribution.
 - Additional job type-check modules may use absolute sandbox paths, but each
   path must remain beneath the parent read envelope.
 - Worker lookup reads the latest cached absolute supervisor snapshot rather than
@@ -54,7 +56,7 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
 - Worker startup injects the configured non-secret database backend so module
   imports can construct the correct SQL compiler without a kernel callback. It
   also applies `ExecutionMetadata.Valid` to the canonical Worker ID, execution
-  user, and workload-compatible service/job/program origin before lookup or
+  user, and workload-compatible service/module/program origin before lookup or
   contacting the supervisor.
 - Node-wide and sandbox-local admission failures have distinct typed sentinels;
   service placement may spill a sandbox-local rejection into another compatible

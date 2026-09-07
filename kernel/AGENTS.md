@@ -144,7 +144,7 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 - Current 80|20 package code is trusted. Jobs and services receive the same
   typed Deno-to-kernel API, immutable execution-context API, and unrestricted
   outbound network/import access. Every Worker has a validated user and
-  service/job/program origin; authenticated requests replace the service's
+  service/module/program origin; authenticated requests replace the service's
   configured anonymous user with their exact identity for that invocation.
   Kernel principals are structural identities independent of users-package
   tables for every username, including `system`. Runtime validation checks
