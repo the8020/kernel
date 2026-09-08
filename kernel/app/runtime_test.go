@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -17,8 +19,23 @@ import (
 	containerdbackend "the8020/kernel/sandbox/backend/containerd"
 	"the8020/kernel/sandbox/manager"
 	"the8020/kernel/sandbox/model"
+	"the8020/kernel/settings"
 	"the8020/kernel/webservices"
 )
+
+func TestZeroDurationSettingDisablesSandboxRetention(t *testing.T) {
+	definitions := []settings.Definition{{Key: "runtime.sandbox.keep_alive", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(120000), Environment: "THE8020_RUNTIME_SANDBOX_KEEP_ALIVE", Description: "Sandbox keepalive"}}
+	configured, err := settings.New(definitions, settings.PersistencePaths{Node: filepath.Join(t.TempDir(), "kernel.toml")}, map[string]string{"runtime.sandbox.keep_alive": "0"}, func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := activeDuration(configured, "runtime.sandbox.keep_alive", 2*time.Minute); got != 0 {
+		t.Fatalf("explicit zero became the fallback: %s", got)
+	}
+	if got := activeDuration(configured, "runtime.sandbox.unconfigured", 2*time.Minute); got != 2*time.Minute {
+		t.Fatalf("missing setting lost the fallback: %s", got)
+	}
+}
 
 type sharedStateDatabaseStub struct {
 	context context.Context
@@ -196,6 +213,44 @@ func TestRuntimeSharedStateReindexesOnlyChangedPackages(t *testing.T) {
 	}
 }
 
+func TestSourceUpdatePublishesRestartBeforeReindexAndRetriesWithoutGating(t *testing.T) {
+	packages := &packageRevisionFollowerStub{update: workspacepackages.PackageSetUpdate{Revision: 7, Packages: []string{"acme/shared"}, Paths: []string{"/workspace/packages/acme/shared/value.ts"}}}
+	indexes := &packageRevisionFollowerStub{}
+	var calls []string
+	fail := true
+	shared := &runtimeSharedState{packages: packages, indexes: indexes,
+		sourceUpdate: func(_ context.Context, update workspacepackages.PackageSetUpdate) error {
+			calls = append(calls, "scan")
+			if update.Revision != 7 || len(update.Paths) != 1 {
+				t.Fatalf("source update=%#v", update)
+			}
+			if fail {
+				return errors.New("supervisor temporarily unavailable")
+			}
+			indexes.update = workspacepackages.PackageSetUpdate{Revision: 3, Restarts: []string{"acme/consumer/api"}}
+			return nil
+		},
+		reindex: func(_ context.Context, ids []string) (core.Result, error) {
+			calls = append(calls, "index:"+ids[0])
+			return nil, nil
+		},
+		restart: func(_ context.Context, id string) error { calls = append(calls, "restart:"+id); return nil },
+	}
+	if err := shared.Refresh(context.Background()); err != nil || len(packages.acks) != 0 {
+		t.Fatalf("failed scan gated traffic/acknowledged update: %v %v", err, packages.acks)
+	}
+	fail = false
+	if err := shared.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(calls, []string{"scan", "scan", "index:acme/shared", "restart:acme/consumer/api"}) || !reflect.DeepEqual(packages.acks, []uint64{7}) || !reflect.DeepEqual(indexes.acks, []uint64{3}) {
+		t.Fatalf("calls=%v package acknowledgements=%v index acknowledgements=%v", calls, packages.acks, indexes.acks)
+	}
+	if err := shared.Refresh(context.Background()); err != nil || len(calls) != 4 {
+		t.Fatalf("idle refresh rescanned imports: %v %v", calls, err)
+	}
+}
+
 func TestTargetedIndexFailureDoesNotGateHealthyServicesOrRepeatDiscovery(t *testing.T) {
 	db := &sharedStateDatabaseStub{status: database.Status{State: database.StateReady}}
 	settings := &sharedSettingsStub{}
@@ -233,6 +288,49 @@ func TestRuntimeProfileSeparatesBoundedTemporaryAndDenoCacheMounts(t *testing.T)
 	for target, found := range want {
 		if !found {
 			t.Fatalf("bounded mount %s missing: %#v", target, profile.Mounts)
+		}
+	}
+}
+
+func TestSharedDenoCacheSurvivesRuntimeRecreation(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "cache")
+	for _, workload := range []model.WorkloadType{model.WorkloadJob, model.WorkloadService} {
+		mounts, err := sharedDenoCacheMounts(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		profile := runtimeProfile(workload, "sha256:"+strings.Repeat("a", 64), mounts, model.ResourceLimits{TmpfsMaximum: 64 << 20}, true)
+		var shared []string
+		for _, mount := range profile.Mounts {
+			if mount.Target == "/runtime-cache" {
+				if mount.Source != "" || mount.Persistence != "ephemeral" {
+					t.Fatalf("SQLite caches must remain private: %#v", mount)
+				}
+				continue
+			}
+			if !strings.HasPrefix(mount.Target, "/runtime-cache/") {
+				continue
+			}
+			shared = append(shared, mount.Target)
+			if mount.Source != filepath.Join(root, strings.TrimPrefix(mount.Target, "/runtime-cache/")) || mount.ReadOnly || mount.Persistence != "node" {
+				t.Fatalf("shared cache must be writable and node-local: %#v", mount)
+			}
+			info, err := os.Stat(mount.Source)
+			if err != nil || info.Mode().Perm() != 0777 {
+				t.Fatalf("cache must admit the runtime image user: %v, %v", info, err)
+			}
+			entry := filepath.Join(mount.Source, "retained-entry")
+			if workload == model.WorkloadJob {
+				if err := os.WriteFile(entry, []byte("cached"), 0644); err != nil {
+					t.Fatal(err)
+				}
+			} else if data, err := os.ReadFile(entry); err != nil || string(data) != "cached" {
+				t.Fatalf("cache was not retained across workloads/recreation: %q, %v", data, err)
+			}
+		}
+		slices.Sort(shared)
+		if !slices.Equal(shared, []string{"/runtime-cache/gen", "/runtime-cache/npm", "/runtime-cache/remote"}) {
+			t.Fatalf("expected npm, remote and gen cache mounts, got %#v", profile.Mounts)
 		}
 	}
 }

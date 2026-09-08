@@ -22,7 +22,7 @@ func TestSelectGroupingStrategiesAndOverrides(t *testing.T) {
 		{"owner", Request{WorkloadType: model.WorkloadService, OwnerID: "s1", Strategy: model.GroupingOwner, Profile: profile(model.WorkloadService, model.DependencyCachedOnly)}, "service:owner:s1", false},
 		{"isolated", Request{WorkloadType: model.WorkloadJob, OwnerID: "j1", ExecutionID: "e1", Strategy: model.GroupingIsolated, Profile: profile(model.WorkloadJob, model.DependencyCachedOnly)}, "job:isolated:e1", false},
 		{"namespace", Request{WorkloadType: model.WorkloadService, OwnerID: "s1", Namespace: "package", Strategy: model.GroupingNamespace, Profile: profile(model.WorkloadService, model.DependencyCachedOnly)}, "service:namespace:package", false},
-		{"shared", Request{WorkloadType: model.WorkloadService, OwnerID: "s1", Strategy: model.GroupingShared, Profile: profile(model.WorkloadService, model.DependencyCachedOnly)}, "service:shared", false},
+		{"shared", Request{WorkloadType: model.WorkloadService, OwnerID: "s1", Strategy: model.GroupingShared, Profile: profile(model.WorkloadService, model.DependencyCachedOnly)}, "service:placement:", false},
 		{"override", Request{WorkloadType: model.WorkloadJob, OwnerID: "j1", ExplicitGroupKey: "queue", Strategy: model.GroupingOwner, Profile: profile(model.WorkloadJob, model.DependencyCachedOnly)}, "job:explicit:queue", false},
 		{"missing namespace", Request{WorkloadType: model.WorkloadService, OwnerID: "s1", Strategy: model.GroupingNamespace, Profile: profile(model.WorkloadService, model.DependencyCachedOnly)}, "", true},
 	}

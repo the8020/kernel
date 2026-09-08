@@ -94,19 +94,18 @@ type WorkerStatus struct {
 }
 
 type ExecutionMetadata struct {
-	WorkerID           string                    `json:"workerId"`
-	WorkloadType       model.WorkloadType        `json:"workloadType"`
-	OwnerID            string                    `json:"ownerId"`
-	WorkloadID         string                    `json:"workloadId"`
-	ReleaseID          string                    `json:"releaseId"`
-	Entrypoint         string                    `json:"entrypoint"`
-	DebuggerName       string                    `json:"debuggerName"`
-	ValidateEntrypoint bool                      `json:"validateEntrypoint,omitempty"`
-	DatabaseBackend    string                    `json:"databaseBackend"`
-	DatabaseAccess     string                    `json:"databaseAccess,omitempty"`
-	User               execution.User            `json:"user"`
-	Origin             execution.Origin          `json:"origin"`
-	Service            *ServiceExecutionMetadata `json:"service,omitempty"`
+	WorkerID        string                    `json:"workerId"`
+	WorkloadType    model.WorkloadType        `json:"workloadType"`
+	OwnerID         string                    `json:"ownerId"`
+	WorkloadID      string                    `json:"workloadId"`
+	ReleaseID       string                    `json:"releaseId"`
+	Entrypoint      string                    `json:"entrypoint"`
+	DebuggerName    string                    `json:"debuggerName"`
+	DatabaseBackend string                    `json:"databaseBackend"`
+	DatabaseAccess  string                    `json:"databaseAccess,omitempty"`
+	User            execution.User            `json:"user"`
+	Origin          execution.Origin          `json:"origin"`
+	Service         *ServiceExecutionMetadata `json:"service,omitempty"`
 }
 
 func (m ExecutionMetadata) Valid() bool {
@@ -218,6 +217,17 @@ func (c *Client) Workers(ctx context.Context, spec model.SandboxSpec) ([]WorkerS
 	return response.Workers, nil
 }
 
+func (c *Client) MatchingImports(ctx context.Context, spec model.SandboxSpec, workerIDs, paths []string) ([]string, error) {
+	var response struct {
+		WorkerIDs []string `json:"worker_ids"`
+	}
+	err := c.control(ctx, spec, "/v1/workers/matching-imports", protocol.MessageWorkerImportsMatch, struct {
+		WorkerIDs []string `json:"worker_ids"`
+		Paths     []string `json:"paths"`
+	}{workerIDs, paths}, protocol.MessageWorkerImportsMatch, &response)
+	return response.WorkerIDs, err
+}
+
 func (c *Client) Snapshot(ctx context.Context, spec model.SandboxSpec) (model.RuntimeSnapshot, error) {
 	var snapshot model.RuntimeSnapshot
 	if err := c.query(ctx, spec, "/v1/snapshot", &snapshot); err != nil {
@@ -291,18 +301,18 @@ func (c *Client) InvokeWorker(ctx context.Context, spec model.SandboxSpec, worke
 	return result, nil
 }
 
-func (c *Client) RunJob(ctx context.Context, spec model.SandboxSpec, workerID string, arguments []any, secrets map[string]string, checkModules []string) (JobResult, error) {
+func (c *Client) RunJob(ctx context.Context, spec model.SandboxSpec, workerID string, arguments []any, secrets map[string]string, dependencyModules []string) (JobResult, error) {
 	invocation, ok := execution.InvocationFromContext(ctx)
 	if !ok || invocation.JobRunID == "" {
 		return JobResult{}, errors.New("job invocation identity is required")
 	}
 	var response JobResult
 	if err := c.control(ctx, spec, "/v1/jobs/"+url.PathEscape(workerID)+"/run", protocol.MessageJobStart, struct {
-		Invocation   execution.Invocation `json:"invocation"`
-		Arguments    []any                `json:"arguments"`
-		Secrets      map[string]string    `json:"secrets"`
-		CheckModules []string             `json:"check_modules,omitempty"`
-	}{Invocation: invocation, Arguments: append([]any{}, arguments...), Secrets: cloneSecrets(secrets), CheckModules: append([]string(nil), checkModules...)}, protocol.MessageJobResult, &response); err != nil {
+		Invocation        execution.Invocation `json:"invocation"`
+		Arguments         []any                `json:"arguments"`
+		Secrets           map[string]string    `json:"secrets"`
+		DependencyModules []string             `json:"dependency_modules,omitempty"`
+	}{Invocation: invocation, Arguments: append([]any{}, arguments...), Secrets: cloneSecrets(secrets), DependencyModules: append([]string(nil), dependencyModules...)}, protocol.MessageJobResult, &response); err != nil {
 		return JobResult{}, err
 	}
 	return response, nil

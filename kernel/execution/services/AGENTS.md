@@ -54,9 +54,9 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
   of cached supervisor occupancy and kernel reservations, grows Workers to
   preserve target headroom, and reports typed sandbox-capacity failure when the
   high-level scheduler must place capacity elsewhere.
-- `Capacity` reads only the selected sandbox's cached snapshot. Lifecycle
-  and reconciliation mutations use a striped service lock; unrelated pools do
-  not serialize behind supervisor or sandbox I/O.
+- `Capacity` reads only the selected sandbox's cached snapshot. Lifecycle and
+  reconciliation mutations use a striped service lock; unrelated pools do not
+  serialize behind supervisor or sandbox I/O.
 - A supervisor call made outside that striped lock must re-read and match the
   pool's runtime identity before persisting failure, so an old response cannot
   overwrite a replacement pool.
@@ -82,15 +82,21 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
   headroom, excludes Workers from supervisor scheduling before graceful stop,
   and never removes an occupied persistent slot. Full streams retain ownership
   through end/cancel.
-- Pool shutdown marks the pool `DRAINING` and excludes it from dispatch. It
+- `RestartRevision` persists the generic restart intent applied to an
+  allocation, separately from its application/runtime generation. `Kill` removes
+  admission then immediately terminates every owned Worker, including occupied
+  and unrecorded live Workers of that pool, and releases only its sandbox
+  ownership.
+- Pool shutdown marks the pool `DRAINING` and excludes it from new dispatch. It
   stops idle Workers, returns incomplete without error while any Worker reports
   occupied execution slots, and leaves that ownership durable for
   reconciliation. Once empty, it removes every Worker, releases its sandbox
-  owner, and destroys the sandbox when that was its final owner. Failed startup
-  also releases partial ownership. If the sandbox was already removed,
-  shutdown retires the recoverable pool index without contacting missing
-  Workers. `RemoveStopped` deletes only a pool that is durably `STOPPED` with no
-  recorded Workers.
+  owner, and leaves empty-sandbox keepalive to the shared lifecycle manager.
+  Failed startup also releases partial ownership. If the sandbox was already
+  removed, shutdown retires the recoverable pool index without contacting
+  missing Workers.
+  `RemoveStopped` deletes only a pool that is durably `STOPPED` with no recorded
+  Workers.
 - A start failure before group ownership is acquired removes its provisional
   pool record immediately; it must not leave an empty-group artifact for the
   filesystem reconciler to retry.
@@ -98,9 +104,9 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
   not unavailable capacity. Startup stops any partial Workers, releases the
   provisional group, and deletes the pool record when cleanup completes; only
   incomplete cleanup remains durably recoverable.
-- Sandbox/supervisor failure marks every live service in the sandbox
-  failed with a durable runtime-unavailable marker. Subsequent shutdown clears
-  its Worker indexes and releases ownership without calling the dead group.
+- Sandbox/supervisor failure marks every live service in the sandbox failed with
+  a durable runtime-unavailable marker. Subsequent shutdown clears its Worker
+  indexes and releases ownership without calling the dead group.
 - Startup reconciliation may call `RetireUnavailable` for an exact pool whose
   sandbox is authoritatively absent; it clears Worker indexes and persists
   `STOPPED` without probing the vanished runtime.

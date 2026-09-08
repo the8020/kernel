@@ -37,8 +37,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   service-record cleanup → initialize/validate the database catalog → compose
   the non-durable job runtime, shared-package program runner, and table
   evaluator → recover a pending schema deployment or fully synchronize an
-  uninitialized database → index package commands, events, and hooks → run
-  ordinary service-index hook jobs and publish package fragments plus
+  uninitialized database → index package commands, events, and hooks → run one
+  ordinary service-index hook job and publish package fragments plus
   active-runtime-only maintenance → heartbeat/OOM and hourly history-retention
   monitoring.
 - The command socket publishes `runtime initialization is in progress` until one
@@ -101,7 +101,7 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - The event dispatcher starts its minute-aligned timer only after the complete
   runtime dependency snapshot is published. One `runtimeIndexer.Reindex` entry
   point refreshes commands and both handler indexes and package-scoped service
-  fragments at startup, after local activation, after remote source convergence,
+  fragments at startup, after local activation, after shared source publication,
   and through `kernel.reindex`. A nil/empty package selection is a full rebuild;
   lifecycle callers pass only changed package IDs. A successful revision refresh
   is retained across service retries so those retries never repeat discovery.
@@ -155,6 +155,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   manager as its transactional runtime applier, uses the private
   `node/kernel/ssh/host_ed25519` key, and starts only after authentication,
   development lifecycle, and the shared console broker are available.
+- Named SSH admission calls the dev-core terminal service's `/open` through
+  generic local service dispatch with the already approved native principal,
+  then attaches the returned physical PTY through the same broker. Package code
+  owns display state, labels, and metadata; Go owns no terminal renderer.
 - Configured image reference and optional immutable digest must match the
   selected pinned runtime before sandbox composition proceeds; the configured
   containerd runtime name applies only to full mode.
@@ -170,6 +174,12 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   receives database credentials or direct database network permissions.
 - Runtime composition gives the sandbox lifecycle owner the existing logging
   manager so authenticated log sources follow native creation and cleanup.
+- Runtime composition supplies the node's sandbox keepalive, default two
+  minutes. Existing health maintenance wakes at most one second apart and
+  processes the cached idle queue as well as stale heartbeats; normal callbacks
+  update Worker counts without polling supervisors. Explicit zero duration
+  overrides remain zero. Development and reserved warm capacity retain their own
+  lifetime rules.
 - Full runtime readiness and task creation share the complete backend
   configuration. The initial probe client closes after its read; the retained
   doctor uses the live runtime backend once connected, never the retired probe
@@ -187,6 +197,18 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   outbound network/imports, and writable `/tmp` and `/runtime-cache`, and keep
   portable dependency mode in sandbox compatibility. Durable shared application
   data goes through the kernel database bridge.
+- Runtime composition creates
+  `node/kernel/runtime/deno-cache/<Deno version>/<backend>/` once and
+  bind-mounts its writable `npm`, `remote`, and `gen` directories into both
+  workload profiles. The bounded `/runtime-cache` tmpfs retains private
+  SQLite/WAL and other process caches. Entries survive sandbox destruction and
+  kernel restart and remain visible to already-running sandboxes. Backend
+  separation avoids mixing the rootless and image-user filesystem ownership.
+  Only those three child directories are mounted; the enclosing node directory
+  stays private. Deno owns file publication and source/version validation.
+  Simultaneous cold misses may duplicate work; no cache-wide execution lock,
+  cache scanning, or application replay is introduced. Development composition
+  does not use this cache.
 - Runtime composition derives the node temporary-storage budget when its
   node-local setting is zero, applies node Worker admission and the kernel-wide
   per-sandbox Worker maximum, and publishes local sandbox/Worker/execution-slot
@@ -225,10 +247,17 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   through Deno; explicit service actions and cold requests reconcile directly,
   while the timer touches only live or capacity-pending services. The
   shared-state monitor scalar-polls package and generic index revisions; only an
-  advanced revision loads and reconciles its affected IDs. Database or
-  package-source convergence failures gate the public plane; a failure to start
-  one affected service remains local, keeps its revision pending, and retries
-  without taking unrelated services offline.
+  advanced revision loads and reconciles its affected IDs. Database or package
+  revision-read failures gate the public plane; a failure to start one affected
+  service remains local, keeps its revision pending, and retries without taking
+  unrelated services offline.
+- Local activation and the shared-state monitor use the same serialized revision
+  consumer. A source update scans current service Worker imports and publishes
+  deduplicated soft-restart intent before reindexing changed package fragments;
+  the generic index follower then applies restart markers on every node.
+  Scan/publication failures retain the update for retry without gating unrelated
+  traffic. Composition injects Worker inspection and generic lifecycle methods;
+  package code owns source-update orchestration. Followers never copy sources.
 - The runtime monitor uses cheap scalar package/index revisions on its normal
   cadence. Shared node topology refresh is independently bounded and never
   becomes a per-request or one-second full-table dependency; runtime callbacks
@@ -239,6 +268,16 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   unavailable.
 - Extend composition only when a kernel-owned Phase requirement adds a real
   lifecycle service.
+
+- Service indexing sends the selected package/commit set through the complete
+  ordered hook chain in one Worker invocation. Results are keyed by package;
+  foreign or missing owners are rejected, failed/invalid fragments retain their
+  accepted state, and healthy fragments publish independently. Pending repair
+  batches only the remaining owners. The first startup/recovery reindex fills
+  the whole local index; startup does not repeat a completed bootstrap pass.
+- Restore inherited workload state before schema jobs or package commands can
+  start. Startup recovery must never classify a new job's normal sandbox
+  deletion as an inherited runtime failure.
 
 # Work Guidance
 
@@ -263,6 +302,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   instructions, and cleanup; `runtime_test.go` covers startup failure
   propagation, healthy-sandbox selection, ordered cleanup stages, and concurrent
   controller cleanup.
+- `runtime_test.go` also verifies shared-cache retention across service/job
+  profiles and recreation while preserving private bounded SQLite storage.
 
 # Child DOX Index
 

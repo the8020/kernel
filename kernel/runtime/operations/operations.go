@@ -122,6 +122,19 @@ func (d *Dispatcher) Execute(ctx context.Context, operation string, input map[st
 			WorkerID: input["workerId"].(string), ExecutionID: input["persistentExecutionId"].(string),
 		})
 	}
+	if operation == "service.restart" {
+		runtime := d.services.RuntimeSnapshot()
+		if runtime == nil || runtime.Services == nil {
+			return nil, errors.New("service runtime is unavailable")
+		}
+		serviceID, idOK := input["service_id"].(string)
+		mode, modeOK := input["mode"].(string)
+		if !idOK || !modeOK || len(input) != 2 {
+			return nil, commandcore.NewError(commandcore.CodeInvalidArguments, "service_id and mode are required")
+		}
+		status, err := runtime.Services.Restart(ctx, serviceID, mode, 0)
+		return commandcore.Result{"service": status}, err
+	}
 	if strings.HasPrefix(operation, "crypto.") {
 		return d.crypto(operation, input)
 	}

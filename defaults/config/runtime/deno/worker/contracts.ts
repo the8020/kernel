@@ -60,7 +60,6 @@ export interface ExecutionMetadata {
   releaseId: string;
   entrypoint: string;
   debuggerName: string;
-  validateEntrypoint?: boolean;
   databaseBackend: "sqlite" | "postgresql";
   databaseAccess?: "full" | "none";
   user: ExecutionUserMetadata;
@@ -94,6 +93,7 @@ export interface ServiceRequestMetadata {
   user: ExecutionUserMetadata;
   auth: AuthContext;
   authentication?: {
+    approved?: boolean;
     module: string;
     claims: Record<string, unknown>;
     unauthenticated: {

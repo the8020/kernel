@@ -21,36 +21,38 @@ type Store struct {
 	root           string
 	records        map[string]cachedRecord
 	ids            map[string]bool
-	heartbeats     heartbeatQueue
-	heartbeatItems map[string]*heartbeatItem
+	heartbeats     timeQueue
+	heartbeatItems map[string]*timeItem
+	idle           timeQueue
+	idleItems      map[string]*timeItem
 	locks          [64]sync.Mutex
 }
 
-type heartbeatItem struct {
+type timeItem struct {
 	sandboxID  string
 	observedAt time.Time
 	index      int
 }
 
-type heartbeatQueue []*heartbeatItem
+type timeQueue []*timeItem
 
-func (q heartbeatQueue) Len() int { return len(q) }
-func (q heartbeatQueue) Less(i, j int) bool {
+func (q timeQueue) Len() int { return len(q) }
+func (q timeQueue) Less(i, j int) bool {
 	if q[i].observedAt.Equal(q[j].observedAt) {
 		return q[i].sandboxID < q[j].sandboxID
 	}
 	return q[i].observedAt.Before(q[j].observedAt)
 }
-func (q heartbeatQueue) Swap(i, j int) {
+func (q timeQueue) Swap(i, j int) {
 	q[i], q[j] = q[j], q[i]
 	q[i].index, q[j].index = i, j
 }
-func (q *heartbeatQueue) Push(value any) {
-	item := value.(*heartbeatItem)
+func (q *timeQueue) Push(value any) {
+	item := value.(*timeItem)
 	item.index = len(*q)
 	*q = append(*q, item)
 }
-func (q *heartbeatQueue) Pop() any {
+func (q *timeQueue) Pop() any {
 	prior := *q
 	last := len(prior) - 1
 	item := prior[last]
@@ -77,7 +79,7 @@ func New(root string) (*Store, error) {
 	if err := os.Chmod(root, 0o700); err != nil {
 		return nil, fmt.Errorf("restrict sandbox state: %w", err)
 	}
-	store := &Store{root: root, records: map[string]cachedRecord{}, ids: map[string]bool{}, heartbeatItems: map[string]*heartbeatItem{}}
+	store := &Store{root: root, records: map[string]cachedRecord{}, ids: map[string]bool{}, heartbeatItems: map[string]*timeItem{}, idleItems: map[string]*timeItem{}}
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil, err
@@ -90,6 +92,7 @@ func New(root string) (*Store, error) {
 		if record, loadErr := store.readRecord(entry.Name()); loadErr == nil {
 			store.records[entry.Name()] = record
 			store.updateHeartbeatLocked(entry.Name(), record.status)
+			store.updateIdleLocked(entry.Name(), record)
 		}
 	}
 	return store, nil
@@ -117,6 +120,7 @@ func (s *Store) SaveSpec(spec model.SandboxSpec) error {
 	s.records[spec.SandboxID] = record
 	s.ids[spec.SandboxID] = true
 	s.updateHeartbeatLocked(spec.SandboxID, record.status)
+	s.updateIdleLocked(spec.SandboxID, record)
 	s.mu.Unlock()
 	return nil
 }
@@ -138,6 +142,7 @@ func (s *Store) SaveStatus(sandboxID string, status model.SandboxStatus) error {
 	s.records[sandboxID] = record
 	s.ids[sandboxID] = true
 	s.updateHeartbeatLocked(sandboxID, status)
+	s.updateIdleLocked(sandboxID, record)
 	s.mu.Unlock()
 	return nil
 }
@@ -283,6 +288,7 @@ func (s *Store) Delete(sandboxID string) error {
 	}
 	s.mu.Lock()
 	s.removeHeartbeatLocked(sandboxID)
+	removeTime(&s.idle, s.idleItems, sandboxID)
 	delete(s.records, sandboxID)
 	delete(s.ids, sandboxID)
 	s.mu.Unlock()
@@ -319,6 +325,11 @@ func (s *Store) Observe(sandboxID string, snapshot model.RuntimeSnapshot, observ
 		record.status.SupervisorHealthy = true
 		record.status.SupervisorVersion = snapshot.SupervisorVersion
 		record.status.DenoVersion = snapshot.DenoVersion
+		if snapshot.WorkerCount > 0 {
+			record.status.IdleSince = time.Time{}
+		} else if record.status.WorkerCount > 0 || record.status.IdleSince.IsZero() {
+			record.status.IdleSince = observedAt
+		}
 		record.status.WorkerCount = snapshot.WorkerCount
 	}
 	if snapshot.SupervisorStartedAtMS >= current.SupervisorStartedAtMS && observedAt.After(record.status.LastHeartbeat) {
@@ -343,22 +354,25 @@ func (s *Store) Snapshot(sandboxID string) (model.RuntimeSnapshot, bool) {
 // then call RescheduleHeartbeat; a concurrent heartbeat inserts its own newer
 // deadline immediately.
 func (s *Store) ClaimStaleHeartbeats(cutoff time.Time, limit int) []string {
-	if limit < 1 {
-		return nil
-	}
 	s.mu.Lock()
-	result := make([]string, 0, min(limit, len(s.heartbeats)))
-	for len(s.heartbeats) > 0 && len(result) < limit {
-		item := s.heartbeats[0]
-		if item.observedAt.After(cutoff) {
-			break
-		}
-		heap.Pop(&s.heartbeats)
-		delete(s.heartbeatItems, item.sandboxID)
-		result = append(result, item.sandboxID)
+	defer s.mu.Unlock()
+	return claimTimes(&s.heartbeats, s.heartbeatItems, cutoff, limit)
+}
+
+// ClaimIdle returns a bounded set of unused sandboxes whose last Worker left
+// before cutoff. New ownership or a newer Worker snapshot cancels eligibility.
+func (s *Store) ClaimIdle(cutoff time.Time, limit int) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return claimTimes(&s.idle, s.idleItems, cutoff, limit)
+}
+
+func (s *Store) RescheduleIdle(sandboxID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if record, ok := s.records[sandboxID]; ok {
+		s.updateIdleLocked(sandboxID, record)
 	}
-	s.mu.Unlock()
-	return result
 }
 
 // RescheduleHeartbeat restores one claimed sandbox from its newest
@@ -437,35 +451,69 @@ func (s *Store) putRecord(sandboxID string, record cachedRecord) {
 	s.records[sandboxID] = record
 	s.ids[sandboxID] = true
 	s.updateHeartbeatLocked(sandboxID, record.status)
+	s.updateIdleLocked(sandboxID, record)
 	s.mu.Unlock()
 }
 
 func (s *Store) updateHeartbeatLocked(sandboxID string, status model.SandboxStatus) {
 	record, complete := s.records[sandboxID]
 	monitor := complete && record.complete && (status.ObservedState == model.StateReady || status.ObservedState == model.StateActive || status.ObservedState == model.StateDraining)
-	item, exists := s.heartbeatItems[sandboxID]
 	if !monitor {
-		if exists {
-			heap.Remove(&s.heartbeats, item.index)
-			delete(s.heartbeatItems, sandboxID)
-		}
+		s.removeHeartbeatLocked(sandboxID)
 		return
 	}
-	if exists {
-		item.observedAt = status.LastHeartbeat
-		heap.Fix(&s.heartbeats, item.index)
-		return
-	}
-	item = &heartbeatItem{sandboxID: sandboxID, observedAt: status.LastHeartbeat}
-	s.heartbeatItems[sandboxID] = item
-	heap.Push(&s.heartbeats, item)
+	setTime(&s.heartbeats, s.heartbeatItems, sandboxID, status.LastHeartbeat)
 }
 
 func (s *Store) removeHeartbeatLocked(sandboxID string) {
-	if item, ok := s.heartbeatItems[sandboxID]; ok {
-		heap.Remove(&s.heartbeats, item.index)
-		delete(s.heartbeatItems, sandboxID)
+	removeTime(&s.heartbeats, s.heartbeatItems, sandboxID)
+}
+
+func (s *Store) updateIdleLocked(sandboxID string, record cachedRecord) {
+	status, spec := record.status, record.spec
+	eligible := record.complete && !spec.Lifecycle.Warm && len(spec.OwnerIDs) == 0 && status.WorkerCount == 0 &&
+		status.ObservedState != model.StateCreating && status.ObservedState != model.StateStarting && status.ObservedState != model.StateDraining
+	if !eligible || status.IdleSince.IsZero() {
+		removeTime(&s.idle, s.idleItems, sandboxID)
+		return
 	}
+	setTime(&s.idle, s.idleItems, sandboxID, status.IdleSince)
+}
+
+func removeTime(queue *timeQueue, items map[string]*timeItem, sandboxID string) {
+	if item, exists := items[sandboxID]; exists {
+		heap.Remove(queue, item.index)
+		delete(items, sandboxID)
+	}
+}
+
+func setTime(queue *timeQueue, items map[string]*timeItem, sandboxID string, when time.Time) {
+	item, exists := items[sandboxID]
+	if exists {
+		item.observedAt = when
+		heap.Fix(queue, item.index)
+		return
+	}
+	item = &timeItem{sandboxID: sandboxID, observedAt: when}
+	items[sandboxID] = item
+	heap.Push(queue, item)
+}
+
+func claimTimes(queue *timeQueue, items map[string]*timeItem, cutoff time.Time, limit int) []string {
+	if limit < 1 {
+		return nil
+	}
+	result := make([]string, 0, min(limit, queue.Len()))
+	for queue.Len() > 0 && len(result) < limit {
+		item := (*queue)[0]
+		if item.observedAt.After(cutoff) {
+			break
+		}
+		heap.Pop(queue)
+		delete(items, item.sandboxID)
+		result = append(result, item.sandboxID)
+	}
+	return result
 }
 
 func (s *Store) write(sandboxID, name string, value any) error {

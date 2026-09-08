@@ -137,7 +137,7 @@ func TestEvaluationBatchesModulesAndReusesOneRelease(t *testing.T) {
 	if len(result.Tables) != maximumBatch+1 || len(runner.calls) != 2 {
 		t.Fatalf("tables=%d calls=%d", len(result.Tables), len(runner.calls))
 	}
-	if len(runner.calls[0].CheckModules) != maximumBatch || len(runner.calls[1].CheckModules) != 1 || runner.calls[0].ReleaseID == "" || runner.calls[0].ReleaseID != runner.calls[1].ReleaseID {
+	if len(runner.calls[0].DependencyModules) != maximumBatch || len(runner.calls[1].DependencyModules) != 1 || runner.calls[0].ReleaseID == "" || runner.calls[0].ReleaseID != runner.calls[1].ReleaseID {
 		t.Fatalf("batch options = %#v", runner.calls)
 	}
 	for _, call := range runner.calls {
@@ -375,7 +375,7 @@ func TestIncrementalPreparationEvaluatesOnlyChangedAndDependentTables(t *testing
 	}
 	modules := []string{}
 	for _, call := range runner.calls[before:] {
-		modules = append(modules, call.CheckModules...)
+		modules = append(modules, call.DependencyModules...)
 	}
 	sort.Strings(modules)
 	wanted := []string{

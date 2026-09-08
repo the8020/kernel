@@ -1,4 +1,6 @@
-/** Physical terminals have kernel lifetime. Names and display state are package-owned. */
+import type { PersistentServiceTarget } from "./services.ts";
+
+/** Physical terminals have kernel lifetime. Labels and display state are package-owned. */
 export interface TerminalSize {
   columns: number;
   rows: number;
@@ -6,6 +8,7 @@ export interface TerminalSize {
 
 export interface TerminalInfo {
   id: string;
+  sessionId?: string;
   kind: "development" | "runtime";
   sandboxId: string;
   size: TerminalSize;
@@ -27,6 +30,15 @@ export interface TerminalAttachment {
   terminal: TerminalInfo;
   attachmentId: string;
 }
+
+export interface TerminalOpenInput extends TerminalCreateInput {
+  sessionId: string;
+  owner: PersistentServiceTarget;
+}
+
+export type TerminalOpenResult =
+  | (TerminalAttachment & { after: number; reset: boolean })
+  | { terminal: TerminalInfo; owner: PersistentServiceTarget };
 
 export interface TerminalEvent {
   sequence: number;
@@ -93,6 +105,13 @@ export function terminalAPI(callOperation: Operation) {
     return result as T;
   };
   return Object.freeze({
+    /** Reuse or create one sandbox-scoped session; a live processor retains ownership. */
+    open(
+      input: TerminalOpenInput,
+      signal?: AbortSignal,
+    ): Promise<TerminalOpenResult> {
+      return operation("terminal.open", { ...input }, signal);
+    },
     create(
       input: TerminalCreateInput,
       signal?: AbortSignal,

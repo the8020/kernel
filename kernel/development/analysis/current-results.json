@@ -1,0 +1,268 @@
+{
+  "recorded_date": "2026-09-08",
+  "kernel_head": "f4c6fe0d1af77d32a33f34e476a8cd51485e276f",
+  "source_state": "Existing dirty worktree; this task changes only workflow analysis files.",
+  "scope": "Current implementation characterization and existing probes; no replacement filesystem qualification.",
+  "timing_limits": "Samples within each probe are sequential; independent probes could overlap. Warm page cache and uncontrolled host scheduling. Git candidate benchmarks exclude capture, validation, publication and durability.",
+  "logs": {
+    "runtime": "=== RUN   TestWorkflowAnalysisRuntime\n    workflow_analysis_test.go:172: live lower/private: \"host-visible-now\\nB\\n\"\n    workflow_analysis_test.go:186: A activation: duration=308.139375ms reset=true success=true\n    workflow_analysis_test.go:187: A generation after activation: replaced\n    workflow_analysis_test.go:190: B activation: duration=294.402625ms success=true status=committed error=<nil>\n    workflow_analysis_test.go:193: published same-line=\"B\\n\" disjoint-line=\"first\\n2\\n3\\n4\\n5\\n6\\n7\\nB-last\\n\"\n    workflow_analysis_test.go:205: stale-capture merge: status=conflicted conflicts=[\"same.txt\"] error=exit status 1\n    workflow_analysis_test.go:210: host merge conflict has markers=true\n    workflow_analysis_test.go:212: sandbox after conflict cleanup=\"B-next\\n\"\n    workflow_analysis_test.go:231: after abrupt loss: crash-new.txt=lost\n        ignored/artifact=lost\n    workflow_analysis_test.go:250: real helper conflict preserves process generation and returns: {\"success\":false,\"status\":\"conflicted\",\"overlay_reset\":false,\"packages\":[{\"package_id\":\"the8020/dev-core\",\"status\":\"conflicted\",\"previous_commit\":\"c4a11de147d786960e391ed66f66ff7e0e29108a\",\"commit_message\":\"Helper conflict\",\"conflicts\":[\"same.txt\"],\"error\":\"Auto-merging same.txt\\nCONFLICT (content): Merge conflict in same.txt\\nerror: could not apply e95c7d5... Helper conflict\\nhint: After resolving the conflicts, mark them with\\nhint: \\\"git add/rm \\u003cpathspec\\u003e\\\", then run\\nhint: \\\"git cherry-pick --continue\\\".\\nhint: You can instead skip this commit with \\\"git cherry-pick --skip\\\".\\nhint: To abort and get back to the state before \\\"git cherry-pick\\\",\\nhint: run \\\"git cherry-pick --abort\\\".\\n\"}]}\n        \n        helper_conflict_exit=3\n    workflow_analysis_test.go:264: direct process after disconnect: dead\n    workflow_analysis_test.go:267: tmux version=tmux 3.5a\n    workflow_analysis_test.go:333: tmux survived 20 authenticated WebSocket closes/switches plus logout/authentication gate; processes=\"first:126\\nsecond:128\\n\"\n    workflow_analysis_test.go:334: remaining tmux clients=\"\"\n    workflow_analysis_test.go:335: tmux detached screen=\"root@sbx-xsqswrsciy:/workspace# printf 'switch-0\\\\n'\\nswitch-0\\nroot@sbx-xsqswrsciy:/workspace# printf 'switch-2\\\\n'\\nswitch-2\\nroot@sbx-xsqswrsciy:/workspace# printf 'switch-4\\\\n'\\nswitch-4\\nroot@sbx-xsqswrsciy:/workspace# printf 'switch-6\\\\n'\\nswitch-6\\nroot@sbx-xsqswrsciy:/workspace# printf 'switch-8\\\\n'\\nswitch-8\\nroot@sbx-xsqswrsciy:/workspace# printf 'switch-10\\\\n'\\nswitch-10\\nroot@sbx-xsqswrsciy:/workspace# printf 'switch-12\\\\n'\\nswitch-12\\nroot@sbx-xsqswrsciy:/workspace# printf 'switch-14\\\\n'\\nswitch-14\\nroot@sbx-xsqswrsciy:/workspace# printf 'switch-16\\\\n'\\nswitch-16\\nroot@sbx-xsqswrsciy:/workspace# printf 'switch-18\\\\n'\\nswitch-18\\nroot@sbx-xsqswrsciy:/workspace#\\n\"\n    workflow_analysis_test.go:340: helper result duration=519.521917ms error=development sandbox exec: exit status 137:  output={\"success\":true,\"status\":\"committed\",\"overlay_reset\":false,\"overlay_reset_pending\":true,\"packages\":[{\"package_id\":\"the8020/dev-core\",\"status\":\"committed\",\"previous_commit\":\"c4a11de147d786960e391ed66f66ff7e0e29108a\",\"resulting_commit\":\"a282d8b85daca4921eff7323d25ef3c8589d29be\",\"commit_message\":\"Helper publication\"}]}\n    workflow_analysis_test.go:349: helper caller survived=no\n--- PASS: TestWorkflowAnalysisRuntime (23.94s)\nPASS\nok  \tthe8020/kernel/development\t23.946s\n",
+    "races": "=== RUN   TestWorkflowAnalysisRaces\n    workflow_races_test.go:51: capture-to-pause write: committed=true shared_retained=false private_retained=false\n    workflow_races_test.go:73: unrelated repository read blocked for entire 200ms schema-hook window\n    workflow_races_test.go:86: repository read released after 230.656334ms\n--- PASS: TestWorkflowAnalysisRaces (0.33s)\nPASS\nok  \tthe8020/kernel/development\t0.338s\n",
+    "native_git": "=== RUN   TestWorkflowAnalysisGit\n    workflow_analysis_test.go:127: activation preview after native commit=[{Path:same.txt Change:modified}]\n    workflow_analysis_test.go:138: native Git after checkpoint/restart=\"local_branch=lost\\nlocal_commit=lost\\n M same.txt\\n\"\n    workflow_analysis_test.go:146: native source/status after untouched shared update=\"shared-advance\\n\"\n    workflow_analysis_test.go:147: native path versus stream hashing=\"stat_size=7\\nc38f87f8c22136bce783105a70f384da68fd0bc3\\n63f55e68e62b0323908dc7ffb655ebaa8e776562\\n\"\n    workflow_analysis_test.go:150: activation preview after shared advance: packages=[{PackageID:the8020/dev-core Selected:true BaseCommit:e95469152bb87a6fc06faf661bd0a438408270f9 SharedCommit:e95469152bb87a6fc06faf661bd0a438408270f9 RequiresMerge:false ActivationReady:true RemoteName: RemoteURL: ChangedFiles:2 AddedRows:2 RemovedRows:2 Files:[{Path:same.txt Change:modified} {Path:untouched.txt Change:modified}]}] error=<nil>\n--- PASS: TestWorkflowAnalysisGit (6.99s)\nPASS\nok  \tthe8020/kernel/development\t7.001s\n",
+    "fuse_1000": "=== RUN   TestWorkflowAnalysisFuse\n    workflow_fuse_test.go:339: external FUSE mount works on pinned runsc without host /dev/fuse\n    workflow_fuse_test.go:348: FUSE live lower/private=\"live-update\\nprivate\\n\"\n    workflow_fuse_test.go:357: FUSE returns published file after removing one upper, with sandbox still alive\n    workflow_fuse_test.go:365: executable/mmap probe=\"direct_exit=0\\n/bin/bash: line 1: /workspace/fuse/elf-probe: Permission denied\\nfuse_exit=126\\nfatal: /workspace/fuse/.git/index: unable to map index file: Function not implemented\\nfuse_git_index_exit=128\\n\"\n    workflow_fuse_test.go:369: scan shape=1000 tracked small files\n    workflow_fuse_test.go:378: scan mount=/workspace/packages/the8020/dev-core trial=0 duration=95.148958ms\n    workflow_fuse_test.go:378: scan mount=/workspace/packages/the8020/dev-core trial=1 duration=32.295208ms\n    workflow_fuse_test.go:378: scan mount=/workspace/packages/the8020/dev-core trial=2 duration=33.583084ms\n    workflow_fuse_test.go:378: scan mount=/workspace/packages/the8020/dev-core trial=3 duration=31.5515ms\n    workflow_fuse_test.go:378: scan mount=/workspace/fuse trial=0 duration=1.236972917s\n    workflow_fuse_test.go:378: scan mount=/workspace/fuse trial=1 duration=283.278041ms\n    workflow_fuse_test.go:378: scan mount=/workspace/fuse trial=2 duration=274.7595ms\n    workflow_fuse_test.go:378: scan mount=/workspace/fuse trial=3 duration=272.868334ms\n    workflow_fuse_test.go:382: FUSE operation counts=map[1:10109 3:4088 4:1 14:1023 15:1020 16:1 17:1 18:1023 25:1022 26:1 27:8 28:44 29:8 34:11155]\n--- PASS: TestWorkflowAnalysisFuse (3.76s)\nPASS\nok  \tthe8020/kernel/development\t3.767s\n",
+    "retained_terminals": "=== RUN   TestRootlessRetainedTerminals\n    terminal_e2e_test.go:107: two native shell PIDs retained through 20 detach/switch/attach cycles: \"3\\n5\"\n    terminal_e2e_test.go:118: 4 MiB detached native PTY output completed without a reader attachment\n    terminal_e2e_test.go:150: explicit close ended only its PTY; the other shell exited independently with its final output retained\n--- PASS: TestRootlessRetainedTerminals (6.92s)\nPASS\nok  \tthe8020/kernel/development\t6.925s\n"
+  },
+  "git": {
+    "environment": {
+      "kernel": "6.10.14-linuxkit",
+      "arch": "aarch64",
+      "cpus": 6,
+      "git": "git version 2.39.5"
+    },
+    "correctness": [
+      {
+        "case": "disjoint_lines",
+        "merge_exit": 0,
+        "pass": true
+      },
+      {
+        "case": "same_line",
+        "merge_exit": 1,
+        "pass": true
+      },
+      {
+        "case": "identical_edit",
+        "merge_exit": 0,
+        "pass": true
+      },
+      {
+        "case": "add_add",
+        "merge_exit": 1,
+        "pass": true
+      },
+      {
+        "case": "delete_modify",
+        "merge_exit": 1,
+        "pass": true
+      },
+      {
+        "case": "rename_edit",
+        "merge_exit": 0,
+        "pass": true
+      },
+      {
+        "case": "binary_conflict",
+        "merge_exit": 1,
+        "pass": true
+      },
+      {
+        "case": "executable_and_content",
+        "merge_exit": 0,
+        "pass": true
+      },
+      {
+        "case": "symlink_conflict",
+        "merge_exit": 1,
+        "pass": true
+      },
+      {
+        "case": "whitespace_filename",
+        "merge_exit": 1,
+        "pass": true
+      },
+      {
+        "case": "first_touch_after_shared_advance",
+        "pass": true
+      },
+      {
+        "case": "mixed_first_touch_bases_with_live_untouched_paths",
+        "pass": true
+      },
+      {
+        "case": "mixed_bases_retain_shared_rename_topology",
+        "pass": true
+      },
+      {
+        "case": "resolve_then_shared_advances",
+        "pass": true
+      },
+      {
+        "case": "stale_publication_compare_and_swap",
+        "pass": true
+      },
+      {
+        "case": "portable_plain_file_delta_without_original_sandbox_or_git_history",
+        "pass": true
+      },
+      {
+        "case": "portable_git_base_bundle_retains_shared_rename",
+        "pass": true,
+        "fixture_bundle_bytes": 428
+      }
+    ],
+    "benchmark": [
+      {
+        "tracked_files": 100,
+        "dirty_files": 1,
+        "bytes_per_file": 171,
+        "samples": {
+          "index_candidate_ms": [
+            14.058083994314075,
+            3.8058339850977063,
+            4.241292015649378,
+            5.415749968960881,
+            3.7127919495105743
+          ],
+          "merge_tree_only_ms": [
+            0.871709082275629,
+            1.084333984181285,
+            0.7698340341448784,
+            5.921417032368481,
+            0.7596659706905484
+          ],
+          "mixed_base_candidate_ms": [
+            9.153458988294005,
+            8.79425008315593,
+            8.325333008542657,
+            8.511750027537346,
+            8.529250044375658
+          ],
+          "two_worktree_prepare_ms": [
+            16.422584070824087,
+            15.731999999843538,
+            15.62108297366649,
+            15.569958020932972,
+            15.931624919176102
+          ],
+          "worktree_cleanup_ms": [
+            2.353459014557302,
+            2.825042000040412,
+            2.556291059590876,
+            2.4664999218657613,
+            2.414542017504573
+          ]
+        },
+        "median": {
+          "index_candidate_ms": 4.241292015649378,
+          "merge_tree_only_ms": 0.871709082275629,
+          "mixed_base_candidate_ms": 8.529250044375658,
+          "two_worktree_prepare_ms": 15.731999999843538,
+          "worktree_cleanup_ms": 2.4664999218657613
+        }
+      },
+      {
+        "tracked_files": 1000,
+        "dirty_files": 1,
+        "bytes_per_file": 171,
+        "samples": {
+          "index_candidate_ms": [
+            8.762959041632712,
+            6.459666998125613,
+            6.1869589844718575,
+            5.5445830803364515,
+            5.463541019707918
+          ],
+          "merge_tree_only_ms": [
+            0.8197079878300428,
+            0.8558749686926603,
+            0.7402090122923255,
+            0.6915420526638627,
+            0.6987910019233823
+          ],
+          "mixed_base_candidate_ms": [
+            13.047833926975727,
+            9.968541911803186,
+            17.178416019305587,
+            9.85999999102205,
+            10.789333027787507
+          ],
+          "two_worktree_prepare_ms": [
+            74.39279195386916,
+            68.64529207814485,
+            64.77270799223334,
+            62.99187510740012,
+            77.95574993360788
+          ],
+          "worktree_cleanup_ms": [
+            12.21479196101427,
+            12.138707912527025,
+            11.30899996496737,
+            12.085540918633342,
+            15.642083017155528
+          ]
+        },
+        "median": {
+          "index_candidate_ms": 6.1869589844718575,
+          "merge_tree_only_ms": 0.7402090122923255,
+          "mixed_base_candidate_ms": 10.789333027787507,
+          "two_worktree_prepare_ms": 68.64529207814485,
+          "worktree_cleanup_ms": 12.138707912527025
+        }
+      },
+      {
+        "tracked_files": 10000,
+        "dirty_files": 1,
+        "bytes_per_file": 171,
+        "samples": {
+          "index_candidate_ms": [
+            20.41104098316282,
+            13.73466697987169,
+            14.592749997973442,
+            14.423874905332923,
+            14.357791980728507
+          ],
+          "merge_tree_only_ms": [
+            0.8558330591768026,
+            0.8014589548110962,
+            0.8542499272152781,
+            0.8765419479459524,
+            0.800207955762744
+          ],
+          "mixed_base_candidate_ms": [
+            30.09691694751382,
+            26.67891699820757,
+            28.299541911110282,
+            26.73216606490314,
+            27.695750002749264
+          ],
+          "two_worktree_prepare_ms": [
+            593.8222090480849,
+            469.52695795334876,
+            437.910542008467,
+            466.2095420062542,
+            401.0808329330757
+          ],
+          "worktree_cleanup_ms": [
+            95.61654191929847,
+            97.21512498799711,
+            96.28112497739494,
+            98.3310000738129,
+            95.72495799511671
+          ]
+        },
+        "median": {
+          "index_candidate_ms": 14.423874905332923,
+          "merge_tree_only_ms": 0.8542499272152781,
+          "mixed_base_candidate_ms": 27.695750002749264,
+          "two_worktree_prepare_ms": 466.2095420062542,
+          "worktree_cleanup_ms": 96.28112497739494
+        }
+      }
+    ],
+    "binary": {
+      "files": 10,
+      "bytes_per_file": 2097152,
+      "new_distinct_blobs_each_trial": true,
+      "candidate_ms": [
+        395.4277499578893,
+        363.0718330387026,
+        395.0904170051217
+      ],
+      "median_ms": 395.0904170051217
+    },
+    "git_subprocesses": {
+      "max_rss_kib": 76816,
+      "total_user_seconds": 2.264531,
+      "total_system_seconds": 3.25024
+    }
+  }
+}

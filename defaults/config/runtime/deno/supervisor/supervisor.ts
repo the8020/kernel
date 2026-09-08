@@ -39,7 +39,6 @@ export interface SupervisorOptions {
   workerStopGraceMilliseconds?: number;
   kernelCall?: KernelCall;
   nodeId: string;
-  entrypointValidator?: (entrypoints: string[]) => Promise<void>;
   moduleAnalyzer?: (entrypoints: string[]) => Promise<ModuleDependencies>;
   onStateChange?: () => void;
   logSink?: LogSink;
@@ -123,7 +122,6 @@ export class Supervisor {
         SupervisorOptions,
         | "kernelCall"
         | "nodeId"
-        | "entrypointValidator"
         | "moduleAnalyzer"
         | "onStateChange"
         | "logSink"
@@ -149,7 +147,6 @@ export class Supervisor {
 
     reason: string;
   }> = [];
-  #entrypointValidator: (entrypoints: string[]) => Promise<void>;
   #moduleAnalyzer: (entrypoints: string[]) => Promise<ModuleDependencies>;
   #onStateChange?: () => void;
   #revision = 1;
@@ -164,8 +161,7 @@ export class Supervisor {
         "canonical node/sandbox IDs and a high-entropy token are required",
       );
     }
-    const { entrypointValidator, moduleAnalyzer, logSink, ...runtimeOptions } =
-      options;
+    const { moduleAnalyzer, logSink, ...runtimeOptions } = options;
     this.#logSink = logSink;
     this.options = {
       ...runtimeOptions,
@@ -175,7 +171,6 @@ export class Supervisor {
       workerStopGraceMilliseconds: options.workerStopGraceMilliseconds ?? 1_000,
       nodeId: options.nodeId,
     };
-    this.#entrypointValidator = entrypointValidator ?? validateEntrypoints;
     this.#moduleAnalyzer = moduleAnalyzer ?? analyzeModules;
     this.#onStateChange = options.onStateChange;
     if (
@@ -264,9 +259,6 @@ export class Supervisor {
     metadata: ExecutionMetadata,
     fingerprint: string,
   ): Promise<RuntimeWorker> {
-    if (options.metadata.validateEntrypoint === true) {
-      await this.#entrypointValidator([options.metadata.entrypoint]);
-    }
     if (this.#draining) throw new Error("sandbox is draining");
     const worker = new RuntimeWorker({
       ...options,
@@ -406,7 +398,16 @@ export class Supervisor {
 
   async stopWorker(workerId: string, immediate = false): Promise<void> {
     const stopping = this.#workerStops.get(workerId);
-    if (stopping !== undefined) return await stopping;
+    if (stopping !== undefined) {
+      if (immediate) {
+        const worker = this.#workers.get(workerId) ??
+          await this.#workerStarts.get(workerId)?.promise.catch(() =>
+            undefined
+          );
+        worker?.kill();
+      }
+      return await stopping;
+    }
     const promise = this.#stopWorker(workerId, immediate);
     this.#workerStops.set(workerId, promise);
     try {
@@ -502,7 +503,7 @@ export class Supervisor {
     }
     const bindings = previous?.bindings ?? new Map<string, PersistentBinding>();
     const admissions = previous?.admissions ?? new Map<string, number>();
-    const nextPool = {
+    const nextPool = Object.assign(previous ?? {}, {
       workers: pool,
       concurrencyPerWorker,
       queueLimit,
@@ -510,12 +511,8 @@ export class Supervisor {
       executionMode,
       bindings,
       admissions,
-    };
+    });
     this.#sweepPersistentBindings(nextPool);
-    for (const binding of bindings.values()) {
-      const worker = this.#workers.get(binding.workerId);
-      if (worker !== undefined && !worker.closed) pool.add(binding.workerId);
-    }
     this.#servicePools.set(serviceId, nextPool);
     this.#notifyCapacity();
   }
@@ -644,7 +641,7 @@ export class Supervisor {
         const worker = this.#workers.get(existing.workerId);
         if (
           worker === undefined || worker.closed || worker.draining ||
-          !pool.workers.has(existing.workerId)
+          worker.metadata.workloadId !== serviceId
         ) {
           pool.bindings.delete(executionId);
           this.#notifyCapacity();
@@ -668,6 +665,12 @@ export class Supervisor {
       // A signed route can select only a live binding. Never turn a follow-up
       // into a new execution, even when its original Worker still exists.
       if (existingOnly) throw new PersistentExecutionLostError();
+      if (
+        pool.workers.size === 0 ||
+        targetWorkerId !== null && !pool.workers.has(targetWorkerId)
+      ) {
+        throw new ServiceUnavailableError("service has no eligible Worker");
+      }
       const reserved = new Map<string, number>();
       for (const binding of pool.bindings.values()) {
         reserved.set(
@@ -770,6 +773,7 @@ export class Supervisor {
         lease.worker,
         signal,
         alreadyQueued,
+        true,
       );
       lease.admitted = true;
       if (pool.bindings.get(lease.executionId!) !== lease.binding) {
@@ -788,11 +792,12 @@ export class Supervisor {
     worker: RuntimeWorker,
     signal: AbortSignal,
     alreadyQueued = false,
+    bound = false,
   ): Promise<void> {
     const available = (): boolean => {
       if (
         worker.closed || worker.draining ||
-        !pool.workers.has(worker.metadata.workerId)
+        !bound && !pool.workers.has(worker.metadata.workerId)
       ) {
         throw new ServiceUnavailableError(
           `target Worker ${worker.metadata.workerId} is unavailable`,
@@ -1083,6 +1088,23 @@ export class Supervisor {
     }).sort((left, right) => left.worker_id.localeCompare(right.worker_id));
   }
 
+  matchingImports(workerIds: string[], paths: string[]): string[] {
+    if (
+      workerIds.length > 65_536 || !workerIds.every((id) => isId(id, "wrk")) ||
+      paths.length > 1_024 ||
+      !paths.every((path) =>
+        typeof path === "string" && path.startsWith("/") &&
+        path.length <= 4_096 && !path.includes("\0")
+      )
+    ) throw new TypeError("invalid Worker import scan");
+    const changed = new Set(paths);
+    return [...new Set(workerIds)].filter((id) => {
+      const worker = this.#workers.get(id);
+      return worker !== undefined && !worker.closed && !worker.draining &&
+        !worker.starting && worker.importsAny(changed);
+    });
+  }
+
   heartbeat(): Envelope<Record<string, unknown>> {
     return {
       protocol_version: PROTOCOL_VERSION,
@@ -1127,6 +1149,26 @@ export class Supervisor {
     }
     if (request.method === "GET" && url.pathname === "/v1/workers") {
       return Response.json({ workers: this.workers() });
+    }
+    if (
+      request.method === "POST" &&
+      url.pathname === "/v1/workers/matching-imports"
+    ) {
+      return await this.#handleControl(
+        request,
+        "worker_imports_match",
+        "worker_imports_match",
+        (payload) => {
+          if (
+            !Array.isArray(payload.worker_ids) || !Array.isArray(payload.paths)
+          ) {
+            throw new TypeError("worker_ids and paths must be arrays");
+          }
+          return {
+            worker_ids: this.matchingImports(payload.worker_ids, payload.paths),
+          };
+        },
+      );
     }
     if (request.method === "POST" && url.pathname === "/v1/workers/start") {
       return await this.#handleControl(
@@ -1201,18 +1243,15 @@ export class Supervisor {
         "job_start",
         "job_result",
         async (payload) => {
-          const checkModules = Array.isArray(payload.check_modules) &&
-              payload.check_modules.every((module) =>
+          const dependencyModules = Array.isArray(payload.dependency_modules) &&
+              payload.dependency_modules.every((module) =>
                 typeof module === "string"
               )
-            ? payload.check_modules as string[]
+            ? payload.dependency_modules as string[]
             : [];
-          if (checkModules.length > 0) {
-            await this.#entrypointValidator(checkModules);
-          }
-          const moduleDependencies = checkModules.length === 0
+          const moduleDependencies = dependencyModules.length === 0
             ? {}
-            : await this.#moduleAnalyzer(checkModules);
+            : await this.#moduleAnalyzer(dependencyModules);
           const worker = this.#requireWorker(
             decodeURIComponent(jobRun[1]!),
             "job",
@@ -1734,19 +1773,6 @@ function nonnegativeIntegerHeader(
   return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
-async function validateEntrypoints(entrypoints: string[]): Promise<void> {
-  const output = await runDeno(
-    serviceCheckArguments(
-      entrypoints,
-      Deno.env.get("DEPENDENCY_MODE") ?? "cached_only",
-    ),
-    0,
-  );
-  if (!output.success) {
-    throw new TypeError(`module type check failed: ${output.stderr}`);
-  }
-}
-
 interface DenoInfoModule {
   specifier?: string;
   dependencies?: Array<{
@@ -1822,15 +1848,6 @@ async function analyzeModules(
   } finally {
     await Deno.remove(aggregator).catch(() => undefined);
   }
-}
-
-export function serviceCheckArguments(
-  entrypoint: string | string[],
-  _dependencyMode: string,
-): string[] {
-  const args = ["check", "--config=/opt/runtime/deno.json"];
-  args.push(...(Array.isArray(entrypoint) ? entrypoint : [entrypoint]));
-  return args;
 }
 
 function requestUser(

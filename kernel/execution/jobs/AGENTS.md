@@ -38,10 +38,10 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
   already scrubbed diagnostics returned to the caller, including validation
   failures before application invocation. Publish logs after releasing state
   locks and timestamp terminal observations with `FinishedAt`.
-- `FinishedAt` describes execution completion, not the last possible log capture.
-  A selected run's log view uses node/run/context IDs and saved position; do not
-  use completion time as an exclusive upper bound that hides the terminal event
-  or asynchronously captured diagnostics.
+- `FinishedAt` describes execution completion, not the last possible log
+  capture. A selected run's log view uses node/run/context IDs and saved
+  position; do not use completion time as an exclusive upper bound that hides
+  the terminal event or asynchronously captured diagnostics.
 - Secure values are scrubbed from returned values and failures; Worker capture
   owns log redaction before forwarding to logd. Redaction preserves structured
   execution error classification and details; secret-free failures retain their
@@ -51,6 +51,10 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
   owns one sandbox allocation claim. Non-reusable Workers stop and release that
   claim after one call; reusable Workers retain it until idle retirement.
   Package commands follow this same policy without caller-specific overrides.
+- The default grouping policy is `shared` for jobs, direct modules, and package
+  programs. Explicit groups and incompatible runtime profiles still separate
+  them. Releasing the last claim leaves sandbox keepalive to the shared
+  lifecycle owner; retaining the supervisor does not enable Worker reuse.
 - An explicit instance-root-bounded development workspace becomes an
   owner-scoped runtime-profile mount at `/workspace`; writable access is opt-in.
   Additional staged activation/evaluator mounts must be read-only and enter
@@ -66,10 +70,13 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
   package program ID.
 - Compatible Worker reuse includes user and origin identity; work from different
   users or origins never shares a reusable Worker.
-- `Options.CheckModules` asks the supervisor to type-check a bounded module list
-  before import. Database access may be full, metadata-only, or absent.
+- Service and job startup perform no TypeScript type checking.
+  `Options.DependencyModules` requests explicit bounded dependency inspection
+  for schema evaluation, independently of execution. Database access may be
+  full, metadata-only, or absent.
 - An execution timeout covers queueing, sandbox acquisition, Worker startup,
-  validation, and invocation. Cancelling queued work starts no Worker.
+  dependency inspection when requested, and invocation. Cancelling queued work
+  starts no Worker.
 - Optional `PlacementGroup` uses the same exact sandbox-group value contract as
   services, scoped to job workloads. Preparation copies the selected value so
   queued work cannot change placement through caller mutation.
@@ -88,13 +95,13 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
 
 - Unit and race tests cover results, secure redaction and cleanup, detached FIFO
   behavior, queue bounds, cancellation, timeout, mounts, database metadata,
-  module checking, default destruction, compatible reuse, idle retirement, no
-  persistence/replay, sandbox failure, and log references captured before startup
-  and preserved through failures and Worker reuse.
+  dependency inspection, default destruction, compatible reuse, idle retirement,
+  no persistence/replay, sandbox failure, and log references captured before
+  startup and preserved through failures and Worker reuse.
 - Lifecycle tests verify invocation/user attribution across reuse, startup and
   invocation failure redaction, cancellation and sandbox-failure observations,
   and publication outside state locks. The real rootless backend test retrieves
-  a native validation failure through its job/context reference after cleanup.
+  runtime failures through their job/context references after cleanup.
 
 # Child DOX Index
 

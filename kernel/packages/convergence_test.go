@@ -2,8 +2,6 @@ package packages
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,38 +25,28 @@ func TestPackageRevisionFollowerUsesCheapNoChangePathAndTargetsChangedPackage(t 
 	if err != nil {
 		t.Skip("git is unavailable")
 	}
-	remoteRoot := t.TempDir()
-	working := filepath.Join(t.TempDir(), "source")
+	root := t.TempDir()
+	working := filepath.Join(root, "packages", "acme", "demo")
 	runTestGit(t, gitPath, "", "init", "-q", "-b", "main", working)
 	runTestGit(t, gitPath, working, "config", "user.name", "Package Test")
 	runTestGit(t, gitPath, working, "config", "user.email", "packages@example.test")
 	writeFile(t, filepath.Join(working, "package.toml"), "schema = 1\ndescription = \"Revision test\"\n")
+	writeFile(t, filepath.Join(working, "removed.ts"), "export const removed = true;\n")
+	writeFile(t, filepath.Join(working, "old name.ts"), "export const renamed = true;\n")
 	runTestGit(t, gitPath, working, "add", ".")
 	runTestGit(t, gitPath, working, "commit", "-q", "-m", "first")
 	firstCommit := runTestGit(t, gitPath, working, "rev-parse", "HEAD")
-	bare := filepath.Join(remoteRoot, "acme", "demo.git")
-	if err := os.MkdirAll(filepath.Dir(bare), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	runTestGit(t, gitPath, "", "clone", "-q", "--bare", working, bare)
-	runTestGit(t, gitPath, bare, "update-server-info")
-	server := httptest.NewTLSServer(http.FileServer(http.Dir(remoteRoot)))
-	defer server.Close()
-	t.Setenv("GIT_SSL_NO_VERIFY", "true")
-	source := server.URL + "/acme/demo.git"
-
-	root := t.TempDir()
-	packagesRoot := filepath.Join(root, "packages")
-	if err := os.MkdirAll(filepath.Join(packagesRoot, "acme"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	runTestGit(t, gitPath, "", "clone", "-q", source, filepath.Join(packagesRoot, "acme", "demo"))
 	db := packageDatabase(t)
 	store, err := New(Config{WorkspaceRoot: root, Database: db})
 	if err != nil {
 		t.Fatal(err)
 	}
-	entry := PackageIndex{PackageID: "acme/demo", Author: "acme", Repository: "demo", Source: source}
+	for _, value := range [][3]string{{"../escaped", firstCommit, firstCommit}, {"acme/demo", "--output=unexpected", firstCommit}} {
+		if _, err := store.changedSourcePaths(context.Background(), value[0], value[1], value[2]); err == nil {
+			t.Fatalf("accepted unsafe source comparison: %v", value)
+		}
+	}
+	entry := PackageIndex{PackageID: "acme/demo", Author: "acme", Repository: "demo", Local: true}
 	if err := store.index.Put(context.Background(), entry); err != nil {
 		t.Fatal(err)
 	}
@@ -79,12 +67,16 @@ func TestPackageRevisionFollowerUsesCheapNoChangePathAndTargetsChangedPackage(t 
 		t.Fatalf("unchanged poll=%#v lists=%d err=%v", update, counter.lists, err)
 	}
 
-	writeFile(t, filepath.Join(working, "second.txt"), "second\n")
+	if err := os.Remove(filepath.Join(working, "removed.ts")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(working, "old name.ts"), filepath.Join(working, "new name.ts")); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(working, "second.ts"), "export const second = true;\n")
 	runTestGit(t, gitPath, working, "add", ".")
 	runTestGit(t, gitPath, working, "commit", "-q", "-m", "second")
 	secondCommit := runTestGit(t, gitPath, working, "rev-parse", "HEAD")
-	runTestGit(t, gitPath, working, "push", "-q", bare, "main")
-	runTestGit(t, gitPath, bare, "update-server-info")
 	if err := store.index.SetActivation(context.Background(), entry.PackageID, "ready", secondCommit, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -99,10 +91,14 @@ func TestPackageRevisionFollowerUsesCheapNoChangePathAndTargetsChangedPackage(t 
 	if update.Revision != 2 || !slices.Equal(update.Packages, []string{"acme/demo"}) {
 		t.Fatalf("targeted update=%#v", update)
 	}
+	wantPaths := []string{"/workspace/packages/acme/demo/new name.ts", "/workspace/packages/acme/demo/old name.ts", "/workspace/packages/acme/demo/removed.ts", "/workspace/packages/acme/demo/second.ts"}
+	if !slices.Equal(update.Paths, wantPaths) {
+		t.Fatalf("changed paths = %v", update.Paths)
+	}
 	if counter.lists != 1 {
 		t.Fatalf("package rows loaded %d times", counter.lists)
 	}
-	head := runTestGit(t, gitPath, filepath.Join(packagesRoot, "acme", "demo"), "rev-parse", "HEAD")
+	head := runTestGit(t, gitPath, working, "rev-parse", "HEAD")
 	if head != secondCommit {
 		t.Fatalf("checkout=%s want=%s", head, secondCommit)
 	}

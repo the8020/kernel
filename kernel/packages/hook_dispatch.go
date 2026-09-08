@@ -29,9 +29,9 @@ type HookReference struct {
 // RunHookChain submits the dispatcher through the ordinary job path. Package
 // revisions join the resolved chain in release compatibility because a handler
 // may import any other active package, including a dependency with no hooks.
-func (s *Store) RunHookChain(ctx context.Context, runner JobRunner, packageID, hook string, handlers []HookDefinition, scope, state any, mounts []model.Mount) (jobs.Record, error) {
-	if _, err := ParsePackageID(packageID); err != nil {
-		return jobs.Record{}, err
+func (s *Store) RunHookChain(ctx context.Context, runner JobRunner, ownerID, hook string, handlers []HookDefinition, scope, state any, mounts []model.Mount) (jobs.Record, error) {
+	if ownerID == "" || hook == "" {
+		return jobs.Record{}, fmt.Errorf("hook owner and name are required")
 	}
 	references := make([]HookReference, 0, len(handlers))
 	for _, handler := range handlers {
@@ -52,9 +52,9 @@ func (s *Store) RunHookChain(ctx context.Context, runner JobRunner, packageID, h
 		return jobs.Record{}, err
 	}
 	digest := sha256.Sum256(encoded)
-	namespace, _, _ := strings.Cut(packageID, "/")
-	return runner.Run(ctx, packageID+"/"+hook, HookDispatcherEntrypoint, jobs.Options{
-		User: execution.SystemUser(), OwnerID: packageID, Namespace: namespace,
+	namespace, _, _ := strings.Cut(ownerID, "/")
+	return runner.Run(ctx, ownerID+"/"+hook, HookDispatcherEntrypoint, jobs.Options{
+		User: execution.SystemUser(), OwnerID: ownerID, Namespace: namespace,
 		Arguments: []any{references, scope, state}, Mounts: mounts,
 		ReleaseID: hex.EncodeToString(digest[:]), Timeout: 5 * time.Minute,
 	})

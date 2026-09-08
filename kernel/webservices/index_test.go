@@ -26,10 +26,10 @@ func indexedTestSpecification(id string) Specification {
 func TestRuntimeIndexPublishesOnlyCompleteValidatedPackageFragments(t *testing.T) {
 	index := NewIndex()
 	one, two, unrelated := indexedTestSpecification("acme/api/one"), indexedTestSpecification("acme/api/two"), indexedTestSpecification("acme/other/keep")
-	if _, err := index.ReplacePackage("acme/api", []Specification{one, two}, "hooks-a"); err != nil {
+	if _, err := index.ReplacePackage("acme/api", []Specification{one, two}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := index.ReplacePackage("acme/other", []Specification{unrelated}, "hooks-a"); err != nil {
+	if _, err := index.ReplacePackage("acme/other", []Specification{unrelated}); err != nil {
 		t.Fatal(err)
 	}
 	before, _ := index.ReadService(one.ServiceID)
@@ -38,14 +38,14 @@ func TestRuntimeIndexPublishesOnlyCompleteValidatedPackageFragments(t *testing.T
 	invalid := two
 	invalid.Effective.Placement.WorkersPerSandbox = 0
 	for _, draft := range [][]Specification{{updated, invalid}, {updated, unrelated}, {updated, updated}} {
-		if _, err := index.ReplacePackage("acme/api", draft, "hooks-b"); err == nil {
+		if _, err := index.ReplacePackage("acme/api", draft); err == nil {
 			t.Fatal("invalid, out-of-scope, or duplicate specification was accepted")
 		}
 		if got, _ := index.ReadService(one.ServiceID); !reflect.DeepEqual(got, before) {
 			t.Fatalf("partially published failed fragment: %#v", got)
 		}
 	}
-	removed, err := index.ReplacePackage("acme/api", []Specification{updated}, "hooks-b")
+	removed, err := index.ReplacePackage("acme/api", []Specification{updated})
 	if err != nil || !reflect.DeepEqual(removed, []string{two.ServiceID}) {
 		t.Fatalf("removed=%v error=%v", removed, err)
 	}
@@ -55,7 +55,7 @@ func TestRuntimeIndexPublishesOnlyCompleteValidatedPackageFragments(t *testing.T
 	if got, _ := index.ReadService(unrelated.ServiceID); got.CodeRevision != unrelated.CodeRevision {
 		t.Fatal("unrelated fragment changed")
 	}
-	if _, err := index.ReplacePackage("acme/api", nil, "hooks-b"); err != nil {
+	if _, err := index.ReplacePackage("acme/api", nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := index.ServiceIDs(); !reflect.DeepEqual(got, []string{unrelated.ServiceID}) {
@@ -63,12 +63,12 @@ func TestRuntimeIndexPublishesOnlyCompleteValidatedPackageFragments(t *testing.T
 	}
 }
 
-func TestRuntimeIndexReleaseIncludesResolvedConfigurationAndHookCode(t *testing.T) {
+func TestRuntimeIndexReleaseIncludesConfigurationButSourceChangesRequireObservedImports(t *testing.T) {
 	index := NewIndex()
 	spec := indexedTestSpecification("acme/api/one")
-	publish := func(chain string) Specification {
+	publish := func() Specification {
 		t.Helper()
-		if _, err := index.ReplacePackage("acme/api", []Specification{spec}, chain); err != nil {
+		if _, err := index.ReplacePackage("acme/api", []Specification{spec}); err != nil {
 			t.Fatal(err)
 		}
 		got, err := index.ReadService(spec.ServiceID)
@@ -77,16 +77,17 @@ func TestRuntimeIndexReleaseIncludesResolvedConfigurationAndHookCode(t *testing.
 		}
 		return got
 	}
-	first := publish("hooks-a")
-	if publish("hooks-a").Release != first.Release {
+	first := publish()
+	if publish().Release != first.Release {
 		t.Fatal("unchanged resolved specification invalidated reuse")
 	}
-	second := publish("hooks-b")
-	if second.Release == first.Release {
-		t.Fatal("changed provider code retained the old runtime release")
+	spec.CodeRevision = "changed-commit"
+	second := publish()
+	if second.Release != first.Release {
+		t.Fatal("source identity alone replaced Workers without an import match")
 	}
 	spec.Effective.Scaling.ConcurrencyPerWorker = 2
-	third := publish("hooks-b")
+	third := publish()
 	if third.Release == second.Release || third.Version != second.Version {
 		t.Fatal("enhanced configuration must change runtime compatibility independently of application version numbering")
 	}

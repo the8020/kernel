@@ -219,6 +219,7 @@ type DevelopmentService interface {
 // WebServiceService is the handler-facing service lifecycle and
 // canonical request contract.
 type WebServiceService interface {
+	Restart(context.Context, string, string, uint64) (webservices.Status, error)
 	Reconcile(context.Context, string) (webservices.Status, error)
 	Retire(context.Context, string) error
 	List() ([]webservices.Status, error)

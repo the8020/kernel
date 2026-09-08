@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,13 +40,20 @@ func TestSSHRetainedTerminalSelectionAndDetach(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer broker.Close()
-	options := backend.ConsoleOptions{Arguments: []string{"/bin/bash"}, WorkingDir: "/workspace", Size: backend.ConsoleSize{Columns: 80, Rows: 24}, Terminal: true}
-	terminal, processor, err := broker.CreateTerminalWithProcessor(ctx, "development", "sbx-aaaaaaaaaa", options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	development := &fakeDevelopment{sandbox: "sbx-bbbbbbbbbb"}
-	manager, err := New(Config{Port: 0, HostKeyPath: filepath.Join(t.TempDir(), "host"), Authentication: testAuthentication(), Development: development, Consoles: broker})
+	owner := console.TerminalOwner{NodeID: "nod-aaaaaaaaaa", SandboxID: "sbx-bbbbbbbbbb", WorkerID: "wrk-aaaaaaaaaa", PersistentExecutionID: "pex-aaaaaaaaaa"}
+	processors := make(chan *console.TerminalAttachment, 1)
+	var processor *console.TerminalAttachment
+	development := &fakeDevelopment{sandbox: "sbx-aaaaaaaaaa"}
+	manager, err := New(Config{Port: 0, HostKeyPath: filepath.Join(t.TempDir(), "host"), Authentication: testAuthentication(), Development: development, Consoles: broker, OpenTerminal: func(ctx context.Context, username, kind, sandboxID, sessionID string, options backend.ConsoleOptions) (backend.Console, error) {
+		result, err := broker.OpenTerminal(ctx, kind, sandboxID, sessionID, options, owner)
+		if err != nil {
+			return nil, err
+		}
+		if result.Attachment != nil {
+			processors <- result.Attachment
+		}
+		return broker.OpenTerminalView(ctx, result.Terminal.Info().ID, sandboxID, options.Size)
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,14 +63,14 @@ func TestSSHRetainedTerminalSelectionAndDetach(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	selector := "the8020 terminal-id=" + terminal.Info().ID
+	selector := "the8020 terminal-id abc"
 	for _, attempt := range []struct {
 		command string
 		pty     bool
 	}{
 		{selector, false},
 		{selector + " sandbox-id=sbx-bbbbbbbbbb", true},
-		{"the8020 terminal-id=tty-aaaaaaaaaa", true},
+		{"the8020 terminal-id=" + strings.Repeat("a", 41), true},
 	} {
 		s, err := client.NewSession()
 		if err != nil {
@@ -90,6 +98,9 @@ func TestSSHRetainedTerminalSelectionAndDetach(t *testing.T) {
 		}
 		if err := s.Start(selector + " sandbox-id=sbx-aaaaaaaaaa"); err != nil {
 			t.Fatal(err)
+		}
+		if processor == nil {
+			processor = <-processors
 		}
 		request, err := processor.NextView(ctx)
 		if err != nil {
@@ -130,13 +141,13 @@ func TestSSHRetainedTerminalSelectionAndDetach(t *testing.T) {
 }
 
 func TestTerminalSelectorGrammar(t *testing.T) {
-	for _, command := range []string{"the8020 terminal-id=tty-aaaaaaaaaa", "the8020 sandbox-id=sbx-aaaaaaaaaa terminal-id=tty-bbbbbbbbbb"} {
+	for _, command := range []string{"the8020 terminal-id=abc", "the8020 terminal-id 1", "the8020 terminal-id abc_ABC-012", "the8020 terminal-id=" + strings.Repeat("a", 40), "the8020 sandbox-id=sbx-aaaaaaaaaa terminal-id=tty-bbbbbbbbbb"} {
 		got, err := parseExec(command)
 		if err != nil || got.terminalID == "" || got.command != "" {
 			t.Fatalf("selector %q = %#v, %v", command, got, err)
 		}
 	}
-	for _, command := range []string{"the8020 terminal-id=sbx-aaaaaaaaaa", "the8020 terminal-id=tty-aaaaaaaaaa terminal-id=tty-aaaaaaaaaa", "the8020 terminal-id=", "the8020 terminal-id=tty-aaaaaaaaaa extra"} {
+	for _, command := range []string{"the8020 terminal-id=a/b", "the8020 terminal-id=abc.def", "the8020 terminal-id=" + strings.Repeat("a", 41), "the8020 terminal-id é", "the8020 terminal-id=tty-aaaaaaaaaa terminal-id=tty-aaaaaaaaaa", "the8020 terminal-id=", "the8020 terminal-id=tty-aaaaaaaaaa extra"} {
 		if _, err := parseExec(command); err == nil {
 			t.Fatalf("accepted %q", command)
 		}

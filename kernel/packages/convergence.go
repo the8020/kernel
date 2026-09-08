@@ -12,14 +12,16 @@ import (
 )
 
 // PackageSetUpdate is the targeted local work caused by one published shared
-// package-set revision. Source has already converged when Poll returns it.
+// revision. Every node observes the same mutable package filesystem.
 type PackageSetUpdate struct {
 	Revision uint64
 	Packages []string
+	Paths    []string
+	Restarts []string
 }
 
-// PackageRevisionFollower keeps one node's package checkouts aligned with the
-// exact commits published in the shared database. The common no-change path is
+// PackageRevisionFollower observes commits published into the shared filesystem.
+// It never fetches or replaces node-local source copies. The common no-change path is
 // one scalar query; package rows are read only after revision
 // advancement.
 type PackageRevisionFollower struct {
@@ -60,26 +62,22 @@ func (f *PackageRevisionFollower) Poll(ctx context.Context) (PackageSetUpdate, e
 	if err != nil {
 		return PackageSetUpdate{}, fmt.Errorf("load active package set: %w", err)
 	}
-	byID := make(map[string]PackageIndex, len(entries))
 	target := make(map[string]string, len(entries))
 	for _, entry := range entries {
 		if entry.State != "ready" || entry.ActiveCommit == "" {
 			continue
 		}
-		byID[entry.PackageID] = entry
 		target[entry.PackageID] = entry.ActiveCommit
 	}
 	changed := changedPackageIDs(f.commits, target)
-	for _, packageID := range changed {
-		entry, exists := byID[packageID]
-		if !exists {
-			continue
-		}
-		if err := f.store.convergePackageCommit(ctx, entry); err != nil {
-			return PackageSetUpdate{}, fmt.Errorf("converge package %s: %w", packageID, err)
-		}
-	}
 	update := PackageSetUpdate{Revision: revision, Packages: changed}
+	for _, packageID := range changed {
+		paths, err := f.store.changedSourcePaths(ctx, packageID, f.commits[packageID], target[packageID])
+		if err != nil {
+			return PackageSetUpdate{}, err
+		}
+		update.Paths = append(update.Paths, paths...)
+	}
 	f.pendingRevision, f.pendingCommits = revision, target
 	return update, nil
 }
@@ -131,54 +129,6 @@ func uniqueSorted(values []string) []string {
 	return result
 }
 
-// convergePackageCommit switches only node-local source. Schema changes,
-// hooks, database publication, and revision advancement belong exclusively to
-// the activation coordinator that published this exact commit.
-func (s *Store) convergePackageCommit(ctx context.Context, entry PackageIndex) error {
-	s.repositoryMu.Lock()
-	defer s.repositoryMu.Unlock()
-	unlock, err := s.lockPackage(ctx, entry.PackageID)
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	destination, exists, err := s.packageDestination(entry.PackageID)
-	if err != nil {
-		return err
-	}
-	if entry.Local {
-		if !exists {
-			return errors.New("node-local package checkout does not exist")
-		}
-		commit, err := s.installedCommit(ctx, destination)
-		if err != nil {
-			return err
-		}
-		if commit != entry.ActiveCommit {
-			return fmt.Errorf("node-local package commit %q does not match shared active commit %q", commit, entry.ActiveCommit)
-		}
-		return nil
-	}
-	if exists {
-		commit, err := s.cleanRepositoryHead(ctx, destination)
-		if err != nil {
-			return err
-		}
-		if commit == entry.ActiveCommit {
-			return finalizePackageDirectory(destination)
-		}
-	}
-	stageRoot, stage, err := s.stageExactCommit(ctx, entry)
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(stageRoot)
-	if _, err := replacePackageDirectory(destination, stage); err != nil {
-		return err
-	}
-	return finalizePackageDirectory(destination)
-}
-
 func (s *Store) installedCommit(ctx context.Context, path string) (string, error) {
 	if info, err := os.Stat(filepath.Join(path, ".git")); err == nil && info.IsDir() {
 		return s.cleanRepositoryHead(ctx, path)
@@ -186,49 +136,56 @@ func (s *Store) installedCommit(ctx context.Context, path string) (string, error
 	return FingerprintPackage(path)
 }
 
-func (s *Store) stageExactCommit(ctx context.Context, entry PackageIndex) (string, string, error) {
-	if strings.TrimSpace(entry.Source) == "" || strings.TrimSpace(entry.ActiveCommit) == "" {
-		return "", "", errors.New("remote package source and active commit are required")
+// changedSourcePaths reads bounded Git metadata from the authoritative shared
+// repository. Deletions and both sides of renames must intersect old imports.
+func (s *Store) changedSourcePaths(ctx context.Context, packageID, previous, current string) ([]string, error) {
+	if _, err := ParsePackageID(packageID); err != nil {
+		return nil, err
 	}
-	identity, err := ParsePackageID(entry.PackageID)
-	if err != nil {
-		return "", "", err
-	}
-	namespaceRoot := filepath.Join(s.packagesRoot, identity.Namespace)
-	if err := os.MkdirAll(namespaceRoot, 0o755); err != nil {
-		return "", "", err
-	}
-	stageRoot, err := os.MkdirTemp(namespaceRoot, "."+identity.Repository+"-revision-")
-	if err != nil {
-		return "", "", err
-	}
-	fail := func(err error) (string, string, error) {
-		_ = os.RemoveAll(stageRoot)
-		return "", "", err
-	}
-	stage := filepath.Join(stageRoot, "repository")
-	authentication, err := s.repositoryAuthentication(entry.PackageID, entry.Source)
-	if err != nil {
-		return fail(err)
-	}
-	if output, err := s.runGit(ctx, "", authentication, "clone", "--quiet", "--no-checkout", "--origin", "origin", entry.Source, stage); err != nil {
-		return fail(fmt.Errorf("clone package: %w: %s", err, cleanGitOutput(output)))
-	}
-	commit, err := s.gitValue(ctx, stage, "rev-parse", "--verify", entry.ActiveCommit+"^{commit}")
-	if err != nil {
-		if output, fetchErr := s.runGit(ctx, stage, authentication, "fetch", "--quiet", "origin", entry.ActiveCommit); fetchErr != nil {
-			return fail(fmt.Errorf("fetch active package commit: %w: %s", fetchErr, cleanGitOutput(output)))
+	for _, commit := range []string{previous, current} {
+		if commit != "" && !isCommitID(commit) {
+			return nil, errors.New("source update commits must be hexadecimal object IDs")
 		}
-		commit, err = s.gitValue(ctx, stage, "rev-parse", "--verify", "FETCH_HEAD^{commit}")
 	}
-	if err != nil || !strings.EqualFold(commit, entry.ActiveCommit) {
-		return fail(fmt.Errorf("remote does not provide active commit %s", entry.ActiveCommit))
+	root := s.packagePath(packageID)
+	arguments := []string{"diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", previous, current, "--"}
+	if previous == "" || current == "" {
+		commit := current
+		if commit == "" {
+			commit = previous
+		}
+		arguments = []string{"ls-tree", "-r", "--name-only", "-z", commit, "--"}
 	}
-	if output, err := s.runGit(ctx, stage, nil, "checkout", "--quiet", "--detach", commit); err != nil {
-		return fail(fmt.Errorf("check out active package commit: %w: %s", err, cleanGitOutput(output)))
+	output, err := s.runGit(ctx, root, nil, arguments...)
+	if err != nil {
+		return nil, fmt.Errorf("read changed source paths for %s: %w", packageID, err)
 	}
-	if err := validateStagedPackage(stage); err != nil {
-		return fail(err)
+	var paths []string
+	for _, name := range strings.Split(output, "\x00") {
+		if name == "" {
+			continue
+		}
+		if !filepath.IsLocal(name) {
+			return nil, fmt.Errorf("invalid changed source path in %s", packageID)
+		}
+		paths = append(paths, filepath.ToSlash(filepath.Join(packageSandboxRoot, packageID, name)))
 	}
-	return stageRoot, stage, nil
+	return paths, nil
+}
+
+// ReactToSourceUpdate owns source-update orchestration. The runtime supplies
+// observed-import inspection and a generic idempotent soft-restart primitive.
+func ReactToSourceUpdate(ctx context.Context, update PackageSetUpdate, matching func(context.Context, []string) ([]string, error), restart func(context.Context, string, uint64) error) error {
+	if len(update.Paths) == 0 {
+		return nil
+	}
+	matched, err := matching(ctx, update.Paths)
+	if err != nil {
+		return err
+	}
+	var failures error
+	for _, id := range uniqueSorted(matched) {
+		failures = errors.Join(failures, restart(ctx, id, update.Revision))
+	}
+	return failures
 }

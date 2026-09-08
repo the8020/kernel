@@ -1,3 +1,5 @@
+import { registerHooks } from "node:module";
+import { fileURLToPath } from "node:url";
 import type {
   BaseContext,
   ExecutionMetadata,
@@ -164,6 +166,18 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
   if (initialized || event.data.type !== "initialize") return;
   initialized = true;
   const { metadata, port } = event.data;
+  registerHooks({
+    load(url, context, nextLoad) {
+      const loaded = nextLoad(url, context);
+      if (url.startsWith("file:")) {
+        port.postMessage({
+          type: "module_loaded",
+          payload: fileURLToPath(url),
+        });
+      }
+      return loaded;
+    },
+  });
   const kernelBridge = createKernelBridge(port, metadata);
   const logSender = new WorkerLogSender(
     port,

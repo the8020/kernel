@@ -13,6 +13,33 @@ import type {
 const example = (name: string): string =>
   new URL(`../examples/${name}.ts`, import.meta.url).href;
 
+Deno.test("Worker records only loaded direct, transitive and late dynamic imports", async () => {
+  const root = new URL("./testdata/", import.meta.url);
+  const worker = new RuntimeWorker({
+    metadata: metadata("job", new URL("imports_entry.ts", root).href),
+    permissions: { read: [root.pathname] },
+  });
+  const observed = (name: string): boolean =>
+    worker.importsAny(
+      new Set([
+        Deno.realPathSync(new URL(`imports_${name}.ts`, root)),
+      ]),
+    );
+  try {
+    assertEquals(await worker.runJob(testInvocation(), []), "static");
+    for (const name of ["entry", "direct", "transitive"]) {
+      assertEquals(observed(name), true);
+    }
+    assertEquals(observed("dynamic"), false);
+    assertEquals(await worker.runJob(testInvocation(), [true]), "dynamic");
+    assertEquals(observed("dynamic"), true);
+    assertEquals(await worker.runJob(testInvocation(), [true]), "dynamic");
+  } finally {
+    worker.kill();
+  }
+  assertEquals(observed("entry"), false);
+});
+
 function metadata(
   workloadType: WorkloadType,
   entrypoint: string,
@@ -215,7 +242,11 @@ Deno.test("hook dispatcher runs an ordered shared-state chain in one ordinary re
   const run = (value: number, fail = false) =>
     worker.runJob(testInvocation(), [
       handlers,
-      { package_id: "acme/service" },
+      {
+        packages: [{ package_id: "acme/service" }, {
+          package_id: "acme/other",
+        }],
+      },
       { trace: [], workers: [], value, fail },
     ]) as Promise<Record<string, unknown>>;
   try {
@@ -1112,6 +1143,28 @@ Deno.test("target Worker authenticates before HTTP and WebSocket handlers", asyn
       { send: () => {}, close: () => {} },
     );
     assertEquals(rejectedSocket.accepted, false);
+    const nativeApproval = {
+      ...meta,
+      authentication: {
+        ...meta.authentication!,
+        approved: true,
+        module: "must-not-be-imported",
+      },
+    };
+    const native = await worker.dispatchService(
+      new Request("https://service/"),
+      nativeApproval,
+    );
+    assertEquals((await native.json()).authenticated, true);
+    await assertRejects(
+      () =>
+        worker.dispatchService(new Request("https://service/"), {
+          ...nativeApproval,
+          user: { userId: "user:other", username: "other" },
+        }),
+      Error,
+      "does not match execution principal",
+    );
     allowed = true;
     const accepted = await worker.dispatchService(
       new Request("https://service/"),

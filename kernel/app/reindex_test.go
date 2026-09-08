@@ -129,32 +129,40 @@ func TestServiceIndexPublicationIsIndependentOfRuntimeStartup(t *testing.T) {
 		}
 	}
 	drafts := map[string][]webservices.Specification{
-		"acme/one/index-services": {spec("acme/one/a"), spec("acme/one/b")},
-		"acme/two/index-services": {spec("acme/two/keep")},
+		"acme/one": {spec("acme/one/a"), spec("acme/one/b")},
+		"acme/two": {spec("acme/two/keep")},
 	}
 	fail := ""
 	calls := 0
 	runner := indexJobFunc(func(_ context.Context, id, entry string, options jobs.Options) (jobs.Record, error) {
 		calls++
-		if id == fail {
-			return jobs.Record{State: "FAILED", Failure: "hook acme/provider failed"}, nil
+		if id != "hooks/index-services" || entry != packages.HookDispatcherEntrypoint || len(options.Arguments) != 3 {
+			t.Fatalf("not one ordinary hook invocation: %s %s %#v", id, entry, options)
 		}
-		return jobs.Record{State: "SUCCEEDED", ReleaseID: options.ReleaseID, Result: map[string]any{"services": drafts[id]}}, nil
+		fragments := map[string]any{}
+		for _, selected := range options.Arguments[1].(serviceIndexScope).Packages {
+			if selected.PackageID == fail {
+				fragments[selected.PackageID] = map[string]any{"error": "provider failed", "services": []any{}}
+			} else {
+				fragments[selected.PackageID] = map[string]any{"services": drafts[selected.PackageID]}
+			}
+		}
+		return jobs.Record{State: "SUCCEEDED", ReleaseID: options.ReleaseID, Result: map[string]any{"packages": fragments}}, nil
 	})
 	runtime := &targetedServiceReconcilerStub{fail: "acme/one/a"}
 	indexer := &runtimeIndexer{packages: store, jobs: runner, services: webservices.NewIndex(), runtime: runtime}
 	applied, diagnostics, err := indexer.indexServices(ctx, nil)
-	if err != nil || len(applied) != 2 || len(diagnostics) != 1 || !strings.Contains(diagnostics[0], "fragment accepted") || len(runtime.calls) != 3 {
+	if err != nil || len(applied) != 2 || len(diagnostics) != 1 || !strings.Contains(diagnostics[0], "fragment accepted") || len(runtime.calls) != 3 || calls != 1 {
 		t.Fatalf("applied=%v diagnostics=%v calls=%v error=%v", applied, diagnostics, runtime.calls, err)
 	}
 	before := calls
 	if err := indexer.RetryPending(ctx); err != nil || calls != before {
 		t.Fatal("runtime error reran the provider job")
 	}
-	fail = "acme/one/index-services"
+	fail = "acme/one"
 	drafts[fail] = []webservices.Specification{spec("acme/one/b")}
-	if _, _, err := indexer.indexServices(ctx, []string{"acme/one"}); err == nil {
-		t.Fatal("failed hook was accepted")
+	if applied, _, err := indexer.indexServices(ctx, nil); err == nil || !reflect.DeepEqual(applied, []string{"acme/two"}) {
+		t.Fatalf("failed package blocked healthy package: applied=%v err=%v", applied, err)
 	}
 	if _, err := indexer.services.ReadService("acme/one/a"); err != nil {
 		t.Fatal("failed chain removed accepted service")
@@ -193,6 +201,33 @@ func TestServiceIndexPublicationIsIndependentOfRuntimeStartup(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(applied, []string{"acme/one", "acme/two"}) {
 		t.Fatalf("provider change selected %v: %v", applied, err)
 	}
+	for _, invalid := range []map[string]any{
+		{"services": []any{map[string]any{"unexpected": true}}},
+		{"services": []any{}, "error": ""},
+	} {
+		indexer.jobs = indexJobFunc(func(_ context.Context, _, _ string, options jobs.Options) (jobs.Record, error) {
+			return jobs.Record{State: "SUCCEEDED", Result: map[string]any{"packages": map[string]any{
+				"acme/one": invalid,
+				"acme/two": map[string]any{"services": drafts["acme/two"]},
+			}}}, nil
+		})
+		if applied, _, err := indexer.indexServices(ctx, nil); err == nil || !reflect.DeepEqual(applied, []string{"acme/two"}) {
+			t.Fatalf("invalid specification was not isolated: applied=%v error=%v", applied, err)
+		}
+	}
+
+	indexer.jobs = indexJobFunc(func(_ context.Context, _, _ string, options jobs.Options) (jobs.Record, error) {
+		return jobs.Record{State: "SUCCEEDED", Result: map[string]any{"packages": map[string]any{
+			"acme/foreign": map[string]any{"services": []any{}},
+		}}}, nil
+	})
+	if _, _, err := indexer.indexServices(ctx, []string{"acme/one"}); err == nil {
+		t.Fatal("hook changed its publication scope")
+	}
+	if _, err := indexer.services.ReadService("acme/one/b"); err != nil {
+		t.Fatal("invalid result erased the accepted fragment")
+	}
+
 }
 
 func TestCanceledServicePublicationRetainsEveryUnprocessedOwnerForRetry(t *testing.T) {
@@ -208,7 +243,7 @@ func TestCanceledServicePublicationRetainsEveryUnprocessedOwnerForRetry(t *testi
 	calls := 0
 	indexer := &runtimeIndexer{packages: store, services: webservices.NewIndex(), jobs: indexJobFunc(func(_ context.Context, _, _ string, options jobs.Options) (jobs.Record, error) {
 		calls++
-		return jobs.Record{State: "SUCCEEDED", ReleaseID: options.ReleaseID, Result: map[string]any{"services": []any{}}}, nil
+		return jobs.Record{State: "SUCCEEDED", ReleaseID: options.ReleaseID, Result: options.Arguments[2]}, nil
 	})}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -217,7 +252,7 @@ func TestCanceledServicePublicationRetainsEveryUnprocessedOwnerForRetry(t *testi
 	if !errors.As(err, &publication) || len(indexer.pending) != 2 || calls != 0 {
 		t.Fatalf("pending=%v calls=%d error=%v", indexer.pending, calls, err)
 	}
-	if err := indexer.RetryPending(context.Background()); err != nil || len(indexer.pending) != 0 || calls != 2 {
+	if err := indexer.RetryPending(context.Background()); err != nil || len(indexer.pending) != 0 || calls != 1 {
 		t.Fatalf("pending=%v calls=%d error=%v", indexer.pending, calls, err)
 	}
 }

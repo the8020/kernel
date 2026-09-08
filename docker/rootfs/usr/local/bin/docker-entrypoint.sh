@@ -4,7 +4,9 @@ set -euo pipefail
 readonly INSTANCE_ROOT=/8020
 readonly KERNEL=/usr/local/bin/kernel
 readonly ADMIN=/usr/local/bin/admin
+readonly DENO="$INSTANCE_ROOT/node/kernel/runtime/images/rootless/rootfs/usr/bin/deno"
 readonly PORTABLE_SMOKE="$INSTANCE_ROOT/node/kernel/runtime/definitions/smoke-portable.sh"
+readonly BOOTSTRAP_DONE="$INSTANCE_ROOT/node/docker/initial-user.done"
 
 if (( $# > 0 )); then
   if (( $# != 1 )) || [[ "$1" != "serve" ]]; then
@@ -76,36 +78,43 @@ if [[ "$admin_ready" != true ]]; then
   exit 1
 fi
 
-echo "startup: waiting for package initialization and user commands" >&2
-users_ready=false
-users_json=""
-for _ in {1..300}; do
-  if users_json=$("$ADMIN" --root "$INSTANCE_ROOT" --json users.list 2>&1); then
-    users_ready=true
-    break
+if [[ ! -f "$BOOTSTRAP_DONE" ]]; then
+  echo "startup: waiting for package initialization and user commands" >&2
+  users_ready=false
+  users_json=""
+  for _ in {1..300}; do
+    if users_json=$("$ADMIN" --root "$INSTANCE_ROOT" --json users.list 2>&1); then
+      users_ready=true
+      break
+    fi
+    if ! kill -0 "$kernel_pid" 2>/dev/null; then
+      break
+    fi
+    sleep 0.1
+  done
+  if [[ "$users_ready" != true ]]; then
+    echo "the8020/users commands did not become available within 30 seconds" >&2
+    printf '%s\n' "$users_json" >&2
+    "$ADMIN" --root "$INSTANCE_ROOT" kernel.status >&2 || true
+    exit 1
   fi
-  if ! kill -0 "$kernel_pid" 2>/dev/null; then
-    break
+  login_user_exists=$(printf '%s' "$users_json" | "$DENO" eval --quiet --no-config '
+    const response = JSON.parse(await new Response(Deno.stdin.readable).text());
+    if (response.success !== true || !Array.isArray(response.result?.users)) {
+      throw new Error("users.list returned an invalid response");
+    }
+    console.log(response.result.users.some(user => user.enabled === true && user.has_password === true));
+  ')
+  if [[ "$login_user_exists" != true ]]; then
+    echo "startup: creating initial 80|20 user: $initial_username" >&2
+    printf '%s\n' "$initial_password" |
+      "$ADMIN" --root "$INSTANCE_ROOT" users.add "$initial_username" --password-stdin >/dev/null
+    echo "created initial 80|20 user: $initial_username" >&2
+  else
+    echo "initial user bootstrap skipped because an enabled login user already exists" >&2
   fi
-  sleep 0.1
-done
-if [[ "$users_ready" != true ]]; then
-  echo "the8020/users commands did not become available within 30 seconds" >&2
-  printf '%s\n' "$users_json" >&2
-  "$ADMIN" --root "$INSTANCE_ROOT" kernel.status >&2 || true
-  exit 1
-fi
-users_json=${users_json//$'\n'/}
-users_json=${users_json//$'\r'/}
-users_json=${users_json//$'\t'/}
-users_json=${users_json// /}
-if [[ "$users_json" != *'"enabled":true,"has_password":true'* ]]; then
-  echo "startup: creating initial 80|20 user: $initial_username" >&2
-  printf '%s\n' "$initial_password" |
-    "$ADMIN" --root "$INSTANCE_ROOT" users.add "$initial_username" --password-stdin >/dev/null
-  echo "created initial 80|20 user: $initial_username" >&2
-else
-  echo "initial user bootstrap skipped because an enabled login user already exists" >&2
+  # Record only completed bootstrap; failed or interrupted creation retries.
+  (umask 077; mkdir -p "${BOOTSTRAP_DONE%/*}"; touch "$BOOTSTRAP_DONE")
 fi
 unset initial_username initial_password
 
@@ -129,7 +138,7 @@ while kill -0 "$kernel_pid" 2>/dev/null; do
     login_ready=true
     break
   fi
-  sleep 1
+  sleep 0.1
 done
 if [[ "$login_ready" != true ]]; then
   echo "80|20 startup failed: the public login service is unavailable" >&2

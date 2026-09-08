@@ -46,10 +46,11 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   Retain the terminal protocol, input/paste, lifetime, and performance checks.
 - Prefer reusing the shared native console/PTY boundary beneath SSH and UUI for
   persistent terminals. Give the PTY a lifetime independent of client sockets;
-  reconnect attaches to the existing process. Kernel owns the physical terminal,
-  and Deno packages own selection, workflow, and display recovery. The shared
-  retained owner and browser/SSH adapters are implemented and verified; the
-  checklist records the completed Phase 1 evidence and the Phase 2 hold.
+  reconnect reuses a live process and a named open recreates a missing one.
+  Kernel owns the sandbox-scoped session name and physical terminal, and Deno
+  packages own selection, workflow, and display recovery. The shared retained
+  owner and browser/SSH adapters are implemented and verified; the checklist
+  records the completed Phase 1 evidence and the Phase 2 hold.
 - Untouched paths follow shared publication immediately; private edits stay
   isolated. Git must merge from each path's original observed version, preserve
   non-overlapping changes, and reject real conflicts with a nonzero helper exit.

@@ -272,8 +272,8 @@ func (s SandboxSpec) Validate() error {
 	if s.Network.Mode != "netstack" {
 		return errors.New("sandbox network mode must be netstack")
 	}
-	if !s.Lifecycle.Warm && (s.GroupKey == "" || len(s.OwnerIDs) == 0) {
-		return errors.New("assigned sandbox requires a group key and at least one owner")
+	if !s.Lifecycle.Warm && s.GroupKey == "" {
+		return errors.New("assigned sandbox requires a group key")
 	}
 	if s.Lifecycle.Warm && (s.GroupKey != "" || len(s.OwnerIDs) != 0) {
 		return errors.New("warm sandbox cannot have a group key or owner")
@@ -366,6 +366,7 @@ type SandboxStatus struct {
 	DenoVersion       string            `json:"deno_version,omitempty"`
 	CurrentOwners     []string          `json:"current_owners,omitempty"`
 	WorkerCount       int               `json:"worker_count"`
+	IdleSince         time.Time         `json:"idle_since,omitempty"`
 	Metrics           ResourceMetrics   `json:"resources"`
 	StartedAt         time.Time         `json:"start_time,omitempty"`
 	LastHeartbeat     time.Time         `json:"last_heartbeat,omitempty"`

@@ -19,6 +19,9 @@ Parent DOX: [kernel/defaults/config/runtime DOX](../AGENTS.md).
 - Unknown versions and message types are rejected clearly.
 - Large request/response bodies use streams and are never encoded into control
   JSON.
+- `worker_imports_match` requests and replies share the ordinary correlated
+  envelope. Payloads contain selected Worker IDs plus changed paths, then only
+  matching IDs; no dependency sets enter snapshots or heartbeat messages.
 - Generation writes build-only Go models under `.development/generated/`, the
   tracked TypeScript model at `generated.ts`, and a byte-identical Go consumer
   mirror under `kernel/runtime/protocol/`; generated output must not be edited.

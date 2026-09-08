@@ -21,6 +21,10 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   and sandbox IDs; Worker admission validates the Worker ID before startup.
 - Worker/job/service-pool/drain controls use generated versioned envelopes and
   validate message type, sandbox identity, and correlation.
+- `worker_imports_match` intersects explicit changed paths with selected live
+  Worker import sets, returns deduplicated Worker IDs, and rejects malformed or
+  oversized selections. It is called only for updates; heartbeats and status
+  never include dependency sets.
 - `Supervisor.serve` owns the HTTP listener used by `main.ts`. Deno's native
   automatic compression runs once when a response leaves that listener, after
   the Worker transfers its body stream. Services control exclusions through
@@ -34,14 +38,14 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   username has special treatment inside the runtime.
 - Job control errors preserve bounded structured command failures while keeping
   ordinary runtime failures as plain messages.
-- Service validation invokes pinned in-sandbox Deno with the configured
-  cached-only/online dependency mode before readiness. Jobs may supply a bounded
-  list of additional modules to type-check through the same validation path.
+- Services and jobs import and execute directly, without a startup type checker.
+  Keep runtime export, permission, and execution-contract validation. Explicit
+  `dependency_modules` on table-evaluation jobs requests native `deno info`
+  dependency inspection only; ordinary jobs and services do not run it.
 - Native Deno helpers stream stderr into the managed raw descriptor, retaining
-  at most 16 KiB of its beginning/end for a returned failure. Type-check stdout
-  is discarded. Module-graph JSON is limited to 16 MiB during reading; overflow
-  terminates that child and rejects the graph without parsing a truncated
-  result.
+  at most 16 KiB of its beginning/end for a returned failure. Module-graph JSON
+  is limited to 16 MiB during reading; overflow terminates that child and
+  rejects the graph without parsing a truncated result.
 - Service pools are `stateless` or `persistent`, with a bounded queue.
   Concurrency one is strict; larger concurrency values are balancing targets
   with exactly one temporary extra slot per Worker and never unbounded overload.
@@ -56,6 +60,11 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   wrong-service, or wrong-Worker target returns `409` before handler/upgrade.
   Never recreate a binding for an existing route. Admission rechecks binding
   identity after any asynchronous capacity wait.
+- Reconfiguring a pool updates its existing admission state. Removing Workers
+  from its eligible set prevents new bindings and wakes queued admissions, while
+  existing bindings still admit exact follow-ups to their owning live Workers.
+  Zero eligible Workers rejects new work immediately. Hard stop interrupts a
+  pending graceful stop and removes all bindings owned by the terminated Worker.
 - HTTP response streams, SSE, and WebSockets hold their bindings through
   consumption/cancel/disconnect. Thereafter positive supervisor keepalive owns
   expiry. Explicit zero means no idle expiry or expiry wakeup; missing, blank,

@@ -7,12 +7,15 @@ Parent DOX: [development DOX](../AGENTS.md).
 
 # Ownership
 
-- Own the workflow analysis report, experimental harnesses, and recorded results.
+- Own the workflow analysis report, experimental harnesses, and recorded
+  results.
 - Own the Phase 1 xterm serializer qualification probe and raw broker benchmark
   observations; completed implementation status belongs to the parent's
   [implementation checklist](../WORKFLOW_IMPLEMENTATION.md).
 - [REPORT.md](REPORT.md) owns recommendations; [RESULTS.md](RESULTS.md) owns
   reproduction, measurement boundaries, and verification observations.
+- `current-results.json` retains the September 8 baseline refresh, including
+  native Git metadata loss and inconsistent lower-file stat/hash observations.
 - Production development behavior remains owned by the parent.
 
 # Local Contracts
@@ -33,9 +36,14 @@ Parent DOX: [development DOX](../AGENTS.md).
 - Run from the kernel repository root with its installed local Go toolchain,
   pinned runsc, and development image.
 - `python3 kernel/development/analysis/run.py runtime` exercises real sandbox
-  activation, data loss, helper results, PTY cleanup, and tmux/WebSocket lifetime.
+  activation, data loss, helper results, PTY cleanup, and tmux/WebSocket
+  lifetime.
 - `python3 kernel/development/analysis/run.py races` characterizes activation's
   capture/pause and repository-lock boundaries with deterministic fixtures.
+- `python3 kernel/development/analysis/run.py git` checks native private
+  commits, checkpoint/restart, and Git inspection after untouched shared files
+  change. It reports failures of the existing backend; it is not candidate
+  qualification.
 - `python3 kernel/development/analysis/run.py fuse` runs the minimal external
   FUSE experiment; `WORKFLOW_PROBE_FILES=10000` selects the larger tree.
 - `python3 kernel/development/analysis/git_probe.py` runs disposable Git merge,

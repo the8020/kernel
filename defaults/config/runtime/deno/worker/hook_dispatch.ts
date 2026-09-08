@@ -10,7 +10,13 @@ export default async function dispatch(
   scope: Readonly<Record<string, unknown>>,
   state: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
-  Object.freeze(scope);
+  // Scope crosses the JSON boundary once, so nested selections are acyclic.
+  const freeze = (value: unknown): void => {
+    if (value === null || typeof value !== "object") return;
+    Object.freeze(value);
+    for (const child of Object.values(value)) freeze(child);
+  };
+  freeze(scope);
   for (const handler of handlers) {
     try {
       const module = await import(handler.entrypoint);

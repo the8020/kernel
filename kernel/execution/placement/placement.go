@@ -106,7 +106,7 @@ func selectKey(request Request) (string, error) {
 		}
 		return string(request.WorkloadType) + ":namespace:" + request.Namespace, nil
 	case model.GroupingShared:
-		return string(request.WorkloadType) + ":shared", nil
+		return string(request.WorkloadType) + ":placement:", nil
 	default:
 		return "", fmt.Errorf("unsupported grouping strategy %q", request.Strategy)
 	}

@@ -62,6 +62,11 @@ Parent DOX: [kernel/defaults DOX](../../AGENTS.md).
   pinned Zod dependency used by the HTTP self-types, and explicitly required
   administrator debugging tools. `stage-service-runtime.sh` excludes tests, DOX
   files, examples, application source, and unrelated files.
+- The service image prepares traversable `/runtime-cache/{npm,remote,gen}` mount
+  points. Runtime profiles bind these native Deno file caches from persistent
+  node storage and keep the remaining cache, including SQLite, private. Ordinary
+  imports grow the shared cache; no application dependency list, source
+  snapshot, or loader replacement is needed.
 - `stage-service-runtime.sh --sources` lists production TypeScript recursively,
   excluding `examples/`, `test/`, and `*_test.ts`. Staging and both image hashes
   consume that same list, so added modules and nested sources participate
@@ -108,6 +113,13 @@ Parent DOX: [kernel/defaults DOX](../../AGENTS.md).
 
 # Verification
 
+- [CACHE_BENCHMARK.md](CACHE_BENCHMARK.md) records the shared-file-cache
+  decision, concurrent-miss comparison, real startup measurements, and
+  regression command.
+- [STARTUP_BENCHMARK.md](STARTUP_BENCHMARK.md) records individual sandbox and
+  import timings, implemented single-invocation indexing and unchecked startup,
+  retained-supervisor reuse and short keepalive qualification, fresh/restart
+  measurements, and remaining startup costs.
 - Deno formatting, linting, type checking, and tests cover supervisor/Worker
   lifecycle, service/job contracts, streaming, persistent binding/completion,
   exact registered Worker invocation, cancellation, permissions, and crashes.

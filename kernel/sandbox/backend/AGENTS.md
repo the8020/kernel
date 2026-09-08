@@ -19,6 +19,9 @@ Parent DOX: [kernel/kernel/sandbox DOX](../AGENTS.md).
   create/start/observe/owned-metadata-list/stop/kill/delete operations, and
   narrowly update owner, owner-list, logical-service-list, placement-group, and
   warm-assignment labels as shared-group membership changes.
+- Empty owner, owner-list, or logical-service-list patches clear membership
+  after the last allocation leaves a retained sandbox. Empty identity, group,
+  and assignment values remain invalid.
 - Production backends implement the optional `ConsoleBackend` contract to exec
   one process with a direct argument vector, environment, and absolute working
   directory, using either byte-transparent streams or bounded PTY geometry.
@@ -32,7 +35,8 @@ Parent DOX: [kernel/kernel/sandbox DOX](../AGENTS.md).
   receives Deno read/write permission for the exact callback socket because Deno
   requires both for Unix-socket connection; the surrounding bind mount remains
   read-only. Service supervisors alone may execute the pinned Deno binary for
-  in-sandbox type checking; application Workers never receive run permission.
+  explicit schema dependency inspection; application Workers never receive run
+  permission.
 - The existing private mount also exposes /run/the8020/logs.sock; shared Deno
   argument construction grants that exact socket to supervisors. Application
   Worker permissions remain separately constructed and omit both private

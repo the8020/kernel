@@ -45,8 +45,9 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   output order follows deterministic registration order.
 - The portable bundled module's self-types import and re-export the actual
   pinned Zod namespace. Preserve its complete API, schema identity, and
-  inference; do not maintain a partial copy of dependency types. In-sandbox
-  service validation must match source-tree type checking.
+  inference; do not maintain a partial copy of dependency types. Image-build
+  checks against the bundle must match source-tree type checking; service
+  startup does not run a type checker.
 - `bundle-runtime.sh` publishes exactly `the8020_http.js` and
   `the8020_http.d.ts` in the generated HTTP output root and removes obsolete
   sibling build outputs before that root is staged into runtime images.

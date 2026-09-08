@@ -34,7 +34,9 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
 - Service placement supplies exactly one sandbox-group string and logical
   service ID. Reuse requires the same group/profile and refuses a sandbox that
   already contains that logical service; releasing the final owner delegates
-  sandbox destruction to the manager.
+  keepalive and destruction to the manager. If idle expiry wins between cached
+  selection and owner acquisition, use ordinary warm assignment or cold
+  creation; other acquisition errors propagate.
 - Existing service sandboxes are eligible only while their observed Worker count
   remains below the kernel-wide limit. If every compatible sandbox is full or
   already contains the service, cold construction retains the requested sandbox
@@ -50,7 +52,8 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
 - Unit tests cover same-owner reuse, cross-owner separation, persistent
   multi-owner shared groups, explicit shared keys, incompatible profiles,
   no-cross-type reuse, Worker-count capacity exclusion, placement-group
-  retention, and new sandbox construction.
+  retention, default/explicit-empty group sharing, idle-expiry acquisition, and
+  new sandbox construction.
 
 # Child DOX Index
 

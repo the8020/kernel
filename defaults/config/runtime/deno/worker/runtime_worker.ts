@@ -110,6 +110,8 @@ export class RuntimeWorker {
   #port: MessagePort;
   #pending = new Map<string, Pending>();
   #activeContexts = new Set<string>();
+  #imports = new Set<string>();
+  #termination = new AbortController();
   #closed = false;
   #draining = false;
   #failure?: string;
@@ -163,6 +165,12 @@ export class RuntimeWorker {
     this.#port.onmessage = (event: MessageEvent<WorkerMessage>) => {
       const message = event.data;
       if (this.#handleLog(message)) return;
+      if (message.type === "module_loaded") {
+        if (typeof message.payload === "string") {
+          this.#imports.add(message.payload);
+        }
+        return;
+      }
       if (message.type === "ready") {
         this.#starting = false;
         this.#idleSinceMilliseconds = this.#now();
@@ -398,6 +406,14 @@ export class RuntimeWorker {
     return this.#inFlight;
   }
 
+  /** Read only during an explicit source-update scan; expires with this Worker. */
+  importsAny(paths: ReadonlySet<string>): boolean {
+    for (const path of this.#imports) {
+      if (paths.has(path)) return true;
+    }
+    return false;
+  }
+
   get idleSinceMilliseconds(): number | undefined {
     return this.#inFlight === 0 && !this.#closed
       ? this.#idleSinceMilliseconds
@@ -521,7 +537,7 @@ export class RuntimeWorker {
         : trackStream(response.body, () => {
           release();
           this.#completeInFlight();
-        });
+        }, this.#termination.signal);
       if (responseBody === null) {
         release();
         this.#completeInFlight();
@@ -638,20 +654,19 @@ export class RuntimeWorker {
     this.#draining = true;
     const deadline = Date.now() + graceMilliseconds;
     await this.#waitForIdle(Math.max(0, deadline - Date.now()));
+    if (this.#closed) return;
     if (this.#inFlight > 0) {
       this.#terminate("drain_timeout");
       return;
     }
-    let forced = false;
     const timeout = setTimeout(() => {
-      forced = true;
       this.#terminate("drain_timeout");
     }, Math.max(1, deadline - Date.now()));
     try {
       await this.#request({ type: "stop" });
       this.#terminate("graceful");
     } catch (error) {
-      if (!forced) throw error;
+      if (!this.#closed) throw error;
     } finally {
       clearTimeout(timeout);
     }
@@ -668,10 +683,12 @@ export class RuntimeWorker {
     if (this.#closed) return;
     this.#closed = true;
     this.#logLifecycle("Worker exited", reason);
+    this.#termination.abort(new Error(failure));
     this.#worker.terminate();
     for (const controller of this.#kernelCalls.values()) controller.abort();
     this.#kernelCalls.clear();
     this.#activeContexts.clear();
+    this.#imports.clear();
     this.#port.close();
     this.#closedNotification();
     this.#closeWebSockets(failure);

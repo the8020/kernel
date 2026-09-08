@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -346,6 +347,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	maximumWorkersPerSandbox := activeInt(settingManager, "runtime.sandbox.maximum_workers", 64)
 	sandboxManager, err := manager.New(manager.Config{
 		InstanceUUID: instanceUUID, StartupTimeout: activeDuration(settingManager, "runtime.sandbox.startup_timeout", 30*time.Second),
+		KeepAlive: activeDuration(settingManager, "runtime.sandbox.keep_alive", 2*time.Minute),
 		StopGrace: activeDuration(settingManager, "runtime.sandbox.stop_grace_period", 10*time.Second), Store: stateStore,
 		Backend: sandboxBackend, Network: networkManager, Supervisor: supervisorClient, Ports: portManager, Logs: serviceSet.Logging,
 		History: historyStore, HistoryRetention: historyRetention, NodeLimits: nodeLimits,
@@ -387,6 +389,12 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	serviceMounts := append(append([]model.Mount(nil), baseMounts...),
 		model.Mount{Source: packageCatalog.PackagesRoot(), Target: "/workspace/packages", ReadOnly: true, Purpose: "workspace-packages", Persistence: "shared"},
 	)
+	cacheMounts, err := sharedDenoCacheMounts(filepath.Join(paths.Runtime, "deno-cache", versions.Deno.Version, string(selectedMode)))
+	if err != nil {
+		runtimeServices.Failure = "initialize shared Deno cache: " + err.Error()
+		return runtimeServices, closeRuntime
+	}
+	serviceMounts = append(serviceMounts, cacheMounts...)
 	serviceProfile := runtimeProfile(model.WorkloadService, imageDigest, serviceMounts, serviceResources, egressAllowed)
 	serviceProfile.Permissions.ReadPaths = append(serviceProfile.Permissions.ReadPaths, "/opt/runtime", "/workspace/packages")
 	jobProfile := runtimeProfile(model.WorkloadJob, imageDigest, serviceMounts, jobResources, egressAllowed)
@@ -442,6 +450,11 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		return runtimeServices, closeRuntime
 	}
 	cleanup.jobs = jobManager
+	// Reconcile inherited workloads before schema jobs or indexed commands can run.
+	if err := restoreRuntimeWorkloads(ctx, sandboxManager, serviceManager, jobManager, portManager, startupReport.Terminated, logger); err != nil {
+		runtimeServices.Failure = err.Error()
+		return runtimeServices, closeRuntime
+	}
 	tableEvaluator, err := databaseevaluator.New(databaseevaluator.Config{Packages: packageCatalog, Jobs: jobManager, Database: systemDatabase})
 	if err != nil {
 		runtimeServices.Failure = err.Error()
@@ -516,9 +529,21 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	runtimeServices.ListPrograms = packageStore.ListPrograms
 	serviceIndex := webservices.NewIndex()
 	indexer := &runtimeIndexer{handlers: packageStore, commands: commandIndexer, packages: packageStore, jobs: jobManager, services: serviceIndex}
+	var sharedState *runtimeSharedState
+	startupIndexed := false
 	lifecycleReindex := func(ctx context.Context, ids []string) error {
+		if sharedState != nil {
+			return sharedState.Refresh(ctx)
+		}
+		// The first boot/recovery pass fills the entire node-local index.
+		if !startupIndexed {
+			ids = nil
+		}
 		_, err := indexer.Reindex(ctx, ids)
 		var publication *indexPublicationError
+		if err == nil || errors.As(err, &publication) {
+			startupIndexed = true
+		}
 		if errors.As(err, &publication) {
 			if logger != nil {
 				logger.Error("service index publication failed; local repair remains available", "error", err)
@@ -593,9 +618,11 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		runtimeServices.Failure = "initialize index convergence: " + err.Error()
 		return runtimeServices, closeRuntime
 	}
-	if err := lifecycleReindex(ctx, nil); err != nil {
-		runtimeServices.Failure = "reindex packages: " + err.Error()
-		return runtimeServices, closeRuntime
+	if !startupIndexed {
+		if err := lifecycleReindex(ctx, nil); err != nil {
+			runtimeServices.Failure = "reindex packages: " + err.Error()
+			return runtimeServices, closeRuntime
+		}
 	}
 	packageFollower, err := workspacepackages.NewPackageRevisionFollower(ctx, packageStore, packageCommits)
 	if err != nil {
@@ -680,24 +707,6 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		runtimeServices.Failure = "register sandbox console route: " + err.Error()
 		return runtimeServices, closeRuntime
 	}
-	sshPort, ok := settingManager.Active("network.ssh_port")
-	if !ok {
-		runtimeServices.Failure = "network.ssh_port is not registered"
-		return runtimeServices, closeRuntime
-	}
-	sshManager, err := kernelssh.New(kernelssh.Config{
-		Port: int(sshPort.(int64)), HostKeyPath: paths.SSHHostKey, Authentication: authentication,
-		Development: developmentManager, Consoles: consoleManager, Logger: logger,
-	})
-	if err != nil {
-		runtimeServices.Failure = "initialize SSH server: " + err.Error()
-		return runtimeServices, closeRuntime
-	}
-	cleanup.ssh = sshManager
-	if err := settingManager.RegisterApplier([]string{"network.ssh_port"}, sshManager); err != nil {
-		runtimeServices.Failure = err.Error()
-		return runtimeServices, closeRuntime
-	}
 	adminManager, err := adminrun.New(adminrun.Config{InstanceRoot: root, ArtifactsRoot: paths.RuntimeAttachments, Jobs: jobManager})
 	if err != nil {
 		runtimeServices.Failure = err.Error()
@@ -714,10 +723,6 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	}
 	runtimeServices.Jobs = jobManager
 	runtimeServices.AdminRun, runtimeServices.Debugging = adminManager, debugManager
-	if err := restoreRuntimeWorkloads(ctx, sandboxManager, serviceManager, jobManager, portManager, startupReport.Terminated, logger); err != nil {
-		runtimeServices.Failure = err.Error()
-		return runtimeServices, closeRuntime
-	}
 	webServiceManager, err := webservices.New(webservices.Config{
 		Index:             serviceIndex,
 		Pools:             serviceManager,
@@ -731,8 +736,29 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		NodeID:            instanceUUID,
 		Signing:           serviceSet.Signing,
 		Nodes:             nodeManager,
+		MatchImports:      workerManager.MatchingImports,
+		Database:          systemDatabase,
 	})
 	if err != nil {
+		runtimeServices.Failure = err.Error()
+		return runtimeServices, closeRuntime
+	}
+	sshPort, ok := settingManager.Active("network.ssh_port")
+	if !ok {
+		runtimeServices.Failure = "network.ssh_port is not registered"
+		return runtimeServices, closeRuntime
+	}
+	sshManager, err := kernelssh.New(kernelssh.Config{
+		Port: int(sshPort.(int64)), HostKeyPath: paths.SSHHostKey, Authentication: authentication,
+		Development: developmentManager, Consoles: consoleManager, Logger: logger,
+		OpenTerminal: namedTerminalOpener(webServiceManager, consoleManager),
+	})
+	if err != nil {
+		runtimeServices.Failure = "initialize SSH server: " + err.Error()
+		return runtimeServices, closeRuntime
+	}
+	cleanup.ssh = sshManager
+	if err := settingManager.RegisterApplier([]string{"network.ssh_port"}, sshManager); err != nil {
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
 	}
@@ -748,7 +774,18 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	cleanup.webservices, runtimeServices.Services = webServiceManager, webServiceManager
 	indexer.runtime = webServiceManager
 	webServiceManager.StartReconciler(ctx)
-	startRuntimeMonitor(cleanup, sandboxManager, serviceManager, jobManager, systemDatabase, settingManager, &runtimeSharedState{packages: packageFollower, indexes: indexFollower, reindex: indexer.Reindex, retry: indexer.RetryPending, logger: logger, topology: nodeManager, nextTopology: time.Now().Add(30 * time.Second)}, publicNetwork, heartbeatInterval, heartbeatTimeout, logger)
+	sharedState = &runtimeSharedState{packages: packageFollower, indexes: indexFollower, reindex: indexer.Reindex, retry: indexer.RetryPending, logger: logger, topology: nodeManager, nextTopology: time.Now().Add(30 * time.Second),
+		sourceUpdate: func(ctx context.Context, update workspacepackages.PackageSetUpdate) error {
+			return workspacepackages.ReactToSourceUpdate(ctx, update, webServiceManager.MatchingImports, func(ctx context.Context, id string, revision uint64) error {
+				return webServiceManager.RequestRestart(ctx, id, "soft", revision)
+			})
+		},
+		restart: func(ctx context.Context, id string) error {
+			_, err := webServiceManager.RefreshRestart(ctx, id)
+			return err
+		},
+	}
+	startRuntimeMonitor(cleanup, sandboxManager, serviceManager, jobManager, systemDatabase, settingManager, sharedState, publicNetwork, heartbeatInterval, heartbeatTimeout, logger)
 	return runtimeServices, closeRuntime
 }
 
@@ -999,6 +1036,7 @@ type targetedServiceReconciler interface {
 }
 
 type runtimeSharedState struct {
+	mu           sync.Mutex
 	packages     packageRevisionFollower
 	indexes      packageRevisionFollower
 	reindex      func(context.Context, []string) (core.Result, error)
@@ -1008,9 +1046,13 @@ type runtimeSharedState struct {
 	topology     interface{ Refresh(context.Context) error }
 	now          func() time.Time
 	nextTopology time.Time
+	sourceUpdate func(context.Context, workspacepackages.PackageSetUpdate) error
+	restart      func(context.Context, string) error
 }
 
 func (s *runtimeSharedState) Refresh(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.topology != nil {
 		now := time.Now()
 		if s.now != nil {
@@ -1056,6 +1098,12 @@ func (s *runtimeSharedState) refreshIndexSource(ctx context.Context, follower pa
 	if err != nil || update.Revision == 0 {
 		return err
 	}
+	if len(update.Paths) > 0 && s.sourceUpdate != nil {
+		if err := s.sourceUpdate(ctx, update); err != nil {
+			s.recordPublicationFailure(err)
+			return nil // Keep this update pending without gating unrelated traffic.
+		}
+	}
 	if s.reindex != nil && len(update.Packages) > 0 {
 		_, err = s.reindex(ctx, update.Packages)
 		var publication *indexPublicationError
@@ -1063,6 +1111,14 @@ func (s *runtimeSharedState) refreshIndexSource(ctx context.Context, follower pa
 			return err
 		}
 		s.recordPublicationFailure(err)
+	}
+	if s.restart != nil {
+		for _, id := range update.Restarts {
+			if err := s.restart(ctx, id); err != nil {
+				s.recordPublicationFailure(err)
+				return nil
+			}
+		}
 	}
 	// Invalid application fragments stay pending in the indexer, not in source
 	// convergence. Healthy services and local commands remain available.
@@ -1086,13 +1142,16 @@ func startRuntimeMonitor(cleanup *runtimeCleanup, sandboxes *manager.Manager, se
 	cleanup.monitorWait.Add(1)
 	go func() {
 		defer cleanup.monitorWait.Done()
-		ticker := time.NewTicker(interval)
+		ticker := time.NewTicker(min(interval, time.Second))
 		defer ticker.Stop()
 		for {
 			select {
 			case <-monitorContext.Done():
 				return
 			case <-ticker.C:
+				if _, err := sandboxes.CleanupIdle(monitorContext); err != nil && !errors.Is(err, context.Canceled) && logger != nil {
+					logger.Error("idle sandbox cleanup failed", "error", err)
+				}
 				report, err := sandboxes.CheckHealth(monitorContext, timeout)
 				if err != nil {
 					if !errors.Is(err, context.Canceled) && logger != nil {
@@ -1158,6 +1217,30 @@ func startRuntimeMonitor(cleanup *runtimeCleanup, sandboxes *manager.Manager, se
 			}
 		}
 	}()
+}
+
+func sharedDenoCacheMounts(root string) ([]model.Mount, error) {
+	if err := os.MkdirAll(root, 0700); err != nil {
+		return nil, err
+	}
+	var mounts []model.Mount
+	// Deno publishes these files atomically. SQLite/WAL caches stay in the
+	// sandbox's private tmpfs because separate gVisor sandboxes do not share locks.
+	// ponytail: cold misses can duplicate downloads; coordinate individual misses
+	// only if that becomes the measured bottleneck.
+	for _, directory := range []string{"npm", "remote", "gen"} {
+		source := filepath.Join(root, directory)
+		if err := os.MkdirAll(source, 0777); err != nil {
+			return nil, err
+		}
+		// The enclosing node directory is private; the mounted child must also
+		// admit the runtime image's non-root user in full containerd mode.
+		if err := os.Chmod(source, 0777); err != nil {
+			return nil, err
+		}
+		mounts = append(mounts, model.Mount{Source: source, Target: "/runtime-cache/" + directory, Purpose: "runtime-cache", Persistence: "node"})
+	}
+	return mounts, nil
 }
 
 func runtimeProfile(workload model.WorkloadType, digest string, mounts []model.Mount, resources model.ResourceLimits, egressAllowed bool) model.RuntimeProfile {
@@ -1253,9 +1336,6 @@ func activeBoolDefault(manager *settings.Manager, key string, fallback bool) boo
 	return fallback
 }
 func activeDuration(manager *settings.Manager, key string, fallback time.Duration) time.Duration {
-	value := activeInt(manager, key, 0)
-	if value <= 0 {
-		return fallback
-	}
+	value := activeInt(manager, key, int(fallback/time.Millisecond))
 	return time.Duration(value) * time.Millisecond
 }

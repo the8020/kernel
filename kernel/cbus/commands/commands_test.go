@@ -162,6 +162,10 @@ func (f fakeWebServices) Reconcile(context.Context, string) (webservices.Status,
 	return f.status(), nil
 }
 
+func (f fakeWebServices) Restart(context.Context, string, string, uint64) (webservices.Status, error) {
+	return f.status(), nil
+}
+
 func (f fakeWebServices) Retire(context.Context, string) error {
 	f.record("service.retire")
 	return nil

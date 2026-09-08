@@ -60,9 +60,9 @@ type Options struct {
 	WorkspaceWritable    bool
 	LogicalServiceID     string
 	Generation           uint64
+	RestartRevision      uint64
 	CanonicalBasePath    string
 	OpenAPI              supervisor.OpenAPIMetadata
-	ValidateEntrypoint   bool
 	SandboxIndex         int
 	ExecutionMode        string
 	TargetUtilization    float64
@@ -88,9 +88,9 @@ type Record struct {
 	Permissions          supervisor.WorkerPermissions `json:"permissions"`
 	LogicalServiceID     string                       `json:"logical_service_id,omitempty"`
 	Generation           uint64                       `json:"generation,omitempty"`
+	RestartRevision      uint64                       `json:"restart_revision,omitempty"`
 	CanonicalBasePath    string                       `json:"canonical_base_path,omitempty"`
 	OpenAPI              supervisor.OpenAPIMetadata   `json:"openapi,omitempty"`
-	ValidateEntrypoint   bool                         `json:"validate_entrypoint,omitempty"`
 	SandboxIndex         int                          `json:"sandbox_index"`
 	ExecutionMode        string                       `json:"execution_mode,omitempty"`
 	TargetUtilization    float64                      `json:"target_utilization,omitempty"`
@@ -215,7 +215,8 @@ func (m *Manager) Start(ctx context.Context, serviceID, entrypoint string, optio
 	if options.ReleaseID == "" {
 		options.ReleaseID = "development"
 	}
-	record := Record{ServiceID: serviceID, LogicalServiceID: options.LogicalServiceID, Generation: options.Generation, CanonicalBasePath: options.CanonicalBasePath, OpenAPI: options.OpenAPI, ValidateEntrypoint: options.ValidateEntrypoint, SandboxIndex: options.SandboxIndex, Entrypoint: entrypoint, ReleaseID: options.ReleaseID, State: "STARTING", MinimumWorkers: minimum, MaximumWorkers: maximum, ConcurrencyPerWorker: concurrency, WorkerKeepAlive: options.WorkerKeepAlive, StartedAt: m.now(), ExecutionMode: options.ExecutionMode, TargetUtilization: options.TargetUtilization}
+	record := Record{ServiceID: serviceID, LogicalServiceID: options.LogicalServiceID, Generation: options.Generation, CanonicalBasePath: options.CanonicalBasePath, OpenAPI: options.OpenAPI, SandboxIndex: options.SandboxIndex, Entrypoint: entrypoint, ReleaseID: options.ReleaseID, State: "STARTING", MinimumWorkers: minimum, MaximumWorkers: maximum, ConcurrencyPerWorker: concurrency, WorkerKeepAlive: options.WorkerKeepAlive, StartedAt: m.now(), ExecutionMode: options.ExecutionMode, TargetUtilization: options.TargetUtilization}
+	record.RestartRevision = options.RestartRevision
 	if record.LogicalServiceID == "" {
 		record.LogicalServiceID = serviceID
 	}
@@ -424,6 +425,15 @@ func contains(values []string, candidate string) bool {
 // Stop removes idle Workers and reports whether the pool is fully retired.
 // Occupied Workers remain durably DRAINING for a later reconciliation pass.
 func (m *Manager) Stop(ctx context.Context, serviceID string) (bool, error) {
+	return m.stop(ctx, serviceID, false)
+}
+
+// Kill terminates every Worker owned by this pool, including occupied Workers.
+func (m *Manager) Kill(ctx context.Context, serviceID string) (bool, error) {
+	return m.stop(ctx, serviceID, true)
+}
+
+func (m *Manager) stop(ctx context.Context, serviceID string, immediate bool) (bool, error) {
 	unlock := m.lock(serviceID)
 	defer unlock()
 	record, err := m.inspect(serviceID)
@@ -506,16 +516,23 @@ func (m *Manager) Stop(ctx context.Context, serviceID string) (bool, error) {
 		}
 	}
 	record.WorkerIDs = append([]string(nil), remaining...)
+	if immediate {
+		for _, item := range live {
+			if item.Worker.WorkloadID == serviceID && !slices.Contains(record.WorkerIDs, item.Worker.WorkerID) {
+				record.WorkerIDs = append(record.WorkerIDs, item.Worker.WorkerID)
+			}
+		}
+	}
 	if err := m.save(record); err != nil {
 		return false, err
 	}
 	var joined error
 	remaining = append([]string(nil), record.WorkerIDs...)
 	for _, id := range append([]string(nil), record.WorkerIDs...) {
-		if liveByID[id].Worker.InFlight > 0 {
+		if !immediate && liveByID[id].Worker.InFlight > 0 {
 			continue
 		}
-		if stopErr := m.workers.StopInSandbox(ctx, record.SandboxID, id, false); stopErr != nil {
+		if stopErr := m.workers.StopInSandbox(ctx, record.SandboxID, id, immediate); stopErr != nil {
 			joined = errors.Join(joined, fmt.Errorf("stop Worker %s: %w", id, stopErr))
 			continue
 		}
@@ -864,7 +881,7 @@ func (m *Manager) startWorker(ctx context.Context, record Record, permissions su
 	if err != nil {
 		return "", err
 	}
-	started, err := m.workers.Start(ctx, record.SandboxID, supervisor.StartWorkerRequest{Metadata: supervisor.ExecutionMetadata{WorkerID: workerID, WorkloadType: model.WorkloadService, OwnerID: record.LogicalServiceID, WorkloadID: record.ServiceID, ReleaseID: record.ReleaseID, Entrypoint: record.Entrypoint, DebuggerName: "service:" + record.LogicalServiceID + ":" + workerID, ValidateEntrypoint: record.ValidateEntrypoint, User: record.User, Origin: execution.Origin{Type: execution.OriginService, ID: record.LogicalServiceID}, Service: &supervisor.ServiceExecutionMetadata{ServiceID: record.LogicalServiceID, Generation: record.Generation, CanonicalBasePath: record.CanonicalBasePath, OpenAPI: record.OpenAPI, ExecutionMode: record.ExecutionMode}}, Permissions: permissions})
+	started, err := m.workers.Start(ctx, record.SandboxID, supervisor.StartWorkerRequest{Metadata: supervisor.ExecutionMetadata{WorkerID: workerID, WorkloadType: model.WorkloadService, OwnerID: record.LogicalServiceID, WorkloadID: record.ServiceID, ReleaseID: record.ReleaseID, Entrypoint: record.Entrypoint, DebuggerName: "service:" + record.LogicalServiceID + ":" + workerID, User: record.User, Origin: execution.Origin{Type: execution.OriginService, ID: record.LogicalServiceID}, Service: &supervisor.ServiceExecutionMetadata{ServiceID: record.LogicalServiceID, Generation: record.Generation, CanonicalBasePath: record.CanonicalBasePath, OpenAPI: record.OpenAPI, ExecutionMode: record.ExecutionMode}}, Permissions: permissions})
 	if err != nil {
 		if supervisor.IsRequestRejected(err) {
 			return "", &invalidServiceDefinitionError{cause: err}
@@ -919,7 +936,7 @@ func (m *Manager) ProxyWebSocket(ctx context.Context, serviceID string, writer h
 	if err != nil {
 		return err
 	}
-	if record.State != "READY" {
+	if record.State != "READY" && !(record.State == "DRAINING" && request.Header.Get("the8020-internal-persistent-existing") == "true") {
 		return errors.New("service sandbox pool is unavailable")
 	}
 	return m.workers.ProxyServiceWebSocket(ctx, record.SandboxID, record.ServiceID, writer, request, modifyResponse)

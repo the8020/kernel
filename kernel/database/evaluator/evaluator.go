@@ -288,7 +288,7 @@ func (e *Evaluator) evaluateBatch(ctx context.Context, batch []evaluationItem, f
 		User:    execution.DefaultUser(ctx),
 		OwnerID: "the8020/db", Arguments: []any{evaluationRequest{PackageRoot: packageMountRoot, Tables: batch}},
 		GroupKey: "database-table-evaluator", Namespace: "the8020", Timeout: 2 * time.Minute,
-		Parallelism: 1, Reuse: &reuse, ReleaseID: fingerprint, DatabaseAccess: "none", CheckModules: modules, Mounts: mounts,
+		Parallelism: 1, Reuse: &reuse, ReleaseID: fingerprint, DatabaseAccess: "none", DependencyModules: modules, Mounts: mounts,
 		Permissions: &supervisor.WorkerPermissions{Read: []string{"/opt/runtime", packageMountRoot}},
 	})
 	if err != nil {

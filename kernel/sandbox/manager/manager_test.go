@@ -30,6 +30,7 @@ type fakeBackend struct {
 	labels                            map[string]map[string]string
 	createError                       error
 	deleteError                       error
+	labelsError                       error
 	consoleID                         string
 	consoleOptions                    backend.ConsoleOptions
 	observeCalls                      atomic.Int64
@@ -95,6 +96,9 @@ func (f *fakeBackend) Create(_ context.Context, spec model.SandboxSpec, paths re
 	return observation, nil
 }
 func (f *fakeBackend) UpdateLabels(_ context.Context, id string, labels map[string]string) error {
+	if f.labelsError != nil {
+		return f.labelsError
+	}
 	if f.labels == nil {
 		f.labels = map[string]map[string]string{}
 	}
@@ -469,7 +473,7 @@ func TestAssignWarmRequiresCleanHealthyGroupAndPersistsOwner(t *testing.T) {
 		t.Fatalf("warm assignment changed the sandbox log reference: %#v", assigned.Status)
 	}
 	stored, status, err := store.Load("sandbox-warm")
-	if err != nil || stored.Lifecycle.Warm || status.CurrentOwners[0] != "nightly" || runtimeBackend.labels["sandbox-warm"]["the8020.owner"] != "nightly" {
+	if err != nil || stored.Lifecycle.Warm || !status.IdleSince.IsZero() || status.CurrentOwners[0] != "nightly" || runtimeBackend.labels["sandbox-warm"]["the8020.owner"] != "nightly" {
 		t.Fatalf("stored=%#v status=%#v labels=%#v err=%v", stored, status, runtimeBackend.labels, err)
 	}
 	if _, err := manager.AssignWarm(context.Background(), "sandbox-warm", "job:owner:other", "other"); err == nil {
@@ -535,6 +539,112 @@ func TestRemoveOwnerRetainsSharedSandboxThenDeletesItWhenEmpty(t *testing.T) {
 	}
 	if _, _, err := store.Load(spec.SandboxID); !errors.Is(err, os.ErrNotExist) || len(runtimeBackend.deleted) != 1 || len(runtimeNetwork.released) != 1 {
 		t.Fatalf("load err=%v deleted=%#v released=%#v", err, runtimeBackend.deleted, runtimeNetwork.released)
+	}
+}
+
+func TestKeepAliveRetainsAndReusesEmptyServiceAndJobSandboxes(t *testing.T) {
+	for _, workload := range []model.WorkloadType{model.WorkloadJob, model.WorkloadService} {
+		t.Run(string(workload), func(t *testing.T) {
+			manager, store, runtimeBackend, _, _ := testManager(t)
+			manager.keepAlive = 2 * time.Second
+			now := manager.now()
+			manager.now = func() time.Time { return now }
+			spec := testSandboxSpec(t, "sandbox-retained")
+			spec.WorkloadType, spec.RuntimeProfile.WorkloadType = workload, workload
+			spec.ProfileHash, _ = spec.RuntimeProfile.Hash()
+			if _, err := manager.Create(context.Background(), spec); err != nil {
+				t.Fatal(err)
+			}
+			if deleted, err := manager.RemoveOwner(context.Background(), spec.SandboxID, "job", ""); err != nil || deleted {
+				t.Fatalf("premature deletion: %t, %v", deleted, err)
+			}
+			retained, _, err := store.Load(spec.SandboxID)
+			if err != nil || len(retained.OwnerIDs) != 0 || retained.GroupKey != spec.GroupKey || retained.Lifecycle.Warm {
+				t.Fatalf("retained sandbox lost compatibility or ownership: %#v, %v", retained, err)
+			}
+			now = now.Add(time.Second)
+			if removed, err := manager.CleanupIdle(context.Background()); err != nil || removed != 0 {
+				t.Fatalf("keepalive was not respected: %d, %v", removed, err)
+			}
+			if _, err := manager.AddOwner(context.Background(), spec.SandboxID, "next-worker"); err != nil {
+				t.Fatal(err)
+			}
+			if deleted, err := manager.expireIdle(context.Background(), spec.SandboxID, now.Add(time.Hour)); err != nil || deleted {
+				t.Fatalf("an earlier idle claim destroyed a new allocation: %t, %v", deleted, err)
+			}
+			snapshot := model.RuntimeSnapshot{SandboxID: spec.SandboxID, WorkloadType: workload, Revision: 1, SupervisorStartedAtMS: 1, WorkerCount: 1}
+			if _, err := store.Observe(spec.SandboxID, snapshot, now); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := manager.RemoveOwner(context.Background(), spec.SandboxID, "next-worker", ""); err != nil {
+				t.Fatal(err)
+			}
+			now = now.Add(5 * time.Second)
+			if removed, err := manager.CleanupIdle(context.Background()); err != nil || removed != 0 {
+				t.Fatalf("a live Worker was destroyed: %d, %v", removed, err)
+			}
+			snapshot.Revision, snapshot.WorkerCount = 2, 0
+			if _, err := store.Observe(spec.SandboxID, snapshot, now); err != nil {
+				t.Fatal(err)
+			}
+			now = now.Add(time.Second)
+			if removed, err := manager.CleanupIdle(context.Background()); err != nil || removed != 0 {
+				t.Fatalf("the new Worker did not reset keepalive: %d, %v", removed, err)
+			}
+			now = now.Add(time.Second)
+			if removed, err := manager.CleanupIdle(context.Background()); err != nil || removed != 1 || len(runtimeBackend.deleted) != 1 {
+				t.Fatalf("idle sandbox did not expire: %d, %v", removed, err)
+			}
+		})
+	}
+}
+
+func TestKeepAliveCleanupRetriesFailureAndExplicitDeleteBypassesDelay(t *testing.T) {
+	manager, _, runtimeBackend, _, _ := testManager(t)
+	manager.keepAlive = time.Second
+	now := manager.now()
+	manager.now = func() time.Time { return now }
+	for _, id := range []string{"sandbox-retry", "sandbox-explicit"} {
+		if _, err := manager.Create(context.Background(), testSandboxSpec(t, id)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := manager.RemoveOwner(context.Background(), id, "job", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := manager.Delete(context.Background(), "sandbox-explicit"); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(2 * time.Second)
+	runtimeBackend.deleteError = errors.New("delete temporarily unavailable")
+	if removed, err := manager.CleanupIdle(context.Background()); err == nil || removed != 0 {
+		t.Fatalf("cleanup failure was hidden: %d, %v", removed, err)
+	}
+	runtimeBackend.deleteError = nil
+	if removed, err := manager.CleanupIdle(context.Background()); err != nil || removed != 1 {
+		t.Fatalf("failed idle cleanup was not retried: %d, %v", removed, err)
+	}
+}
+
+func TestFailedOwnerAcquisitionPreservesIdleExpiry(t *testing.T) {
+	manager, _, runtimeBackend, _, _ := testManager(t)
+	now := time.Now()
+	manager.now = func() time.Time { return now }
+	manager.keepAlive = 2 * time.Second
+	spec := testSandboxSpec(t, "sandbox-owner-rollback")
+	if _, err := manager.Create(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.RemoveOwner(context.Background(), spec.SandboxID, spec.OwnerIDs[0], ""); err != nil {
+		t.Fatal(err)
+	}
+	runtimeBackend.labelsError = errors.New("label update failed")
+	if _, err := manager.AddOwner(context.Background(), spec.SandboxID, "new-owner"); !errors.Is(err, runtimeBackend.labelsError) {
+		t.Fatalf("owner acquisition error = %v", err)
+	}
+	now = now.Add(manager.keepAlive)
+	if removed, err := manager.CleanupIdle(context.Background()); err != nil || removed != 1 {
+		t.Fatalf("failed owner acquisition lost idle expiry: %d, %v", removed, err)
 	}
 }
 

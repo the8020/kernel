@@ -98,25 +98,37 @@ func (i *runtimeIndexer) indexServices(ctx context.Context, packageIDs []string)
 	}
 	var applied, diagnostics []string
 	var failures []error
-	for position, packageID := range packageIDs {
-		if err := ctx.Err(); err != nil {
-			for _, pendingID := range packageIDs[position:] {
-				i.pending[pendingID] = true
-				failure := fmt.Errorf("%s: %w", pendingID, err)
-				failures = append(failures, failure)
-				diagnostics = append(diagnostics, failure.Error())
-			}
-			break
+	fail := func(packageID string, err error) {
+		i.pending[packageID] = true
+		failure := fmt.Errorf("%s: %w", packageID, err)
+		failures = append(failures, failure)
+		diagnostics = append(diagnostics, failure.Error())
+	}
+	scope := serviceIndexScope{Packages: []serviceIndexPackage{}}
+	for _, packageID := range packageIDs {
+		entry, err := i.packages.InspectPackageIndex(packageID)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			fail(packageID, err)
+			continue
 		}
-		runtimeFailures, err := i.indexServicePackage(ctx, packageID, chain)
+		if err == nil && entry.State != "ready" && entry.State != "retired" {
+			fail(packageID, fmt.Errorf("%w: %s", packages.ErrPackageNotReady, packageID))
+			continue
+		}
+		scope.Packages = append(scope.Packages, serviceIndexPackage{PackageID: packageID, PackageCommit: entry.ActiveCommit, Active: err == nil && entry.State == "ready", state: entry.State})
+	}
+	fragments, batchErr := i.runServiceIndex(ctx, scope, chain)
+	for _, selected := range scope.Packages {
+		if batchErr != nil {
+			fail(selected.PackageID, batchErr)
+			continue
+		}
+		runtimeFailures, err := i.publishServicePackage(ctx, selected, fragments[selected.PackageID])
 		if err != nil {
-			i.pending[packageID] = true
-			failure := fmt.Errorf("%s: %w", packageID, err)
-			failures = append(failures, failure)
-			diagnostics = append(diagnostics, failure.Error())
+			fail(selected.PackageID, err)
 		} else {
-			delete(i.pending, packageID)
-			applied = append(applied, packageID)
+			delete(i.pending, selected.PackageID)
+			applied = append(applied, selected.PackageID)
 			diagnostics = append(diagnostics, runtimeFailures...)
 		}
 	}
@@ -142,21 +154,29 @@ func (i *runtimeIndexer) RetryPending(ctx context.Context) error {
 	return err
 }
 
-func (i *runtimeIndexer) indexServicePackage(ctx context.Context, packageID string, chain []packages.HookDefinition) ([]string, error) {
-	entry, err := i.packages.InspectPackageIndex(packageID)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+type serviceIndexPackage struct {
+	state         string
+	PackageID     string `json:"package_id"`
+	PackageCommit string `json:"package_commit"`
+	Active        bool   `json:"active"`
+}
+
+type serviceIndexScope struct {
+	Packages []serviceIndexPackage `json:"packages"`
+}
+
+func (i *runtimeIndexer) runServiceIndex(ctx context.Context, scope serviceIndexScope, chain []packages.HookDefinition) (map[string]json.RawMessage, error) {
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err == nil && entry.State != "ready" && entry.State != "retired" {
-		return nil, fmt.Errorf("%w: %s", packages.ErrPackageNotReady, packageID)
+	if len(scope.Packages) == 0 {
+		return nil, nil
 	}
-	scope := struct {
-		PackageID     string `json:"package_id"`
-		PackageCommit string `json:"package_commit"`
-		Active        bool   `json:"active"`
-	}{packageID, entry.ActiveCommit, err == nil && entry.State == "ready"}
-	state := map[string]any{"services": []webservices.Specification{}}
-	record, err := i.packages.RunHookChain(ctx, i.jobs, packageID, "index-services", chain, scope, state, nil)
+	drafts := make(map[string]any, len(scope.Packages))
+	for _, selected := range scope.Packages {
+		drafts[selected.PackageID] = map[string]any{"services": []webservices.Specification{}}
+	}
+	record, err := i.packages.RunHookChain(ctx, i.jobs, "hooks", "index-services", chain, scope, map[string]any{"packages": drafts}, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -168,32 +188,52 @@ func (i *runtimeIndexer) indexServicePackage(ctx context.Context, packageID stri
 		return nil, fmt.Errorf("encode hook result: %w", err)
 	}
 	var result struct {
-		Services json.RawMessage `json:"services"`
+		Packages map[string]json.RawMessage `json:"packages"`
 	}
 	if err := json.Unmarshal(encoded, &result); err != nil {
 		return nil, fmt.Errorf("read hook result: %w", err)
 	}
-	if len(result.Services) == 0 || bytes.Equal(result.Services, []byte("null")) {
-		return nil, errors.New("index-services result must contain a services array")
+	if len(result.Packages) != len(drafts) {
+		return nil, errors.New("index-services result must contain every selected package")
 	}
-	var specifications []webservices.Specification
-	decoder := json.NewDecoder(bytes.NewReader(result.Services))
+	for id := range result.Packages {
+		if _, ok := drafts[id]; !ok {
+			return nil, fmt.Errorf("index-services result contains unselected package %s", id)
+		}
+	}
+	return result.Packages, nil
+}
+
+func (i *runtimeIndexer) publishServicePackage(ctx context.Context, selected serviceIndexPackage, fragment json.RawMessage) ([]string, error) {
+	packageID := selected.PackageID
+	var result struct {
+		Services []webservices.Specification `json:"services"`
+		Error    *string                     `json:"error,omitempty"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(fragment))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&specifications); err != nil {
+	if err := decoder.Decode(&result); err != nil {
 		return nil, fmt.Errorf("decode runtime specifications: %w", err)
 	}
+	if result.Error != nil {
+		return nil, fmt.Errorf("index-services provider failed: %s", *result.Error)
+	}
+	if result.Services == nil {
+		return nil, errors.New("index-services package result must contain a services array")
+	}
+	specifications := result.Services
 	// Activation may have changed source while the ordinary job was running.
 	current, currentErr := i.packages.InspectPackageIndex(packageID)
 	if currentErr != nil && !errors.Is(currentErr, os.ErrNotExist) {
 		return nil, currentErr
 	}
-	if current.State != entry.State || current.ActiveCommit != entry.ActiveCommit {
+	if current.State != selected.state || current.ActiveCommit != selected.PackageCommit {
 		return nil, errors.New("package changed during indexing")
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	removed, err := i.services.ReplacePackage(packageID, specifications, record.ReleaseID)
+	removed, err := i.services.ReplacePackage(packageID, specifications)
 	if err != nil {
 		return nil, err
 	}

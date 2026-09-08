@@ -17,6 +17,9 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
 - `isolated`, `owner`, `namespace`, and `shared` strategies apply to services and
   jobs, with defaults supplied by settings. Exact placement overrides, including
   empty labels, take precedence.
+- `shared` and an explicit empty placement label select the same default key.
+  Jobs, modules, and package programs use this group by default; their origins
+  do not create separate sandbox classes.
 - Joining requires the same workload type, placement/sharing key, full runtime
   profile, healthy ready/active state, and enough Worker capacity.
 - A sandbox cannot contain two allocations of the same logical service.

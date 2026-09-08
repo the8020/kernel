@@ -40,6 +40,12 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   accesses it through typed terminal operations; `dev-core` owns its display
   engine and retained browser/SSH display adapters. The existing `OpenConsole`
   wire path remains connection-bound.
+- `OpenTerminal` atomically opens a name scoped to one sandbox. Names contain
+  1–40 ASCII letters, digits, `_`, or `-`; the broker assigns no numeric labels.
+  Reuse a live processor and return its exact package owner, create a new PTY
+  after exit/destruction, or claim a missing processor at the current sequence.
+  Claiming preserves the shell but starts fresh display state. Per-name pending
+  opens are bounded and cancellable; locks never span provider I/O.
 - `OpenTerminalView` binds a native transport to an existing terminal and its
   exclusive controller. Its opaque display pipe is supplied by the sole
   processor through `NextView`/`WriteView`/`FinishView`. Each write is at most
@@ -99,7 +105,7 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 - Keep the broker transport-only and use provider/backend interfaces for all
   target, stream, and PTY behavior.
-- Keep byte sequencing and attachment ownership here; Deno packages own names,
+- Keep byte sequencing and attachment ownership here; Deno packages own labels,
   display recovery, and workflow. Do not treat the retained-byte recovery window
   as a framebuffer or suppress ordinary connection-bound SSH EOF.
 

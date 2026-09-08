@@ -10,6 +10,7 @@ export const MESSAGE_TYPES = [
   "worker_log_event",
   "worker_invoke",
   "worker_result",
+  "worker_imports_match",
   "job_start",
   "job_result",
   "service_pool_configuration",

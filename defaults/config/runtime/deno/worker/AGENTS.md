@@ -16,18 +16,24 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 - Entrypoints load only here; Worker names include declared origin and Worker
   identity. RuntimeWorker validates canonical node, sandbox and Worker IDs
   before allocating the Worker or MessagePort.
+- Before application import, synchronous `node:module.registerHooks` reports
+  each successfully loaded file module's resolved, decoded filesystem path over
+  the private port. RuntimeWorker owns one deduplicated set including direct,
+  transitive, and late dynamic imports; it expires on termination. Recording
+  performs no extra filesystem reads or permission grants. Only explicit update
+  scans intersect these sets; snapshots never copy them.
 - Workload types are exactly `service` and `job`. Worker permissions are
   explicit and no broader than the sandbox envelope.
 - Jobs require a function default export and call it as
   `await module.default(...arguments)`. A named `run` export has no special
   meaning and no hidden context argument is appended.
 - `hook_dispatch.ts` is an ordinary job entrypoint receiving ordered handler
-  references, invocation scope, and mutable state. It freezes the scope and
-  imports/awaits each handler's default export as `(state, scope)` in the same
-  Worker, returning the final state. It creates no child jobs or Workers and
-  carries no application indexing policy. The kernel resolves entrypoints and
-  supplies the job release identity; a failure identifies its declaration and
-  stops the chain.
+  references, invocation scope, and mutable state. It freezes the scope,
+  including nested package selections, and imports/awaits each handler's default
+  export as `(state, scope)` in the same Worker, returning the final state. It
+  creates no child jobs or Workers and carries no application indexing policy.
+  The kernel resolves entrypoints and supplies the job release identity; a
+  failure identifies its declaration and stops the chain.
 - Service in-flight ownership lasts through complete response-stream consumption
   or cancellation so graceful stop cannot truncate a dispatch. `streams.ts` owns
   shared finish-once stream accounting for Worker and supervisor leases.
@@ -37,6 +43,10 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   remove the Worker.
 - Graceful shutdown waits on the same in-flight completion signal used by
   request accounting; do not add drain polling loops.
+- Forced termination aborts tracked transferred response streams and WebSockets
+  and completes an already pending graceful stop. `trackStream` accepts the
+  Worker's termination signal, releases accounting once, and never waits for a
+  dead Worker to acknowledge stream cancellation.
 - `request_authentication.ts` invokes the composition-supplied package hook
   inside the existing Worker and ordinary bridge request scope before HTTP
   handlers or WebSocket acceptance. The generic runtime has no users-package
@@ -45,6 +55,10 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   `auth.authenticated`; streaming bodies and WebSocket callbacks restore that
   approved request context. Context getters do not perform I/O. Never introduce
   a second auth Worker, service, or sandbox.
+- Trusted native-transport approval in authentication metadata skips the package
+  hook already performed by that transport. The signed/approved subject must
+  still match the execution principal before publishing authenticated context.
+  Ordinary HTTP credentials continue through the package hook.
 - Request metadata carries the trusted effective user and current generic
   execution identity plus the kernel-observed client IP address and network
   scope, without cookies, route tokens, or application settings.
@@ -145,6 +159,8 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 
 # Verification
 
+- Import-recording tests cover direct, transitive, late dynamic, repeated loads,
+  and expiration; supervisor tests cover hard stop during graceful drain.
 - Worker tests cover default-export-only spread job invocation, secure-input
   isolation/cleanup, service/job network access, permission denial, nested
   Workers, denial of direct internal-token/socket access,

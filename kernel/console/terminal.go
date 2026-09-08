@@ -34,6 +34,7 @@ var (
 // TerminalInfo is physical process state. Names and display state belong to Deno.
 type TerminalInfo struct {
 	ID         string              `json:"id"`
+	SessionID  string              `json:"sessionId,omitempty"`
 	Kind       string              `json:"kind"`
 	SandboxID  string              `json:"sandboxId"`
 	Size       backend.ConsoleSize `json:"size"`
@@ -62,6 +63,7 @@ type TerminalBatch struct {
 type Terminal struct {
 	manager      *Manager
 	id           string
+	sessionID    string
 	kind         string
 	sandboxID    string
 	console      backend.Console
@@ -101,6 +103,7 @@ type TerminalAttachment struct {
 	id        string
 	control   bool
 	processor bool
+	owner     TerminalOwner
 	detached  chan struct{}
 	view      *terminalView
 }
@@ -109,14 +112,14 @@ type TerminalAttachment struct {
 // provider is opening still cancels creation; cancellation after registration
 // cannot terminate the process.
 func (m *Manager) CreateTerminal(ctx context.Context, kind, sandboxID string, options backend.ConsoleOptions) (*Terminal, error) {
-	return m.createTerminal(ctx, kind, sandboxID, options, false)
+	return m.createTerminal(ctx, kind, sandboxID, options, false, "", TerminalOwner{})
 }
 
 // CreateTerminalWithProcessor establishes the lossless output owner before the
 // first PTY read. Deno uses this owner for terminal state and query responses;
 // browser/SSH views remain independent replaceable attachments.
 func (m *Manager) CreateTerminalWithProcessor(ctx context.Context, kind, sandboxID string, options backend.ConsoleOptions) (*Terminal, *TerminalAttachment, error) {
-	t, err := m.createTerminal(ctx, kind, sandboxID, options, true)
+	t, err := m.createTerminal(ctx, kind, sandboxID, options, true, "", TerminalOwner{})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -128,7 +131,7 @@ func (m *Manager) CreateTerminalWithProcessor(ctx context.Context, kind, sandbox
 	return t, t.processor, nil
 }
 
-func (m *Manager) createTerminal(ctx context.Context, kind, sandboxID string, options backend.ConsoleOptions, processOutput bool) (*Terminal, error) {
+func (m *Manager) createTerminal(ctx context.Context, kind, sandboxID string, options backend.ConsoleOptions, processOutput bool, sessionID string, owner TerminalOwner) (*Terminal, error) {
 	if !validTarget(target{Kind: kind, SandboxID: sandboxID}) || !options.Terminal {
 		return nil, errors.New("persistent terminals require a valid target and PTY")
 	}
@@ -168,7 +171,7 @@ func (m *Manager) createTerminal(ctx context.Context, kind, sandboxID string, op
 		return nil, ctx.Err()
 	}
 	terminal := &Terminal{
-		manager: m, id: id, kind: kind, sandboxID: sandboxID, console: value,
+		manager: m, id: id, sessionID: sessionID, kind: kind, sandboxID: sandboxID, console: value,
 		cancel: cancel, size: options.Size, changed: make(chan struct{}),
 		attachments: make(map[*TerminalAttachment]struct{}),
 		input:       make(chan terminalInput, terminalInputFrames), done: make(chan struct{}),
@@ -180,6 +183,7 @@ func (m *Manager) createTerminal(ctx context.Context, kind, sandboxID string, op
 			_ = value.Close()
 			return nil, err
 		}
+		terminal.processor.owner = owner
 	}
 	m.mu.Lock()
 	switch {
@@ -241,7 +245,7 @@ func (m *Manager) Terminals(kind, sandboxID string) []TerminalInfo {
 func (t *Terminal) Info() TerminalInfo {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return TerminalInfo{ID: t.id, Kind: t.kind, SandboxID: t.sandboxID, Size: t.size,
+	return TerminalInfo{ID: t.id, SessionID: t.sessionID, Kind: t.kind, SandboxID: t.sandboxID, Size: t.size,
 		Sequence: t.sequence, Exited: t.exited, ExitStatus: t.statusLocked()}
 }
 
@@ -277,6 +281,10 @@ func (t *Terminal) attach(control, processor bool, after uint64, takeover bool) 
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	return t.attachLocked(id, control, processor, after, takeover)
+}
+
+func (t *Terminal) attachLocked(id string, control, processor bool, after uint64, takeover bool) (*TerminalAttachment, error) {
 	if t.closed {
 		return nil, ErrTerminalGone
 	}

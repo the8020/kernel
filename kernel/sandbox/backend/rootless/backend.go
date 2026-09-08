@@ -296,7 +296,11 @@ func (b *Backend) UpdateLabels(ctx context.Context, sandboxID string, updates ma
 		return err
 	}
 	for key, value := range updates {
-		meta.Labels[key] = value
+		if value == "" {
+			delete(meta.Labels, key)
+		} else {
+			meta.Labels[key] = value
+		}
 	}
 	return writeJSON(filepath.Join(b.sandboxPath(sandboxID), "metadata.json"), meta)
 }
@@ -648,7 +652,7 @@ func validateLabelUpdates(labels map[string]string) error {
 		if key != labelOwner && key != labelOwners && key != labelServices && key != labelGroupKey && key != labelAssignedAt {
 			return fmt.Errorf("sandbox label %q cannot be updated", key)
 		}
-		if strings.TrimSpace(value) == "" {
+		if strings.TrimSpace(value) == "" && !(value == "" && (key == labelOwner || key == labelOwners || key == labelServices)) {
 			return fmt.Errorf("sandbox label %q cannot be empty", key)
 		}
 	}

@@ -127,6 +127,46 @@ func (d *Dispatcher) terminal(ctx context.Context, action string, input map[stri
 	}
 	key := terminalOwnerKey(caller.SandboxID, caller.WorkerID)
 	switch action {
+	case "open":
+		var in struct {
+			Kind        string                `json:"kind"`
+			SandboxID   string                `json:"sandboxId"`
+			SessionID   string                `json:"sessionId"`
+			Arguments   []string              `json:"arguments"`
+			Environment []string              `json:"environment"`
+			WorkingDir  string                `json:"workingDir"`
+			Size        backend.ConsoleSize   `json:"size"`
+			Owner       console.TerminalOwner `json:"owner"`
+		}
+		if err := decodeTerminalInput(input, &in); err != nil {
+			return nil, err
+		}
+		if in.Owner.NodeID != d.services.Instance.UUID || in.Owner.SandboxID != caller.SandboxID ||
+			in.Owner.WorkerID != caller.WorkerID || !identity.Is(in.Owner.PersistentExecutionID, "pex") {
+			return nil, errors.New("terminal processor must belong to the calling Worker")
+		}
+		callCtx, owner, finish, err := d.beginTerminalOwner(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		defer finish()
+		opened, err := m.OpenTerminal(callCtx, in.Kind, in.SandboxID, in.SessionID, backend.ConsoleOptions{
+			Arguments: in.Arguments, Environment: in.Environment, WorkingDir: in.WorkingDir, Size: in.Size, Terminal: true,
+		}, in.Owner)
+		if err != nil {
+			return nil, err
+		}
+		if opened.Attachment == nil {
+			return map[string]any{"terminal": opened.Terminal.Info(), "owner": opened.Owner}, nil
+		}
+		if err := d.retainTerminalAttachment(owner, opened.Terminal.Info().ID, opened.Attachment); err != nil {
+			_ = opened.Attachment.Close()
+			if opened.Created {
+				_ = opened.Terminal.Close()
+			}
+			return nil, err
+		}
+		return map[string]any{"terminal": opened.Terminal.Info(), "attachmentId": opened.Attachment.ID(), "after": opened.After, "reset": opened.Reset}, nil
 	case "list":
 		var in struct {
 			Kind      string `json:"kind"`

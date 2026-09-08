@@ -18,17 +18,19 @@ export async function authenticateRequest(
   if (authentication.claims.sub !== meta.user.userId) {
     throw new TypeError("verified token does not match execution principal");
   }
-  const response = await bridge.withRequest(meta, async () => {
-    const hook = await import(authentication.module);
-    if (typeof hook.authenticate !== "function") {
-      throw new TypeError("authentication module must export authenticate");
-    }
-    return await hook.authenticate(
-      request,
-      Object.freeze({ ...authentication.claims }),
-      authentication.unauthenticated,
-    );
-  }, signal);
+  const response = authentication.approved === true
+    ? undefined
+    : await bridge.withRequest(meta, async () => {
+      const hook = await import(authentication.module);
+      if (typeof hook.authenticate !== "function") {
+        throw new TypeError("authentication module must export authenticate");
+      }
+      return await hook.authenticate(
+        request,
+        Object.freeze({ ...authentication.claims }),
+        authentication.unauthenticated,
+      );
+    }, signal);
   if (response instanceof Response) return { meta, response };
   if (response !== undefined) {
     throw new TypeError(

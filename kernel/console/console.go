@@ -51,6 +51,7 @@ type Manager struct {
 	runtime            Provider
 	sessions           map[*session]struct{}
 	terminals          map[string]*Terminal
+	namedOpening       map[string]chan struct{}
 	opening            int
 	lifetime           context.Context
 	cancel             context.CancelFunc
@@ -118,6 +119,7 @@ func New(config Config) (*Manager, error) {
 		development:        config.Development,
 		sessions:           make(map[*session]struct{}),
 		terminals:          make(map[string]*Terminal),
+		namedOpening:       make(map[string]chan struct{}),
 		lifetime:           lifetime,
 		cancel:             cancel,
 		acquireDevelopment: config.AcquireDevelopment,

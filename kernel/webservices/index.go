@@ -33,8 +33,11 @@ type Specification struct {
 	Access        AccessPolicy               `json:"access"`
 	Effective     Configuration              `json:"configuration"`
 
-	Identity packages.Identity `json:"-"`
-	Release  string            `json:"-"`
+	Identity            packages.Identity `json:"-"`
+	Release             string            `json:"-"`
+	RestartRevision     uint64            `json:"-"`
+	HardRestartRevision uint64            `json:"-"`
+	baseRelease         string
 }
 
 type AccessPolicy struct {
@@ -91,13 +94,16 @@ type TimeoutConfiguration struct {
 type Index struct {
 	mu       sync.RWMutex
 	services map[string]Specification
+	restarts map[string]RestartRevision
 }
 
-func NewIndex() *Index { return &Index{services: map[string]Specification{}} }
+func NewIndex() *Index {
+	return &Index{services: map[string]Specification{}, restarts: map[string]RestartRevision{}}
+}
 
 // ReplacePackage validates the whole draft before publishing any of it. Scope
 // comes from the invocation, never from a mutable field returned by a hook.
-func (i *Index) ReplacePackage(packageID string, draft []Specification, chainRevision string) ([]string, error) {
+func (i *Index) ReplacePackage(packageID string, draft []Specification) ([]string, error) {
 	if _, err := packages.ParsePackageID(packageID); err != nil {
 		return nil, err
 	}
@@ -113,15 +119,18 @@ func (i *Index) ReplacePackage(packageID string, draft []Specification, chainRev
 		if err := validateSpecification(spec); err != nil {
 			return nil, fmt.Errorf("service %s: %w", spec.ServiceID, err)
 		}
-		encoded, err := json.Marshal(struct {
-			Specification
-			ChainRevision string
-		}{spec, chainRevision})
+		// Source identity is diagnostic. Observed imports trigger code restarts;
+		// provider identity alone cannot change an otherwise identical runtime spec.
+		configuration := spec
+		configuration.CodeRevision = ""
+		encoded, err := json.Marshal(configuration)
 		if err != nil {
 			return nil, err
 		}
 		digest := sha256.Sum256(encoded)
 		spec.Identity, spec.Release = identity, hex.EncodeToString(digest[:])
+		spec.baseRelease = spec.Release
+		spec.RestartRevision, spec.HardRestartRevision = 0, 0
 		next[spec.ServiceID] = spec
 	}
 	i.mu.Lock()
@@ -136,7 +145,7 @@ func (i *Index) ReplacePackage(packageID string, draft []Specification, chainRev
 		}
 	}
 	for id, spec := range next {
-		i.services[id] = spec
+		i.services[id] = withRestart(spec, i.restarts[id])
 	}
 	slices.Sort(removed)
 	return removed, nil
@@ -150,6 +159,27 @@ func (i *Index) ReadService(serviceID string) (Specification, error) {
 		return Specification{}, fmt.Errorf("service %s is not indexed: %w", serviceID, os.ErrNotExist)
 	}
 	return spec, nil
+}
+
+func withRestart(spec Specification, restart RestartRevision) Specification {
+	spec.Version = spec.Version - spec.RestartRevision + restart.Revision
+	spec.RestartRevision, spec.HardRestartRevision = restart.Revision, restart.Hard
+	if restart.Revision > 0 {
+		digest := sha256.Sum256([]byte(fmt.Sprintf("%s:restart:%d", spec.baseRelease, restart.Revision)))
+		spec.Release = hex.EncodeToString(digest[:])
+	}
+	return spec
+}
+
+func (i *Index) setRestart(serviceID string, restart RestartRevision) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if restart.Revision > i.restarts[serviceID].Revision {
+		i.restarts[serviceID] = restart
+		if spec, exists := i.services[serviceID]; exists {
+			i.services[serviceID] = withRestart(spec, restart)
+		}
+	}
 }
 
 func (i *Index) ServiceIDs() []string {

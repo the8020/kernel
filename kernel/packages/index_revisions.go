@@ -60,7 +60,7 @@ func (f *IndexRevisionFollower) Poll(ctx context.Context) (PackageSetUpdate, err
 		return PackageSetUpdate{}, nil
 	}
 	rows, err := f.database.QueryContext(ctx, `SELECT "domain" FROM "the8020__system__revisions"
-		WHERE "domain" LIKE 'index:%' AND "revision" > $1 AND "revision" <= $2 ORDER BY "domain"`, int64(f.revision), int64(revision))
+		WHERE ("domain" LIKE 'index:%' OR "domain" LIKE 'restart:%') AND "revision" > $1 AND "revision" <= $2 ORDER BY "domain"`, int64(f.revision), int64(revision))
 	if err != nil {
 		return PackageSetUpdate{}, err
 	}
@@ -70,6 +70,13 @@ func (f *IndexRevisionFollower) Poll(ctx context.Context) (PackageSetUpdate, err
 		var domain string
 		if err := rows.Scan(&domain); err != nil {
 			return PackageSetUpdate{}, err
+		}
+		if id, ok := strings.CutPrefix(domain, "restart:"); ok {
+			if _, err := ParseServiceID(id); err != nil {
+				return PackageSetUpdate{}, err
+			}
+			update.Restarts = append(update.Restarts, id)
+			continue
 		}
 		id := strings.TrimPrefix(domain, "index:")
 		if _, err := ParsePackageID(id); err != nil {

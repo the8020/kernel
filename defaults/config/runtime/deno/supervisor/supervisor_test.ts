@@ -1,7 +1,7 @@
 import { newId } from "../identity/mod.ts";
 import { assertEquals, assertRejects } from "../test/assert.ts";
 import { type MessageType, PROTOCOL_VERSION } from "@the8020/protocol";
-import { serviceCheckArguments, Supervisor } from "./supervisor.ts";
+import { Supervisor } from "./supervisor.ts";
 import type { ExecutionMetadata } from "../worker/contracts.ts";
 import { kernelCallbackRequest } from "./callback_request.ts";
 import { TestLogSink } from "../test/logs.ts";
@@ -64,31 +64,6 @@ Deno.test("kernel callback payloads contain only operation-owned fields", () => 
         context_id: "ctx-0000000001",
       },
     },
-  );
-});
-
-Deno.test("service type checking uses supported dependency-mode arguments", () => {
-  assertEquals(
-    serviceCheckArguments(
-      "file:///workspace/packages/service.ts",
-      "cached_only",
-    ),
-    [
-      "check",
-      "--config=/opt/runtime/deno.json",
-      "file:///workspace/packages/service.ts",
-    ],
-  );
-  assertEquals(
-    serviceCheckArguments(
-      "file:///workspace/packages/service.ts",
-      "online",
-    ),
-    [
-      "check",
-      "--config=/opt/runtime/deno.json",
-      "file:///workspace/packages/service.ts",
-    ],
   );
 });
 
@@ -266,6 +241,38 @@ Deno.test("supervisor authenticates health/status and rejects cross-type Workers
   );
 });
 
+Deno.test("hard stop interrupts an existing graceful drain and expires imports", async () => {
+  const supervisor = new Supervisor({
+    nodeId: "nod-0000000001",
+    sandboxId: "sbx-0000000001",
+    workloadType: "service",
+    token,
+    supervisorVersion: "test",
+    workerStopGraceMilliseconds: 30_000,
+  });
+  const worker = await supervisor.startWorker({
+    metadata: metadata("wrk-0000000001"),
+    permissions: { read: [examples] },
+  });
+  const ids = [worker.metadata.workerId];
+  const paths = [new URL(worker.metadata.entrypoint).pathname];
+  try {
+    assertEquals(supervisor.matchingImports(ids, paths), ids);
+    const response = await worker.dispatchService(
+      new Request("http://service/"),
+    );
+    const stopping = supervisor.stopWorker(ids[0]!);
+    assertEquals(supervisor.matchingImports(ids, paths), []);
+    await supervisor.stopWorker(ids[0]!, true);
+    await stopping;
+    await assertRejects(() => response.text(), Error, "Worker terminated");
+    assertEquals(supervisor.matchingImports(ids, paths), []);
+    assertEquals(supervisor.workers(), []);
+  } finally {
+    await supervisor.stopWorker(ids[0]!, true);
+  }
+});
+
 Deno.test("supervisor tracks Workers, service pools, and drain", async () => {
   const supervisor = new Supervisor({
     nodeId: "nod-0000000001",
@@ -441,12 +448,64 @@ Deno.test("higher concurrency has one bounded temporary slot per Worker", async 
   }
 });
 
+Deno.test("services and jobs execute TypeScript without startup type checking", async () => {
+  const entrypoint = "data:application/typescript," + encodeURIComponent(`
+    const value: number = "ready";
+    export function fetch() { return new Response(String(value)); }
+    export default () => value;
+  `);
+  for (const workloadType of ["service", "job"] as const) {
+    const supervisor = new Supervisor({
+      nodeId: "nod-0000000001",
+      sandboxId: "sbx-0000000004",
+      workloadType,
+      token,
+      supervisorVersion: "test",
+    });
+    const meta = {
+      ...metadata("wrk-0000000020"),
+      workloadType,
+      entrypoint,
+      origin: {
+        type: workloadType === "job" ? "module" as const : "service" as const,
+        id: "unchecked",
+      },
+    };
+    try {
+      const worker = await supervisor.startWorker({
+        metadata: meta,
+        permissions: {},
+      });
+      if (workloadType === "service") {
+        const response = await worker.dispatchService(
+          new Request("http://service/"),
+        );
+        assertEquals(await response.text(), "ready");
+      } else {
+        const response = await supervisor.handler(
+          new Request(`http://runtime/v1/jobs/${meta.workerId}/run`, {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${token}`,
+              "content-type": "application/json",
+            },
+            body: controlEnvelope("job_start", {
+              invocation: testInvocation(),
+              arguments: [],
+              secrets: {},
+            }),
+          }),
+        );
+        assertEquals(response.status, 200);
+        assertEquals((await response.json()).payload.result, "ready");
+      }
+    } finally {
+      await supervisor.drain();
+    }
+  }
+});
+
 Deno.test("concurrent Worker lifecycle retries remain idempotent", async () => {
-  let releaseValidation!: () => void;
-  const validationGate = new Promise<void>((resolve) => {
-    releaseValidation = resolve;
-  });
-  let validationCalls = 0;
   const supervisor = new Supervisor({
     nodeId: "nod-0000000001",
 
@@ -454,13 +513,8 @@ Deno.test("concurrent Worker lifecycle retries remain idempotent", async () => {
     workloadType: "service",
     token,
     supervisorVersion: "test",
-    entrypointValidator: async () => {
-      validationCalls++;
-      await validationGate;
-    },
   });
   const validated = metadata("wrk-0000000020");
-  validated.validateEntrypoint = true;
   const options = {
     metadata: validated,
     permissions: { read: [examples] },
@@ -477,8 +531,6 @@ Deno.test("concurrent Worker lifecycle retries remain idempotent", async () => {
     Error,
     "different configuration",
   );
-  assertEquals(validationCalls, 1);
-  releaseValidation();
   const [first, repeated] = await Promise.all([firstStart, repeatedStart]);
   assertEquals(first, repeated);
   assertEquals(supervisor.status().worker_count, 1);
@@ -1305,7 +1357,6 @@ Deno.test("exact Worker control invokes only explicitly registered functions", a
 
 Deno.test("job dispatch forwards console logs and returns execution metadata without log copies", async () => {
   const logs = new TestLogSink();
-  const checked: string[][] = [];
   const analyzed: string[][] = [];
   const supervisor = new Supervisor({
     logSink: logs,
@@ -1315,10 +1366,6 @@ Deno.test("job dispatch forwards console logs and returns execution metadata wit
     workloadType: "job",
     token,
     supervisorVersion: "test",
-    entrypointValidator: (modules) => {
-      checked.push(modules);
-      return Promise.resolve();
-    },
     moduleAnalyzer: (modules) => {
       analyzed.push(modules);
       return Promise.resolve(Object.fromEntries(modules.map((module) => [
@@ -1347,7 +1394,7 @@ Deno.test("job dispatch forwards console logs and returns execution metadata wit
         invocation: testInvocation(),
         arguments: [{ value: 1 }],
         secrets: {},
-        check_modules: [job.entrypoint],
+        dependency_modules: [job.entrypoint],
       }),
     }),
   );
@@ -1358,7 +1405,6 @@ Deno.test("job dispatch forwards console logs and returns execution metadata wit
   assertEquals(body.payload.result, {
     input: { value: 1 },
   });
-  assertEquals(checked, [[job.entrypoint]]);
   assertEquals(analyzed, [[job.entrypoint]]);
   assertEquals(body.payload.module_dependencies, {
     [job.entrypoint]: [
@@ -1692,6 +1738,7 @@ Deno.test("zero keepalive retains detached executions without timer activity unt
     now += 365 * 24 * 60 * 60 * 1_000;
     assertEquals(supervisor.workers()[0]?.persistent_executions, 1);
     assertEquals(supervisor.workers()[0]?.idle_since_ms, undefined);
+    supervisor.configureService(target.workloadId, [], 1);
     // A follow-up cannot replace the lifetime chosen by its initial request.
     const resumed = await dispatch(true, "1");
     assertEquals(resumed.status, 204);

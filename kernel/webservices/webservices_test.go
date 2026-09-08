@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -269,7 +271,7 @@ func (p *fakePools) Start(_ context.Context, serviceID, entrypoint string, optio
 		ServiceID: serviceID, LogicalServiceID: options.LogicalServiceID,
 		Entrypoint: entrypoint,
 		SandboxID:  sandboxID, WorkerIDs: workers, State: "READY",
-		ReleaseID: options.ReleaseID, Generation: options.Generation, MaximumWorkers: options.MaximumWorkers,
+		ReleaseID: options.ReleaseID, Generation: options.Generation, RestartRevision: options.RestartRevision, MaximumWorkers: options.MaximumWorkers,
 		ConcurrencyPerWorker: options.ConcurrencyPerWorker, ExecutionMode: options.ExecutionMode, SandboxIndex: options.SandboxIndex,
 	}
 	p.records[serviceID], p.options[serviceID] = record, options
@@ -485,6 +487,13 @@ func (p *fakePools) Stop(_ context.Context, serviceID string) (bool, error) {
 	record.WorkerIDs = nil
 	p.records[serviceID] = record
 	return true, nil
+}
+
+func (p *fakePools) Kill(ctx context.Context, serviceID string) (bool, error) {
+	p.mu.Lock()
+	p.occupiedSlots[serviceID] = 0
+	p.mu.Unlock()
+	return p.Stop(ctx, serviceID)
 }
 
 func (p *fakePools) RemoveStopped(serviceID string) error {
@@ -793,7 +802,7 @@ func TestRejectedIndexKeepsAcceptedVersionServingWithoutSourceReads(t *testing.T
 	invalid, _ := index.ReadService(id)
 	invalid.Version++
 	invalid.Effective.Placement.WorkersPerSandbox = 0
-	if _, err := index.ReplacePackage("the8020/demo", []Specification{invalid}, "new-hooks"); err == nil {
+	if _, err := index.ReplacePackage("the8020/demo", []Specification{invalid}); err == nil {
 		t.Fatal("invalid draft was published")
 	}
 	if err := manager.ReconcileAll(context.Background()); err != nil {
@@ -804,7 +813,7 @@ func TestRejectedIndexKeepsAcceptedVersionServingWithoutSourceReads(t *testing.T
 		t.Fatalf("accepted version=%#v error=%v", status, err)
 	}
 	assertHTTPStatus(t, router.boundary, "/"+id+"/", http.StatusOK)
-	if _, err := index.ReplacePackage("the8020/demo", nil, "new-hooks"); err != nil {
+	if _, err := index.ReplacePackage("the8020/demo", nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := manager.Retire(context.Background(), id); err != nil {
@@ -844,7 +853,7 @@ func TestRejectedServiceVersionDoesNotEnterCapacityRetryLoop(t *testing.T) {
 	store := newTestServiceIndex(t, root, "the8020/demo/variables", nil)
 	pools, router := newFakePools(), &fakeRouter{}
 	manager := newTestManager(t, store, pools, router, filepath.Join(root, "node", "kernel", "services"))
-	rejection := fmt.Errorf("%w: type check failed", executionservices.ErrInvalidServiceDefinition)
+	rejection := fmt.Errorf("%w: service export is invalid", executionservices.ErrInvalidServiceDefinition)
 	pools.failVersion[1] = rejection
 
 	status, err := manager.Reconcile(context.Background(), "the8020/demo/variables")
@@ -1272,6 +1281,38 @@ func TestAuthenticatedBoundaryRejectsOrRedirectsBeforeDispatchAndAttachesTrusted
 	if forwarded.header.Get("the8020-internal-authentication") == "" {
 		t.Fatal("verified token metadata missing")
 	}
+	var approved authenticationSetup
+	decodeSetup := func(header http.Header) {
+		t.Helper()
+		encoded, err := base64.StdEncoding.DecodeString(header.Get("the8020-internal-authentication"))
+		if err != nil || json.Unmarshal(encoded, &approved) != nil {
+			t.Fatal("invalid authentication metadata")
+		}
+	}
+	decodeSetup(forwarded.header)
+	if approved.Approved {
+		t.Fatal("HTTP token skipped package policy")
+	}
+	nativeUser, _ := execution.UserForUsername("alice")
+	native, err := manager.Request(context.Background(), "the8020/demo/protected", http.MethodPost, "/open", RequestOptions{AuthenticatedUser: &nativeUser})
+	if err != nil || native.StatusCode != http.StatusOK || authentication.calls != 2 {
+		t.Fatalf("native admission = %#v, %v", native, err)
+	}
+	forwarded = <-pools.dispatched
+	decodeSetup(forwarded.header)
+	if !approved.Approved || approved.Claims["sub"] != nativeUser.ID || forwarded.header.Get("the8020-internal-user-id") != nativeUser.ID {
+		t.Fatal("native principal lost")
+	}
+	forged := httptest.NewRequest(http.MethodPost, "/the8020/demo/protected/open", nil)
+	forged.Header.Set("the8020-internal-authentication", forwarded.header.Get("the8020-internal-authentication"))
+	rejectedNative := httptest.NewRecorder()
+	manager.ServeHTTP(rejectedNative, forged)
+	if rejectedNative.Code != http.StatusUnauthorized {
+		t.Fatal("client forged native approval")
+	}
+	if _, err := manager.Request(context.Background(), "the8020/demo/protected", http.MethodGet, "/", RequestOptions{AuthenticatedUser: &execution.User{ID: "user:alice", Username: "admin"}}); err == nil {
+		t.Fatal("inconsistent native identity accepted")
+	}
 
 	if _, err := publishTestVersion(context.Background(), manager, "the8020/demo/protected", func(spec *Specification) {
 		spec.Access.Unauthenticated = UnauthenticatedPolicy{Action: "redirect", Status: 307, RedirectURL: "https://identity.example.test/login?return=fixed"}
@@ -1470,7 +1511,7 @@ func TestObservedSandboxesCountUniqueResourcesAndVersions(t *testing.T) {
 	}
 }
 
-func TestReloadRoutesOnlyToCurrentGenerationWhileOldPoolDrains(t *testing.T) {
+func TestReloadRoutesNewWorkToCurrentGenerationAndRetainsOldBindings(t *testing.T) {
 	root := t.TempDir()
 	store := newTestServiceIndex(t, root, "example/realtime/channel", func(spec *Specification) {
 		spec.Effective.Scaling.MinimumWorkers = 2
@@ -1533,7 +1574,7 @@ func TestReloadRoutesOnlyToCurrentGenerationWhileOldPoolDrains(t *testing.T) {
 	resume.AddCookie(&http.Cookie{Name: "the8020_auth", Value: "valid-jwt"})
 	response := httptest.NewRecorder()
 	manager.ServeHTTP(response, resume)
-	if response.Code != http.StatusConflict || len(pools.websockets) != 0 {
+	if response.Code != http.StatusOK || len(pools.websockets) != 1 || pools.websockets[0].poolID != oldPool {
 		t.Fatalf("old route status=%d proxies=%#v", response.Code, pools.websockets)
 	}
 
@@ -2273,7 +2314,7 @@ func newTestServiceIndex(t testing.TB, root, serviceID string, configure func(*S
 			fragment = append(fragment, current)
 		}
 	}
-	if _, err := index.ReplacePackage(identity.PackageID(), append(fragment, spec), "test-hooks"); err != nil {
+	if _, err := index.ReplacePackage(identity.PackageID(), append(fragment, spec)); err != nil {
 		t.Fatal(err)
 	}
 	serviceRoot := filepath.Join(root, "packages", identity.Namespace, identity.Repository, "services", identity.Service)
@@ -2308,7 +2349,7 @@ func editTestSpecification(index *Index, serviceID string, edit func(*Specificat
 			fragment = append(fragment, current)
 		}
 	}
-	if _, err := index.ReplacePackage(spec.Identity.PackageID(), append(fragment, spec), "test-hooks"); err != nil {
+	if _, err := index.ReplacePackage(spec.Identity.PackageID(), append(fragment, spec)); err != nil {
 		return spec, err
 	}
 	return index.ReadService(serviceID)
@@ -2401,7 +2442,7 @@ func TestRemovedServiceRetirementRetriesFailuresAndDrainingOnOrdinaryMaintenance
 		t.Fatalf("status=%#v error=%v", status, err)
 	}
 	pool := status.Sandboxes[0].PoolID
-	if _, err := index.ReplacePackage("the8020/demo", nil, "removed"); err != nil {
+	if _, err := index.ReplacePackage("the8020/demo", nil); err != nil {
 		t.Fatal(err)
 	}
 	pools.failStop[pool] = errors.New("temporary supervisor failure")

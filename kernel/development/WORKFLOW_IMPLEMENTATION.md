@@ -106,13 +106,15 @@ attachment leaves; the canonical processor and output do not reset it.
 `development.idle_timeout` then allows two hours after the last ordinary console
 or retained terminal closes before checkpointing and stopping the sandbox.
 
-Named SSH attachment uses
-`ssh -tt -p <port> <user>@<owning-node> the8020 terminal-id=<tty-id>` with an
-optional matching `sandbox-id=<sbx-id>`. The selector requires an existing
-terminal on that node and a PTY. Ordinary SSH exec, environment, stdin EOF,
-signals, and exit status retain their connection-bound behavior. SSH receives a
-Deno-rendered view of the same canonical state, without replaying raw queries or
-historical clipboard effects. Kernel transport does not interpret terminal VT.
+Named SSH access uses
+`ssh -tt -p <port> <user>@<owning-node> the8020 terminal-id <session-id>` with
+optional `sandbox-id=<sbx-id>`. A PTY is required. Session names contain 1–40
+ASCII letters, digits, `_`, or `-` and connect or create within the selected
+sandbox. Labels survive physical expiry; reopening creates a new physical ID.
+Ordinary SSH exec, environment, stdin EOF, signals, and exit status retain their
+connection-bound behavior. SSH receives a Deno-rendered view of the same
+canonical state, without replaying raw queries or historical clipboard effects.
+Kernel transport does not interpret terminal VT.
 
 The native browser/OpenSSH/htop fixture passed after the final parser batching
 change: terminal `tty-9iqws0nj1o`, Bash PID 3, and htop PID 79. Two SSH

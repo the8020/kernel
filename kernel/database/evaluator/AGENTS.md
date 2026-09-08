@@ -11,9 +11,9 @@ Parent DOX: [kernel/kernel/database DOX](../AGENTS.md).
 
 - Discovery is fixed-depth at `tables/<table>.ts` and uses the centralized
   canonical table ID encoder.
-- Evaluate at most 256 modules per job call, type-check every requested module,
-  commit each successful initialization batch, and reuse one compatible
-  evaluator Worker when possible. Failed first initialization resumes completed
+- Evaluate at most 256 modules per job call without static type checking, commit
+  each successful initialization batch, and reuse one compatible evaluator
+  Worker when possible. Failed first initialization resumes completed
   table/commit pairs.
 - Mount and read only the activated shared package tree. Private development
   overlays are never schema sources; staged activation roots temporarily replace

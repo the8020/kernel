@@ -20,7 +20,9 @@ export default function build(
   state.trace.push("build");
   state.workers.push(context.workerId);
   state.value += 1;
-  state.packageId = scope.package_id;
-  state.scopeFrozen = Object.isFrozen(scope);
+  const packages = scope.packages as readonly { package_id: string }[];
+  state.packageId = packages[0]!.package_id;
+  state.scopeFrozen = Object.isFrozen(scope) && Object.isFrozen(packages) &&
+    packages.every(Object.isFrozen);
   state.user = context.userId;
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -54,6 +55,7 @@ type Config struct {
 	CgroupRoot       string
 	StartupTimeout   time.Duration
 	ProbeInterval    time.Duration
+	KeepAlive        time.Duration
 	StopGrace        time.Duration
 	Store            *state.Store
 	Backend          backend.Backend
@@ -89,6 +91,7 @@ type Manager struct {
 	cgroupRoot         string
 	startupTimeout     time.Duration
 	probeInterval      time.Duration
+	keepAlive          time.Duration
 	stopGrace          time.Duration
 	store              *state.Store
 	backend            backend.Backend
@@ -144,7 +147,9 @@ const (
 	StartupDestroy   StartupPolicy = "destroy"
 )
 
-const maximumHealthChecksPerPass = 256
+const maximumMaintenancePerPass = 256
+
+var ErrUnavailable = errors.New("sandbox is unavailable")
 
 func New(config Config) (*Manager, error) {
 	if config.InstanceUUID == "" || config.Store == nil || config.Backend == nil || config.Network == nil || config.Supervisor == nil || config.Ports == nil || config.Logs == nil || config.History == nil {
@@ -157,7 +162,10 @@ func New(config Config) (*Manager, error) {
 		config.StartupTimeout = 30 * time.Second
 	}
 	if config.ProbeInterval <= 0 {
-		config.ProbeInterval = 200 * time.Millisecond
+		config.ProbeInterval = 10 * time.Millisecond
+	}
+	if config.KeepAlive < 0 {
+		return nil, errors.New("sandbox keepalive cannot be negative")
 	}
 	if config.StopGrace <= 0 {
 		config.StopGrace = 10 * time.Second
@@ -168,7 +176,7 @@ func New(config Config) (*Manager, error) {
 	if config.HistoryRetention <= 0 {
 		config.HistoryRetention = history.DefaultRetention
 	}
-	return &Manager{instanceUUID: config.InstanceUUID, cgroupRoot: config.CgroupRoot, startupTimeout: config.StartupTimeout, probeInterval: config.ProbeInterval, stopGrace: config.StopGrace, store: config.Store, backend: config.Backend, network: config.Network, supervisor: config.Supervisor, ports: config.Ports, logs: config.Logs, history: config.History, historyRetention: config.HistoryRetention, nodeLimits: config.NodeLimits, reservedSandboxIDs: map[string]bool{}, pendingCreations: map[string]model.SandboxSpec{}, now: config.Now}, nil
+	return &Manager{instanceUUID: config.InstanceUUID, cgroupRoot: config.CgroupRoot, startupTimeout: config.StartupTimeout, probeInterval: config.ProbeInterval, keepAlive: config.KeepAlive, stopGrace: config.StopGrace, store: config.Store, backend: config.Backend, network: config.Network, supervisor: config.Supervisor, ports: config.Ports, logs: config.Logs, history: config.History, historyRetention: config.HistoryRetention, nodeLimits: config.NodeLimits, reservedSandboxIDs: map[string]bool{}, pendingCreations: map[string]model.SandboxSpec{}, now: config.Now}, nil
 }
 
 // NewSandboxID reserves one short ID after checking both the live catalog and
@@ -300,6 +308,9 @@ func (m *Manager) Create(ctx context.Context, spec model.SandboxSpec) (result In
 		value.SupervisorVersion = supervisorStatus.SupervisorVersion
 		value.DenoVersion = supervisorStatus.DenoVersion
 		value.WorkerCount = supervisorStatus.WorkerCount
+		if value.WorkerCount == 0 {
+			value.IdleSince = m.now()
+		}
 		value.LastHeartbeat = m.now()
 	})
 	if err != nil {
@@ -436,6 +447,7 @@ func (m *Manager) AssignWarm(ctx context.Context, sandboxID, groupKey, ownerID s
 	}
 	assignedStatus := priorStatus
 	assignedStatus.CurrentOwners = []string{ownerID}
+	assignedStatus.IdleSince = time.Time{}
 	if err := m.store.SaveSpec(assigned); err != nil {
 		return Inspection{}, err
 	}
@@ -460,24 +472,25 @@ func (m *Manager) AddOwner(ctx context.Context, sandboxID, ownerID string, logic
 	}
 	priorSpec, priorStatus, err := m.store.Load(sandboxID)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return Inspection{}, errors.Join(ErrUnavailable, err)
+		}
 		return Inspection{}, err
 	}
 	if priorSpec.Lifecycle.Warm {
 		return Inspection{}, errors.New("cannot add an owner to an unassigned warm sandbox")
 	}
 	if priorStatus.ObservedState != model.StateReady && priorStatus.ObservedState != model.StateActive {
-		return Inspection{}, errors.New("cannot add an owner to an unavailable sandbox")
+		return Inspection{}, ErrUnavailable
 	}
 	for _, existing := range priorSpec.OwnerIDs {
 		if existing == ownerID {
 			return Inspection{Spec: priorSpec, Status: priorStatus}, nil
 		}
 	}
-	updatedSpec, updatedStatus := priorSpec, priorStatus
+	updatedSpec := priorSpec
 	updatedSpec.OwnerIDs = append(append([]string(nil), priorSpec.OwnerIDs...), ownerID)
-	updatedStatus.CurrentOwners = append(append([]string(nil), priorStatus.CurrentOwners...), ownerID)
 	sort.Strings(updatedSpec.OwnerIDs)
-	sort.Strings(updatedStatus.CurrentOwners)
 	if len(logicalServiceID) > 0 && logicalServiceID[0] != "" {
 		if slices.Contains(priorSpec.ServiceIDs, logicalServiceID[0]) {
 			return Inspection{}, fmt.Errorf("service %q already has a sandbox allocation in sandbox %s", logicalServiceID[0], sandboxID)
@@ -485,25 +498,11 @@ func (m *Manager) AddOwner(ctx context.Context, sandboxID, ownerID string, logic
 		updatedSpec.ServiceIDs = append(append([]string(nil), priorSpec.ServiceIDs...), logicalServiceID[0])
 		sort.Strings(updatedSpec.ServiceIDs)
 	}
-	if err := updatedSpec.Validate(); err != nil {
-		return Inspection{}, err
-	}
-	if err := m.store.SaveSpec(updatedSpec); err != nil {
-		return Inspection{}, err
-	}
-	if err := m.store.SaveStatus(sandboxID, updatedStatus); err != nil {
-		return Inspection{}, errors.Join(err, m.store.SaveSpec(priorSpec))
-	}
-	if err := m.backend.UpdateLabels(ctx, updatedSpec.SandboxID, ownershipLabels(updatedSpec, false)); err != nil {
-		rollbackErr := errors.Join(m.store.SaveSpec(priorSpec), m.store.SaveStatus(sandboxID, priorStatus))
-		return Inspection{}, errors.Join(fmt.Errorf("update sandbox owner labels: %w", err), rollbackErr)
-	}
-	return Inspection{Spec: updatedSpec, Status: updatedStatus}, nil
+	return m.saveOwners(ctx, priorSpec, updatedSpec)
 }
 
-// RemoveOwner releases one workload from a shared sandbox. The sandbox
-// is deleted when the final owner leaves; otherwise the remaining ownership
-// and service-placement indexes are updated atomically before returning.
+// RemoveOwner releases one allocation. Unused sandboxes retain their compatible
+// supervisor until keepalive expires; explicit deletion bypasses retention.
 func (m *Manager) RemoveOwner(ctx context.Context, sandboxID, ownerID, logicalServiceID string) (bool, error) {
 	unlock := m.lockLifecycle(sandboxID)
 	defer unlock()
@@ -518,40 +517,71 @@ func (m *Manager) RemoveOwner(ctx context.Context, sandboxID, ownerID, logicalSe
 		return false, err
 	}
 	if !slices.Contains(spec.OwnerIDs, ownerID) {
-		return len(spec.OwnerIDs) == 0, nil
+		return false, nil
 	}
-	updatedSpec, updatedStatus := spec, status
+	updatedSpec := spec
 	updatedSpec.OwnerIDs = removeString(updatedSpec.OwnerIDs, ownerID)
-	updatedStatus.CurrentOwners = removeString(updatedStatus.CurrentOwners, ownerID)
 	if logicalServiceID != "" {
 		updatedSpec.ServiceIDs = removeString(updatedSpec.ServiceIDs, logicalServiceID)
 	}
-	if len(updatedSpec.OwnerIDs) == 0 {
+	if len(updatedSpec.OwnerIDs) == 0 && status.WorkerCount == 0 && m.keepAlive == 0 {
 		return true, m.deleteLocked(ctx, spec.SandboxID)
 	}
-	if err := updatedSpec.Validate(); err != nil {
-		return false, err
-	}
-	if err := m.store.SaveSpec(updatedSpec); err != nil {
-		return false, err
-	}
-	if err := m.store.SaveStatus(sandboxID, updatedStatus); err != nil {
-		return false, errors.Join(err, m.store.SaveSpec(spec))
-	}
-	labels := ownershipLabels(updatedSpec, true)
-	if err := m.backend.UpdateLabels(ctx, updatedSpec.SandboxID, labels); err != nil {
-		rollbackErr := errors.Join(m.store.SaveSpec(spec), m.store.SaveStatus(sandboxID, status))
-		return false, errors.Join(fmt.Errorf("update sandbox owner labels: %w", err), rollbackErr)
-	}
-	return false, nil
+	_, err = m.saveOwners(ctx, spec, updatedSpec)
+	return false, err
 }
 
-func ownershipLabels(spec model.SandboxSpec, primary bool) map[string]string {
-	labels := map[string]string{"the8020.owners": strings.Join(spec.OwnerIDs, ",")}
-	if primary {
+// Ownership writes preserve newer supervisor observations received during I/O.
+func (m *Manager) saveOwners(ctx context.Context, priorSpec, updatedSpec model.SandboxSpec) (Inspection, error) {
+	labels := ownershipLabels(updatedSpec)
+	updatedSpec.Labels = maps.Clone(priorSpec.Labels)
+	if updatedSpec.Labels == nil {
+		updatedSpec.Labels = map[string]string{}
+	}
+	for key, value := range labels {
+		if value == "" {
+			delete(updatedSpec.Labels, key)
+		} else {
+			updatedSpec.Labels[key] = value
+		}
+	}
+	if err := m.store.SaveSpec(updatedSpec); err != nil {
+		return Inspection{}, err
+	}
+	var priorIdleSince time.Time
+	status, err := m.store.UpdateStatus(updatedSpec.SandboxID, func(value *model.SandboxStatus) error {
+		priorIdleSince = value.IdleSince
+		value.CurrentOwners = append([]string(nil), updatedSpec.OwnerIDs...)
+		if len(updatedSpec.OwnerIDs) > len(priorSpec.OwnerIDs) {
+			value.IdleSince = time.Time{}
+		} else if value.WorkerCount == 0 && value.IdleSince.IsZero() {
+			value.IdleSince = m.now()
+		}
+		return nil
+	})
+	if err != nil {
+		return Inspection{}, errors.Join(err, m.store.SaveSpec(priorSpec))
+	}
+	if err := m.backend.UpdateLabels(ctx, updatedSpec.SandboxID, labels); err != nil {
+		rollbackSpecErr := m.store.SaveSpec(priorSpec)
+		_, rollbackStatusErr := m.store.UpdateStatus(priorSpec.SandboxID, func(value *model.SandboxStatus) error {
+			value.CurrentOwners = append([]string(nil), priorSpec.OwnerIDs...)
+			if value.WorkerCount == 0 && value.IdleSince.IsZero() {
+				value.IdleSince = priorIdleSince
+			}
+			return nil
+		})
+		return Inspection{}, errors.Join(fmt.Errorf("update sandbox owner labels: %w", err), rollbackSpecErr, rollbackStatusErr)
+	}
+	return Inspection{Spec: updatedSpec, Status: status}, nil
+}
+
+func ownershipLabels(spec model.SandboxSpec) map[string]string {
+	labels := map[string]string{"the8020.owner": "", "the8020.owners": strings.Join(spec.OwnerIDs, ",")}
+	if len(spec.OwnerIDs) > 0 {
 		labels["the8020.owner"] = spec.OwnerIDs[0]
 	}
-	if len(spec.ServiceIDs) > 0 {
+	if spec.WorkloadType == model.WorkloadService {
 		labels["the8020.services"] = strings.Join(spec.ServiceIDs, ",")
 	}
 	return labels
@@ -699,7 +729,7 @@ func (m *Manager) CheckHealth(ctx context.Context, heartbeatTimeout time.Duratio
 	}
 	report := HealthReport{}
 	now := m.now()
-	ids := m.store.ClaimStaleHeartbeats(now.Add(-heartbeatTimeout), maximumHealthChecksPerPass)
+	ids := m.store.ClaimStaleHeartbeats(now.Add(-heartbeatTimeout), maximumMaintenancePerPass)
 	for _, id := range ids {
 		report.Checked++
 		failure, failed, err := m.checkStaleHealth(ctx, id, now, heartbeatTimeout)
@@ -713,6 +743,40 @@ func (m *Manager) CheckHealth(ctx context.Context, heartbeatTimeout time.Duratio
 	}
 	sort.Slice(report.Failures, func(i, j int) bool { return report.Failures[i].SandboxID < report.Failures[j].SandboxID })
 	return report, nil
+}
+
+// CleanupIdle examines only expired entries in the cached idle queue. Atomic
+// owner acquisition uses the same lifecycle lock as expiry, protecting startup.
+func (m *Manager) CleanupIdle(ctx context.Context) (int, error) {
+	cutoff := m.now().Add(-m.keepAlive)
+	removed := 0
+	var joined error
+	for _, id := range m.store.ClaimIdle(cutoff, maximumMaintenancePerPass) {
+		deleted, err := m.expireIdle(ctx, id, cutoff)
+		m.store.RescheduleIdle(id)
+		if deleted {
+			removed++
+		}
+		joined = errors.Join(joined, err)
+	}
+	return removed, joined
+}
+
+func (m *Manager) expireIdle(ctx context.Context, sandboxID string, cutoff time.Time) (bool, error) {
+	unlock := m.lockLifecycle(sandboxID)
+	defer unlock()
+	spec, status, err := m.store.Load(sandboxID)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if spec.Lifecycle.Warm || len(spec.OwnerIDs) > 0 || status.WorkerCount > 0 || status.IdleSince.IsZero() || status.IdleSince.After(cutoff) {
+		return false, nil
+	}
+	err = m.deleteLocked(ctx, sandboxID)
+	return err == nil, err
 }
 
 func (m *Manager) checkStaleHealth(ctx context.Context, sandboxID string, now time.Time, heartbeatTimeout time.Duration) (HealthFailure, bool, error) {
@@ -910,6 +974,11 @@ func (m *Manager) Reconcile(ctx context.Context) (ReconcileReport, error) {
 		status.TaskPID = observation.TaskPID
 		status.SupervisorHealthy, status.SupervisorVersion, status.DenoVersion = true, supervisorStatus.SupervisorVersion, supervisorStatus.DenoVersion
 		status.WorkerCount, status.LastHeartbeat = supervisorStatus.WorkerCount, m.now()
+		if status.WorkerCount > 0 {
+			status.IdleSince = time.Time{}
+		} else if status.IdleSince.IsZero() {
+			status.IdleSince = m.now()
+		}
 		target := model.StateReady
 		if supervisorStatus.WorkerCount > 0 {
 			target = model.StateActive
@@ -1068,6 +1137,7 @@ func (m *Manager) restoreAvailable(sandboxID string, status model.SandboxStatus,
 			value.SupervisorVersion = status.SupervisorVersion
 			value.DenoVersion = status.DenoVersion
 			value.WorkerCount = status.WorkerCount
+			value.IdleSince = status.IdleSince
 			value.LastHeartbeat = status.LastHeartbeat
 			value.FailureReason = ""
 		})

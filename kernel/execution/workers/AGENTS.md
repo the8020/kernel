@@ -16,6 +16,10 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
 
 # Local Contracts
 
+- `MatchingImports` targets one known sandbox and selected Workers, sends
+  changed paths in batches of at most 1,024, and deduplicates matching IDs. It
+  performs no global inventory lookup and stores no imports in Go or snapshots.
+
 - Public API includes `New`, `Manager.Start`, `List`, `Inspect`, `Stop`,
   `StopInSandbox`, `InvokeWorker`, `InvokeLocalWorker`, `RunJob`,
   `ConfigureService`, and service dispatch/proxy methods.
@@ -24,12 +28,12 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
   require an explicitly allowed import host.
 - Default debugger names use the validated origin type, origin ID, and Worker
   ID, matching execution context and log attribution.
-- Additional job type-check modules may use absolute sandbox paths, but each
-  path must remain beneath the parent read envelope.
+- Explicit job dependency-inspection modules may use absolute sandbox paths, but
+  each path must remain beneath the parent read envelope.
 - Worker lookup reads the latest cached absolute supervisor snapshot rather than
   container process state. A filtered `List` resolves only the exact cached
-  sandbox and never contacts a supervisor or enumerates unrelated
-  sandboxes. Explicit sandbox refresh owns live inspection.
+  sandbox and never contacts a supervisor or enumerates unrelated sandboxes.
+  Explicit sandbox refresh owns live inspection.
 - Invocation verifies node, sandbox, and Worker identity, never scans unrelated
   Workers, carries an optional persistent-execution target for supervisor
   binding validation, forwards cross-node only to the exact authenticated node,
@@ -37,8 +41,8 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
 - Local and forwarded invocation apply the shared node request validator before
   lookup or forwarding. A malformed parent is rejected; a valid parent reaches
   supervisor control so reused Workers receive distinct child contexts.
-- Runtime callbacks validate the cached sandbox token at the callback
-  boundary; this Worker facade performs no per-call reverse liveness validation.
+- Runtime callbacks validate the cached sandbox token at the callback boundary;
+  this Worker facade performs no per-call reverse liveness validation.
 - Workload managers with a durable Worker-to-sandbox association stop through
   `StopInSandbox`; unrelated unavailable sandboxes must not block owned Worker
   cleanup.
@@ -64,8 +68,8 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
 
 # Work Guidance
 
-- Keep all workload types on the same start/stop path and include stable
-  Worker identity in debugger names.
+- Keep all workload types on the same start/stop path and include stable Worker
+  identity in debugger names.
 
 # Verification
 

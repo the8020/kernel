@@ -131,14 +131,17 @@ relevant child AGENTS.md
   compatible minor and patch win. The exact selected package tag and active
   commit are retained in the database package index. Missing compatible tags
   fail installation. Docker runs require an unconfined outer seccomp profile and
-  complete the pinned runsc smoke before kernel startup. The entrypoint creates
-  the first enabled login user when none exists, defaulting to username `admin`
-  and password `admin`; `THE8020_USERNAME` and `THE8020_PASSWORD` independently
+  complete the pinned runsc smoke before kernel startup. The entrypoint performs
+  initial-account bootstrap once per persistent instance volume and creates the
+  first enabled login user when none exists, defaulting to username `admin` and
+  password `admin`; `THE8020_USERNAME` and `THE8020_PASSWORD` independently
   override those defaults. Enabled passwordless users do not suppress this
-  bootstrap. Existing users are never changed. It prints `80|20 is ready` after
-  first-user handling and an HTTP 200 response from the public login service.
-  The kernel control plane remains independent of users, while Docker readiness
-  requires this initial user to exist. Bootstrap failure prints the last
+  bootstrap. Existing users are never changed. Successful bootstrap writes the
+  entrypoint-owned `node/docker/initial-user.done` marker; later starts skip
+  user checks and creation, including after accounts are deleted or disabled. It
+  prints `80|20 is ready` after any pending first-user handling and an HTTP 200
+  response from the public login service. The kernel control plane remains
+  independent of users. Bootstrap failure leaves no marker and prints the last
   users-command error and kernel status so the underlying runtime failure is
   visible in container output.
 - The local `Dockerfile` builds the checked-out kernel release without build
@@ -146,9 +149,10 @@ relevant child AGENTS.md
   image assembly and build-cache cleanup; the installer stays generic.
   [Docker DOX](docker/AGENTS.md) owns the container-specific runtime payload.
 - Container startup prints a message before starting the kernel, waiting for
-  package initialization and user commands, creating the initial user, and
-  waiting for the public login service. Report the stage before its potentially
-  slow operation; do not repeat unchanged messages on each readiness poll.
+  package initialization and user commands during initial bootstrap, creating
+  the initial user when needed, and waiting for the public login service. Report
+  the stage before its potentially slow operation; do not repeat unchanged
+  messages on each readiness poll.
 - The Docker entrypoint probes `/the8020/uui/login/` over loopback at
   `THE8020_NETWORK_MAIN_PORT` (default 80), bypasses outbound proxies, and
   requires HTTP 200 before announcing readiness. It waits at most five minutes
@@ -211,14 +215,20 @@ relevant child AGENTS.md
   packing targets and may have small race-bound overshoot without exceeding the
   hard kernel-wide total-Worker limit. Scaling removes only excess idle Workers
   after Worker keepalive, retains configured warm sandboxes independently, and
-  destroys ownerless sandboxes. Global allocation indexes are partitioned across
-  enabled application-server nodes. Kernel packing policy has exactly one
-  per-sandbox capacity dimension: total Workers, defaulting to 64. CPU and RAM
-  have no settings, reservations, placement targets, admission limits, or cgroup
-  ceilings; their raw usage is diagnostic only. Nodes enforce and advertise
-  sandbox-count, Worker-count, and temporary-storage budgets. Insufficient
-  capacity retains desired state, reports `PENDING_CAPACITY` or `DEGRADED`, and
-  may spill new work through authenticated node forwarding.
+  releases unused allocations. Empty service and job/module sandboxes retain
+  their supervisor for the node's `runtime.sandbox.keep_alive`, default two
+  minutes, then expire through bounded maintenance. A new allocation protects
+  Worker startup; the countdown starts again after the last Worker leaves. Jobs,
+  direct modules, and package programs share the default sandbox group when
+  their runtime profiles match; explicit groups still override placement. Global
+  allocation indexes are partitioned across enabled application-server nodes.
+  Kernel packing policy has exactly one per-sandbox capacity dimension: total
+  Workers, defaulting to 64. CPU and RAM have no settings, reservations,
+  placement targets, admission limits, or cgroup ceilings; their raw usage is
+  diagnostic only. Nodes enforce and advertise sandbox-count, Worker-count, and
+  temporary-storage budgets. Insufficient capacity retains desired state,
+  reports `PENDING_CAPACITY` or `DEGRADED`, and may spill new work through
+  authenticated node forwarding.
 - UUI establishment, messages, replay, heartbeat, reconnect behavior, program
   lifecycle, and session administration belong to the ordinary persistent UUI
   service handler. The Deno supervisor and Worker bridge must remain generic so
@@ -238,6 +248,11 @@ relevant child AGENTS.md
 - Ordinary service and job sandboxes mount the complete activated package tree
   read-only at `/workspace/packages`. Application durable shared state uses the
   kernel-owned database API; no generic package-data filesystem is mounted.
+- Service/job/module execution shares a persistent node-local Deno file cache
+  that grows through ordinary runtime imports, including transpiled output.
+  Development sandboxes remain separate. Keep SQLite caches private across
+  gVisor boundaries, and qualify changes against concurrent cache misses and
+  actual system startup time.
 - Public services completely ignore platform tokens and execute as their
   configured user. They preserve raw cookies/headers for explicit package
   login/logout. Authenticated services verify the platform JWT in Go before
@@ -284,6 +299,13 @@ relevant child AGENTS.md
   tracking, atomically switch source, and refresh only affected services. Hook
   and deployment phases are durable and recoverable; PostgreSQL serializes
   deployment through an advisory lock.
+- All nodes observe the same mutable shared package sources. Published package
+  revisions trigger scans of imports actually loaded by current service Workers;
+  the package/update layer requests one soft restart per affected logical
+  service and update across nodes. Generic soft/hard restart uses existing
+  generation placement, replacement, and drain paths. Old connections and
+  bindings survive soft replacement; hard restart terminates all generations of
+  that service. Running jobs retain their identity and execution.
 - Global named secrets live only in `the8020__secrets__secrets`. Package records
   may retain one secret name but never its value. Kernel-owned Git operations
   resolve that value only for the selected package, inject it as a host-scoped
@@ -394,19 +416,22 @@ relevant child AGENTS.md
   `/root/.ssh/authorized_keys` directly from its confined durable system root
   without creating or starting the sandbox. Ordinary remote commands execute
   through that sandbox's Bash login environment; commands beginning with the
-  reserved `the8020 [sandbox-id=<sbx-id>] [terminal-id=<tty-id>]` grammar select
-  a terminal target instead of executing. SSH uses the generic direct sandbox
-  PTY path when requested and a byte-transparent process stream for non-PTY
-  exec, forwarding all client behavior representable by that process/TTY
+  reserved `the8020 [sandbox-id=<sbx-id>] [terminal-id=<session-id>]` grammar
+  select a terminal target instead of executing. SSH uses the generic direct
+  sandbox PTY path when requested and a byte-transparent process stream for
+  non-PTY exec, forwarding all client behavior representable by that process/TTY
   boundary, including environment, commands, raw control/function-key bytes,
   resize, cancellation, distinct non-PTY stdout/stderr, real exit status, and
   canonical PTY EOF for half-closed streamed exec input. SSH-only forwarding
   channels and subsystems remain unavailable. SSH follows the same temporary
   all-authenticated-users administrator policy as the browser console.
-- A selected `terminal-id` requires a PTY and attaches an existing retained
-  process on that node. It never ensures a sandbox or replaces a missing ID.
-  Deno owns display recovery; SSH disconnect releases only the native
-  attachment.
+- A selected `terminal-id` requires a PTY and connects or creates a retained
+  named session in the selected sandbox; omission of `sandbox-id` ensures the
+  authenticated user's development sandbox. Session IDs allow 1–40 ASCII
+  letters, digits, `_`, or `-`, with either `terminal-id=ID` or
+  `terminal-id ID`. Physical `tty-` handles stay internal and are never reused
+  for replacement processes. Deno owns labels and display state; SSH disconnect
+  releases only the native attachment.
 - Runtime resource IDs must use a type prefix plus ten random lowercase
   alphanumeric characters: `sbx-` for sandboxes, `uis-` for UUI sessions, `wrk-`
   for Workers. Cleaned terminal sandboxes leave the live catalog immediately;
@@ -560,9 +585,10 @@ below.
   entrypoint's first-user path; a browser flow that creates its own test user
   does not verify that path. Report Docker build/run coverage separately from
   native runtime tests when Docker is unavailable.
-- `bash docker-entrypoint_test.sh` verifies startup progress, HTTP 200
-  readiness, failure diagnostics, and the curl dependency with isolated process
-  doubles.
+- With Deno on PATH, `bash docker-entrypoint_test.sh` verifies startup progress,
+  HTTP 200 readiness, failure diagnostics, the curl dependency, and structural
+  existing-login-user detection, one-time bootstrap, restart bypass after user
+  removal, and failed-creation retry with isolated process doubles.
 
 - `.vscode/` configures the Deno language server and linting for
   `defaults/config/runtime/deno/`, recommends the Go/Deno/TOML/shell development

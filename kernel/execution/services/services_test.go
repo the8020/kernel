@@ -52,6 +52,7 @@ type fakeWorkers struct {
 	starts         []supervisor.StartWorkerRequest
 	startErr       error
 	stops          []string
+	kills          []string
 	configurations []configuration
 	websocketCalls []string
 	inFlight       map[string]int
@@ -269,13 +270,50 @@ func TestServiceRestoreRejectsPersistedFailedWorker(t *testing.T) {
 		t.Fatalf("failed=%#v err=%v", failed, err)
 	}
 }
-func (f *fakeWorkers) StopInSandbox(_ context.Context, _ string, workerID string, _ bool) error {
+func (f *fakeWorkers) StopInSandbox(_ context.Context, _ string, workerID string, immediate bool) error {
 	if err := f.stopErrors[workerID]; err != nil {
 		return err
 	}
 	f.stops = append(f.stops, workerID)
+	if immediate {
+		f.kills = append(f.kills, workerID)
+	}
 	f.lifecycle = append(f.lifecycle, "stop:"+workerID)
 	return nil
+}
+
+func TestHardStopKillsOccupiedAndUnrecordedWorkersOfOnlyTheSelectedPool(t *testing.T) {
+	store, _ := records.New(t.TempDir())
+	workersFake := &fakeWorkers{inFlight: map[string]int{}}
+	manager, err := New(&fakeCoordinator{}, workersFake, store, Policy{Strategy: model.GroupingOwner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := manager.Start(context.Background(), "api", "file:///programs/api.ts", testOptions(1, 2, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := record.WorkerIDs[0]
+	workersFake.inFlight[worker] = 1
+	if stopped, err := manager.Stop(context.Background(), "api"); err != nil || stopped {
+		t.Fatalf("soft stop=%t error=%v", stopped, err)
+	}
+	orphan := workersFake.starts[0]
+	orphan.Metadata.WorkerID = "wrk-aaaaaaaaaa"
+	unrelated := orphan
+	unrelated.Metadata.WorkerID, unrelated.Metadata.WorkloadID = "wrk-bbbbbbbbbb", "another-pool"
+	workersFake.starts = append(workersFake.starts, orphan, unrelated)
+	workersFake.inFlight[orphan.Metadata.WorkerID] = 1
+	if stopped, err := manager.Kill(context.Background(), "api"); err != nil || !stopped {
+		t.Fatalf("hard stop=%t error=%v", stopped, err)
+	}
+	if !slices.Equal(workersFake.kills, []string{worker, orphan.Metadata.WorkerID}) {
+		t.Fatalf("killed=%v", workersFake.kills)
+	}
+	live, err := workersFake.List(context.Background(), record.SandboxID)
+	if err != nil || len(live) != 1 || live[0].Worker.WorkerID != unrelated.Metadata.WorkerID {
+		t.Fatalf("remaining=%#v error=%v", live, err)
+	}
 }
 
 func TestServiceStopPersistsProgressAndResumes(t *testing.T) {
@@ -395,13 +433,13 @@ func TestServiceStartDiscardsRecordWhenGroupWasNeverAcquired(t *testing.T) {
 func TestRejectedServiceStartReleasesGroupAndDiscardsPoolRecord(t *testing.T) {
 	store, _ := records.New(t.TempDir())
 	coordinatorFake := &fakeCoordinator{}
-	workersFake := &fakeWorkers{startErr: &supervisor.ResponseError{Method: http.MethodPost, Path: "/v1/workers/start", Status: "400 Bad Request", StatusCode: http.StatusBadRequest, Message: "service type check failed"}}
+	workersFake := &fakeWorkers{startErr: &supervisor.ResponseError{Method: http.MethodPost, Path: "/v1/workers/start", Status: "400 Bad Request", StatusCode: http.StatusBadRequest, Message: "service export is invalid"}}
 	manager, err := New(coordinatorFake, workersFake, store, Policy{Strategy: model.GroupingOwner})
 	if err != nil {
 		t.Fatal(err)
 	}
 	failed, err := manager.Start(context.Background(), "rejected-pool", "file:///programs/api.ts", testOptions(1, 1, 1))
-	if !errors.Is(err, ErrInvalidServiceDefinition) || failed.State != "FAILED" || !strings.Contains(err.Error(), "type check failed") {
+	if !errors.Is(err, ErrInvalidServiceDefinition) || failed.State != "FAILED" || !strings.Contains(err.Error(), "service export is invalid") {
 		t.Fatalf("failed=%#v err=%v", failed, err)
 	}
 	if len(coordinatorFake.releases) != 1 {

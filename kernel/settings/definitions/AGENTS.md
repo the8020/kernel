@@ -34,6 +34,11 @@ Parent DOX: [kernel/kernel/settings DOX](../AGENTS.md).
 - Keys and environment variables are unique; every setting environment variable
   starts with `THE8020_`, and values must pass generated-catalog validation.
 - Files are data, not executable hooks.
+- `runtime.sandbox.keep_alive` is a node-local, restart-required integer in
+  milliseconds, default `120000`; zero disables empty-sandbox retention. It
+  applies to service and job/module sandboxes through the sandbox manager.
+- `execution.grouping.job` defaults to `shared` for jobs, modules, and programs.
+  Explicit placement labels and persisted strategy overrides remain effective.
 - Logging has seven node-local runtime settings: enabled, minimum level,
   unified/source split, UTC period, maximum segment size, global byte cap, and
   maximum segment age. Batching/record/queue/sync limits are implementation

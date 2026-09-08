@@ -14,8 +14,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   untrusted internal headers, attach trusted request/auth/execution metadata,
   stream HTTP bodies, proxy WebSockets, and select local or remote capacity.
 - Issue and verify signed route descriptors, then dispatch to exact node,
-  sandbox, Worker, and persistent execution identities. No database dependency
-  or route registry exists here; the supervisor owns execution lifetime.
+  sandbox, Worker, and persistent execution identities. The supervisor owns
+  execution lifetime; routes require no database registry. Shared system
+  revisions carry generic restart intent, never application configuration.
 - Do not parse manifests, execute application handlers, interpret UUI messages,
   schedule inside a sandbox-local pool, or implement sandbox lifecycle.
 
@@ -73,6 +74,12 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   It never marks application authentication complete. The target Worker approves
   user/session policy before handler/upgrade; kernel routing and callbacks
   retain the signed principal. Go never queries the users package tables.
+- In-process `RequestOptions.AuthenticatedUser` carries a principal already
+  approved by a native transport's package authentication. A private Go context
+  marks this request; the target Worker checks principal consistency and skips
+  only the already-completed hook. HTTP headers, RPC input, and public services
+  cannot acquire this approval. Native requests stay local; remote spillover
+  requires a separately authenticated transport.
 - Warm routing uses one immutable definition lookup, one cache-only supervisor
   capacity read per candidate sandbox, a short reservation, and final dispatch.
   It performs no manifest read, Worker scan, live supervisor inspection, metrics
@@ -101,7 +108,7 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   below the minimum or target-load headroom. Empty excess sandboxes may then be
   retired, while minimum sandboxes remain warm independently of minimum Workers
   and active session routes prevent retirement. Releasing the final sandbox
-  owner destroys that sandbox.
+  owner leaves empty-sandbox keepalive and destruction to the sandbox manager.
 - Each actual service allocation/Worker pool receives an opaque `srv-` ID,
   including temporary validation pools. Cold reconciliation recovers by explicit
   declared service, release, generation, and placement index in the selected
@@ -140,11 +147,31 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   start, stop, and recover concurrently.
 - Repeated identical maintenance failures neither increment failure counters nor
   emit duplicate logs until the failure changes or clears.
-- Replacement capacity is validated before a version switch. HTTP, WebSocket,
-  and persistent follow-up routing select only sandboxes from the loaded
-  generation. Every stale pool follows the same drain workflow: it receives no
-  new routed work, occupied Workers remain `DRAINING` without making the switch
-  fail, and maintenance retries until it can remove the fully stopped record.
+- Replacement capacity starts before a version switch, including one fresh
+  Worker when an active service has a zero minimum. New HTTP/WebSocket work
+  selects the loaded generation; exact persistent follow-ups may still select
+  their live retired Worker and carry its generation. Old pools retain existing
+  streams, connections, and bindings until occupancy reaches zero, without a
+  forced drain timeout. Startup rejection retains the healthy loaded version.
+- `Restart` publishes soft or hard intent through the existing `indexes`
+  revision transaction. A positive source-update revision deduplicates soft
+  requests across nodes; zero creates a manual request. The latest hard marker
+  survives subsequent soft requests so a delayed node still terminates every
+  older allocation. Persisted pool restart revisions prevent replay on recovery.
+- Runtime generation combines the application policy version and shared restart
+  revision. Release hashing happens only when publishing the immutable index;
+  source/provider commit changes alone never replace service capacity. Both
+  manual modes work with unchanged manifests and use existing node placement.
+- Hard restart removes routing, kills active and retired allocations of the
+  selected service, then prepares fresh capacity. Cleanup failures remain
+  retryable through ordinary reconciliation; unrelated services and jobs keep
+  their Workers. Disabled services remain disabled.
+- `MatchingImports` copies only current, enabled, non-draining service Worker
+  selections under the routing lock, then intersects Worker-owned imports via
+  the supplied supervisor operation outside that lock. It returns deduplicated
+  logical services. Package/update code owns when to scan and request restarts;
+  routing, snapshots, and maintenance never scan imports or keep reverse
+  indexes.
 - `Index.ReplacePackage` validates the entire fragment, then replaces it under
   one short publication lock and reports removed IDs for retirement. Hook or
   specification failure leaves the old fragment untouched. The owning reindex
@@ -154,16 +181,16 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   validation records left by earlier kernels.
 - Service status is one logical row per service. It reports all live current or
   draining-version sandboxes and Workers by unique identity, counts distinct
-  versions, and includes each sandbox's version; routing still targets only the
-  loaded version. Request metrics belong to the stable logical service so a
-  request finishing on a draining version updates the same aggregate.
+  versions, and includes each sandbox's version. Request metrics belong to the
+  stable logical service so a request finishing on a draining version updates
+  the same aggregate.
 - Administration replaces routing reservations with cached supervisor-observed
   request/Worker totals and exposes snapshot revision/time. Explicit service
   refresh inspects only that service's unique sandboxes with at most eight
   concurrent probes; list and ordinary detail reads stay cache-only.
 - This package forwards no application settings and performs no application
-  inventory or Worker scan. Package-owned administration may use the generic
-  exact-Worker invocation capability through the kernel SDK.
+  inventory scan. Package-owned administration may use the generic exact-Worker
+  invocation capability through the kernel SDK.
 - Request and response bodies remain streaming. Canonical path validation
   rejects encoded separators, backslashes, nulls, traversal, invalid UTF-8, and
   client-supplied internal headers.
@@ -191,13 +218,17 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   capacity locking, concurrent unrelated warm dispatch, strict/bounded-soft
   dispatch, failed-dispatch reservation release, abandoned-reservation expiry,
   cache-only warm routing, failed cold-start rollback, idle sandbox scale-down,
-  version replacement, current-generation-only routing with prior-version
-  draining, degraded cold-start routing, in-place missing-capacity recovery,
+  version replacement, new-generation routing with exact prior-version
+  follow-ups, degraded cold-start routing, in-place missing-capacity recovery,
   capacity states, stale-pool cleanup, terminal pool-record removal,
   validation-pool cleanup, stale persistent-Worker rejection, exact persistent
   completion, accepted-index discovery, bounded background maintenance, stable
   rejected-version suppression with explicit retry, and duplicate failure
   suppression.
+- `restarts_test.go` verifies selective import scans, concurrent duplicate
+  updates across nodes, soft draining, zero-minimum replacement, rejected
+  replacement retention, hard termination of all generations, and recovery
+  without repeating an applied hard restart.
 
 # Child DOX Index
 

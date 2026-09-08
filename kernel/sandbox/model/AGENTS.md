@@ -23,12 +23,16 @@ Parent DOX: [kernel/kernel/sandbox DOX](../AGENTS.md).
   disabled.
 - Canonical mounts are copied and ordered deterministically with parent targets
   before descendants; callers never need backend-specific mount ordering.
-- A spec cannot mix workload types or owners, its mounts and permission envelope
-  must exactly match its immutable runtime profile, and image identity must be a
-  SHA-256 digest.
+- A spec contains one workload type and compatible owners. Its mounts and
+  permission envelope must exactly match its immutable runtime profile, and
+  image identity must be a SHA-256 digest.
 - Service specs retain one exact placement-group value plus the logical service
   IDs already present. The lists are used to prevent duplicate allocations in
   one sandbox; an empty placement group remains a valid shared value.
+- Assigned specs always retain their group key and may have no owners while
+  awaiting keepalive expiry. Clean warm specs have neither a group nor owners.
+  Status records `IdleSince` for the last observed transition to zero Workers;
+  sandbox lifecycle owns the retention duration.
 - Sandbox resource limits contain only PID and temporary-filesystem bounds; CPU
   and RAM fields are observations, not limits or placement inputs.
 - Sandbox status retains its creation node, creation time and cached log reader

@@ -43,8 +43,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - An ordinary exec request runs through `[/bin/bash, -lc, <command>]` inside the
   authenticated user's development sandbox. Commands beginning with reserved
   `the8020` use the structured `the8020 [sandbox-id=<id>] [terminal-id=<id>]`
-  selector grammar instead; its optional parameter accepts a canonical `sbx-`
-  ID. The shared console broker resolves its registered owner; unavailable or
+  selector grammar instead; `sandbox-id` accepts a canonical `sbx-` ID. The
+  shared console broker resolves its registered owner; unavailable or
   conflicting claims fail before opening a process. Malformed parameters are
   rejected.
 - Only SSH `session` channels are accepted. Port, agent, X11, and socket
@@ -63,11 +63,14 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   and remain unavailable without a sandbox-side SSH protocol endpoint.
 - The current temporary authorization policy permits every authenticated user to
   select any running sandbox.
-- `ssh -t user@node -p PORT 'the8020 terminal-id=tty-…'` attaches that node's
-  existing retained PTY. Optional `sandbox-id=sbx-…` must match its owner.
-  Unknown IDs, malformed/duplicate parameters, missing PTY requests, absent
-  display owners, and occupied input control fail without creating a sandbox or
-  process. Existing process environment and working directory are preserved.
+- `ssh -t -p PORT user@node the8020 terminal-id XYZ` connects or creates the
+  sandbox-scoped named session; `terminal-id=XYZ` is also accepted. Session IDs
+  allow 1–40 ASCII letters, digits, `_`, or `-`. Optional `sandbox-id` selects a
+  registered running target; omission ensures the user's development sandbox.
+  Composition opens the package display owner before attaching the physical
+  native view. Missing/exited processes are recreated; a surviving process keeps
+  its environment and working directory. Malformed/duplicate parameters, missing
+  PTY requests, and occupied input control still fail explicitly.
 - Retained attachment uses the shared console owner's native display stream.
   Deno supplies recovered VT display bytes; Go interprets no terminal state. SSH
   EOF/disconnection releases the attachment without PTY EOF or hangup. Native

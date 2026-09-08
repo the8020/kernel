@@ -200,8 +200,9 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 - CPU and memory usage remain observable but never limit sandbox creation,
   placement, or Worker admission and receive no cgroup ceilings. Full mode
   retains PID control; rootless mode reports that PID cgroup enforcement and
-  CNI/firewall isolation are unavailable. Shared grouping is explicit and shares
-  one failure, security, permission, and resource boundary.
+  CNI/firewall isolation are unavailable. Shared groups have one failure,
+  security, permission, and resource boundary. Jobs, modules, and programs share
+  the default compatible group; explicit placement overrides still separate work.
 - System-shipped and user-developed programs use the same supervisor and Worker
   path. Package command dispatch submits an ordinary `system` job against the
   shared package mount; it owns no source copies, mount overlays, or special

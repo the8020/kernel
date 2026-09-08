@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -28,6 +29,7 @@ type Sandboxes interface {
 }
 
 type Control interface {
+	MatchingImports(context.Context, model.SandboxSpec, []string, []string) ([]string, error)
 	Workers(context.Context, model.SandboxSpec) ([]supervisor.WorkerStatus, error)
 	StartWorker(context.Context, model.SandboxSpec, supervisor.StartWorkerRequest) (supervisor.WorkerStatus, error)
 	StopWorker(context.Context, model.SandboxSpec, string, bool) error
@@ -258,6 +260,27 @@ func (m *Manager) Inspect(ctx context.Context, workerID string) (Record, error) 
 	return Record{}, fmt.Errorf("Worker %q not found", workerID)
 }
 
+// MatchingImports reads Worker-owned import sets only for an explicit update.
+func (m *Manager) MatchingImports(ctx context.Context, sandboxID string, workerIDs, paths []string) ([]string, error) {
+	inspection, err := m.sandboxes.Inspect(ctx, sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireWorkerRuntime(inspection); err != nil {
+		return nil, err
+	}
+	var matches []string
+	for start := 0; start < len(paths); start += 1024 {
+		found, err := m.control.MatchingImports(ctx, inspection.Spec, workerIDs, paths[start:min(start+1024, len(paths))])
+		if err != nil {
+			return nil, err
+		}
+		matches = append(matches, found...)
+	}
+	sort.Strings(matches)
+	return slices.Compact(matches), nil
+}
+
 func (m *Manager) Stop(ctx context.Context, workerID string, immediate bool) error {
 	record, err := m.Inspect(ctx, workerID)
 	if err != nil {
@@ -345,7 +368,7 @@ func (m *Manager) InvokeLocalWorker(ctx context.Context, input nodes.WorkerInvoc
 func invocationFailure(code, message string) nodes.WorkerInvocationResult {
 	return nodes.WorkerInvocationResult{Error: &nodes.WorkerInvocationError{Code: code, Message: message}}
 }
-func (m *Manager) RunJob(ctx context.Context, workerID string, arguments []any, secrets map[string]string, checkModules []string) (supervisor.JobResult, error) {
+func (m *Manager) RunJob(ctx context.Context, workerID string, arguments []any, secrets map[string]string, dependencyModules []string) (supervisor.JobResult, error) {
 	record, spec, err := m.find(ctx, workerID)
 	if err != nil {
 		return supervisor.JobResult{}, err
@@ -353,12 +376,12 @@ func (m *Manager) RunJob(ctx context.Context, workerID string, arguments []any, 
 	if record.WorkloadType != model.WorkloadJob {
 		return supervisor.JobResult{}, errors.New("Worker is not a job")
 	}
-	for _, module := range checkModules {
-		if err := validateCheckModule(spec, module); err != nil {
-			return supervisor.JobResult{}, fmt.Errorf("type-check module: %w", err)
+	for _, module := range dependencyModules {
+		if err := validateDependencyModule(spec, module); err != nil {
+			return supervisor.JobResult{}, fmt.Errorf("dependency module: %w", err)
 		}
 	}
-	return m.control.RunJob(ctx, spec, workerID, arguments, secrets, checkModules)
+	return m.control.RunJob(ctx, spec, workerID, arguments, secrets, dependencyModules)
 }
 func (m *Manager) ConfigureService(ctx context.Context, sandboxID, serviceID string, workerIDs []string, concurrencyPerWorker int) error {
 	inspection, err := m.sandboxes.Inspect(ctx, sandboxID)
@@ -423,7 +446,7 @@ func (m *Manager) find(ctx context.Context, workerID string) (Record, model.Sand
 	return record, inspection.Spec, nil
 }
 
-func validateCheckModule(spec model.SandboxSpec, module string) error {
+func validateDependencyModule(spec model.SandboxSpec, module string) error {
 	if !filepath.IsAbs(module) {
 		return validateEntrypoint(spec, module)
 	}

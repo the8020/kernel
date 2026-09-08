@@ -22,8 +22,8 @@ type SandboxManager interface {
 	RemoveOwner(context.Context, string, string, string) (bool, error)
 }
 
-// Release removes one workload owner and destroys the sandbox when it became
-// empty. Worker shutdown remains the caller's responsibility.
+// Release removes one allocation; the sandbox manager owns keepalive and final
+// destruction. Worker shutdown remains the caller's responsibility.
 func (c *Coordinator) Release(ctx context.Context, sandboxID, ownerID, logicalServiceID string) error {
 	_, err := c.sandboxes.RemoveOwner(ctx, sandboxID, ownerID, logicalServiceID)
 	return err
@@ -94,7 +94,12 @@ func (c *Coordinator) Ensure(ctx context.Context, request Request) (manager.Insp
 		allocationID = request.OwnerID
 	}
 	if selection.Existing {
-		return c.sandboxes.AddOwner(ctx, selection.SandboxID, allocationID, request.LogicalServiceID)
+		inspection, err := c.sandboxes.AddOwner(ctx, selection.SandboxID, allocationID, request.LogicalServiceID)
+		if !errors.Is(err, manager.ErrUnavailable) {
+			return inspection, err
+		}
+		// The selected idle sandbox expired before its allocation was claimed.
+		// Continue through ordinary warm assignment or cold creation.
 	}
 	if err := request.ResourceLimits.Validate(); err != nil {
 		return manager.Inspection{}, err

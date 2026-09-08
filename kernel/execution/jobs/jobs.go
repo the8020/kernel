@@ -68,7 +68,7 @@ type Options struct {
 	Workspace         string
 	WorkspaceWritable bool
 	DatabaseAccess    string
-	CheckModules      []string
+	DependencyModules []string
 	Mounts            []model.Mount
 	User              execution.User
 	Origin            execution.Origin
@@ -106,7 +106,7 @@ type Record struct {
 	Duration           time.Duration                `json:"duration"`
 	Permissions        supervisor.WorkerPermissions `json:"permissions"`
 	DatabaseAccess     string                       `json:"database_access,omitempty"`
-	CheckModules       []string                     `json:"check_modules,omitempty"`
+	DependencyModules  []string                     `json:"dependency_modules,omitempty"`
 	ModuleDependencies map[string][]string          `json:"module_dependencies,omitempty"`
 }
 
@@ -132,7 +132,7 @@ func New(groupCoordinator GroupCoordinator, workerManager WorkerManager, policy 
 		return nil, errors.New("group coordinator, Worker manager are required")
 	}
 	if policy.Strategy == "" {
-		policy.Strategy = model.GroupingOwner
+		policy.Strategy = model.GroupingShared
 	}
 	if !policy.Strategy.Valid() {
 		return nil, errors.New("valid job grouping strategy is required")
@@ -336,7 +336,7 @@ func (m *Manager) prepare(jobID, entrypoint string, options Options) (submission
 		ProfileHash: profileHash, Entrypoint: entrypoint, WorkerID: workerID,
 		ReleaseID: options.ReleaseID, State: "STARTING", Detached: options.Detached,
 		Reuse: reuse, Timeout: timeout, Parallelism: parallelism, Permissions: permissions,
-		DatabaseAccess: databaseAccess, CheckModules: append([]string(nil), options.CheckModules...),
+		DatabaseAccess: databaseAccess, DependencyModules: append([]string(nil), options.DependencyModules...),
 	}
 	return submission{
 		record: record, profile: profile, groupKey: options.GroupKey, placementGroup: placementGroup,
@@ -499,7 +499,7 @@ func (m *Manager) execute(ctx context.Context, prepared submission) (Record, err
 	record := prepared.record
 	m.logEvent(record, m.now(), "job_started", "job started", slog.LevelInfo)
 	ctx = execution.WithInvocation(ctx, execution.Invocation{ContextID: record.ContextID, ParentContextID: record.ParentContextID, JobRunID: record.ExecutionID})
-	result, err := m.workers.RunJob(ctx, record.WorkerID, prepared.arguments, prepared.secrets, record.CheckModules)
+	result, err := m.workers.RunJob(ctx, record.WorkerID, prepared.arguments, prepared.secrets, record.DependencyModules)
 	if err != nil {
 		return m.failAndStop(record, err, prepared.secrets)
 	}

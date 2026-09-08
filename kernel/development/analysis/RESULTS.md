@@ -1,5 +1,92 @@
 # Development workflow experiment results
 
+## September 8 baseline refresh
+
+Rechecked kernel `f4c6fe0d1af77d32a33f34e476a8cd51485e276f` with its existing
+in-progress changes. This task changes analysis files only. Environment remains
+LinuxKit 6.10.14, arm64, six CPUs, Go 1.26.5, Git 2.39.5, and pinned runsc
+`release-20260817.0`. Only disposable repositories and sandboxes were used.
+[current-results.json](current-results.json) retains the five probe logs and
+complete current Git matrix/samples. The September 6 measurements below remain
+historical; they are not evidence that the replacement filesystem shipped.
+
+Commands run from the kernel root:
+
+```sh
+python3 kernel/development/analysis/run.py runtime
+python3 kernel/development/analysis/run.py races
+python3 kernel/development/analysis/run.py git
+python3 kernel/development/analysis/run.py fuse
+python3 kernel/development/analysis/git_probe.py
+```
+
+The runtime again overwrote another developer's disjoint changes, discarded
+uncheckpointed source and ignored artifacts after runtime loss, removed the host
+conflict worktree without exposing its annotations, and killed the helper caller
+with exit 137 about 520 ms after invocation. The injected write after capture
+was absent from both shared and private source. An unrelated repository reader
+waited through the 200 ms schema hook and resumed after 231 ms.
+
+The new native Git probe additionally proves:
+
+- Native branch creation, staging, and committing do not alter shared source.
+  Checkpoint/stop/start retains the edited file but loses the local branch and
+  commit object, leaving the file uncommitted. Source patches are insufficient
+  workspace persistence even during orderly shutdown.
+- After `untouched.txt` changes from `before\n` to `shared-advance\n` in shared
+  source, `cat` reads the complete 15 bytes but `stat` reports the former
+  size 7. `git hash-object untouched.txt` hashes `shared-`; piping `cat` into
+  `git hash-object --stdin` hashes the complete content. Native status is empty,
+  and the activation preview incorrectly includes this untouched file. A
+  successful ordinary read does not qualify live lower coherence for Git.
+- The first probe ordering also failed activation preview with
+  `failed to unpack
+  tree object` after shared HEAD advanced. The final probe
+  checks orderly checkpoint first and logs shared-update inspection afterward,
+  so both persistence and metadata incoherence can be observed in one disposable
+  run. A passing characterization is not a passing redesign acceptance gate.
+
+All 17 existing Git merge/transfer/ref cases pass. Five-trial medians for one
+small edited file are below. Candidate timing includes private index/tree/commit
+construction and merge; the two-worktree comparison includes checkout, patch,
+commit, and cherry-pick but excludes its separately measured cleanup.
+
+| Tracked files | Two-worktree preparation | Cleanup | Per-path-original candidate |
+| ------------: | -----------------------: | ------: | --------------------------: |
+|           100 |                  15.7 ms |  2.5 ms |                      8.5 ms |
+|         1,000 |                  68.6 ms | 12.1 ms |                     10.8 ms |
+|        10,000 |                 466.2 ms | 96.3 ms |                     27.7 ms |
+
+The three-trial ten-file, 20 MiB binary candidate median was 395 ms. These costs
+exclude workspace capture, durable writes, validation/hooks, conflict
+installation, and publication. Probes could overlap with independent checks;
+host scheduling and page cache were uncontrolled. No end-to-end activation
+latency guarantee follows from these measurements.
+
+The repeated 1,000-file external FUSE probe still fails ELF execution and Git
+index mmap. First/warm scans were 1,237/275 ms, versus 95/32 ms on the current
+overlay. Warm is the median of three repeats. Host `/dev/fuse` remains absent;
+host FUSE and custom gofer integration remain unqualified. The larger FUSE
+measurements below were not repeated.
+
+The actual `TestRootlessRetainedTerminals` passed again with two shell PIDs
+through 20 detach/switch/attach cycles, 4 MiB detached output, and independent
+close/exit. The existing `TestActivationPublishesOnlyAfterBothHooks` and
+`TestActivationLockCoversDurableRecordThroughCompletion` also pass. Their latter
+contract explicitly retains the shared deployment lock: the report now covers
+the required package/deployment changes rather than suggesting that an
+activation-only mutex replacement solves concurrency. Browser/htop evidence
+remains in the [completed Phase 1 checklist](../WORKFLOW_IMPLEMENTATION.md).
+
+DOX verification checked 210 documents and all 17 workspace/repository roots,
+with framework text normalized for line wrapping. Hierarchy, reciprocal links,
+reachability, and local report links pass. Go/Python syntax, whitespace, and
+Markdown/JSON formatting pass. The analysis DOX records the new probe and
+artifact; parent and runtime contracts remain unchanged because this refresh
+adopts no production filesystem or publication behavior.
+
+## September 6 initial investigation
+
 Recorded 2026-09-06 against kernel source `ce6db1b`, with the local PTY fix,
 test-fixture corrections, and opt-in experiments described below. No source
 package was activated, and no developer sandbox was used. This records an
@@ -11,8 +98,9 @@ analysis, not completion of the proposed production redesign.
 - Repository-local Go `1.26.5`; pinned runsc `release-20260817.0`.
 - Real sandbox tests used rootless systrap and the installed development image.
 - tmux `3.5a` was installed only inside a disposable test sandbox.
-- Host `/dev/fuse` was unavailable; opening a temporary FUSE device node returned
-  `Operation not permitted`. No host FUSE mount or custom gofer build was tested.
+- Host `/dev/fuse` was unavailable; opening a temporary FUSE device node
+  returned `Operation not permitted`. No host FUSE mount or custom gofer build
+  was tested.
 - Timing runs were sequential. Page caches were not flushed, and host scheduling
   was uncontrolled. These are local measurements, not service-level guarantees.
 
@@ -31,25 +119,25 @@ python3 kernel/development/analysis/git_probe.py
 `workflowanalysis` fixtures into the development package. It does not replace
 production files. Each experiment owns temporary repositories, runtime records,
 system roots, and sandbox cleanup. The runtime test installs tmux and requires
-outbound package access; the Git, race, and FUSE probes can run offline after the
-toolchain and development image are installed.
+outbound package access; the Git, race, and FUSE probes can run offline after
+the toolchain and development image are installed.
 
 ## Current runtime behavior
 
 Raw output: [runtime-results.txt](runtime-results.txt).
 
-| Observation | Recorded result |
-|---|---|
-| Private edits and live lower reads | Shared `same.txt` stayed `base`; B read its private `B` while immediately seeing the host update to an untouched file. |
-| Sequential A/B activation | A succeeded in 315 ms, B in 340 ms. Final same-line content was B. A's non-overlapping first-line change was also erased by B. Both activations reported success. |
-| Sandbox lifetime | A's `/tmp` generation marker disappeared after activation. The persisted sandbox ID stayed the same. |
-| Genuine merge conflict | Advancing shared HEAD after capture produced `conflicted` and `same.txt`. The host merge file had markers; cleanup deleted it while B retained unannotated private text. |
-| Canonical helper conflict | Returned exit 3, `success:false`, `status:conflicted`, and `conflicts:[same.txt]`. Its process generation survived. The fixture matches the production command's existing structured-failure contract. |
-| Abrupt runtime loss | An uncheckpointed new source file and an ignored artifact were both lost after killing/deleting runtime state and starting again. |
-| Canonical helper success | Returned committed/pending-reset JSON, then the enclosing command exited 137 after about 530 ms. Its delayed post-activation marker was never written. |
-| Direct console close after PTY fix | The waiting process died; before the fix, an idle read retained the PTY and left it unreachable but alive. |
-| Two named tmux sessions | Shell PIDs 126 and 128 survived 20 actual authenticated console WebSocket closes/reconnections and switches, with commands and screen contents verified. No abandoned tmux clients remained. |
-| Logout boundary | An authentication fixture rejected reattachment while logged out and allowed later reattachment; the tmux sessions survived. This was not a browser or real users-package logout test. |
+| Observation                        | Recorded result                                                                                                                                                                                        |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Private edits and live lower reads | Shared `same.txt` stayed `base`; B read its private `B` while immediately seeing the host update to an untouched file.                                                                                 |
+| Sequential A/B activation          | A succeeded in 315 ms, B in 340 ms. Final same-line content was B. A's non-overlapping first-line change was also erased by B. Both activations reported success.                                      |
+| Sandbox lifetime                   | A's `/tmp` generation marker disappeared after activation. The persisted sandbox ID stayed the same.                                                                                                   |
+| Genuine merge conflict             | Advancing shared HEAD after capture produced `conflicted` and `same.txt`. The host merge file had markers; cleanup deleted it while B retained unannotated private text.                               |
+| Canonical helper conflict          | Returned exit 3, `success:false`, `status:conflicted`, and `conflicts:[same.txt]`. Its process generation survived. The fixture matches the production command's existing structured-failure contract. |
+| Abrupt runtime loss                | An uncheckpointed new source file and an ignored artifact were both lost after killing/deleting runtime state and starting again.                                                                      |
+| Canonical helper success           | Returned committed/pending-reset JSON, then the enclosing command exited 137 after about 530 ms. Its delayed post-activation marker was never written.                                                 |
+| Direct console close after PTY fix | The waiting process died; before the fix, an idle read retained the PTY and left it unreachable but alive.                                                                                             |
+| Two named tmux sessions            | Shell PIDs 126 and 128 survived 20 actual authenticated console WebSocket closes/reconnections and switches, with commands and screen contents verified. No abandoned tmux clients remained.           |
+| Logout boundary                    | An authentication fixture rejected reattachment while logged out and allowed later reattachment; the tmux sessions survived. This was not a browser or real users-package logout test.                 |
 
 The conflict was deliberately introduced between capture and preparation because
 ordinary sequential activation currently chooses the new shared HEAD as its base
@@ -68,8 +156,8 @@ This isolates the capture-before-pause race without relying on random timing.
 
 While a schema hook deliberately waited for 200 ms, an unrelated reader of the
 shared repository mutex could not proceed. It resumed after 221.557 ms when the
-hook and activation finished. This demonstrates the broad lock's contention;
-it does not prove an unavoidable deadlock or measure real schema-hook latency.
+hook and activation finished. This demonstrates the broad lock's contention; it
+does not prove an unavoidable deadlock or measure real schema-hook latency.
 
 ## Native Git correctness and cost
 
@@ -97,10 +185,10 @@ two-worktree comparison includes both checkouts, patch application, a commit,
 and cherry-pick; cleanup is measured separately. The merged trees must agree.
 
 | Tracked files | Two-worktree preparation | Cleanup | Common-base candidate | Per-path-base candidate | Merge only |
-|---:|---:|---:|---:|---:|---:|
-| 100 | 12.0 ms | 1.7 ms | 3.2 ms | 6.6 ms | 0.6 ms |
-| 1,000 | 69.1 ms | 10.0 ms | 4.6 ms | 10.0 ms | 0.7 ms |
-| 10,000 | 391.9 ms | 78.7 ms | 12.3 ms | 23.1 ms | 0.7 ms |
+| ------------: | -----------------------: | ------: | --------------------: | ----------------------: | ---------: |
+|           100 |                  12.0 ms |  1.7 ms |                3.2 ms |                  6.6 ms |     0.6 ms |
+|         1,000 |                  69.1 ms | 10.0 ms |                4.6 ms |                 10.0 ms |     0.7 ms |
+|        10,000 |                 391.9 ms | 78.7 ms |               12.3 ms |                 23.1 ms |     0.7 ms |
 
 The separate binary case changes ten distinct 2 MiB files, introducing fresh
 blobs on each of three trials. Common-base candidate plus merge took 372 ms
@@ -119,8 +207,8 @@ The plain-file transfer test removes its original sandbox directory and merges
 using saved originals in a new unrelated repository. That proves text recovery,
 not arbitrary rename recovery. The second transfer includes a native base-only
 Git bundle, removes the original repository too, and merges a shared rename.
-That fixture's recorded bundle is 428 bytes; real export size depends on the baseline
-objects needed, potentially including unchanged files.
+That fixture's recorded bundle is 428 bytes; real export size depends on the
+baseline objects needed, potentially including unchanged files.
 
 ## External FUSE prototype
 
@@ -139,11 +227,11 @@ external FUSE failed mmap (`Function not implemented`, exit 128). The scan
 comparison therefore puts mutable Git indexes in normal sandbox `/tmp` storage
 and measures source traversal, not the already-failed index operation.
 
-| Files | Mount | First scan | Subsequent scans | Warm median |
-|---:|---|---:|---|---:|
-| 1,000 | Current private overlay | 122.703 ms | 95.514 / 93.361 / 118.060 ms | 95.514 ms |
-| 1,000 | External FUSE prototype | 1,709.243 ms | 335.637 / 332.222 / 329.860 ms | 332.222 ms |
-| 10,000 | Current private overlay | 544.908 ms | 146.704 / 146.232 / 148.174 ms | 146.704 ms |
+|  Files | Mount                   |    First scan | Subsequent scans                     |  Warm median |
+| -----: | ----------------------- | ------------: | ------------------------------------ | -----------: |
+|  1,000 | Current private overlay |    122.703 ms | 95.514 / 93.361 / 118.060 ms         |    95.514 ms |
+|  1,000 | External FUSE prototype |  1,709.243 ms | 335.637 / 332.222 / 329.860 ms       |   332.222 ms |
+| 10,000 | Current private overlay |    544.908 ms | 146.704 / 146.232 / 148.174 ms       |   146.704 ms |
 | 10,000 | External FUSE prototype | 15,121.828 ms | 3,387.727 / 3,587.070 / 3,644.456 ms | 3,587.070 ms |
 
 The server is serial and deliberately minimal, with no data/attribute caching,
@@ -163,8 +251,8 @@ afterward. Existing console and SSH race tests also passed. Named-session
 persistence itself remains a prototype.
 
 Two fixture corrections accompany it: the SSH E2E expects the actual opaque
-sandbox hostname, and activation command registration retains structured
-failure results as the production handler already does.
+sandbox hostname, and activation command registration retains structured failure
+results as the production handler already does.
 
 Use the repository-local Go environment for existing checks:
 
@@ -190,11 +278,10 @@ THE8020_DEVELOPMENT_OVERLAY_PROBE=1 .development/toolchains/go/bin/go test ./ker
 - Go formatting, whitespace, and Python syntax checks passed. The DOX audit
   checked 195 documents and all 17 workspace/repository roots with no broken
   links, missing direct-child entries, parent mismatches, unreachable documents,
-  or incomplete framework copies. Sandbox-parent,
-  dev-core and UUI docs remain unchanged by this task where their ownership and
-  implemented contracts did not change. Workspace and relevant
-  kernel/development/PTY docs record the requested target, evidence, and actual
-  fix separately.
+  or incomplete framework copies. Sandbox-parent, dev-core and UUI docs remain
+  unchanged by this task where their ownership and implemented contracts did not
+  change. Workspace and relevant kernel/development/PTY docs record the
+  requested target, evidence, and actual fix separately.
 
 Remaining production qualification includes the filesystem backend's POSIX and
 crash behavior, concurrent saves during activation/conflict installation,

@@ -89,15 +89,24 @@ Parent DOX: [kernel/kernel/sandbox/backend DOX](../AGENTS.md).
   archived-reference retrieval of kernel and Deno boot logs. Discovered command
   success and failure expose their allocated log references after Worker
   cleanup.
-- The same managed job path exercises native Deno type checking and module graph
-  collection, verifies imported dependencies, returns a failed type check with
-  allocated references, and retrieves its persisted raw stderr after cleanup.
+- The same managed job path executes statically invalid TypeScript without a
+  checker, preserves explicit native module dependency inspection, and cleans up
+  completed Workers. Runtime execution failures still retain log references.
 - A real service sandbox suspends two users concurrently in each of two Workers,
   verifies persisted begin records before releasing either Worker, rejects
   duplicate initial persistent IDs, and resumes an explicit follow-up. Its saved
   log position retrieves both ends after Worker cleanup, preserving node,
   sandbox, Worker, service allocation, binding, context, parent, user and
   object.
+- The same service/job E2E harness shares `npm`, `remote`, and `gen` binds over
+  private cache tmpfs mounts. Each workload imports a previously unknown remote
+  TypeScript module after both sandboxes start; the other then loads it with the
+  dependency server unavailable, without another download or transpilation.
+- `service_updates_e2e_test.go` runs real import scans, rewrites a transitive
+  shared dependency, and verifies fresh Worker source with old HTTP streams and
+  persistent/WebSocket connections still alive. Hard termination closes active
+  and draining streams/sockets while a job completes once in its original
+  Worker. Run the main harness's `concurrent_service` subtest for this path.
 
 # Child DOX Index
 

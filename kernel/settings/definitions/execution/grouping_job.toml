@@ -1,9 +1,9 @@
 key = "execution.grouping.job"
 type = "enum"
 storage = "node"
-default = "owner"
+default = "shared"
 environment = "THE8020_EXECUTION_GROUPING_JOB"
 allowed = ["isolated", "owner", "namespace", "shared"]
 runtime_mutable = false
 restart_required = true
-description = "Default sandbox grouping strategy for jobs."
+description = "Default sandbox grouping strategy shared by jobs, direct modules, and package programs. Explicit sandbox groups override it."

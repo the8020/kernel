@@ -441,7 +441,7 @@ func validateLabelUpdates(labels map[string]string) error {
 		if key != labelOwner && key != labelOwners && key != labelServices && key != labelGroupKey && key != labelAssignedAt {
 			return fmt.Errorf("sandbox label %q cannot be updated", key)
 		}
-		if strings.TrimSpace(value) == "" {
+		if strings.TrimSpace(value) == "" && !(value == "" && (key == labelOwner || key == labelOwners || key == labelServices)) {
 			return fmt.Errorf("sandbox label %q cannot be empty", key)
 		}
 	}

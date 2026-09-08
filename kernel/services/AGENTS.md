@@ -24,6 +24,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   bridges.
 - The platform snapshot exposes the shared console manager to typed terminal
   operations; it introduces no second PTY broker.
+- The web-service interface exposes generic soft/hard restart with an optional
+  monotonic update revision for cross-node deduplication; the owning lifecycle
+  implementation supplies the behavior and persistence.
 - Runtime dependencies expose the generic local event dispatcher, ordinary
   program runner, and program-catalog reader to the private operations bridge;
   the native event command uses the same dispatcher. `Reindex(ctx, packageIDs)`

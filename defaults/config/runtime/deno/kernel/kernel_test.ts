@@ -963,6 +963,18 @@ Deno.test("typed secret and package APIs use private runtime operations", async 
       return await promise;
     };
 
+    for (const mode of ["soft", "hard"] as const) {
+      assertEquals(
+        await respond(
+          inContext(() => kernel.services.restart("acme/api/main", mode)),
+          "service.restart",
+          { service_id: "acme/api/main", mode },
+          { service: { state: "READY" } },
+        ),
+        { state: "READY" },
+      );
+    }
+
     assertEquals(
       await respond(
         inContext(() => kernel.events.emit("minute", { test: true })),

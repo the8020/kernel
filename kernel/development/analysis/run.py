@@ -11,8 +11,8 @@ import tempfile
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 
-if sys.argv[1:] not in (["runtime"], ["fuse"], ["races"]):
-    raise SystemExit("usage: run.py runtime|fuse|races")
+if sys.argv[1:] not in (["runtime"], ["fuse"], ["races"], ["git"]):
+    raise SystemExit("usage: run.py runtime|fuse|races|git")
 selected = sys.argv[1]
 
 env = os.environ.copy()

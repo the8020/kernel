@@ -91,6 +91,10 @@ func (f *fakeControl) Workers(_ context.Context, spec model.SandboxSpec) ([]supe
 	f.lists++
 	return f.workers[spec.SandboxID], nil
 }
+
+func (f *fakeControl) MatchingImports(context.Context, model.SandboxSpec, []string, []string) ([]string, error) {
+	return nil, nil
+}
 func (f *fakeControl) StartWorker(_ context.Context, _ model.SandboxSpec, request supervisor.StartWorkerRequest) (supervisor.WorkerStatus, error) {
 	f.started = request
 	return supervisor.WorkerStatus{WorkerID: request.Metadata.WorkerID}, nil
@@ -294,7 +298,7 @@ func TestWorkerJobDelegationUsesTheExactWorker(t *testing.T) {
 		t.Fatalf("job=%#v err=%v", output, err)
 	}
 	if _, err := manager.RunJob(context.Background(), "worker", nil, nil, []string{"/private/table.ts"}); err == nil {
-		t.Fatal("out-of-envelope type-check module accepted")
+		t.Fatal("out-of-envelope dependency module accepted")
 	}
 }
 

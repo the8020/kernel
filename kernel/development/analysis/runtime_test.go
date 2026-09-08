@@ -95,6 +95,61 @@ func analysisExec(t *testing.T, driver *RunscDriver, sandbox Sandbox, command st
 	return string(output)
 }
 
+// Characterize native Git on the current overlay; these observations do not
+// qualify its durability or turn lost Git metadata into an accepted contract.
+func TestWorkflowAnalysisGit(t *testing.T) {
+	m, d, repository := analysisRuntime(t)
+	ctx := context.Background()
+	sandbox, err := m.Create(ctx, "analysisgit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		// A broken checkpoint must not retain this disposable sandbox.
+		if err := m.Delete(ctx, sandbox.UserID); err != nil {
+			t.Error(err)
+		}
+	})
+	prefix := "set -e; cd /workspace/packages/the8020/dev-core; "
+	createCommit := prefix + "git checkout -qb analysis-local; printf 'private\\n' >same.txt; git add same.txt; git -c user.name=Analysis -c user.email=analysis@example.test commit -qm 'Native private commit'"
+	analysisExec(t, d, sandbox, createCommit)
+	privateCommit := strings.TrimSpace(analysisExec(t, d, sandbox, prefix+"git rev-parse HEAD"))
+	shared, err := os.ReadFile(filepath.Join(repository, "same.txt"))
+	if err != nil || string(shared) != "base\n" {
+		t.Fatalf("native commit escaped private workspace: %q, %v", shared, err)
+	}
+	preview, err := m.Preview(ctx, sandbox.UserID, ActivationOptions{})
+	if err != nil || len(preview.Packages) != 1 {
+		t.Fatalf("activation preview: %+v, %v", preview, err)
+	}
+	t.Logf("activation preview after native commit=%+v", preview.Packages[0].Files)
+	if _, err := m.Stop(ctx, sandbox.UserID); err != nil {
+		t.Fatal(err)
+	}
+	sandbox, err = m.Start(ctx, sandbox.UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := analysisExec(t, d, sandbox, prefix+"cat same.txt"); got != "private\n" {
+		t.Fatalf("ordinary checkpoint failed to retain private source: %q", got)
+	}
+	t.Logf("native Git after checkpoint/restart=%q", analysisExec(t, d, sandbox, prefix+
+		"if git show-ref --verify --quiet refs/heads/analysis-local; then echo local_branch=retained; else echo local_branch=lost; fi; "+
+		"if git cat-file -e "+shellQuote(privateCommit)+" 2>/dev/null; then echo local_commit=retained; else echo local_commit=lost; fi; git status --short"))
+	analysisExec(t, d, sandbox, createCommit)
+	writeTestFile(t, filepath.Join(repository, "untouched.txt"), "shared-advance\n")
+	if _, err := gitCommand(ctx, repository, gitIdentity("Fixture", "fixture@example.test"), "commit", "-am", "Advance untouched path"); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("native source/status after untouched shared update=%q", analysisExec(t, d, sandbox, prefix+"cat untouched.txt; git status --short"))
+	t.Logf("native path versus stream hashing=%q", analysisExec(t, d, sandbox, prefix+
+		"stat -c 'stat_size=%s' untouched.txt; git hash-object untouched.txt; cat untouched.txt | git hash-object --stdin"))
+	preview, err = m.Preview(ctx, sandbox.UserID, ActivationOptions{})
+	t.Logf("activation preview after shared advance: packages=%+v error=%v", preview.Packages, err)
+}
+
 func TestWorkflowAnalysisRuntime(t *testing.T) {
 	m, d, repository := analysisRuntime(t)
 	ctx := context.Background()

@@ -16,6 +16,7 @@ Parent DOX: [kernel/kernel/sandbox DOX](../AGENTS.md).
 - Public API: `Store`, `New`, `SaveSpec`, `SaveStatus`, `UpdateStatus`,
   `Transition`, `TransitionIf`, `Load`, `Cached`, `Contains`, `List`,
   `Observe`, `Snapshot`, `ClaimStaleHeartbeats`, `RescheduleHeartbeat`,
+  `ClaimIdle`, `RescheduleIdle`,
   `ObserveMetrics`, and `Delete`.
 - `spec.json` stores desired immutable inputs, `state.json` stores observed
   status, and restrictive `secret.json` stores the internal callback/control
@@ -35,6 +36,11 @@ Parent DOX: [kernel/kernel/sandbox DOX](../AGENTS.md).
 - Ready/active/draining records live in an indexed heartbeat deadline queue.
   Monitoring claims a bounded number of stale IDs directly from that queue, so a
   periodic health pass never scans every cached sandbox.
+- A second queue uses the same heap implementation for assigned sandboxes with
+  no allocations or Workers. Accepted Worker-count transitions maintain
+  `IdleSince`; equal heartbeat revisions never extend it. New ownership or live
+  Workers remove idle eligibility. Failed cleanup remains eligible for retry;
+  creation, draining, and reserved warm capacity stay outside this queue.
 
 # Lifecycle
 
@@ -66,7 +72,8 @@ Parent DOX: [kernel/kernel/sandbox DOX](../AGENTS.md).
 
 - Unit tests cover atomic persistence, preload/index resolution, reload/list
   ordering, legal/illegal synchronized transitions, absolute snapshot ordering,
-  memory-only observation, bounded stale-heartbeat indexing, corruption,
+  memory-only observation, bounded heartbeat/idle indexing, Worker countdown
+  reset, allocation protection, corruption,
   permissions, deletion, and concurrent independent records.
 
 # Child DOX Index

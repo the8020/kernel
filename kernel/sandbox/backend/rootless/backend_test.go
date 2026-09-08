@@ -87,6 +87,12 @@ func commandArgument(arguments []string) string {
 }
 
 func TestMutableOwnerLabelsSupportSharedServiceSandboxes(t *testing.T) {
+	if err := validateLabelUpdates(map[string]string{labelOwner: "", labelOwners: "", labelServices: ""}); err != nil {
+		t.Fatalf("empty retained sandbox cannot clear its owners: %v", err)
+	}
+	if err := validateLabelUpdates(map[string]string{labelGroupKey: ""}); err == nil {
+		t.Fatal("assigned sandbox group could be cleared")
+	}
 	if err := validateLabelUpdates(map[string]string{
 		labelOwner: "first", labelOwners: "first,second",
 		labelServices: "the8020/demo/api,the8020/demo/api",

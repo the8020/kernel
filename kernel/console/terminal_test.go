@@ -212,7 +212,9 @@ func TestRetainedTerminalSlowReaderCannotBlockOutputOrHideGap(t *testing.T) {
 	}
 	terminal.mu.Lock()
 	retainedBytes, retainedEvents := terminal.bytes, len(terminal.events)
-	after := terminal.events[0].Sequence - 1
+	// The final native read may still be publishing; inspect a tail frame that
+	// cannot be evicted by that last read.
+	after := terminal.events[len(terminal.events)-1].Sequence - 1
 	terminal.mu.Unlock()
 	if retainedBytes > terminalOutputBytes || retainedEvents > terminalOutputEvents {
 		t.Fatalf("unbounded output: %d / %d", retainedBytes, retainedEvents)

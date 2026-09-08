@@ -13,6 +13,10 @@ Parent DOX: [kernel/kernel/runtime DOX](../AGENTS.md).
 
 # Local Contracts
 
+- `service.restart` accepts exactly a service ID and `soft` or `hard` mode and
+  delegates to generic lifecycle publication/reconciliation. No application
+  configuration edit or package reindex is required to force fresh capacity.
+
 - Operations call handlers or managers directly; they never recurse through the
   public command registry.
 - `terminal.*` delegates physical PTYs to the shared console manager. It owns
@@ -21,8 +25,13 @@ Parent DOX: [kernel/kernel/runtime DOX](../AGENTS.md).
   never application input. Release cancels pending opens and detaches all roles
   without closing existing PTYs; empty owner records are removed.
 - Terminal input acknowledges native consumption for bounded frame flow control;
-  output reads wait on owner events. Deno names, rendering, and client protocols
-  stay outside this bridge.
+  output reads wait on owner events. Deno labels, rendering, and client
+  protocols stay outside this bridge.
+- `terminal.open` delegates sandbox-scoped connect-or-create to the broker. Its
+  processor descriptor must match the trusted node, sandbox, and Worker and
+  contain a canonical persistent execution ID. Return either the live owner or a
+  new lease with its initial sequence and display-reset flag. Failed adoption
+  releases only the new lease; failed creation also closes its new PTY.
 - Canonical terminal responses acknowledge bounded admission so a process that
   writes before reading cannot deadlock the display processor. Physical
   destruction is idempotent for an already absent identity.

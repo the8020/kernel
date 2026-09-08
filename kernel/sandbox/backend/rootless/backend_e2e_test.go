@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -130,6 +132,13 @@ func TestRealRunscSupervisorUsesMountedKernelSocket(t *testing.T) {
 		{Target: "/tmp", MaximumSize: 64 << 20, Purpose: "temporary", Persistence: "ephemeral"},
 		{Target: "/runtime-cache", MaximumSize: 64 << 20, Purpose: "temporary", Persistence: "ephemeral"},
 	}
+	for _, part := range []string{"npm", "remote", "gen"} {
+		source := filepath.Join(runtimeRoot, "cache", part)
+		if err := os.MkdirAll(source, 0755); err != nil {
+			t.Fatal(err)
+		}
+		mounts = append(mounts, model.Mount{Source: source, Target: "/runtime-cache/" + part, Purpose: "runtime-cache", Persistence: "node"})
+	}
 	profile := model.RuntimeProfile{
 		WorkloadType: model.WorkloadJob, ImageDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		DependencyMode: model.DependencyOnline,
@@ -181,9 +190,9 @@ func TestRealRunscSupervisorUsesMountedKernelSocket(t *testing.T) {
 							t.Log(readDiagnostic(logManager))
 						}
 					})
-					verifyCommandJob(t, sandbox, packageSource, logManager)
-					verifyHookJob(t, sandbox, packageSource, logManager)
-					verifyPersistedRuntimeLogs(t, logManager, sandbox.SandboxID)
+					t.Run("commands", func(t *testing.T) { verifyCommandJob(t, sandbox, packageSource, logManager) })
+					t.Run("hooks", func(t *testing.T) { verifyHookJob(t, sandbox, packageSource, logManager) })
+					t.Run("logs", func(t *testing.T) { verifyPersistedRuntimeLogs(t, logManager, sandbox.SandboxID) })
 				})
 				t.Run("sandbox history keeps log references through assignment recovery and cleanup", func(t *testing.T) {
 					verifySandboxHistoryLifecycle(t, runscPath, rootFS, filepath.Join(runtimeRoot, "history-check"), sandbox, logManager)
@@ -204,6 +213,7 @@ func TestRealRunscSupervisorUsesMountedKernelSocket(t *testing.T) {
 
 func verifyConcurrentServiceLogs(t *testing.T, native *Backend, spec model.SandboxSpec, logs *logging.Manager) {
 	t.Helper()
+	jobSpec := spec
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	newID := func(prefix string) string {
@@ -276,6 +286,9 @@ func verifyConcurrentServiceLogs(t *testing.T, native *Backend, spec model.Sandb
 	if err := client.ConfigureService(ctx, spec, serviceID, workerIDs, 2); err != nil {
 		t.Fatal(err)
 	}
+	t.Run("service and job imports grow their shared file cache at runtime", func(t *testing.T) {
+		verifySharedDenoCacheGrowth(t, client, jobSpec, spec, workerIDs[0])
+	})
 	type invocation struct {
 		worker, username, context, parent, persistent string
 	}
@@ -402,6 +415,89 @@ func verifyConcurrentServiceLogs(t *testing.T, native *Backend, spec model.Sandb
 	}
 	// The saved reference still retrieves each invocation after Worker cleanup.
 	waitForLogs(len(invocations), true)
+	t.Run("shared sources preserve old work and supply fresh Workers", func(t *testing.T) {
+		verifyServiceSourceUpdate(t, client, jobSpec, spec)
+	})
+}
+
+func verifySharedDenoCacheGrowth(t *testing.T, client *supervisor.Client, job, service model.SandboxSpec, workerID string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	runtime := &commandRuntime{client: client, spec: job}
+	workerManager, err := workers.New(runtime, client, 0, 64, "sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobManager, err := jobs.New(runtime, workerManager, jobs.Policy{Profile: job.RuntimeProfile, ExecutionTimeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer jobManager.Close()
+	var requests atomic.Int32
+	var online atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if !online.Load() {
+			http.Error(w, "dependency server is offline", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/typescript")
+		_, _ = io.WriteString(w, "const answer: number = 42; export default answer;\n")
+	}))
+	defer server.Close()
+	loadJob := func(url string) {
+		t.Helper()
+		record, err := jobManager.Run(ctx, "acme/commands/cache", "file:///workspace/packages/acme/commands/programs/cache/program.ts", jobs.Options{User: execution.SystemUser(), Arguments: []any{url}})
+		if err != nil || fmt.Sprint(record.Result) != "42" {
+			t.Fatalf("job import: %#v, %v", record, err)
+		}
+	}
+	loadService := func(url string) {
+		t.Helper()
+		result, err := client.InvokeWorker(ctx, service, workerID, "", "fixture.import", url, execution.SystemUser())
+		if err != nil || !result.OK || fmt.Sprint(result.Output) != "42" {
+			t.Fatalf("service import: %#v, %v", result, err)
+		}
+	}
+	var gen string
+	for _, mount := range job.Mounts {
+		if mount.Target == "/runtime-cache/gen" {
+			gen = filepath.Join(mount.Source, "http")
+		}
+	}
+	emits := func() map[string]time.Time {
+		t.Helper()
+		result := map[string]time.Time{}
+		if err := filepath.Walk(gen, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if !info.IsDir() {
+				result[path] = info.ModTime()
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	// Both sandboxes and the service Worker are already running before either
+	// previously unknown URL is imported. Each workload can populate the cache.
+	for i, pair := range [][2]func(string){{loadJob, loadService}, {loadService, loadJob}} {
+		url := fmt.Sprintf("%s/late-%d.ts", server.URL, i)
+		online.Store(true)
+		pair[0](url)
+		before := emits()
+		if len(before) != i+1 {
+			t.Fatalf("expected shared transpilation output: %v", before)
+		}
+		online.Store(false)
+		pair[1](url)
+		if requests.Load() != int32(i+1) || !reflect.DeepEqual(before, emits()) {
+			t.Fatalf("cached import downloaded or retranspiled: requests=%d", requests.Load())
+		}
+	}
 }
 
 func verifySandboxHistoryLifecycle(t *testing.T, runscPath, rootFS, root string, spec model.SandboxSpec, logs *logging.Manager) {
@@ -657,7 +753,8 @@ export default async (...args: unknown[]) => {
 `,
 		"acme/dependency/mod.ts":                   "export const answer = () => 40;\n",
 		"acme/dependency/dynamic.ts":               "export default () => 2;\n",
-		"acme/commands/programs/native/program.ts": "export default () => 42;\n",
+		"acme/commands/programs/native/program.ts": "const answer: string = 42; export default () => answer;\n",
+		"acme/commands/programs/cache/program.ts":  "export default async (url: string) => (await import(url)).default;\n",
 		"acme/commands/modules/valid.ts":           "import { answer } from '/p/acme/dependency/mod.ts'; export const result: number = answer();\n",
 		"acme/commands/modules/invalid.ts":         "export const result: number = 'deliberate native type failure';\n",
 		"acme/commands/services/logs/service.ts": `
@@ -671,7 +768,10 @@ export async function fetch() {
   return Response.json({ username: context.username, contextId: context.contextId,
     parentContextId: context.parentContextId, workerId: context.workerId });
 }
-export const workerFunctions = { "fixture.release": () => { release(); return true; } };
+export const workerFunctions = {
+  "fixture.release": () => { release(); return true; },
+  "fixture.import": async (url: string) => (await import(url)).default,
+};
 `,
 	} {
 		fullPath := filepath.Join(root, filepath.FromSlash(path))
@@ -820,6 +920,25 @@ func verifyCommandJob(t *testing.T, spec model.SandboxSpec, source commandPackag
 	if err != nil || len(remaining) != 0 {
 		t.Fatalf("job Worker cleanup: remaining=%#v error=%v", remaining, err)
 	}
+	t.Run("jobs execute without type checking and retain explicit dependency inspection", func(t *testing.T) {
+		options := jobs.Options{User: user, DependencyModules: []string{"/workspace/packages/acme/commands/modules/valid.ts"}}
+		record, err := jobManager.Run(ctx, "acme/commands/native", "file:///workspace/packages/acme/commands/programs/native/program.ts", options)
+		if err != nil || fmt.Sprint(record.Result) != "42" {
+			t.Fatalf("native execution/graph: %v %#v\n%s", err, record, readDiagnostic(logs))
+		}
+		dependencies := record.ModuleDependencies[options.DependencyModules[0]]
+		if !slices.Contains(dependencies, "/workspace/packages/acme/dependency/mod.ts") {
+			t.Fatalf("native graph lost imported module: %v", dependencies)
+		}
+		options.DependencyModules[0] = "/workspace/packages/acme/commands/modules/invalid.ts"
+		record, err = jobManager.Run(ctx, "acme/commands/native", "file:///workspace/packages/acme/commands/programs/native/program.ts", options)
+		if err != nil || fmt.Sprint(record.Result) != "42" || record.State != "SUCCEEDED" {
+			t.Fatalf("static type errors blocked execution: %#v %v", record, err)
+		}
+		if remaining, err := client.Workers(ctx, spec); err != nil || len(remaining) != 0 {
+			t.Fatalf("job Worker cleanup: %#v %v", remaining, err)
+		}
+	})
 	failed := registry.Execute(ctx, core.Request{
 		ProtocolVersion: core.ProtocolVersion, CommandID: registry.Catalog().Commands[0].ID, Argv: []string{"fail"},
 	})
@@ -834,52 +953,7 @@ func verifyCommandJob(t *testing.T, spec model.SandboxSpec, source commandPackag
 		NodeID: reference.NodeID, SandboxID: reference.SandboxID, WorkerID: reference.WorkerID,
 		ContextID: reference.ContextID, JobID: reference.ExecutionID, From: reference.QueuedAt,
 	}})
-	t.Run("native Deno validation and graph helpers", func(t *testing.T) {
-		options := jobs.Options{User: user, CheckModules: []string{"/workspace/packages/acme/commands/modules/valid.ts"}}
-		record, err := jobManager.Run(ctx, "acme/commands/native", "file:///workspace/packages/acme/commands/programs/native/program.ts", options)
-		if err != nil || fmt.Sprint(record.Result) != "42" {
-			t.Fatalf("native validation/graph: %v %#v\n%s", err, record, readDiagnostic(logs))
-		}
-		dependencies := record.ModuleDependencies[options.CheckModules[0]]
-		if !slices.Contains(dependencies, "/workspace/packages/acme/dependency/mod.ts") {
-			t.Fatalf("native graph lost imported module: %v", dependencies)
-		}
-		options.CheckModules[0] = "/workspace/packages/acme/commands/modules/invalid.ts"
-		failed, err := jobManager.Run(ctx, "acme/commands/native", "file:///workspace/packages/acme/commands/programs/native/program.ts", options)
-		if err == nil || !strings.Contains(err.Error(), "module type check failed") || !strings.Contains(err.Error(), "TS2322") || failed.State != "FAILED" {
-			t.Fatalf("native type error lost diagnostics: %#v %v", failed, err)
-		}
-		if remaining, err := client.Workers(ctx, spec); err != nil || len(remaining) != 0 {
-			t.Fatalf("native validation Worker cleanup: %#v %v", remaining, err)
-		}
-		foundRaw, foundJob := false, false
-		for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); {
-			page, err := logs.Query(ctx, records.Query{Position: failed.LogPosition, Limit: 100, Filter: records.Filter{SandboxID: spec.SandboxID, From: failed.QueuedAt, Until: failed.FinishedAt}})
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, item := range page.Records {
-				if item.Record.Stream == "stderr" && strings.Contains(item.Record.Message, "TS2322") {
-					foundRaw = true
-				}
-			}
-			jobPage, err := logs.Query(ctx, records.Query{Position: failed.LogPosition, Limit: 100, Filter: records.Filter{JobID: failed.ExecutionID, ContextID: failed.ContextID, From: failed.QueuedAt}})
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, item := range jobPage.Records {
-				r := item.Record
-				if r.Attributes["event"] == "job_failed" && r.Username == user.Username && r.Time.Equal(failed.FinishedAt) && strings.Contains(r.Message, "TS2322") {
-					foundJob = true
-				}
-			}
-			if foundRaw && foundJob {
-				return
-			}
-			time.Sleep(25 * time.Millisecond)
-		}
-		t.Fatalf("native type checker diagnostics missing: raw=%t job=%t", foundRaw, foundJob)
-	})
+
 }
 
 // The source index is a fixture; discovery, dispatcher admission, package

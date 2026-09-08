@@ -23,6 +23,9 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
 - Every request carries the per-sandbox bearer token and is context bounded;
   lifecycle control requests and responses use the generated versioned envelope
   and must match message type, sandbox identity, and correlation ID.
+- `MatchingImports` uses `worker_imports_match` on
+  `/v1/workers/matching-imports`, carrying selected Worker IDs and changed file
+  paths and returning only matching Worker IDs. The supervisor retains the sets.
 - Job RPCs require the kernel-allocated `Invocation` from Go context. Optional
   startup invocation metadata attributes job imports without adding a Worker
   lifetime execution ID. Exact control RPCs create a fresh `ctx-` child and

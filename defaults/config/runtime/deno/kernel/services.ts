@@ -50,11 +50,16 @@ export interface ServiceSpecification {
 }
 
 export interface ServiceIndexScope {
-  readonly package_id: string;
-  readonly package_commit: string;
-  readonly active: boolean;
+  readonly packages: readonly {
+    readonly package_id: string;
+    readonly package_commit: string;
+    readonly active: boolean;
+  }[];
 }
 
 export interface ServiceIndexState {
-  services: ServiceSpecification[];
+  packages: Record<string, {
+    services: ServiceSpecification[];
+    error?: string;
+  }>;
 }

@@ -19,6 +19,7 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 
+	"the8020/kernel/console"
 	"the8020/kernel/execution"
 	"the8020/kernel/sandbox/backend"
 	"the8020/kernel/settings"
@@ -53,7 +54,6 @@ type Development interface {
 type Consoles interface {
 	ResolveTarget(string) (string, error)
 	OpenConsole(context.Context, string, string, backend.ConsoleOptions) (backend.Console, error)
-	OpenTerminalView(context.Context, string, string, backend.ConsoleSize) (backend.Console, error)
 }
 
 type Config struct {
@@ -62,6 +62,7 @@ type Config struct {
 	Authentication Authenticator
 	Development    Development
 	Consoles       Consoles
+	OpenTerminal   func(context.Context, string, string, string, string, backend.ConsoleOptions) (backend.Console, error)
 	Logger         *slog.Logger
 }
 
@@ -72,6 +73,7 @@ type Manager struct {
 	server         *gossh.ServerConfig
 	development    Development
 	consoles       Consoles
+	openTerminal   func(context.Context, string, string, string, string, backend.ConsoleOptions) (backend.Console, error)
 	logger         *slog.Logger
 	connections    map[net.Conn]struct{}
 	activeSessions int
@@ -171,7 +173,7 @@ func New(config Config) (*Manager, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	manager := &Manager{
 		listener: listener, port: listenerPort(listener), server: serverConfig,
-		development: config.Development, consoles: config.Consoles, logger: config.Logger,
+		development: config.Development, consoles: config.Consoles, openTerminal: config.OpenTerminal, logger: config.Logger,
 		connections: make(map[net.Conn]struct{}), context: ctx, cancel: cancel, done: make(chan struct{}),
 	}
 	manager.startAccept(listener)
@@ -434,23 +436,9 @@ func (m *Manager) serveSession(ctx context.Context, username string, channel gos
 }
 
 func (m *Manager) launch(ctx context.Context, username string, selected selector, configuration terminal, environment map[string]string, channel gossh.Channel, requests <-chan *gossh.Request, start *gossh.Request) {
-	if selected.terminalID != "" {
-		if !configuration.allocated {
-			writeSessionError(channel, errors.New("terminal-id attachment requires a PTY; use ssh -t"))
-			reply(start, false)
-			return
-		}
-		view, err := m.consoles.OpenTerminalView(ctx, selected.terminalID, selected.sandboxID, configuration.size)
-		if err != nil {
-			m.logSessionFailure(username, "attach-terminal", err)
-			writeSessionError(channel, err)
-			reply(start, false)
-			return
-		}
-		if m.logger != nil {
-			m.logger.Info("SSH terminal attached", "username", username, "terminal_id", selected.terminalID)
-		}
-		relayConsole(ctx, view, channel, requests, start)
+	if selected.terminalID != "" && (!configuration.allocated || m.openTerminal == nil) {
+		writeSessionError(channel, errors.New("named terminal requires a PTY (ssh -t) and an available terminal service"))
+		reply(start, false)
 		return
 	}
 	kind, sandboxID, err := m.resolveTarget(ctx, username, selected)
@@ -491,7 +479,12 @@ func (m *Manager) launch(ctx context.Context, username string, selected selector
 		Size:        configuration.size,
 		Terminal:    configuration.allocated,
 	}
-	console, err := m.consoles.OpenConsole(ctx, kind, sandboxID, options)
+	var opened backend.Console
+	if selected.terminalID != "" {
+		opened, err = m.openTerminal(ctx, username, kind, sandboxID, selected.terminalID, options)
+	} else {
+		opened, err = m.consoles.OpenConsole(ctx, kind, sandboxID, options)
+	}
 	if err != nil {
 		m.logSessionFailure(username, "open-console", err)
 		writeSessionError(channel, err)
@@ -501,7 +494,7 @@ func (m *Manager) launch(ctx context.Context, username string, selected selector
 	if m.logger != nil {
 		m.logger.Info("SSH session started", "username", username, "target_kind", kind, "sandbox_id", sandboxID, "command_bytes", len(selected.command))
 	}
-	relayConsole(ctx, console, channel, requests, start)
+	relayConsole(ctx, opened, channel, requests, start)
 }
 
 func relayConsole(ctx context.Context, console backend.Console, channel gossh.Channel, requests <-chan *gossh.Request, start *gossh.Request) {
@@ -652,9 +645,13 @@ func parseExec(command string) (selector, error) {
 		return selector{command: command}, nil
 	}
 	selected := selector{}
-	for _, field := range fields[1:] {
-		name, value, ok := strings.Cut(field, "=")
-		if !ok || value == "" {
+	for i := 1; i < len(fields); i++ {
+		name, value, paired := strings.Cut(fields[i], "=")
+		if !paired && i+1 < len(fields) {
+			i++
+			value = fields[i]
+		}
+		if value == "" {
 			return selector{}, errors.New("unknown or malformed the8020 selector parameter")
 		}
 		switch name {
@@ -670,8 +667,8 @@ func parseExec(command string) (selector, error) {
 			if selected.terminalID != "" {
 				return selector{}, errors.New("terminal-id may be specified only once")
 			}
-			if !identity.Is(value, "tty") {
-				return selector{}, errors.New("terminal-id must be a canonical tty- ID")
+			if !console.ValidSessionID(value) {
+				return selector{}, errors.New("terminal-id must be 1..40 letters, digits, _ or -")
 			}
 			selected.terminalID = value
 		default:

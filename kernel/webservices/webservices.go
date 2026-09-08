@@ -27,6 +27,7 @@ import (
 	"unicode/utf8"
 
 	"the8020/kernel/auth"
+	"the8020/kernel/database"
 	"the8020/kernel/execution"
 	executionservices "the8020/kernel/execution/services"
 	executionworkers "the8020/kernel/execution/workers"
@@ -53,6 +54,7 @@ type RuntimePools interface {
 	Dispatch(context.Context, string, *http.Request) (*http.Response, error)
 	ProxyWebSocket(context.Context, string, http.ResponseWriter, *http.Request, func(*http.Response) error) error
 	Stop(context.Context, string) (bool, error)
+	Kill(context.Context, string) (bool, error)
 	RemoveStopped(string) error
 }
 
@@ -70,6 +72,7 @@ type authenticationSetup struct {
 	Module          string                `json:"module"`
 	Claims          auth.TokenClaims      `json:"claims"`
 	Unauthenticated UnauthenticatedPolicy `json:"unauthenticated"`
+	Approved        bool                  `json:"approved,omitempty"`
 }
 
 type NodeRouter interface {
@@ -93,6 +96,8 @@ type Config struct {
 	NodeID            string
 	Signing           *auth.Signer
 	Nodes             NodeRouter
+	MatchImports      func(context.Context, string, []string, []string) ([]string, error)
+	Database          database.Store
 }
 
 type State string
@@ -173,7 +178,12 @@ type RequestOptions struct {
 	Headers http.Header
 	Body    io.Reader
 	Timeout time.Duration
+	// AuthenticatedUser is for native transports whose package authentication
+	// has already approved the principal. It is never accepted over HTTP/RPC.
+	AuthenticatedUser *execution.User `json:"-"`
 }
+
+type authenticatedUserKey struct{}
 
 type RequestResult struct {
 	StatusCode int         `json:"status_code"`
@@ -217,6 +227,10 @@ type Manager struct {
 	signing        *auth.Signer
 	nodeID         string
 	nodes          NodeRouter
+	matchImports   func(context.Context, string, []string, []string) ([]string, error)
+	database       database.Store
+	hardRestarted  sync.Map
+	restartDemand  sync.Map
 
 	mu               sync.Mutex
 	services         map[string]*runtimeService
@@ -252,7 +266,19 @@ func New(config Config) (*Manager, error) {
 	}
 	background, stopBackground := context.WithCancel(context.Background())
 	manager := &Manager{index: config.Index, pools: config.Pools, observed: config.ObservedRoot, interval: config.ReconcileInterval, startup: config.StartupTimeout, logger: config.Logger, authentication: config.Authentication, authenticator: config.Authenticator, nodes: config.Nodes, services: map[string]*runtimeService{}, signing: config.Signing, nodeID: config.NodeID, background: background, stopBackground: stopBackground, maintenanceSet: map[string]bool{}}
+	manager.matchImports = config.MatchImports
+	manager.database = config.Database
+	if config.Database != nil {
+		ctx, cancel := context.WithTimeout(background, config.StartupTimeout)
+		err := manager.loadRestarts(ctx)
+		cancel()
+		if err != nil {
+			stopBackground()
+			return nil, err
+		}
+	}
 	if err := config.Router.RegisterServiceBoundary(manager); err != nil {
+		stopBackground()
 		return nil, err
 	}
 	return manager, nil
@@ -480,6 +506,13 @@ func (m *Manager) reconcileService(ctx context.Context, serviceID string, provis
 	if err != nil {
 		return m.retainFailedVersion(serviceID, 0, err)
 	}
+	hardRestarted, _ := m.hardRestarted.Load(serviceID)
+	if definition.HardRestartRevision > 0 && hardRestarted != definition.HardRestartRevision {
+		if err := m.terminateGenerations(ctx, serviceID, definition.HardRestartRevision); err != nil {
+			return m.retainFailedVersion(serviceID, definition.Version, err)
+		}
+		m.hardRestarted.Store(serviceID, definition.HardRestartRevision)
+	}
 	if !definition.Enabled {
 		return m.stopRuntime(ctx, definition)
 	}
@@ -505,7 +538,8 @@ func (m *Manager) reconcileService(ctx context.Context, serviceID string, provis
 		if failedVersion {
 			return existingStatus, nil
 		}
-		requiresCapacity := definition.Effective.Scaling.MinimumWorkers > 0 || definition.Effective.Placement.MinimumSandboxes > 0
+		_, restartDemand := m.restartDemand.Load(serviceID)
+		requiresCapacity := definition.Effective.Scaling.MinimumWorkers > 0 || definition.Effective.Placement.MinimumSandboxes > 0 || restartDemand
 		if !requiresCapacity && (existing == nil || existing.status.State != StatePendingCapacity) {
 			idle := m.statusFromDefinition(definition, StateIdle)
 			idle.LoadedVersion, idle.VersionCount = definition.Version, 1
@@ -563,6 +597,24 @@ func (m *Manager) reconcileService(ctx context.Context, serviceID string, provis
 	startupContext, cancel := context.WithTimeout(ctx, m.startup)
 	defer cancel()
 	prepared, preparationErrors := m.prepareVersion(startupContext, definition)
+	_, restartDemand := m.restartDemand.Load(serviceID)
+	if len(preparationErrors) == 0 && workerCount(prepared) == 0 && (workerCount(previous) > 0 || restartDemand) {
+		if len(prepared) > 0 {
+			record, err := m.pools.Scale(startupContext, prepared[0].status.PoolID, 1)
+			if err != nil {
+				preparationErrors = append(preparationErrors, err)
+			} else {
+				prepared[0].status.WorkerIDs = slices.Clone(record.WorkerIDs)
+			}
+		} else {
+			sandbox, err := m.prepareSandbox(startupContext, definition, m.nextOwnedSandboxIndex(nil), 0, 1)
+			if err != nil {
+				preparationErrors = append(preparationErrors, err)
+			} else {
+				prepared = append(prepared, sandbox)
+			}
+		}
+	}
 	preparationFailure := errors.Join(preparationErrors...)
 	if len(preparationErrors) > 0 && errors.Is(preparationFailure, executionservices.ErrInvalidServiceDefinition) {
 		previousPools := make(map[string]bool, len(previous))
@@ -636,6 +688,9 @@ func (m *Manager) reconcileService(ctx context.Context, serviceID string, provis
 		metrics.WorkerRestarts += uint64(workerCount(previous))
 	}
 	m.services[serviceID] = replacementRuntime(existing, status, prepared, retired, definition)
+	if len(preparationErrors) == 0 {
+		m.restartDemand.Delete(serviceID)
+	}
 	m.mu.Unlock()
 	_ = m.writeObserved(status)
 	cleanupErr := m.cleanupStaleVersionPools(ctx, definition, prepared)
@@ -1089,9 +1144,9 @@ func (m *Manager) prepareSandbox(ctx context.Context, definition Specification, 
 			ReleaseID:            "service-version-" + definition.Release,
 			LogicalServiceID:     definition.Identity.ServiceID(),
 			Generation:           definition.Version,
+			RestartRevision:      definition.RestartRevision,
 			CanonicalBasePath:    definition.Identity.CanonicalBasePath(),
 			OpenAPI:              definition.OpenAPI,
-			ValidateEntrypoint:   true,
 			SandboxIndex:         index,
 			ExecutionMode:        serviceExecutionMode(definition),
 			TargetUtilization:    definition.Effective.Scaling.TargetUtilization,
@@ -1293,11 +1348,10 @@ func (m *Manager) Validate(ctx context.Context, serviceID string) ValidationResu
 		WorkerKeepAlive: definition.Effective.Scaling.WorkerKeepAlive,
 		ReleaseID:       "service-validation", LogicalServiceID: serviceID,
 		Generation: definition.Version, CanonicalBasePath: definition.Identity.CanonicalBasePath(),
-		OpenAPI:            definition.OpenAPI,
-		ValidateEntrypoint: true,
-		ExecutionMode:      serviceExecutionMode(definition),
-		TargetUtilization:  definition.Effective.Scaling.TargetUtilization,
-		PlacementWorkers:   1,
+		OpenAPI:           definition.OpenAPI,
+		ExecutionMode:     serviceExecutionMode(definition),
+		TargetUtilization: definition.Effective.Scaling.TargetUtilization,
+		PlacementWorkers:  1,
 	})
 	if err != nil {
 		return ValidationResult{ServiceID: serviceID, Error: err.Error()}
@@ -1346,6 +1400,12 @@ func (m *Manager) OpenAPI(ctx context.Context, serviceID string) (map[string]any
 }
 
 func (m *Manager) Request(ctx context.Context, serviceID, method, relativePath string, options RequestOptions) (RequestResult, error) {
+	if options.AuthenticatedUser != nil {
+		if !options.AuthenticatedUser.Valid() {
+			return RequestResult{}, execution.ErrInvalidUser
+		}
+		ctx = context.WithValue(ctx, authenticatedUserKey{}, *options.AuthenticatedUser)
+	}
 	identity, err := workspacepackages.ParseServiceID(serviceID)
 	if err != nil {
 		return RequestResult{}, err
@@ -1415,7 +1475,11 @@ func (m *Manager) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	}
 	var authentication *authenticationSetup
 	user := assigned
-	if admission.Access.Mode == "authenticated" {
+	nativeUser, nativeApproved := request.Context().Value(authenticatedUserKey{}).(execution.User)
+	if admission.Access.Mode == "authenticated" && nativeApproved {
+		user = nativeUser
+		authentication = &authenticationSetup{Approved: true, Claims: auth.TokenClaims{"sub": user.ID}}
+	} else if admission.Access.Mode == "authenticated" {
 		token, fromCookie := auth.RequestToken(request)
 		var claims auth.TokenClaims
 		if m.authentication != nil && token != "" {
@@ -1486,7 +1550,7 @@ func (m *Manager) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			return
 		}
 		if route.remoteNode != "" {
-			if m.nodes == nil {
+			if m.nodes == nil || nativeApproved {
 				http.Error(writer, "owning node unavailable", http.StatusServiceUnavailable)
 				return
 			}
@@ -1553,7 +1617,7 @@ func (m *Manager) dispatch(writer http.ResponseWriter, request *http.Request, id
 	forwarded.Header.Set(internalHeaderPrefix+"context-id", requestID)
 	forwarded.Header.Set(internalHeaderPrefix+"service-id", identity.ServiceID())
 	m.mu.Lock()
-	loadedVersion := runtime.status.LoadedVersion
+	loadedVersion := sandbox.status.Version
 	m.mu.Unlock()
 	forwarded.Header.Set(internalHeaderPrefix+"service-generation", strconv.FormatUint(loadedVersion, 10))
 	forwarded.Header.Set(internalHeaderPrefix+"canonical-base-path", identity.CanonicalBasePath())
@@ -1653,7 +1717,7 @@ func (m *Manager) dispatchWebSocket(writer http.ResponseWriter, request *http.Re
 	forwarded.Header.Set(internalHeaderPrefix+"context-id", requestID)
 	forwarded.Header.Set(internalHeaderPrefix+"service-id", identity.ServiceID())
 	m.mu.Lock()
-	loadedVersion := runtime.status.LoadedVersion
+	loadedVersion := sandbox.status.Version
 	m.mu.Unlock()
 	forwarded.Header.Set(internalHeaderPrefix+"service-generation", strconv.FormatUint(loadedVersion, 10))
 	forwarded.Header.Set(internalHeaderPrefix+"canonical-base-path", identity.CanonicalBasePath())
@@ -2141,7 +2205,7 @@ func (m *Manager) respondCapacityUnavailable(writer http.ResponseWriter, err err
 }
 
 func (m *Manager) forwardAvailable(writer http.ResponseWriter, request *http.Request) (bool, error) {
-	if m.nodes == nil {
+	if m.nodes == nil || request.Context().Value(authenticatedUserKey{}) != nil {
 		return false, nil
 	}
 	return m.nodes.ProxyAvailable(writer, request)
@@ -2161,13 +2225,13 @@ func (m *Manager) selectPersistentSandbox(runtime *runtimeService, sandboxID, wo
 		return nil
 	}
 	var selected *runtimeSandbox
-	for _, sandbox := range runtime.sandboxes {
-		if sandbox.status.SandboxID == sandboxID {
+	for _, sandbox := range observedSandboxesOf(runtime) {
+		if sandbox.status.SandboxID == sandboxID && slices.Contains(sandbox.status.WorkerIDs, workerID) {
 			selected = sandbox
 			break
 		}
 	}
-	if selected == nil || selected.status.Version != runtime.status.LoadedVersion || workerID != "" && !slices.Contains(selected.status.WorkerIDs, workerID) {
+	if selected == nil {
 		return nil
 	}
 	reserveRequest(selected, time.Now())

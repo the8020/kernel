@@ -29,9 +29,21 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   chain. The kernel does not discover/parse service declarations, merge policy,
   persist application configuration, or issue service-specific revision SQL.
 - Generic `IndexRevisionFollower` reads the system `indexes` scalar and newer
-  `index:<package>` markers, then invokes the same targeted reindex entry point.
-  Deno publishes those markers with desired configuration. No application table
-  scan or parallel service revision poller is permitted.
+  `index:<package>` and `restart:<service>` markers, then invokes the same
+  targeted reindex or generic restart entry point. Deno publishes those markers
+  with desired configuration. No application table scan or parallel service
+  revision poller is permitted.
+- `PackageRevisionFollower` observes the shared `packages` revision and ready
+  commits without fetching, cloning, or replacing sources on another node.
+  Bounded Git diffs yield resolved sandbox file paths, including deletions and
+  both sides of renames. All nodes read the same authoritative mutable checkout;
+  commit metadata must remain available for the pending revision comparison.
+- On a source update, `ReactToSourceUpdate` requests an observed-import scan of
+  current service Workers, deduplicates logical services, and requests a soft
+  restart with that package revision as update identity. Import sets remain
+  Worker-owned and jobs are never restarted or replayed. Unobserved late
+  imports, stale caches, and failures in old work remain accepted shared-source
+  tradeoffs.
 - The database package record is the sole desired/active package source of truth
   after first initialization. Bootstrap TOML is only the fresh-database source
   list; ordinary boots trust database state and never rescan all definitions.
@@ -75,19 +87,22 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   packages. Candidate mounts are read-only. Recovery rebuilds its candidate
   index and retains durable phase completion, never repeating successful phases.
 - `RunHookChain` invokes `worker/hook_dispatch.ts` as one ordinary system job
-  per package/phase. Its handlers receive the same mutable state and a separate
-  frozen invocation scope. Activation scope contains the declaring package,
-  previous/candidate commits, first-activation flag, and activation ID. Only
-  initial input and final output cross the Worker boundary. Hook failures stop
-  the chain and identify the failing declaration. Normal job permissions,
-  mounts, grouping, and reuse apply; candidate mounts enter normal profile
-  compatibility. Never copy packages or force per-handler isolation. Resolved
-  chain versions and the published package revision participate in ordinary job
-  release compatibility, invalidating cached dependency imports.
+  per trigger invocation. Service indexing passes all selected packages in one
+  invocation; activation retains its durable per-package phase boundaries.
+  Handlers receive the same mutable state and a separate frozen invocation
+  scope. Activation scope contains the declaring package, previous/candidate
+  commits, first-activation flag, and activation ID. Only initial input and
+  final output cross the Worker boundary. Hook failures stop the chain and
+  identify the failing declaration. Normal job permissions, mounts, grouping,
+  and reuse apply; candidate mounts enter normal profile compatibility. Never
+  copy packages or force per-handler isolation. Resolved chain versions and the
+  published package revision participate in ordinary job release compatibility,
+  invalidating cached dependency imports.
 - The shared runtime reindex entry point invokes handler and command indexing on
-  boot, activation/recovery publication, and local source convergence to a
+  boot, activation/recovery publication, and observation of a shared source
   published revision, including commit switching. These boundaries pass only
-  changed IDs; explicit `kernel.reindex` also supports a full rebuild.
+  changed IDs after the first full node-startup pass; explicit `kernel.reindex`
+  also supports a full rebuild.
 - `DeclarationFiles` supplies shared flat TOML discovery for hooks, events, and
   `cbus/commands`. It treats filenames as opaque and validates real contained
   files and directories, rejecting nesting and symlinks. Only `.toml` files
@@ -127,8 +142,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 # Work Guidance
 
-- Keep mutations package-targeted. Do not turn a candidate update into an
-  installed-package, table, service, sandbox, or Worker scan.
+- Keep mutations and definition indexing package-targeted. Only published source
+  updates scan current service Workers for observed imports; never precompute
+  dependency graphs, reverse indexes, or asset dependencies.
 - Keep filesystem ownership separate from database ownership: this package
   supplies candidates and commits; the database owner evaluates descriptors and
   applies physical schema.

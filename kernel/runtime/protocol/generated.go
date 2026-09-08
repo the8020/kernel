@@ -19,6 +19,7 @@ const (
 	MessageWorkerLogEvent            MessageType = "worker_log_event"
 	MessageWorkerInvoke              MessageType = "worker_invoke"
 	MessageWorkerResult              MessageType = "worker_result"
+	MessageWorkerImportsMatch        MessageType = "worker_imports_match"
 	MessageJobStart                  MessageType = "job_start"
 	MessageJobResult                 MessageType = "job_result"
 	MessageServicePoolConfiguration  MessageType = "service_pool_configuration"
@@ -42,6 +43,7 @@ var validMessageTypes = map[MessageType]bool{
 	MessageWorkerLogEvent:            true,
 	MessageWorkerInvoke:              true,
 	MessageWorkerResult:              true,
+	MessageWorkerImportsMatch:        true,
 	MessageJobStart:                  true,
 	MessageJobResult:                 true,
 	MessageServicePoolConfiguration:  true,

@@ -15,6 +15,7 @@ type fakeSandboxes struct {
 	creates       []model.SandboxSpec
 	ownerAdds     int
 	createFailure error
+	claimFailure  error
 }
 
 func (f *fakeSandboxes) NewSandboxID() (string, error) { return identity.New("sbx") }
@@ -22,6 +23,9 @@ func (f *fakeSandboxes) ReleaseSandboxID(string)       {}
 
 func (f *fakeSandboxes) AddOwner(_ context.Context, sandboxID, ownerID string, serviceID ...string) (manager.Inspection, error) {
 	f.ownerAdds++
+	if f.claimFailure != nil {
+		return manager.Inspection{}, f.claimFailure
+	}
 	for index := range f.items {
 		if f.items[index].Spec.SandboxID != sandboxID {
 			continue
@@ -150,6 +154,33 @@ func TestEnsureSharedGroupPersistsEveryOwner(t *testing.T) {
 	}
 	if first.Spec.SandboxID != second.Spec.SandboxID || len(second.Spec.OwnerIDs) != 2 || second.Spec.OwnerIDs[1] != "owner-two" {
 		t.Fatalf("first=%#v second=%#v", first, second)
+	}
+}
+
+func TestSharedDefaultAndExplicitEmptyGroupReuseAcrossOwners(t *testing.T) {
+	backend := &fakeSandboxes{}
+	coordinator, _ := New(backend, 64)
+	request := testRequest(t, "module-owner", model.WorkloadJob)
+	request.Strategy = model.GroupingShared
+	first, err := coordinator.Ensure(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.OwnerID = "program-owner"
+	empty := ""
+	request.PlacementGroup = &empty
+	second, err := coordinator.Ensure(context.Background(), request)
+	if err != nil || first.Spec.SandboxID != second.Spec.SandboxID || len(backend.creates) != 1 {
+		t.Fatalf("default executions were split by owner or empty group: %#v, %v", second, err)
+	}
+	backend.claimFailure = manager.ErrUnavailable
+	third, err := coordinator.Ensure(context.Background(), request)
+	if err != nil || third.Spec.SandboxID == first.Spec.SandboxID || len(backend.creates) != 2 {
+		t.Fatalf("idle expiry during acquisition failed the execution: %#v, %v", third, err)
+	}
+	backend.claimFailure = errors.New("ownership persistence failed")
+	if _, err := coordinator.Ensure(context.Background(), request); !errors.Is(err, backend.claimFailure) || len(backend.creates) != 2 {
+		t.Fatalf("a real ownership failure was hidden by replacement: %v", err)
 	}
 }
 

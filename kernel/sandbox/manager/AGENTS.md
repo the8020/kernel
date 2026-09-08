@@ -20,8 +20,8 @@ Parent DOX: [kernel/kernel/sandbox DOX](../AGENTS.md).
 
 - Public API: `New`, `NewSandboxID`, `ReleaseSandboxID`, `Manager.Create`,
   `AssignWarm`, `AddOwner`, `RemoveOwner`, `Capacity`, `List`, `ResolveSandbox`,
-  `Inspect`, `Refresh`, `Metrics`, `OpenConsole`, `CheckHealth`, `Stop`, `Kill`,
-  `Delete`, `ListHistory`, `InspectHistory`, `CleanupHistory`, `Reconcile`,
+  `Inspect`, `Refresh`, `Metrics`, `OpenConsole`, `CheckHealth`, `CleanupIdle`,
+  `Stop`, `Kill`, `Delete`, `ListHistory`, `InspectHistory`, `CleanupHistory`, `Reconcile`,
   `Startup`, and `Shutdown`.
 - Reconcile startup restores healthy persisted sandboxes and deletes owned
   backend orphans. Default destroy startup bypasses all health and supervisor
@@ -48,6 +48,9 @@ Parent DOX: [kernel/kernel/sandbox DOX](../AGENTS.md).
   failure, reconciliation rejection, and deletion revoke matching host-port
   leases; completed cleanup moves terminal metadata into history before removing
   the live sandbox record.
+- Supervisor startup readiness probes immediately, then every 10 milliseconds
+  by default until ready or the existing startup deadline expires. This interval
+  applies only to startup readiness, independently of health monitoring.
 - Successfully archived records are physically absent from live listing;
   cleanup-pending terminal records remain live and inspectable until explicit
   retry succeeds. History listing is a separately requested bounded index query;
@@ -67,10 +70,20 @@ Parent DOX: [kernel/kernel/sandbox DOX](../AGENTS.md).
   contacts the supervisor or backend; identity-routing callers use it when they
   already hold the sandbox ID.
 - Shared sandbox reuse durably adds each distinct owner and logical service to
-  specification/status state and container labels. Removing an owner updates
-  those indexes transactionally and deletes the sandbox when no owner remains.
-  Label patches contain only workload-applicable non-empty fields; job sandboxes
-  never manufacture an empty service label.
+  specification/status state and container labels. Ownership writes preserve
+  concurrent supervisor observations. Empty ownership labels clear membership;
+  job sandboxes never manufacture a service label.
+- `KeepAlive` retains an assigned sandbox with no allocations or Workers for
+  the configured duration. Production defaults to two minutes; zero removes the
+  delay. Reserved warm capacity remains independently owned. A new allocation
+  cancels idle eligibility before Worker startup; the last Worker's departure
+  starts the countdown again. Explicit stop, kill, delete, failure, and shutdown
+  bypass retention.
+- `CleanupIdle` claims at most 256 expired cached entries per maintenance pass,
+  rechecks eligibility under the allocation lifecycle lock, and retries failed
+  deletion on a later pass. No per-sandbox timer or full-catalog scan exists.
+  `AddOwner` returns `ErrUnavailable` when a selected sandbox has already
+  expired so the coordinator can use ordinary allocation.
 - Creation admits declared reservations only while node-wide sandbox-count and
   temporary-storage budgets remain. `Capacity` exposes those limits and current
   reservations without inferring health from usage.
@@ -94,8 +107,10 @@ Parent DOX: [kernel/kernel/sandbox DOX](../AGENTS.md).
 
 - Unit tests cover successful creation, compact ID reservation, readiness,
   generic console routing, node-budget admission, warm assignment/shared-owner
-  add/remove and final-owner destruction, failure archival, lifecycle
-  transitions, sandbox-scoped port release, Worker-count and raw CPU/RAM
+  add/remove, empty service/job reuse, countdown reset, expiry and deletion
+  retry, failed ownership rollback, final-owner destruction with retention
+  disabled, failure archival, lifecycle transitions, sandbox-scoped port release,
+  Worker-count and raw CPU/RAM
   metrics, cache-only healthy monitoring, heartbeat timeout, stale-sandbox OOM
   evidence preservation/full cleanup, deletion, reconstruction, cached versus
   targeted live inspection, parallel unrelated creations, missing sandboxes,

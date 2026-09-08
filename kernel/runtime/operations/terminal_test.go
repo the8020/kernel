@@ -67,7 +67,7 @@ func terminalTestDispatcher(t *testing.T, p *terminalTestProvider) (*Dispatcher,
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = m.Close() })
-	d := &Dispatcher{services: &services.Services{Consoles: m}, terminalOwners: make(map[string]*terminalOwner)}
+	d := &Dispatcher{services: &services.Services{Consoles: m, Instance: services.InstanceInfo{UUID: "nod-aaaaaaaaaa"}}, terminalOwners: make(map[string]*terminalOwner)}
 	ctx := execution.WithCaller(context.Background(), execution.Caller{
 		ContextID: "ctx-aaaaaaaaaa", SandboxID: "sbx-bbbbbbbbbb", WorkerID: "wrk-aaaaaaaaaa",
 		Workload: model.WorkloadService, User: execution.SystemUser(),
@@ -78,6 +78,48 @@ func terminalTestDispatcher(t *testing.T, p *terminalTestProvider) (*Dispatcher,
 func terminalCreateArguments() map[string]any {
 	return map[string]any{"kind": "development", "sandboxId": "sbx-aaaaaaaaaa", "arguments": []string{"/bin/bash", "-l"},
 		"environment": []string{"TERM=xterm-256color"}, "workingDir": "/workspace", "size": backend.ConsoleSize{Columns: 80, Rows: 24}}
+}
+
+func TestNamedTerminalBridgeValidatesOwnerAndReclaimsLostWorker(t *testing.T) {
+	p := &terminalTestProvider{opened: make(chan net.Conn, 2)}
+	d, m, ctx := terminalTestDispatcher(t, p)
+	args := terminalCreateArguments()
+	args["sessionId"] = "1"
+	owner := console.TerminalOwner{NodeID: "nod-aaaaaaaaaa", SandboxID: "sbx-bbbbbbbbbb", WorkerID: "wrk-aaaaaaaaaa", PersistentExecutionID: "pex-aaaaaaaaaa"}
+	args["owner"] = owner
+	first, err := d.Execute(ctx, "terminal.open", args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer (<-p.opened).Close()
+	physical := first.(map[string]any)["terminal"].(console.TerminalInfo).ID
+	other := execution.WithCaller(ctx, execution.Caller{ContextID: "ctx-bbbbbbbbbb", SandboxID: owner.SandboxID, WorkerID: "wrk-bbbbbbbbbb", Workload: model.WorkloadService, User: execution.SystemUser()})
+	if _, err := d.Execute(other, "terminal.open", args); err == nil {
+		t.Fatal("forged processor Worker accepted")
+	}
+	owner.WorkerID = "wrk-bbbbbbbbbb"
+	owner.PersistentExecutionID = "pex-bbbbbbbbbb"
+	args["owner"] = owner
+	current, err := d.Execute(other, "terminal.open", args)
+	if err != nil || current.(map[string]any)["owner"].(console.TerminalOwner).WorkerID != "wrk-aaaaaaaaaa" {
+		t.Fatalf("live owner = %#v, %v", current, err)
+	}
+	d.ReleaseWorker("sbx-bbbbbbbbbb", "wrk-aaaaaaaaaa")
+	adopted, err := d.Execute(other, "terminal.open", args)
+	if err != nil || adopted.(map[string]any)["reset"] != true || adopted.(map[string]any)["terminal"].(console.TerminalInfo).ID != physical {
+		t.Fatalf("adopted = %#v, %v", adopted, err)
+	}
+	if err := d.CloseTerminal(ctx, physical); err != nil {
+		t.Fatal(err)
+	}
+	recreated, err := d.Execute(other, "terminal.open", args)
+	if err != nil || recreated.(map[string]any)["terminal"].(console.TerminalInfo).ID == physical {
+		t.Fatalf("recreated = %#v, %v", recreated, err)
+	}
+	defer (<-p.opened).Close()
+	if got := m.Terminals("development", "sbx-aaaaaaaaaa"); len(got) != 1 || got[0].SessionID != "1" {
+		t.Fatalf("named catalog = %#v", got)
+	}
 }
 
 func TestNativeViewBridgeRequiresExactProcessorWorker(t *testing.T) {

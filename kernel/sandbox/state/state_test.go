@@ -93,6 +93,66 @@ func TestStorePersistsListsTransitionsAndDeletes(t *testing.T) {
 	}
 }
 
+func TestIdleQueueTracksWorkerTransitionsWithoutHeartbeatExtension(t *testing.T) {
+	store, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, status := testRecord(t, "idle-sandbox")
+	spec.OwnerIDs = nil
+	status.ObservedState = model.StateReady
+	if err := store.SaveSpec(spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveStatus(spec.SandboxID, status); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(100, 0).UTC()
+	snapshot := model.RuntimeSnapshot{SandboxID: spec.SandboxID, WorkloadType: spec.WorkloadType, Revision: 1, SupervisorStartedAtMS: 1}
+	observe := func(value model.RuntimeSnapshot, at time.Time) {
+		t.Helper()
+		if _, err := store.Observe(spec.SandboxID, value, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	observe(snapshot, now)
+	observe(snapshot, now.Add(time.Second))
+	if ids := store.ClaimIdle(now.Add(-time.Second), 1); len(ids) != 0 {
+		t.Fatalf("idle queue ignored cutoff: %v", ids)
+	}
+	if ids := store.ClaimIdle(now, 1); len(ids) != 1 {
+		t.Fatalf("heartbeat incorrectly extended idle time: %v", ids)
+	}
+	store.RescheduleIdle(spec.SandboxID)
+	snapshot.Revision, snapshot.WorkerCount = 2, 1
+	observe(snapshot, now.Add(2*time.Second))
+	stale := snapshot
+	stale.Revision, stale.WorkerCount = 1, 0
+	observe(stale, now.Add(3*time.Second))
+	if ids := store.ClaimIdle(now.Add(time.Hour), 1); len(ids) != 0 {
+		t.Fatalf("a stale snapshot restored the old deadline: %v", ids)
+	}
+	snapshot.Revision, snapshot.WorkerCount = 3, 0
+	observe(snapshot, now.Add(4*time.Second))
+	if ids := store.ClaimIdle(now.Add(3*time.Second), 1); len(ids) != 0 {
+		t.Fatalf("last Worker removal did not reset the clock: %v", ids)
+	}
+	spec.OwnerIDs = []string{"reserved-worker"}
+	if err := store.SaveSpec(spec); err != nil {
+		t.Fatal(err)
+	}
+	if ids := store.ClaimIdle(now.Add(time.Hour), 1); len(ids) != 0 {
+		t.Fatalf("pending ownership did not protect Worker startup: %v", ids)
+	}
+	spec.OwnerIDs, spec.GroupKey, spec.Lifecycle.Warm = nil, "", true
+	if err := store.SaveSpec(spec); err != nil {
+		t.Fatal(err)
+	}
+	if ids := store.ClaimIdle(now.Add(time.Hour), 1); len(ids) != 0 {
+		t.Fatalf("reserved warm capacity was treated as abandoned: %v", ids)
+	}
+}
+
 func TestStoreRejectsCorruptionAndUnsafeIDs(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sandboxes")
 	store, err := New(root)

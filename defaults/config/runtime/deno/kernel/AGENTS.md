@@ -21,6 +21,11 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 
 # Local Contracts
 
+- `kernel.services.restart(serviceId, mode = "soft")` publishes a generic
+  restart across existing node placements. `hard` also terminates draining
+  generations. Both return observed local status and preserve disabled policy;
+  source update orchestration stays with the package/update owner.
+
 - `newId` and `isId` expose the shared operational ID contract to package
   creation owners; they perform no kernel call.
 - Public API is `kernel.crypto`, `kernel.admin.execute()`, `kernel.execution`,
@@ -31,13 +36,18 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   `kernel.database.tables`, `kernel.worker.invoke()`, and
   `kernel.execution.runPersistent()`/`completePersistent()`.
 - `terminals.ts` exposes native PTY
-  create/list/inspect/attach/read/write/respond/ resize/detach/close through
+  open/create/list/inspect/attach/read/write/respond/resize/detach/close through
   typed private operations. Creation atomically attaches the canonical output
   processor. Binary data uses base64 only on the JSON bridge; the package API
   uses Uint8Array. Read acknowledges the last applied output sequence; write
   awaits native consumption of one bounded frame before the next. Uncertain
   writes must not be replayed. Attachments belong to the exact calling Worker,
   while PTYs have independent broker lifetime.
+- `terminals.open` accepts a sandbox-scoped `sessionId` of 1–40 ASCII letters,
+  digits, `_`, or `-`, shell options, and the current persistent owner
+  descriptor. It returns the live processor owner or a new attachment with
+  `after` and `reset`. A reset preserves a surviving shell with fresh display
+  state; recreation after process loss assigns a new internal physical ID.
 - Use the pinned runtime's native Uint8Array Base64 conversion on terminal
   frames; do not allocate a JavaScript string iterator and temporary number
   collection for each output byte.
@@ -52,8 +62,8 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   explicitly revokes the prior browser or SSH lease.
 - Physical destruction raises `TerminalClosedError`, including on pending
   processor reads and native-view waits. It is distinct from process EOF or a
-  lost attachment. Package owners use it to complete their handler and metadata
-  cleanup; terminal idle policy remains in the kernel.
+  lost attachment. Package owners use it to complete their handler; metadata
+  retention belongs to the package and terminal idle policy to the kernel.
 - `terminals.detach` remains callable during cancelled-request cleanup, as does
   database scope cleanup. Input, resize, and process destruction retain normal
   cancellation. Worker death releases all of that Worker's attachment roles.
@@ -157,6 +167,11 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   initialization; every SQL, transaction, authentication, administration, and
   typed operation call still requires an active execution context.
 - There is no application settings accessor or application-specific namespace.
+
+- `ServiceIndexScope.packages` is the immutable selected package/commit set.
+  `ServiceIndexState.packages` holds mutable per-package service arrays and
+  optional explicit errors. Hooks share the complete state in one invocation;
+  the Go owner validates scope and publishes each accepted fragment.
 
 # Work Guidance
 

@@ -7,6 +7,8 @@ export type {
   TerminalCreateInput,
   TerminalEvent,
   TerminalInfo,
+  TerminalOpenInput,
+  TerminalOpenResult,
   TerminalSize,
   TerminalViewRequest,
 } from "./terminals.ts";
@@ -732,6 +734,16 @@ export const kernel = Object.freeze({
     }),
   }),
   services: Object.freeze({
+    /** Replace capacity and drain existing work, or immediately terminate every generation. */
+    restart<Result = Record<string, unknown>>(
+      serviceId: string,
+      mode: "soft" | "hard" = "soft",
+    ): Promise<Result> {
+      return runtimeOperationField("service.restart", {
+        service_id: serviceId,
+        mode,
+      }, "service");
+    },
     /** Reconstruct a signed descriptor; follow-up admission still proves the live binding and principal. */
     route(target: PersistentServiceTarget): Promise<string> {
       return executeRuntimeOperation("service.route", { ...target });
