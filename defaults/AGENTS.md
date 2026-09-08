@@ -7,7 +7,9 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 # Ownership
 
 - `bootstrap-packages.toml` owns the small initial package source list used only
-  when a database has no initialized package set.
+  when a database has no initialized package set. It includes
+  `the8020/dev-skills` so fresh deployments install the shipped agent guidance
+  through the ordinary package release path.
 - `config/runtime/` owns platform-maintained runtime versions, protocol source,
   Deno supervisor/Worker source, generic SDKs, and service/development image
   construction.
