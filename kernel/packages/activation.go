@@ -536,13 +536,14 @@ func (c *ActivationCoordinator) runHooks(ctx context.Context, run *activationRun
 	var mounts []model.Mount
 	for _, candidate := range run.candidates {
 		item := candidate.Candidate
-		if staged {
+		installedRoot := c.packages.packagePath(item.PackageID)
+		if staged && item.Root != installedRoot {
 			mounts = append(mounts, model.Mount{
 				Source: item.Root, Target: packageSandboxRoot + "/" + item.PackageID, ReadOnly: true,
 				OwnerScope: item.PackageID, Purpose: "workspace", Persistence: "activation",
 			})
-		} else {
-			item.Root = c.packages.packagePath(item.PackageID)
+		} else if !staged {
+			item.Root = installedRoot
 		}
 		selected[item.PackageID] = item
 	}

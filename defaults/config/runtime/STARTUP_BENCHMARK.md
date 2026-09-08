@@ -181,6 +181,32 @@ Artifacts are in `/tmp/8020-cache-benchmark/bootstrap-once-fresh` and
 users removed, existing-account preservation, malformed results, and retry after
 failed account creation. Docker daemon build/run was not exercised.
 
+## Fresh-boot job grouping
+
+Fresh bootstrap previously created three job sandboxes: table evaluation forced
+its own group, and pre-activation hooks overlaid twelve installed package paths
+with identical source directories. Those redundant mounts changed the runtime
+profile, separating hooks from ordinary indexing and user jobs. The evaluator
+already had the same sandbox profile as ordinary jobs.
+
+Evaluation now uses normal job grouping while retaining its restricted Worker
+permissions. Activation adds package overrides only for roots that differ from
+the installed paths. Genuine staged-source profiles remain separate.
+
+One fresh native gVisor run completed in 5.863 seconds; its restart completed in
+1.918 seconds. Both returned login HTTP 200 and started exactly one job
+supervisor and one service supervisor. At readiness, the fresh job sandbox held
+the reusable evaluator Worker; the restart's job sandbox was empty and retained
+by the two-minute keepalive. Fresh boot created the initial account and downloaded
+17 resources; restart ran no user programs and downloaded nothing. These are
+single-run qualification timings, not a controlled performance comparison.
+
+Artifacts are in `/tmp/8020-cache-benchmark/grouping-{fresh,restart}`, reproduced
+with `startup-grouping.py`, `grouping-kernel`, and `batch-image`. The harness
+asserts sandbox types/counts, the job group, and exactly two supervisor starts.
+Focused Go and race tests cover package activation, table evaluation, and jobs;
+regressions preserve staged mounts and the evaluator's Worker restrictions.
+
 ## Verification and reproduction
 
 - Kernel Go unit suite passed; runtime Deno suite passed all 107 tests; services

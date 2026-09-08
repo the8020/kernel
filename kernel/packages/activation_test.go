@@ -66,6 +66,29 @@ func (f activationRunFunc) Run(ctx context.Context, id, entrypoint string, optio
 	return f(ctx, id, entrypoint, options)
 }
 
+func TestBootstrapHooksUseInstalledSourceMount(t *testing.T) {
+	root, store, db := activationStore(t)
+	writeActivationPackage(t, filepath.Join(root, "packages"), "acme/orders", true)
+	var calls []string
+	runner := activationRunFunc(func(_ context.Context, id, _ string, options jobs.Options) (jobs.Record, error) {
+		if len(options.Mounts) != 0 {
+			t.Errorf("bootstrap added mounts over installed sources: %#v", options.Mounts)
+		}
+		calls = append(calls, id)
+		return jobs.Record{}, nil
+	})
+	coordinator, err := NewActivationCoordinator(ActivationCoordinatorConfig{Database: db, Schema: &activationSchemaRecorder{events: &calls}, Packages: store, Jobs: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinator.Bootstrap(context.Background(), map[string]string{"acme/orders": "installed"}); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"acme/orders/pre-activate", "acme/orders/post-activate"}; !reflect.DeepEqual(calls, want) {
+		t.Fatalf("bootstrap calls = %#v, want %#v", calls, want)
+	}
+}
+
 func TestHookUsesReferencedCandidateProgramAndWaitsForCompletion(t *testing.T) {
 	_, store, db := activationStore(t)
 	owner := writeActivationPackage(t, t.TempDir(), "acme/orders", false)

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"the8020/kernel/database"
 	"the8020/kernel/deployment"
 	"the8020/kernel/execution/jobs"
+	"the8020/kernel/execution/supervisor"
 	workspacepackages "the8020/kernel/packages"
 )
 
@@ -143,6 +145,12 @@ func TestEvaluationBatchesModulesAndReusesOneRelease(t *testing.T) {
 	for _, call := range runner.calls {
 		if call.DatabaseAccess != "none" || call.Reuse == nil || !*call.Reuse || call.Parallelism != 1 {
 			t.Fatalf("unsafe evaluator options = %#v", call)
+		}
+		if call.GroupKey != "" || call.PlacementGroup != nil {
+			t.Fatalf("evaluator overrode ordinary job grouping: key=%q placement=%v", call.GroupKey, call.PlacementGroup)
+		}
+		if want := (&supervisor.WorkerPermissions{Read: []string{"/opt/runtime", packageMountRoot}}); !reflect.DeepEqual(call.Permissions, want) {
+			t.Fatalf("evaluator permissions = %#v, want %#v", call.Permissions, want)
 		}
 	}
 }

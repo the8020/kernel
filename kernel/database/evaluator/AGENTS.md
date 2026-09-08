@@ -15,6 +15,9 @@ Parent DOX: [kernel/kernel/database DOX](../AGENTS.md).
   each successful initialization batch, and reuse one compatible evaluator
   Worker when possible. Failed first initialization resumes completed
   table/commit pairs.
+- Use ordinary configured job grouping and profile compatibility, without a
+  dedicated evaluator group. Restricted evaluator permissions belong to its
+  Worker; compatible jobs may share the same supervisor.
 - Mount and read only the activated shared package tree. Private development
   overlays are never schema sources; staged activation roots temporarily replace
   only their matching package mounts.
@@ -38,8 +41,8 @@ Parent DOX: [kernel/kernel/database DOX](../AGENTS.md).
 
 # Verification
 
-- Tests cover identity, collision rejection, batching, package fingerprints, and
-  malformed evaluator results.
+- Tests cover identity, collision rejection, batching, shared job grouping with
+  restricted Worker permissions, package fingerprints, and malformed results.
 
 # Child DOX Index
 

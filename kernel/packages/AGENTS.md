@@ -84,8 +84,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   trigger chain across packages; both consume only the published memory index.
   Activation phases use a validated candidate index before live publication.
   Program references resolve against all candidates before ready installed
-  packages. Candidate mounts are read-only. Recovery rebuilds its candidate
-  index and retains durable phase completion, never repeating successful phases.
+  packages. Read-only candidate mounts override only roots that differ from
+  installed package paths; bootstrap uses the existing shared mount without
+  redundant overrides. Recovery rebuilds its candidate index and retains durable
+  phase completion, never repeating successful phases.
 - `RunHookChain` invokes `worker/hook_dispatch.ts` as one ordinary system job
   per trigger invocation. Service indexing passes all selected packages in one
   invocation; activation retains its durable per-package phase boundaries.
@@ -160,6 +162,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   index propagation without application-table scans.
 - Declaration regressions include documentation-only and documented TOML
   folders, candidate activation validation, and live handler reindexing.
+- Hook regressions distinguish installed bootstrap sources without extra mounts
+  from staged candidates requiring read-only overrides.
 
 # Child DOX Index
 
