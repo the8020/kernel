@@ -379,6 +379,8 @@ Parent DOX: [development DOX](../AGENTS.md).
 
 # Local Contracts
 
+- Keep prototype changes in source and verify them in disposable fixtures.
+  Update a manual test deployment only when the user explicitly requests it.
 - Group sandbox Git storage under `/workspace/git/`: writable `private/`,
   read-only retained objects in `borrowed/`, and read-only shared repositories
   in `shared/`. Keep package-root bookkeeping under `packages/.meta/`, with
