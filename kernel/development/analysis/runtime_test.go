@@ -6,6 +6,7 @@ package development
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -47,9 +48,8 @@ func analysisRuntime(t *testing.T) (*Manager, *RunscDriver, string) {
 			t.Fatal(err)
 		}
 	}
-	if err := copyDirectory(context.Background(), filepath.Join(source, "defaults/scripts"), filepath.Join(root, "scripts")); err != nil {
-		t.Fatal(err)
-	}
+	analysisStagePackage(t, filepath.Join(filepath.Dir(source), "dev-skills"), filepath.Join(packages, "the8020/dev-skills"))
+	installTestDevelopmentAssets(t, root)
 	repository := filepath.Join(packages, "the8020/dev-core")
 	writeTestFile(t, filepath.Join(repository, "package.toml"), "schema = 1\n")
 	writeTestFile(t, filepath.Join(repository, ".gitignore"), "ignored/\n")
@@ -74,6 +74,7 @@ func analysisRuntime(t *testing.T) (*Manager, *RunscDriver, string) {
 	}
 	registerTestActivationCommands(t, registry, manager)
 	initializeTestRepository(t, manager, "the8020/dev-core", "Fixture", "fixture@example.test", "Base")
+	initializeTestRepository(t, manager, "the8020/dev-skills", "Fixture", "fixture@example.test", "Guidance fixture")
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -82,6 +83,36 @@ func analysisRuntime(t *testing.T) (*Manager, *RunscDriver, string) {
 		}
 	})
 	return manager, driver, repository
+}
+
+// Stage real package working sources, including newly authored files, without
+// carrying host Git metadata, ignored artifacts or environment files.
+func analysisStagePackage(t *testing.T, source, destination string) string {
+	t.Helper()
+	files, err := gitCommand(context.Background(), source, nil, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := sha256.New()
+	for _, file := range strings.Split(strings.TrimSuffix(files, "\x00"), "\x00") {
+		if file == "" || strings.HasPrefix(filepath.Base(file), ".env") {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join(source, file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(filepath.Join(source, file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeTestFile(t, filepath.Join(destination, file), string(body))
+		if err := os.Chmod(filepath.Join(destination, file), info.Mode().Perm()); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = fmt.Fprintf(hash, "%s\x00%s\x00", file, body)
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil))
 }
 
 func analysisExec(t *testing.T, driver *RunscDriver, sandbox Sandbox, command string) string {
@@ -240,7 +271,7 @@ func TestWorkflowAnalysisRuntime(t *testing.T) {
 			_, mutationErr = gitCommand(ctx, repository, gitIdentity("Fixture", "fixture@example.test"), "commit", "-am", "Competing helper publication")
 		}
 	}}
-	conflictOutput := analysisExec(t, d, b, "activate --message 'Helper conflict'; status=$?; printf '\\nhelper_conflict_exit=%s\\n' \"$status\"; test -f /tmp/conflict-generation")
+	conflictOutput := analysisExec(t, d, b, "activate --json --message 'Helper conflict'; status=$?; printf '\\nhelper_conflict_exit=%s\\n' \"$status\"; test -f /tmp/conflict-generation")
 	m.driver = d
 	if mutationErr != nil {
 		t.Fatal(mutationErr)
@@ -337,7 +368,7 @@ func TestWorkflowAnalysisRuntime(t *testing.T) {
 	// The canonical helper responds before the delayed destruction, then kills its caller.
 	analysisExec(t, d, a, prefix+"printf helper > helper.txt")
 	started = time.Now()
-	output, helperErr := d.Exec(ctx, a.SandboxID, "activate --message 'Helper publication'; sleep 1; printf survived > /root/analysis-helper-survived")
+	output, helperErr := d.Exec(ctx, a.SandboxID, "activate --json --message 'Helper publication'; sleep 1; printf survived > /root/analysis-helper-survived")
 	t.Logf("helper result duration=%s error=%v output=%s", time.Since(started), helperErr, output)
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {

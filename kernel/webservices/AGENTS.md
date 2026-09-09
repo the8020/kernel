@@ -80,6 +80,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   only the already-completed hook. HTTP headers, RPC input, and public services
   cannot acquire this approval. Native requests stay local; remote spillover
   requires a separately authenticated transport.
+- `RequestOptions.LocalAuthentication` marks native sandbox ingress while still
+  verifying the ordinary token and running users policy in the target Worker.
+  Local-token transport may continue through authenticated peer forwarding;
+  public headers never grant this marker. It does not approve account policy.
 - Warm routing uses one immutable definition lookup, one cache-only supervisor
   capacity read per candidate sandbox, a short reservation, and final dispatch.
   It performs no manifest read, Worker scan, live supervisor inspection, metrics

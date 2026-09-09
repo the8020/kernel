@@ -24,7 +24,16 @@ func TestAgentInstallHelpers(t *testing.T) {
 		t.Fatalf("development scripts mount is not read-only and executable: %#v", scriptsMount)
 	}
 
-	scriptsRoot := filepath.Join("..", "..", "defaults", "scripts")
+	root := t.TempDir()
+	installTestDevelopmentAssets(t, root)
+	scriptsRoot := filepath.Join(root, "scripts")
+	// Reproduce the two mounted paths for host-side installer doubles.
+	if err := os.MkdirAll(filepath.Join(root, "skills", "custom"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "packages", "the8020", "dev-skills"), filepath.Join(root, "skills", "builtin")); err != nil {
+		t.Fatal(err)
+	}
 	for _, name := range []string{"install-codex.sh", "install-claude.sh"} {
 		info, err := os.Stat(filepath.Join(scriptsRoot, name))
 		if err != nil {

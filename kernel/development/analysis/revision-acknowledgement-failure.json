@@ -1,0 +1,12 @@
+{
+  "full_workflow_qualified": false,
+  "expected_failure_observed": true,
+  "observed_at": "2026-09-08T22:41:35.196358+00:00",
+  "output": "=== RUN   TestIndexingDoesNotWaitForAnotherProvider\n=== RUN   TestIndexingDoesNotWaitForAnotherProvider/shared-revision\n    reindex_test.go:210: first indexing failed: index revision 1 is not pending\n--- FAIL: TestIndexingDoesNotWaitForAnotherProvider (0.01s)\n    --- FAIL: TestIndexingDoesNotWaitForAnotherProvider/shared-revision (0.01s)\nFAIL\nFAIL\tthe8020/kernel/app\t0.499s\nFAIL\n",
+  "source_sha256": {
+    ".development/workflow-transaction-build/after/kernel/app/reindex.go": "fe62fb01de02f54b796cba32f79159d5bea07ad63e6546ca375746f992a44382",
+    ".development/workflow-transaction-build/after/kernel/app/reindex_test.go": "77c873349e9dabe08fd32660d84ec75947bd9cf7c7f1c2357bb15a4c0be828d8",
+    ".development/workflow-transaction-build/after/kernel/app/runtime.go": "9c3350f44ac4896940cb801428098efc419c120a31e1179c64fd5177e14217a8",
+    "kernel/packages/index_revisions.go": "cd299024694c68e03b0229e4fa9a10e4147b6da2b0a390be570fb44ac8885b64"
+  }
+}

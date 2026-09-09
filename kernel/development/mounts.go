@@ -8,12 +8,16 @@ import (
 	"strings"
 )
 
-// DefaultMountProfile returns the package, helper-script, and temporary mount
+// DefaultMountProfile returns the package, agent-guidance, helper, and temporary mount
 // profile. Tests and embedders may provide a profile directly.
 func DefaultMountProfile() []MountDefinition {
 	return []MountDefinition{
 		{ID: "packages", Target: "/workspace/packages", Behavior: MountSandboxSource, Writable: true},
 		{ID: "scripts", Source: "scripts", Target: "/workspace/scripts", Behavior: MountReadOnly, Executable: true},
+		{ID: "builtin-skills", Source: "packages/the8020/dev-skills", Target: "/workspace/skills/builtin", Behavior: MountReadOnly},
+		{ID: "custom-skills", Source: "users/<user-id>/dev-sandbox/skills", Target: "/workspace/skills/custom", Behavior: MountPersistent, Writable: true},
+		{ID: "agents", Source: "packages/the8020/dev-skills/workspace.md", Target: "/workspace/AGENTS.md", Behavior: MountReadOnly},
+		{ID: "claude", Source: "packages/the8020/dev-skills/workspace.md", Target: "/workspace/CLAUDE.md", Behavior: MountReadOnly},
 		{ID: "temporary", Target: "/tmp", Behavior: MountEphemeral, Writable: true},
 	}
 }
@@ -117,7 +121,7 @@ func applicationMountSource(config Config, relative string) (string, error) {
 	if !validRelative(relative) || filepath.Clean(filepath.FromSlash(relative)) != filepath.FromSlash(relative) {
 		return "", errors.New("application source must be a clean relative path")
 	}
-	source, err := canonicalDirectory(filepath.Join(config.Root, filepath.FromSlash(relative)))
+	source, err := canonicalMountSource(filepath.Join(config.Root, filepath.FromSlash(relative)))
 	if err != nil {
 		return "", err
 	}

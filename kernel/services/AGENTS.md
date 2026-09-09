@@ -38,6 +38,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   under synchronization; command handlers never read a partially composed
   runtime.
 - Extend only when a generated handler has a current typed dependency.
+- Package management includes `DeletePackage` for the confirmed CBus/private
+  operation; package activation owns removal and recovery.
 - Signing is available before database/runtime startup and exposes no private
   key material. User/session policy is not a kernel dependency.
 - The sandbox handler contract exposes live lifecycle operations separately from

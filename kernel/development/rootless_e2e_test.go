@@ -60,12 +60,18 @@ func TestRootlessDevelopmentOverlayProbe(t *testing.T) {
 		RunscPath: runsc, RuntimeRoot: filepath.Join(root, "runsc"),
 		SandboxRoot: filepath.Join(root, "sandboxes"), LogRoot: filepath.Join(root, "logs"),
 	})
+	installTestDevelopmentAssets(t, root)
 	start := SandboxStart{
 		UserID: "overlayprobe", SandboxID: "sbx-0123456789", Packages: packages, RootFS: rootfs,
 		Mounts: []SandboxMount{
 			{MountDefinition: MountDefinition{ID: "packages", Target: "/workspace/packages", Behavior: MountSandboxSource, Writable: true}, HostSource: packages},
 			{MountDefinition: MountDefinition{ID: "temporary", Target: "/tmp", Behavior: MountEphemeral, Writable: true}},
 		},
+	}
+	for _, mount := range DefaultMountProfile() {
+		if mount.Behavior == MountReadOnly {
+			start.Mounts = append(start.Mounts, SandboxMount{MountDefinition: mount, HostSource: filepath.Join(root, mount.Source)})
+		}
 	}
 	if err := driver.Start(context.Background(), start); err != nil {
 		t.Fatal(err)
@@ -128,9 +134,7 @@ func runDevelopmentE2E(t *testing.T, rootless bool) {
 			t.Fatal(err)
 		}
 	}
-	if err := copyDirectory(context.Background(), filepath.Join(sourceRoot, "defaults", "scripts"), filepath.Join(root, "scripts")); err != nil {
-		t.Fatal(err)
-	}
+	installTestDevelopmentAssets(t, root)
 	for _, id := range []string{"the8020/dev-core", "the8020/demo"} {
 		packageRoot := filepath.Join(packages, filepath.FromSlash(id))
 		writeTestFile(t, filepath.Join(packageRoot, "package.toml"), "schema = 1\n")
@@ -198,12 +202,12 @@ func runDevelopmentE2E(t *testing.T, rootless bool) {
 	}
 	shell(t, manager, sandbox.UserID, "test ! -e /run/the8020-transient && test ! -e /workspace/packages/the8020/dev-core/ignored/generated.dat && grep -F private /workspace/packages/the8020/dev-core/src/message.ts && grep -F home-ok /root/.config/editor/proof && test \"$(the8020-proof)\" = system-ok && dpkg-query -W the8020-proof && aptitude --version")
 
-	previewJSON := shell(t, manager, sandbox.UserID, "activate --preview --message Preview")
+	previewJSON := shell(t, manager, sandbox.UserID, "activate --json --preview --message Preview")
 	var preview ActivationPreview
 	if err := json.Unmarshal([]byte(previewJSON), &preview); err != nil || len(preview.Packages) != 1 || preview.Packages[0].ChangedFiles != 2 || preview.Packages[0].AddedRows != 2 || preview.Packages[0].RemovedRows != 1 {
 		t.Fatalf("helper preview = %q, %v", previewJSON, err)
 	}
-	activationJSON := shell(t, manager, sandbox.UserID, "activate --message Activate --author-name Developer --author-email developer@example.test")
+	activationJSON := shell(t, manager, sandbox.UserID, "activate --json --message Activate --author-name Developer --author-email developer@example.test")
 	var activation ActivationResult
 	if err := json.Unmarshal([]byte(activationJSON), &activation); err != nil || !activation.Success {
 		t.Fatalf("helper activation = %q, %v", activationJSON, err)
@@ -225,7 +229,7 @@ func runDevelopmentE2E(t *testing.T, rootless bool) {
 	if _, err := os.Stat(filepath.Join(packages, "the8020", "demo", "second-activation.txt")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("second private edit escaped the overlay: %v", err)
 	}
-	secondJSON := shell(t, manager, sandbox.UserID, "activate --message 'Activate again'")
+	secondJSON := shell(t, manager, sandbox.UserID, "activate --json --message 'Activate again'")
 	var second ActivationResult
 	if err := json.Unmarshal([]byte(secondJSON), &second); err != nil || !second.Success || packageResult(second, "the8020/demo").Status != "committed" {
 		t.Fatalf("second helper activation = %q, %v", secondJSON, err)

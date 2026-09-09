@@ -22,6 +22,9 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   transitive, and late dynamic imports; it expires on termination. Recording
   performs no extra filesystem reads or permission grants. Only explicit update
   scans intersect these sets; snapshots never copy them.
+- Import matching accepts exact files and trailing-slash directories. Directory
+  matching scans existing import paths, so deleting source needs no retained
+  repository or additional dependency index.
 - Workload types are exactly `service` and `job`. Worker permissions are
   explicit and no broader than the sandbox envelope.
 - Jobs require a function default export and call it as
@@ -37,6 +40,8 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 - Service in-flight ownership lasts through complete response-stream consumption
   or cancellation so graceful stop cannot truncate a dispatch. `streams.ts` owns
   shared finish-once stream accounting for Worker and supervisor leases.
+- WebSocket close releases its context and request slot exactly once, including
+  a late transport-close callback after the Worker has already closed it.
 - A service Worker becomes idle after readiness and again only after its final
   in-flight request completes; new activity clears that timestamp. The
   supervisor reports the timestamp but does not decide when kernel policy should

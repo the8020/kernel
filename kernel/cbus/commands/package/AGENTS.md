@@ -8,7 +8,8 @@ Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
 # Ownership
 
 - Publish only `kernel.packages.list`, `kernel.packages.inspect`,
-  `kernel.packages.set`, and `kernel.packages.synchronize`.
+  `kernel.packages.set`, `kernel.packages.synchronize`, and
+  `kernel.packages.delete`.
 - Retain remaining package/source/version/local/repository thin handlers behind
   the private runtime-operation dispatcher. `the8020/packages` owns their
   visible `packages.*` command programs.
@@ -36,6 +37,9 @@ Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
   results.
 - Local creation writes a minimal valid manifest, initializes an independent Git
   repository and first commit, and records a source-free local package row.
+- Deletion requires `--confirm` and delegates to `DeletePackage`; the same
+  handler serves private `package.delete` calls. It removes installed source
+  through activation, preserves dirty work, and retains physical database data.
 - Repository initialization is explicit, never inferred from discovery, and
   creates one initial commit at the package root. Remote configuration rejects
   embedded credentials. Pull fast-forwards a clean attached branch, push
@@ -51,7 +55,7 @@ Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
 
 # Verification
 
-- Generator catalog and aggregate handler tests cover the four recovery commands
+- Generator catalog and aggregate handler tests cover the five recovery commands
   and private operation adapters; package-store tests own discovery/path safety
   and real Git synchronization/authentication. Package-command tests cover
   concise package results and publication failure reporting; package-domain
@@ -64,4 +68,5 @@ Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
   checkout.
 
 - The `index/list`, `index/inspect`, `index/set`, and `synchronize` leaves own
-  recovery metadata; other leaves retain private handlers only.
+  recovery metadata, as does `delete`; other leaves retain private handlers
+  only.

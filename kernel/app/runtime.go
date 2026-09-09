@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -641,11 +642,16 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	nodeManager.SetLogReader(serviceSet.Logging)
 	cleanup.nodes = nodeManager
 	developmentRunsc := developmentRunscConfig(ctx, root, paths, settingManager)
+	var sandboxServices atomic.Pointer[webservices.Manager]
 	developmentManager, err := development.New(development.Config{
 		Root: root, PackagesRoot: paths.Packages, UsersRoot: paths.Users,
 		RuntimeRoot: paths.RuntimeDevelopment, ImageRoot: filepath.Join(paths.DevelopmentImage, "rootfs"),
 		ImageRecord: filepath.Join(paths.DevelopmentImage, "image.json"), MountProfile: development.DefaultMountProfile(),
 		ActivationGateway: development.NewCommandBusGateway(commandRegistry), RepositoryMu: repositoryMu,
+		UserAccess: sandboxUserAccess(authentication, sandboxServices.Load),
+		SystemURL: func() string {
+			return fmt.Sprintf("http://127.0.0.1:%d", activeInt(settingManager, "network.main_port", 8080))
+		},
 		Driver: development.NewRunscDriver(development.RunscConfig{
 			RunscPath: developmentRunsc.path, RuntimeRoot: filepath.Join(paths.RuntimeDevelopment, "runsc"),
 			SandboxRoot: filepath.Join(paths.RuntimeDevelopment, "sandboxes"), LogRoot: filepath.Join(paths.RuntimeDevelopment, "logs"),
@@ -744,6 +750,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		return runtimeServices, closeRuntime
 	}
 	sshPort, ok := settingManager.Active("network.ssh_port")
+	sandboxServices.Store(webServiceManager)
 	if !ok {
 		runtimeServices.Failure = "network.ssh_port is not registered"
 		return runtimeServices, closeRuntime

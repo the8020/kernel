@@ -970,6 +970,12 @@ export const kernel = Object.freeze({
     },
   }),
   packages: Object.freeze({
+    async delete(packageId: string, confirm: true): Promise<void> {
+      await executeRuntimeOperation("package.delete", {
+        package_id: packageId,
+        confirm,
+      });
+    },
     list<Result = Record<string, unknown>>(): Promise<Result[]> {
       return runtimeOperationField("package.list", {}, "packages");
     },

@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"the8020/kernel/auth"
 	"the8020/kernel/database"
 	"the8020/kernel/execution"
 	"the8020/kernel/identity"
@@ -386,6 +387,10 @@ func (m *Manager) Proxy(nodeID string, writer http.ResponseWriter, request *http
 			forwarded.URL.Host = target.Host
 			forwarded.Host = target.Host
 			forwarded.Header.Set("Authorization", "Bearer "+m.secret)
+			forwarded.Header.Del("the8020-internal-local-authentication")
+			if auth.LocalTransport(request.Context()) {
+				forwarded.Header.Set("the8020-internal-local-authentication", "true")
+			}
 			path, _ := request.Context().Value(forwardingPathKey{}).([]string)
 			forwarded.Header.Set("the8020-internal-forwarded-nodes", strings.Join(append(append([]string(nil), path...), m.localID), ","))
 		},
@@ -631,6 +636,10 @@ func (m *Manager) authorize(next http.Handler) http.Handler {
 			return
 		}
 		request.Header.Del("Authorization")
+		if request.Header.Get("the8020-internal-local-authentication") == "true" {
+			request = request.WithContext(auth.WithLocalTransport(request.Context()))
+		}
+		request.Header.Del("the8020-internal-local-authentication")
 		// Only authenticated peers may supply forwarding history. Public
 		// request headers are never consulted for peer selection.
 		path := strings.Split(request.Header.Get("the8020-internal-forwarded-nodes"), ",")

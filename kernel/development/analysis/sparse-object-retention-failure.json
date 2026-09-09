@@ -1,0 +1,21 @@
+{
+  "error": "development sandbox exec: exit status 1: ",
+  "output": "",
+  "private_history_survived": false,
+  "shared_gc_removed_original": true,
+  "source_sha256": {
+    "../../defaults/scripts/activate": "ab02a512797e2f0d949bcc238dd5664f895599e212c5706c23267265aaa6b8d7",
+    "../../defaults/scripts/activate.ts": "e6b4954a4279a0016c2cdba0eb4091ef42156adb1d82314870209ae740201643",
+    "activation.go": "fcd29918aa169d822a1d748219e4c878a0c2dfda1872ada246330049491c6411",
+    "analysis/gofer_probe.go": "aaaae85445dfde1a6cfa6596a5e6ea0b9b7f0f3450c405227409e83477e1ad67",
+    "analysis/gofer_probe.py": "0a04c989a51f2d744d04b47fcb470e607b9e8521fa14e1541573411b049d7b2a",
+    "analysis/native_probe.go": "d06ff2f5038fb111960e51a9ff69a085fa2ad8df602f7cb81fbee15ed1b4db57",
+    "analysis/native_test.go": "f9c704d7d0597dd47a99231c965a0638782ac93d6fcc4953d6b6e5d9b84ceb39",
+    "analysis/run.py": "62454f362bfdd776aa4ecaff0b2a8847cb9cf6153aa281c77c4a97c6de4f1db1",
+    "analysis/sparse_test.go": "6fc9a4c0dc1a58c29dbe3d4524eb1b0556bc9b3989cf185fe00baa9cd36abb27",
+    "gateway.go": "eb33a3901d4e8d05e18e899df90937b6d86c237a99179ccec68fd998f873f53b",
+    "manager.go": "1a0168f6d69a5e9f8e5778f50d8b3ec8edd98edd7667f7171ce6aeb031450767",
+    "model.go": "d522dc1bc6842c885ded7af0779d24efb90385b455071ab171741fbc8332e03c",
+    "rootless.go": "65aea324d38c35d9d61d1af365d4b970cae2ca461a335400aa1ebd4d544d635c"
+  }
+}

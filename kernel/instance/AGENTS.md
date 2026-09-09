@@ -19,9 +19,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Public API includes `Paths`, `ResolveRoot`, `Prepare`, `LoadPaths`,
   `CheckUnixPermissions`, `Initialize`, `Acquire`, and `Release`.
 - Identity is a stable `nod-` ID with ten random lowercase alphanumeric
-  characters, generated through `identity` and stored in `kernel.toml`. The same file stores
-  every persisted per-node kernel setting; it is the only node configuration
-  file.
+  characters, generated through `identity` and stored in `kernel.toml`. The same
+  file stores every persisted per-node kernel setting; it is the only node
+  configuration file.
 - Process locking uses non-blocking `unix.Flock`; stale PID/socket removal
   occurs only after lock acquisition.
 - Initialization uses the fixed layout, proves ownership/mode operations on a

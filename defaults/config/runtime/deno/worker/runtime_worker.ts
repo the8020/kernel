@@ -223,11 +223,11 @@ export class RuntimeWorker {
           : "";
         const callbacks = this.#webSockets.get(connectionId);
         if (callbacks !== undefined) {
+          this.#webSockets.delete(connectionId);
           callbacks.close(
             Number.isInteger(payload.code) ? Number(payload.code) : 1011,
             typeof payload.reason === "string" ? payload.reason : "",
           );
-          this.#webSockets.delete(connectionId);
           this.#completeInFlight();
         }
         return;
@@ -410,6 +410,13 @@ export class RuntimeWorker {
   importsAny(paths: ReadonlySet<string>): boolean {
     for (const path of this.#imports) {
       if (paths.has(path)) return true;
+      for (
+        let end = path.lastIndexOf("/");
+        end > 0;
+        end = path.lastIndexOf("/", end - 1)
+      ) {
+        if (paths.has(path.slice(0, end + 1))) return true;
+      }
     }
     return false;
   }
@@ -626,7 +633,9 @@ export class RuntimeWorker {
       accepted: true,
       connection: {
         send: (data) => {
-          if (closed || this.#closed) return;
+          if (closed || this.#closed || !this.#webSockets.has(connectionId)) {
+            return;
+          }
           this.#port.postMessage({
             type: "service_websocket_message",
             payload: { connectionId, data },
@@ -635,7 +644,7 @@ export class RuntimeWorker {
         close: (code = 1000, reason = "") => {
           if (closed) return;
           closed = true;
-          this.#webSockets.delete(connectionId);
+          if (!this.#webSockets.delete(connectionId)) return;
           release();
           if (!this.#closed) {
             this.#port.postMessage({

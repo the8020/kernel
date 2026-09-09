@@ -11,6 +11,7 @@ type SandboxStart struct {
 	Packages  string
 	RootFS    string
 	Endpoint  string
+	SystemURL string
 	Token     string
 	Mounts    []SandboxMount
 }

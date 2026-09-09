@@ -19,7 +19,8 @@ import (
 )
 
 type activationSchemaRecorder struct {
-	events *[]string
+	events     *[]string
+	onRollback func(context.Context) error
 }
 
 func (r *activationSchemaRecorder) Prepare(_ context.Context, candidates []deployment.Candidate) error {
@@ -27,8 +28,11 @@ func (r *activationSchemaRecorder) Prepare(_ context.Context, candidates []deplo
 	return nil
 }
 
-func (r *activationSchemaRecorder) Complete(_ context.Context, activated bool) error {
+func (r *activationSchemaRecorder) Complete(ctx context.Context, activated bool) error {
 	*r.events = append(*r.events, fmt.Sprintf("schema-complete:%t", activated))
+	if !activated && r.onRollback != nil {
+		return r.onRollback(ctx)
+	}
 	return nil
 }
 

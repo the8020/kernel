@@ -180,7 +180,8 @@ type RequestOptions struct {
 	Timeout time.Duration
 	// AuthenticatedUser is for native transports whose package authentication
 	// has already approved the principal. It is never accepted over HTTP/RPC.
-	AuthenticatedUser *execution.User `json:"-"`
+	AuthenticatedUser   *execution.User `json:"-"`
+	LocalAuthentication bool            `json:"-"`
 }
 
 type authenticatedUserKey struct{}
@@ -1400,6 +1401,9 @@ func (m *Manager) OpenAPI(ctx context.Context, serviceID string) (map[string]any
 }
 
 func (m *Manager) Request(ctx context.Context, serviceID, method, relativePath string, options RequestOptions) (RequestResult, error) {
+	if options.LocalAuthentication {
+		ctx = auth.WithLocalTransport(ctx)
+	}
 	if options.AuthenticatedUser != nil {
 		if !options.AuthenticatedUser.Valid() {
 			return RequestResult{}, execution.ErrInvalidUser
@@ -1484,6 +1488,9 @@ func (m *Manager) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		var claims auth.TokenClaims
 		if m.authentication != nil && token != "" {
 			claims, err = m.authentication.VerifyToken(token)
+			if err == nil && !auth.AllowsTransport(claims, request.Context()) {
+				err = auth.ErrInvalidToken
+			}
 		} else {
 			err = auth.ErrInvalidToken
 		}

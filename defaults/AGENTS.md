@@ -14,17 +14,20 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   Deno supervisor/Worker source, generic SDKs, and service/development image
   construction.
 - `scripts/` owns platform-maintained helpers mounted read-only and executable
-  in development sandboxes. Its opt-in installers install the latest native
-  Codex or Claude Code release into the persistent sandbox home and configure
-  only each tool's no-prompt, full-access mode.
+  in development sandboxes, including the agent-discovery startup helper. Its
+  opt-in installers install the latest native Codex or Claude Code release into
+  the persistent sandbox home and configure each tool's no-prompt, full-access
+  mode plus shared development guidance discovery.
 - Defaults contain no node identity, credentials, users, shared settings,
   operational state, package source, or materialized images.
 
 # Local Contracts
 
-- `install.sh`, not kernel startup, atomically refreshes runtime definitions
-  into `node/kernel/runtime/definitions/` and the complete instance `scripts/`
-  tree.
+- `install.sh`, not kernel startup, refreshes runtime definitions into
+  `node/kernel/runtime/definitions/`. Its `install-development-assets.sh` step
+  replaces the complete instance `scripts/` tree, removing retired helpers and
+  retaining only source-declared executable bits. The bootstrap package
+  `the8020/dev-skills` owns shipped skills and their discovery policy.
 - On a fresh fixed-layout instance, installation stages every bootstrap package
   under `packages/`. Local development sources become clean deterministic Git
   snapshots; remote sources retain their repository history. Release builds

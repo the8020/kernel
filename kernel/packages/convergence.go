@@ -142,6 +142,9 @@ func (s *Store) changedSourcePaths(ctx context.Context, packageID, previous, cur
 	if _, err := ParsePackageID(packageID); err != nil {
 		return nil, err
 	}
+	if current == "" {
+		return []string{packageSandboxRoot + "/" + packageID + "/"}, nil
+	}
 	for _, commit := range []string{previous, current} {
 		if commit != "" && !isCommitID(commit) {
 			return nil, errors.New("source update commits must be hexadecimal object IDs")

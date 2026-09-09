@@ -1,0 +1,35 @@
+{
+  "full_workflow_qualified": false,
+  "host_git": "git version 2.39.5",
+  "asset_bytes": 4194304,
+  "asset_count": 4,
+  "observations": [
+    {
+      "case": "before_links",
+      "content_scans": 0,
+      "clean": true
+    },
+    {
+      "case": "after_link_creation",
+      "content_scans": 4,
+      "clean": true
+    },
+    {
+      "case": "after_index_refresh",
+      "content_scans": 0,
+      "clean": true
+    },
+    {
+      "case": "after_link_removal",
+      "content_scans": 4,
+      "clean": true
+    },
+    {
+      "case": "after_second_refresh",
+      "content_scans": 0,
+      "clean": true
+    }
+  ],
+  "mtime_unchanged_ctime_changed": true,
+  "boundary": "native Git Trace2 content-scan counts; unchanged allocated files; no activation or disk-cold timing"
+}

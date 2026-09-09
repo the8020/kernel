@@ -1,0 +1,109 @@
+{
+  "acknowledgement": {
+    "exclusive_ms": 1.5595,
+    "reason": "later_content",
+    "status": "retained"
+  },
+  "activation_owner_replaced": false,
+  "asset_bytes": 4194304,
+  "base_commit": "de424f9c91b7b516ed1629a51634441cc949533e",
+  "capture_precedes_later_edit_and_git_preparation": true,
+  "current_helper_conflict": {
+    "milliseconds": 398.345,
+    "native_conflict_files_retained": false,
+    "output": "{\"success\":false,\"status\":\"conflicted\",\"overlay_reset\":false,\"packages\":[{\"package_id\":\"the8020/dev-core\",\"status\":\"conflicted\",\"previous_commit\":\"17d12b0f9fcc42e6dba81670bd48a0e5ca171c82\",\"commit_message\":\"Sparse helper conflict\",\"conflicts\":[\"same.txt\"],\"error\":\"Auto-merging same.txt\\nCONFLICT (content): Merge conflict in same.txt\\nerror: could not apply 10ffec4... Sparse helper conflict\\nhint: After resolving the conflicts, mark them with\\nhint: \\\"git add/rm \\u003cpathspec\\u003e\\\", then run\\nhint: \\\"git cherry-pick --continue\\\".\\nhint: You can instead skip this commit with \\\"git cherry-pick --skip\\\".\\nhint: To abort and get back to the state before \\\"git cherry-pick\\\",\\nhint: run \\\"git cherry-pick --abort\\\".\\n\"}]}\n\nhelper_exit=3\n",
+    "qualified": false,
+    "timing": "one current-owner failure including runtime exec and helper startup; full temporary validation checkouts remain"
+  },
+  "end_private_regular_storage": {
+    "allocated_bytes": 176128,
+    "directory_allocation_included": false,
+    "inodes": 44,
+    "logical_bytes": 6957,
+    "scope": "all private regular inodes after native workflow and current-helper characterization; excludes transient host validation checkouts"
+  },
+  "full_workflow_qualified": false,
+  "go_version": "go1.26.5",
+  "goarch": "arm64",
+  "goos": "linux",
+  "gvisor_sdk": "v0.0.0-20260815055033-7d8fb7f28de4",
+  "helper_preview": {
+    "packages": [
+      {
+        "package_id": "the8020/dev-core",
+        "selected": true,
+        "base_commit": "de424f9c91b7b516ed1629a51634441cc949533e",
+        "current_shared_commit": "de424f9c91b7b516ed1629a51634441cc949533e",
+        "requires_merge": false,
+        "activation_ready": true,
+        "changed_files": 1,
+        "added_rows": 1,
+        "removed_rows": 1,
+        "files": [
+          {
+            "path": "same.txt",
+            "change": "modified"
+          }
+        ]
+      }
+    ]
+  },
+  "helper_preview_ms": 267.448,
+  "host_statfs_type": "0x794c7630",
+  "incremental_bundle_bytes": 1060,
+  "large_private_files": {},
+  "materialized_asset_copies": 0,
+  "native_conflict": "\u003c\u003c\u003c\u003c\u003c\u003c\u003c HEAD\nprivate label\n||||||| de424f9\nbase\n=======\nshared label\n\u003e\u003e\u003e\u003e\u003e\u003e\u003e 079d64dff76dea5d91194355df75f3d72788f69d\nbase\nprivate label\nshared label\n",
+  "native_versions": "deno 2.9.4 (stable, release, aarch64-unknown-linux-gnu)\nv8 15.0.245.2-rusty\ntypescript 6.0.3\ngit version 2.47.3\n",
+  "observed_at": "2026-09-08T14:22:42.272647876Z",
+  "package_dentry_cache": 0,
+  "passed": true,
+  "preview_process_io_delta": {
+    "gofer_cancelled_write_bytes": 4284416,
+    "gofer_rchar": 0,
+    "gofer_read_bytes": 0,
+    "gofer_syscr": 0,
+    "gofer_syscw": 0,
+    "gofer_wchar": 0,
+    "gofer_write_bytes": 0,
+    "sentry_cancelled_write_bytes": 0,
+    "sentry_rchar": 169268,
+    "sentry_read_bytes": 0,
+    "sentry_syscr": 189,
+    "sentry_syscw": 1276,
+    "sentry_wchar": 4616203,
+    "sentry_write_bytes": 4763648
+  },
+  "private_logical_bytes_by_stage": {
+    "current_helper_conflict": 6957,
+    "deno_label_edit": 19,
+    "helper_preview": 49,
+    "initialized": 0,
+    "native_conflict": 5859,
+    "resolved_and_exported": 6904,
+    "snapshot_git_preparation": 3687,
+    "unsupported_metadata_request": 19
+  },
+  "schema_hooks_qualified": false,
+  "sdk_setstat_fix": {
+    "after_sha256": "54cf589d9c6143f91602dd1e5ca906183d79610fa686076e5de666588054aa0d",
+    "before_sha256": "6c4a55a01cc36fa0118b8cca018662dd4737759566ede90d84e9f5748c60c651",
+    "file": "pkg/sentry/fsimpl/gofer/gofer.go"
+  },
+  "small_edit_storage_check": true,
+  "source_sha256": {
+    "../../defaults/scripts/activate": "ab02a512797e2f0d949bcc238dd5664f895599e212c5706c23267265aaa6b8d7",
+    "../../defaults/scripts/activate.ts": "e6b4954a4279a0016c2cdba0eb4091ef42156adb1d82314870209ae740201643",
+    "activation.go": "fcd29918aa169d822a1d748219e4c878a0c2dfda1872ada246330049491c6411",
+    "analysis/gofer_probe.go": "3f15cc1285e6d16ab456d7ee3466b049a5c93fb4d09498f8004b2896ee87d96d",
+    "analysis/gofer_probe.py": "0632e9530ebd478ffd49137e517873f83b32b3bb057d5941c84c415c78206cf7",
+    "analysis/native_probe.go": "a4408d10ae0dc851185cdc23837936b18f3e8b73e4eb8c31aab8b2a896f9b052",
+    "analysis/native_test.go": "f9c704d7d0597dd47a99231c965a0638782ac93d6fcc4953d6b6e5d9b84ceb39",
+    "analysis/run.py": "784ccb8dd8e00eddc42ab79a34355df1e7c73acb680781943411cb1587d562ff",
+    "analysis/sparse_test.go": "a0d3f920c28932f6dbc2e0fbd350985936f9154a4d853b1588c591b81b616d3d",
+    "gateway.go": "eb33a3901d4e8d05e18e899df90937b6d86c237a99179ccec68fd998f873f53b",
+    "rootless.go": "989d728ee1791163d487f08c3805a2606ce3450d4ea3be0adaab1e1c8cea5ea9"
+  },
+  "tracked_assets": 4,
+  "unresolved_worktree_recreation": true
+}

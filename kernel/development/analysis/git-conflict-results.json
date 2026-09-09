@@ -1,0 +1,20 @@
+{
+  "case": "sparse_native_git_conflict_resolution",
+  "pass": true,
+  "git_conflict_exit": 1,
+  "conflict_status": "UU label.txt\u0000M  untouched.txt\u0000",
+  "conflict_file": "<<<<<<< HEAD\nYour label\n||||||| 73c6e5e\nOriginal label\n=======\nShared label\n>>>>>>> c9090a828a5900bcb6b2988c05d440a72f4dc205\n",
+  "resolved_commit": "4427983f759b4ef8caa84530669e179a1cb37945",
+  "materialized_asset_files": 0,
+  "asset_tree_entries": 1024,
+  "original_workspace_later_edit_preserved": true,
+  "prepare_and_conflict_ms": 6.107374909333885,
+  "resolve_and_retry_ms": 11.021874961443245,
+  "measurement": "one trusted host Git fixture; excludes filesystem capture, transfer, schema/hooks and publication",
+  "full_activation_qualified": false,
+  "command": "python3 kernel/development/analysis/git_probe.py conflict",
+  "source_sha256": {
+    "git_probe.py": "6c33d9cf8b0f058478bdf0c400a9abcc8b39e437322996f3235f9cf6764e8514"
+  },
+  "git_version": "git version 2.39.5"
+}

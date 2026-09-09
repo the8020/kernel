@@ -105,6 +105,9 @@ func (s *Store) resolveProgram(ctx context.Context, programID string, candidates
 		return ProgramDefinition{}, err
 	}
 	if candidate, exists := candidates[identity.PackageID()]; exists {
+		if candidate.Commit == "" {
+			return ProgramDefinition{}, fmt.Errorf("package %s is being deleted", identity.PackageID())
+		}
 		return ValidateProgram(candidate.Root, identity.PackageID(), name, candidate.Commit)
 	}
 	entry, found, err := s.index.Get(ctx, identity.PackageID())

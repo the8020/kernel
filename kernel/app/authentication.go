@@ -52,6 +52,9 @@ func (a *packageAuthentication) AuthenticateToken(ctx context.Context, token str
 	if err != nil {
 		return execution.User{}, err
 	}
+	if !auth.AllowsTransport(claims, ctx) {
+		return execution.User{}, auth.ErrInvalidToken
+	}
 	encoded, err := json.Marshal(claims)
 	if err != nil {
 		return execution.User{}, auth.ErrInvalidToken

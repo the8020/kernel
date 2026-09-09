@@ -1,0 +1,1315 @@
+{
+  "sdk": "v0.0.0-20260815055033-7d8fb7f28de4",
+  "environment": {
+    "system": "Linux",
+    "node": "0d5235689514",
+    "release": "6.10.14-linuxkit",
+    "version": "#1 SMP Thu Mar 20 16:32:56 UTC 2025",
+    "machine": "aarch64",
+    "processor": ""
+  },
+  "source_sha256": {
+    "gofer_probe.go": "d0c24696add1d0494542caa25ff910665470b8208b175e38038eb7fc8198d983",
+    "gofer_probe.py": "52713f76ab9e12451e1d7363f74ac18739db658818c175c2ae2a207cbf3d2b8c",
+    "native_probe.go": "4c8273f7171d0c8ecd974a0a681f0a091be71d3103dc96b79b0132b11bb56e53"
+  },
+  "checks": {
+    "mount_initialization": {
+      "passed": true,
+      "detail": {
+        "files": 0,
+        "regular_inodes": 0,
+        "logical_bytes": 0,
+        "allocated_bytes": 0,
+        "symlinks": 0,
+        "deleted_markers": 0,
+        "asset_copies": 0,
+        "directory_allocation_included": false
+      }
+    },
+    "complete_asset_namespace": {
+      "passed": true,
+      "detail": "4"
+    },
+    "small_edit_cost": {
+      "passed": true,
+      "detail": {
+        "files": 2,
+        "regular_inodes": 2,
+        "logical_bytes": 20,
+        "allocated_bytes": 8192,
+        "symlinks": 0,
+        "deleted_markers": 0,
+        "asset_copies": 0,
+        "directory_allocation_included": false
+      }
+    },
+    "original_before_truncate": {
+      "passed": true,
+      "detail": "Old label\n"
+    },
+    "private_isolation": {
+      "passed": true,
+      "detail": "Old label\n"
+    },
+    "native_symlink": {
+      "passed": true,
+      "detail": "relative symlink"
+    },
+    "host_escape_denied": {
+      "passed": true,
+      "detail": "host sibling file is not accessible"
+    },
+    "fresh_path_with_old_descriptor": {
+      "passed": true,
+      "detail": "shared replacement\n19\n"
+    },
+    "old_descriptor_identity": {
+      "passed": true,
+      "detail": "before\n"
+    },
+    "native_git_hash_coherence": {
+      "passed": true,
+      "detail": [
+        "be63890a152d86a29c8d7885b0817b6d9593258e",
+        "be63890a152d86a29c8d7885b0817b6d9593258e"
+      ]
+    },
+    "elf_and_first_copy_mmap": {
+      "passed": true,
+      "detail": "PASS ELF retained-read retained-mmap writable-mmap\n"
+    },
+    "mmap_isolation": {
+      "passed": true,
+      "detail": "shared source unchanged"
+    },
+    "native_git_commit": {
+      "passed": true,
+      "detail": "label.txt\nPrivate label\n"
+    },
+    "shared_git_isolation": {
+      "passed": true,
+      "detail": "shared HEAD remains Base"
+    },
+    "mounted_git_conflict": {
+      "passed": true,
+      "detail": {
+        "output": "Auto-merging label.txt\nCONFLICT (content): Merge conflict in label.txt\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+        "markers": "<<<<<<< HEAD\nNew label\n||||||| ae4030d\nOld label\n=======\nShared label\n>>>>>>> 0797978f4bfbfeee0d2e4b4627352341f9a4d9bd\n",
+        "stages": "Old label\nNew label\nShared label\n"
+      }
+    },
+    "mounted_conflict_durability": {
+      "passed": true,
+      "detail": "markers and all three index stages survive recreation"
+    },
+    "mounted_git_resolution": {
+      "passed": true,
+      "detail": "Resolved native merge\n"
+    },
+    "native_namespace_tools": {
+      "passed": true,
+      "detail": "PASS executable mmap hardlink symlink rename open-handle flock local-inotify\n"
+    },
+    "atomic_save_and_delete": {
+      "passed": true,
+      "detail": "Atomic private\nOriginal atomic\n"
+    },
+    "deleted_name_enumeration": {
+      "passed": true,
+      "detail": "deleted lower name is absent from directory entries"
+    },
+    "namespace_asset_copy_cost": {
+      "passed": true,
+      "detail": {
+        "files": 32,
+        "regular_inodes": 32,
+        "logical_bytes": 16161,
+        "allocated_bytes": 131072,
+        "symlinks": 1,
+        "deleted_markers": 2,
+        "asset_copies": 0,
+        "directory_allocation_included": false
+      }
+    },
+    "runtime_loss_durability": {
+      "passed": true,
+      "detail": {
+        "files": 32,
+        "regular_inodes": 32,
+        "logical_bytes": 16161,
+        "allocated_bytes": 131072,
+        "symlinks": 1,
+        "deleted_markers": 2,
+        "asset_copies": 0,
+        "directory_allocation_included": false
+      }
+    },
+    "namespace_and_git_durability": {
+      "passed": true,
+      "detail": "Atomic private\nResolved native merge\nreplacement"
+    },
+    "write_data_sparse": {
+      "passed": true,
+      "detail": "all final bytes and applicable originals checked"
+    },
+    "write_data_stock_rpc": {
+      "passed": true,
+      "detail": "all final bytes and applicable originals checked"
+    },
+    "write_data_stock_directfs": {
+      "passed": true,
+      "detail": "all final bytes and applicable originals checked"
+    }
+  },
+  "commands": [
+    {
+      "args": [
+        "run",
+        "--detach",
+        "--bundle=/workspace/8020/kernel/.development/workflow-gofer-build/workflow-gofer-zsfndqrt",
+        "probe"
+      ],
+      "exit": 0,
+      "seconds": 0.2214544169837609,
+      "output": ""
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "find assets -type f | wc -l"
+      ],
+      "exit": 0,
+      "seconds": 0.12100883410312235,
+      "output": "4\n"
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "printf 'New label\n' >label.txt"
+      ],
+      "exit": 0,
+      "seconds": 0.06919279100839049,
+      "output": ""
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "cat label-link"
+      ],
+      "exit": 0,
+      "seconds": 0.06918491597753018,
+      "output": "New label\n"
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "cat escape"
+      ],
+      "exit": 1,
+      "seconds": 0.06831437500659376,
+      "output": "cat: escape: No such file or directory\n"
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "sh -c 'exec 9<untouched.txt; touch /tmp/ready; while ! test -f /tmp/release; do sleep .05; done; cat <&9 >/tmp/held' </dev/null >/tmp/held-log 2>&1 &"
+      ],
+      "exit": 0,
+      "seconds": 0.06851741601713002,
+      "output": ""
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "for n in $(seq 1 100); do test -f /tmp/ready && exit 0; sleep .05; done; exit 1"
+      ],
+      "exit": 0,
+      "seconds": 0.0660625419113785,
+      "output": ""
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "cat untouched.txt; stat -c %s untouched.txt"
+      ],
+      "exit": 0,
+      "seconds": 0.07005666696932167,
+      "output": "shared replacement\n19\n"
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "touch /tmp/release; for n in $(seq 1 100); do test -s /tmp/held && exit 0; sleep .05; done; exit 1"
+      ],
+      "exit": 0,
+      "seconds": 0.12215870805084705,
+      "output": ""
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "cat /tmp/held"
+      ],
+      "exit": 0,
+      "seconds": 0.06928866705857217,
+      "output": "before\n"
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "git hash-object untouched.txt; cat untouched.txt | git hash-object --stdin"
+      ],
+      "exit": 0,
+      "seconds": 0.11776937497779727,
+      "output": "be63890a152d86a29c8d7885b0817b6d9593258e\nbe63890a152d86a29c8d7885b0817b6d9593258e\n"
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "./client workflow-file-client"
+      ],
+      "exit": 0,
+      "seconds": 0.12038670910988003,
+      "output": "PASS ELF retained-read retained-mmap writable-mmap\n"
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "set -e; git add label.txt; git diff --cached --name-only; git commit -qm 'Private label'; git log -1 --format=%s"
+      ],
+      "exit": 0,
+      "seconds": 0.4792734170332551,
+      "output": "label.txt\nPrivate label\n"
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "git -c merge.conflictStyle=diff3 merge --no-edit 0797978f4bfbfeee0d2e4b4627352341f9a4d9bd"
+      ],
+      "exit": 1,
+      "seconds": 0.47664174996316433,
+      "output": "Auto-merging label.txt\nCONFLICT (content): Merge conflict in label.txt\nAutomatic merge failed; fix conflicts and then commit the result.\n"
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "cat label.txt"
+      ],
+      "exit": 0,
+      "seconds": 0.06919541698880494,
+      "output": "<<<<<<< HEAD\nNew label\n||||||| ae4030d\nOld label\n=======\nShared label\n>>>>>>> 0797978f4bfbfeee0d2e4b4627352341f9a4d9bd\n"
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "git show :1:label.txt; git show :2:label.txt; git show :3:label.txt"
+      ],
+      "exit": 0,
+      "seconds": 0.22188245796132833,
+      "output": "Old label\nNew label\nShared label\n"
+    },
+    {
+      "args": [
+        "kill",
+        "probe",
+        "KILL"
+      ],
+      "exit": 0,
+      "seconds": 0.06786116596776992,
+      "output": ""
+    },
+    {
+      "args": [
+        "delete",
+        "--force",
+        "probe"
+      ],
+      "exit": 0,
+      "seconds": 0.03486304194666445,
+      "output": ""
+    },
+    {
+      "args": [
+        "run",
+        "--detach",
+        "--bundle=/workspace/8020/kernel/.development/workflow-gofer-build/workflow-gofer-zsfndqrt",
+        "probe"
+      ],
+      "exit": 0,
+      "seconds": 0.22406029200647026,
+      "output": ""
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "cat label.txt; git show :1:label.txt; git show :2:label.txt; git show :3:label.txt"
+      ],
+      "exit": 0,
+      "seconds": 0.27405291702598333,
+      "output": "<<<<<<< HEAD\nNew label\n||||||| ae4030d\nOld label\n=======\nShared label\n>>>>>>> 0797978f4bfbfeee0d2e4b4627352341f9a4d9bd\nOld label\nNew label\nShared label\n"
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "set -e; printf 'Resolved label\n' >label.txt; git add label.txt; git commit -qm 'Resolved native merge'; git log -1 --format=%s; git ls-files -u; git merge-base --is-ancestor 0797978f4bfbfeee0d2e4b4627352341f9a4d9bd HEAD"
+      ],
+      "exit": 0,
+      "seconds": 0.4240061250748113,
+      "output": "Resolved native merge\n"
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "./native-client"
+      ],
+      "exit": 0,
+      "seconds": 0.12085116608068347,
+      "output": "PASS executable mmap hardlink symlink rename open-handle flock local-inotify\n"
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "set -e; exec 8<atomic.txt; printf 'Atomic private\n' >atomic.tmp; mv atomic.tmp atomic.txt; cat atomic.txt; cat <&8; rm remove.txt; test ! -e remove.txt"
+      ],
+      "exit": 0,
+      "seconds": 0.06879837496671826,
+      "output": "Atomic private\nOriginal atomic\n"
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "ls -1"
+      ],
+      "exit": 0,
+      "seconds": 0.06779779202770442,
+      "output": "assets\natomic.txt\nclient\nescape\nhandles.txt\nignored\nlabel-link\nlabel.txt\nnative-client\nsmall\nuntouched.txt\nwrites\n"
+    },
+    {
+      "args": [
+        "kill",
+        "probe",
+        "KILL"
+      ],
+      "exit": 0,
+      "seconds": 0.06998820800799876,
+      "output": ""
+    },
+    {
+      "args": [
+        "delete",
+        "--force",
+        "probe"
+      ],
+      "exit": 0,
+      "seconds": 0.03671758307609707,
+      "output": ""
+    },
+    {
+      "args": [
+        "run",
+        "--detach",
+        "--bundle=/workspace/8020/kernel/.development/workflow-gofer-build/workflow-gofer-zsfndqrt",
+        "probe"
+      ],
+      "exit": 0,
+      "seconds": 0.22684695792850107,
+      "output": ""
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "cat label.txt"
+      ],
+      "exit": 0,
+      "seconds": 0.06945112498942763,
+      "output": "Resolved label\n"
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "set -e; cat atomic.txt; test ! -e remove.txt; git log -1 --format=%s; cat ignored/native/file"
+      ],
+      "exit": 0,
+      "seconds": 0.11879437498282641,
+      "output": "Atomic private\nResolved native merge\nreplacement"
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "git --version"
+      ],
+      "exit": 0,
+      "seconds": 0.06689458293840289,
+      "output": "git version 2.47.3\n"
+    },
+    {
+      "args": [
+        "delete",
+        "--force",
+        "probe"
+      ],
+      "exit": 0,
+      "seconds": 0.08676591597031802,
+      "output": ""
+    },
+    {
+      "args": [
+        "run",
+        "--detach",
+        "--bundle=/workspace/8020/kernel/.development/workflow-gofer-build/workflow-gofer-zsfndqrt",
+        "probe"
+      ],
+      "exit": 0,
+      "seconds": 0.17013029207009822,
+      "output": ""
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "./client workflow-write-client sparse"
+      ],
+      "exit": 0,
+      "seconds": 0.7779703330015764,
+      "output": "{\"1048576\":{\"first\":[8870500,9821541,9344833,8601583,10510833,11945833,8890667,9083041,8755500,9278333,8831750,8860625,9032250,9332834,8825792,8136083,9276333,9241042,8893167,8252375,8038875,8623541,8452291,8154500,8836000,8645958,9314708,8799959,8855708,8902584,8627000],\"repeat\":[1597625,1566042,1584500,1516083,8508333,1592791,1549167,1544416,1748083,1634959,1535291,1827750,1541250,1502291,1401875,1349792,1382584,1538542,1557834,1610208,1585916,1613875,1604583,1479500,1507250,1551542,1589541,1568042,1554541,1456750,1432042]},\"64\":{\"first\":[29486333,5329083,4632417,4460917,4532000,4440333,4438042,4434375,4442291,4287250,4390916,4593542,4952750,4509917,4472792,4240541,4457000,4472250,4437875,4272708,4583750,4456375,3516416,3591625,4346458,4558709,4436375,4432417,4175459,3607334,3524250],\"repeat\":[850625,735459,11074958,1018834,797583,803250,798584,787875,789250,829667,771084,751875,820917,796833,865292,1089583,892125,769000,758750,788041,801750,757041,785292,754834,743583,742500,715917,735750,741583,701208,799667]},\"65536\":{\"first\":[4985042,5113125,4940334,4695500,4764000,4440375,4741542,5008250,4788792,4882209,4424834,4789792,4675000,4765583,4665791,3732292,4678000,4517375,4101667,4747667,4537667,4931500,4404875,4708250,4595167,4456875,4759750,4485250,4688583,4455042,4829083],\"repeat\":[797583,982375,848209,816541,810000,836500,797625,809583,798458,769000,791334,796417,792291,855875,963292,966166,869375,827583,795958,825958,851917,804583,877000,807750,824125,856958,825167,869542,956791,849167,791875]}}\n"
+    },
+    {
+      "args": [
+        "delete",
+        "--force",
+        "probe"
+      ],
+      "exit": 0,
+      "seconds": 0.08496837608981878,
+      "output": ""
+    },
+    {
+      "args": [
+        "run",
+        "--detach",
+        "--bundle=/workspace/8020/kernel/.development/workflow-gofer-build/workflow-gofer-zsfndqrt",
+        "probe"
+      ],
+      "exit": 0,
+      "seconds": 0.17393612500745803,
+      "output": ""
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "./client workflow-write-client stock_rpc"
+      ],
+      "exit": 0,
+      "seconds": 0.2220531669445336,
+      "output": "{\"1048576\":{\"first\":[1327167,1131709,1182833,1166833,1200333,1100708,10263500,1174792,1123416,1173167,1175292,1320000,1045333,1021625,1019875,1052583,1310667,1250000,1148834,1091209,1103666,1104958,1091125,1104083,1104166,1065042,1370834,1164917,1112167,1055042,1128875],\"repeat\":[1019958,1039375,1020209,1025333,1019917,1072209,1510500,1065875,1041208,1068000,1099833,1067458,1003584,1033666,1102708,1141542,1437833,1120209,1071625,923708,958875,1023709,1031458,1032917,1054667,1023875,1053083,1133542,1035583,948000,956750]},\"64\":{\"first\":[978125,445291,406625,421167,9971791,544083,478875,396583,542875,374084,430708,411708,367917,467792,420834,462500,409333,399458,396750,397333,444959,482458,541541,472000,505750,429958,491375,3521375,677083,560875,510417],\"repeat\":[448208,415209,339708,366667,321958,326833,426000,533708,427541,338541,5104459,390042,374542,350416,372000,348041,347792,376291,379000,364458,369250,358250,384416,374375,366083,372333,340333,375333,459250,423042,401709]},\"65536\":{\"first\":[694000,471584,458000,527709,464041,460250,541583,571542,509417,483917,465792,457042,426667,463083,432250,462667,451500,474333,475584,498750,461291,510625,451292,519333,544000,538750,511833,492625,461542,548250,513417],\"repeat\":[440625,391875,372458,425542,395416,374958,366875,411375,376542,356709,404500,378625,391250,357375,363375,397166,489625,474042,456458,382834,388584,375333,373834,378667,381583,485625,473542,357166,349542,359292,354041]}}\n"
+    },
+    {
+      "args": [
+        "delete",
+        "--force",
+        "probe"
+      ],
+      "exit": 0,
+      "seconds": 0.07799487502779812,
+      "output": ""
+    },
+    {
+      "args": [
+        "run",
+        "--detach",
+        "--bundle=/workspace/8020/kernel/.development/workflow-gofer-build/workflow-gofer-zsfndqrt",
+        "probe"
+      ],
+      "exit": 0,
+      "seconds": 0.16966100002173334,
+      "output": ""
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "./client workflow-write-client stock_directfs"
+      ],
+      "exit": 0,
+      "seconds": 0.22536733304150403,
+      "output": "{\"1048576\":{\"first\":[1347292,1227084,1088291,1146084,1040875,1089208,1171709,1012625,1034209,1071042,1083375,982792,1060375,990875,1048167,1094917,1081667,1090333,1021458,3349417,1016583,983584,1018708,997083,1011042,995917,1155042,1046041,1236500,1409042,2201500],\"repeat\":[977084,957209,2154375,1228125,1114208,1071875,1051416,1023708,1704083,1262416,1240417,1322291,1275917,1094167,1098459,920708,964041,972125,957958,969625,3594125,1255625,1211917,1527875,2098417,1028875,939875,969000,1021042,1223500,1182625]},\"64\":{\"first\":[1017250,390459,387542,345125,365208,350417,388583,328000,351917,328834,348208,344583,334416,343375,331083,317750,423166,362000,465542,348625,368000,386084,535916,469375,342250,358000,455750,382583,466084,488125,344250],\"repeat\":[301666,281209,298875,328542,332917,385833,301333,296292,379250,316041,357917,305666,325500,297708,305625,320458,416292,347750,323583,286000,319084,297958,274042,299500,328333,357875,381791,379833,350583,373833,304792]},\"65536\":{\"first\":[544750,385792,402416,410041,401250,410250,384834,472667,484334,445792,391083,370375,403625,366084,380459,365833,374250,361334,357000,407708,415500,361667,370500,422125,474458,505875,466334,390583,384167,355166,371833],\"repeat\":[330084,342500,324292,310167,338667,337791,471708,353375,330334,271166,295583,285417,274833,327500,356333,341709,399708,373709,318583,348750,321041,339834,411417,379833,410125,524125,356042,367833,343958,359500,331750]}}\n"
+    },
+    {
+      "args": [
+        "delete",
+        "--force",
+        "probe"
+      ],
+      "exit": 0,
+      "seconds": 0.07054287509527057,
+      "output": ""
+    },
+    {
+      "args": [
+        "delete",
+        "--force",
+        "probe"
+      ],
+      "exit": 0,
+      "seconds": 0.036580707994289696,
+      "output": ""
+    }
+  ],
+  "full_workflow_qualified": false,
+  "mode": "writes",
+  "timing_boundary": "open/truncate/write/file-sync/close",
+  "unimplemented_gates": [
+    "lower/directory rename, directory deletion, full metadata and hardlink semantics",
+    "transactional copy-up recovery and concurrent upstream in-place writes",
+    "hard-linked lower files and detached lower-handle mutation",
+    "private Git ownership, merge/conflicts, publication and live retirement",
+    "bounded enumeration, watcher behavior, concurrency and deployment profiles"
+  ],
+  "assets": {
+    "files": 4,
+    "logical_bytes": 4194304,
+    "allocated_bytes": 4194304
+  },
+  "small_tree": {
+    "files": 0,
+    "logical_bytes": 0
+  },
+  "small_edit_storage": {
+    "files": 2,
+    "regular_inodes": 2,
+    "logical_bytes": 20,
+    "allocated_bytes": 8192,
+    "symlinks": 0,
+    "deleted_markers": 0,
+    "asset_copies": 0,
+    "directory_allocation_included": false
+  },
+  "sandbox_git_version": "git version 2.47.3",
+  "traversal": {},
+  "writes": {
+    "sparse": {
+      "1048576": {
+        "first": [
+          8870500,
+          9821541,
+          9344833,
+          8601583,
+          10510833,
+          11945833,
+          8890667,
+          9083041,
+          8755500,
+          9278333,
+          8831750,
+          8860625,
+          9032250,
+          9332834,
+          8825792,
+          8136083,
+          9276333,
+          9241042,
+          8893167,
+          8252375,
+          8038875,
+          8623541,
+          8452291,
+          8154500,
+          8836000,
+          8645958,
+          9314708,
+          8799959,
+          8855708,
+          8902584,
+          8627000
+        ],
+        "repeat": [
+          1597625,
+          1566042,
+          1584500,
+          1516083,
+          8508333,
+          1592791,
+          1549167,
+          1544416,
+          1748083,
+          1634959,
+          1535291,
+          1827750,
+          1541250,
+          1502291,
+          1401875,
+          1349792,
+          1382584,
+          1538542,
+          1557834,
+          1610208,
+          1585916,
+          1613875,
+          1604583,
+          1479500,
+          1507250,
+          1551542,
+          1589541,
+          1568042,
+          1554541,
+          1456750,
+          1432042
+        ]
+      },
+      "64": {
+        "first": [
+          29486333,
+          5329083,
+          4632417,
+          4460917,
+          4532000,
+          4440333,
+          4438042,
+          4434375,
+          4442291,
+          4287250,
+          4390916,
+          4593542,
+          4952750,
+          4509917,
+          4472792,
+          4240541,
+          4457000,
+          4472250,
+          4437875,
+          4272708,
+          4583750,
+          4456375,
+          3516416,
+          3591625,
+          4346458,
+          4558709,
+          4436375,
+          4432417,
+          4175459,
+          3607334,
+          3524250
+        ],
+        "repeat": [
+          850625,
+          735459,
+          11074958,
+          1018834,
+          797583,
+          803250,
+          798584,
+          787875,
+          789250,
+          829667,
+          771084,
+          751875,
+          820917,
+          796833,
+          865292,
+          1089583,
+          892125,
+          769000,
+          758750,
+          788041,
+          801750,
+          757041,
+          785292,
+          754834,
+          743583,
+          742500,
+          715917,
+          735750,
+          741583,
+          701208,
+          799667
+        ]
+      },
+      "65536": {
+        "first": [
+          4985042,
+          5113125,
+          4940334,
+          4695500,
+          4764000,
+          4440375,
+          4741542,
+          5008250,
+          4788792,
+          4882209,
+          4424834,
+          4789792,
+          4675000,
+          4765583,
+          4665791,
+          3732292,
+          4678000,
+          4517375,
+          4101667,
+          4747667,
+          4537667,
+          4931500,
+          4404875,
+          4708250,
+          4595167,
+          4456875,
+          4759750,
+          4485250,
+          4688583,
+          4455042,
+          4829083
+        ],
+        "repeat": [
+          797583,
+          982375,
+          848209,
+          816541,
+          810000,
+          836500,
+          797625,
+          809583,
+          798458,
+          769000,
+          791334,
+          796417,
+          792291,
+          855875,
+          963292,
+          966166,
+          869375,
+          827583,
+          795958,
+          825958,
+          851917,
+          804583,
+          877000,
+          807750,
+          824125,
+          856958,
+          825167,
+          869542,
+          956791,
+          849167,
+          791875
+        ]
+      }
+    },
+    "stock_rpc": {
+      "1048576": {
+        "first": [
+          1327167,
+          1131709,
+          1182833,
+          1166833,
+          1200333,
+          1100708,
+          10263500,
+          1174792,
+          1123416,
+          1173167,
+          1175292,
+          1320000,
+          1045333,
+          1021625,
+          1019875,
+          1052583,
+          1310667,
+          1250000,
+          1148834,
+          1091209,
+          1103666,
+          1104958,
+          1091125,
+          1104083,
+          1104166,
+          1065042,
+          1370834,
+          1164917,
+          1112167,
+          1055042,
+          1128875
+        ],
+        "repeat": [
+          1019958,
+          1039375,
+          1020209,
+          1025333,
+          1019917,
+          1072209,
+          1510500,
+          1065875,
+          1041208,
+          1068000,
+          1099833,
+          1067458,
+          1003584,
+          1033666,
+          1102708,
+          1141542,
+          1437833,
+          1120209,
+          1071625,
+          923708,
+          958875,
+          1023709,
+          1031458,
+          1032917,
+          1054667,
+          1023875,
+          1053083,
+          1133542,
+          1035583,
+          948000,
+          956750
+        ]
+      },
+      "64": {
+        "first": [
+          978125,
+          445291,
+          406625,
+          421167,
+          9971791,
+          544083,
+          478875,
+          396583,
+          542875,
+          374084,
+          430708,
+          411708,
+          367917,
+          467792,
+          420834,
+          462500,
+          409333,
+          399458,
+          396750,
+          397333,
+          444959,
+          482458,
+          541541,
+          472000,
+          505750,
+          429958,
+          491375,
+          3521375,
+          677083,
+          560875,
+          510417
+        ],
+        "repeat": [
+          448208,
+          415209,
+          339708,
+          366667,
+          321958,
+          326833,
+          426000,
+          533708,
+          427541,
+          338541,
+          5104459,
+          390042,
+          374542,
+          350416,
+          372000,
+          348041,
+          347792,
+          376291,
+          379000,
+          364458,
+          369250,
+          358250,
+          384416,
+          374375,
+          366083,
+          372333,
+          340333,
+          375333,
+          459250,
+          423042,
+          401709
+        ]
+      },
+      "65536": {
+        "first": [
+          694000,
+          471584,
+          458000,
+          527709,
+          464041,
+          460250,
+          541583,
+          571542,
+          509417,
+          483917,
+          465792,
+          457042,
+          426667,
+          463083,
+          432250,
+          462667,
+          451500,
+          474333,
+          475584,
+          498750,
+          461291,
+          510625,
+          451292,
+          519333,
+          544000,
+          538750,
+          511833,
+          492625,
+          461542,
+          548250,
+          513417
+        ],
+        "repeat": [
+          440625,
+          391875,
+          372458,
+          425542,
+          395416,
+          374958,
+          366875,
+          411375,
+          376542,
+          356709,
+          404500,
+          378625,
+          391250,
+          357375,
+          363375,
+          397166,
+          489625,
+          474042,
+          456458,
+          382834,
+          388584,
+          375333,
+          373834,
+          378667,
+          381583,
+          485625,
+          473542,
+          357166,
+          349542,
+          359292,
+          354041
+        ]
+      }
+    },
+    "stock_directfs": {
+      "1048576": {
+        "first": [
+          1347292,
+          1227084,
+          1088291,
+          1146084,
+          1040875,
+          1089208,
+          1171709,
+          1012625,
+          1034209,
+          1071042,
+          1083375,
+          982792,
+          1060375,
+          990875,
+          1048167,
+          1094917,
+          1081667,
+          1090333,
+          1021458,
+          3349417,
+          1016583,
+          983584,
+          1018708,
+          997083,
+          1011042,
+          995917,
+          1155042,
+          1046041,
+          1236500,
+          1409042,
+          2201500
+        ],
+        "repeat": [
+          977084,
+          957209,
+          2154375,
+          1228125,
+          1114208,
+          1071875,
+          1051416,
+          1023708,
+          1704083,
+          1262416,
+          1240417,
+          1322291,
+          1275917,
+          1094167,
+          1098459,
+          920708,
+          964041,
+          972125,
+          957958,
+          969625,
+          3594125,
+          1255625,
+          1211917,
+          1527875,
+          2098417,
+          1028875,
+          939875,
+          969000,
+          1021042,
+          1223500,
+          1182625
+        ]
+      },
+      "64": {
+        "first": [
+          1017250,
+          390459,
+          387542,
+          345125,
+          365208,
+          350417,
+          388583,
+          328000,
+          351917,
+          328834,
+          348208,
+          344583,
+          334416,
+          343375,
+          331083,
+          317750,
+          423166,
+          362000,
+          465542,
+          348625,
+          368000,
+          386084,
+          535916,
+          469375,
+          342250,
+          358000,
+          455750,
+          382583,
+          466084,
+          488125,
+          344250
+        ],
+        "repeat": [
+          301666,
+          281209,
+          298875,
+          328542,
+          332917,
+          385833,
+          301333,
+          296292,
+          379250,
+          316041,
+          357917,
+          305666,
+          325500,
+          297708,
+          305625,
+          320458,
+          416292,
+          347750,
+          323583,
+          286000,
+          319084,
+          297958,
+          274042,
+          299500,
+          328333,
+          357875,
+          381791,
+          379833,
+          350583,
+          373833,
+          304792
+        ]
+      },
+      "65536": {
+        "first": [
+          544750,
+          385792,
+          402416,
+          410041,
+          401250,
+          410250,
+          384834,
+          472667,
+          484334,
+          445792,
+          391083,
+          370375,
+          403625,
+          366084,
+          380459,
+          365833,
+          374250,
+          361334,
+          357000,
+          407708,
+          415500,
+          361667,
+          370500,
+          422125,
+          474458,
+          505875,
+          466334,
+          390583,
+          384167,
+          355166,
+          371833
+        ],
+        "repeat": [
+          330084,
+          342500,
+          324292,
+          310167,
+          338667,
+          337791,
+          471708,
+          353375,
+          330334,
+          271166,
+          295583,
+          285417,
+          274833,
+          327500,
+          356333,
+          341709,
+          399708,
+          373709,
+          318583,
+          348750,
+          321041,
+          339834,
+          411417,
+          379833,
+          410125,
+          524125,
+          356042,
+          367833,
+          343958,
+          359500,
+          331750
+        ]
+      }
+    }
+  },
+  "extension_loaded": true,
+  "runtime_errors": [],
+  "component_checks_pass": true
+}

@@ -35,6 +35,8 @@ Parent DOX: [kernel/kernel/database DOX](../AGENTS.md).
 - `Prepare` applies candidate schema before source visibility and `Complete`
   either records activation or restores active descriptors. Restart recovery
   evaluates the package tree actually present on disk.
+- Removal candidates have empty commits. Preparation retires their recorded
+  tables without discovering, mounting, or executing the removed package.
 - PostgreSQL retains one database advisory lock from `Prepare` through source
   switch and `Complete`; recovery aligns schema and clears the pending record
   under that same lock. SQLite uses the manager's local schema lock.

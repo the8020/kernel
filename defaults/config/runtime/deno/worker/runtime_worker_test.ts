@@ -31,6 +31,10 @@ Deno.test("Worker records only loaded direct, transitive and late dynamic import
       assertEquals(observed(name), true);
     }
     assertEquals(observed("dynamic"), false);
+    const directory = Deno.realPathSync(root);
+    assertEquals(worker.importsAny(new Set([directory + "/"])), true);
+    assertEquals(worker.importsAny(new Set([directory])), false);
+    assertEquals(worker.importsAny(new Set([directory + "-other/"])), false);
     assertEquals(await worker.runJob(testInvocation(), [true]), "dynamic");
     assertEquals(observed("dynamic"), true);
     assertEquals(await worker.runJob(testInvocation(), [true]), "dynamic");
@@ -666,8 +670,23 @@ Deno.test("stateless service Worker bridges WebSocket routes without buffering m
     assertEquals(sent[2], new Uint8Array([4, 5, 6]));
     assertEquals(closes, []);
 
-    opened.connection.close(1000, "test complete");
+    opened.connection.send("close");
+    await waitFor(() => closes.length === 1);
     await waitFor(() => worker.inFlight === 0);
+
+    const replacement = await worker.openServiceWebSocket(
+      new Request("http://service/echo/replacement"),
+      { ...requestMetadata, contextId: "ctx-0000000012" },
+      "the8020.echo",
+      { send() {}, close() {} },
+    );
+    if (!replacement.accepted) throw new Error("Replacement was rejected");
+    assertEquals(worker.inFlight, 1);
+    // A delayed transport close must not release the replacement's slot.
+    opened.connection.close(1000, "server closed");
+    assertEquals(worker.inFlight, 1);
+    replacement.connection.close();
+    assertEquals(worker.inFlight, 0);
 
     const missing = await worker.openServiceWebSocket(
       new Request("http://service/missing"),

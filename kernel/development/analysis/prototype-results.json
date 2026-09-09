@@ -1,0 +1,225 @@
+{
+  "scope": "Opt-in prototype; production adoption, optimization and broader filesystem qualification deferred.",
+  "native_browser": {
+    "command": "deno run -A --import-map=deno.local.json browser_e2e.ts --source-root=/workspace/8020/kernel --package-workspace=/workspace/8020/kernel/.development/workflow-prototype/package-workspace --runtime-root=/workspace/8020/kernel/.development/named-terminal-test --kernel=/workspace/8020/kernel/.development/workflow-prototype/kernel --admin=/workspace/8020/kernel/.development/workflow-prototype/admin --browser=/usr/bin/chromium --fixture=../dev-core/programs/development-test/prototype_browser.ts",
+    "working_directory": "/workspace/8020/uui",
+    "exit_code": 0,
+    "checks": [
+      "package created after both development sandboxes start is visible to the peer",
+      "peer activates through the real helper while first developer has private edits",
+      "private edits stay isolated and untouched files follow peer publication",
+      "UUI activation creates native text and modify/delete conflicts",
+      "annotated code editor saves a resolution",
+      "peer publishes another untouched-file update during conflict resolution",
+      "terminal reads identical Git index stages and resolves deletion",
+      "UUI refresh and continuation preserves the newer shared update",
+      "readable helper names both conflicts, supplies Git/retry instructions and exits 3",
+      "whole-package deletion removes shared source files from the peer view",
+      "both development runtimes retained through activation and deletion",
+      "native private commit in a later-published package leaves shared Git HEAD unchanged",
+      "private commit remains readable after shared-package deletion",
+      "private commit remains readable after explicit peer sandbox stop/start",
+      "explicit service updates use the repaired synchronous reindex owner",
+      "two development sandboxes tear down without the former deadline diagnostic"
+    ],
+    "observed_at": "2026-09-09T07:54:12.775454+00:00",
+    "kernel_sha256": "ba8f676424fa69e5cefff5d5e92ef1c54f8117bef4a9bde94e02cf281f9ec696",
+    "custom_runsc_sha256": "025b4abb440df1bb13a2f416070a25de183c308e6a864107fc225ea5a920c21b",
+    "note": "Two real development sandboxes use ordinary Git and activate through the helper. Private history for a package created after sandbox startup survives shared deletion and explicit peer restart. Publications are sequential; overlapping activation and multi-node source publication remain unqualified.",
+    "log": ".development/workflow-indexing-fix/native-browser-shutdown.log",
+    "cleanup": {
+      "diagnostic": null,
+      "observed_at": "2026-09-09T07:57:11.190490+00:00",
+      "final_state": "Harness exited 0 and no previous development-sandbox deadline diagnostic occurred. /proc inspection found no live prototype or browser-fixture kernel/runsc/Deno/Chromium processes.",
+      "graceful_shutdown_qualified": false,
+      "limitation": "The harness does not assert individual kernel exit status and can force-stop a child after its deadline. Owner race checks prove bounded overlap and checkpoint ordering; full process-shutdown qualification remains open."
+    }
+  },
+  "native_activation": {
+    "command": "python3 kernel/development/analysis/run.py activation",
+    "exit_code": 0,
+    "record": "sparse-activation-results.json",
+    "checks": [
+      "new package and existing edit in one publication",
+      "whole-package deletion with concurrent upstream addition",
+      "private edit against upstream package deletion",
+      "stale UI saves rejected after terminal edits",
+      "retained native PTY",
+      "ordinary symlink deletion/rename and UUI helper Git side selection without reading targets",
+      "live private Git initialization cannot escape its mounted metadata root"
+    ],
+    "duration_seconds": 29.52,
+    "observed_at": "2026-09-09T07:24:39.645309842Z",
+    "log": ".development/workflow-gofer-build/private-git-activation.log"
+  },
+  "native_schema": {
+    "command": "python3 kernel/development/analysis/run.py schema",
+    "exit_code": 0,
+    "record": "sparse-schema-results.json",
+    "checks": [
+      "new package catalog registration and native program execution",
+      "deleted package retired from catalog",
+      "table data retained",
+      "same package ID recreated"
+    ],
+    "duration_seconds": 55.46,
+    "observed_at": "2026-09-09T07:30:37.165810965Z",
+    "log": ".development/workflow-gofer-build/private-git-schema.log"
+  },
+  "presentation_browser": {
+    "command": "deno run -A --import-map=deno.local.json presentation_browser_e2e.ts --programs --screenshots",
+    "working_directory": "/workspace/8020/uui",
+    "exit_code": 0,
+    "checks": [
+      "annotated editor",
+      "save",
+      "delete",
+      "continue",
+      "retained console DOM"
+    ],
+    "note": "The final layout also passes the fresh compiled native browser check."
+  },
+  "owner_checks": {
+    "command": "go test ./kernel/development ./kernel/cbus/commands/development/shared",
+    "exit_code": 0,
+    "regression": "TestCommandBusGatewayUsesCurrentPackageCommand"
+  },
+  "source_sha256": {
+    "kernel": "ba8f676424fa69e5cefff5d5e92ef1c54f8117bef4a9bde94e02cf281f9ec696",
+    "custom_runsc": "025b4abb440df1bb13a2f416070a25de183c308e6a864107fc225ea5a920c21b",
+    "native_browser_fixture": "e39ccd0ae83847ca45bf34c7eb36dd153a567af5ffc5f0a6115b001f2c4949c0",
+    "native_browser_conflict_screen": "a3cae8ce78ae43684eabf651710b54374e49277086f7f4c329ca609ac701c27e",
+    "presentation_conflict_screen": "a3cae8ce78ae43684eabf651710b54374e49277086f7f4c329ca609ac701c27e",
+    "activation_helper": "94bf50ed842a9b9faa605c335c27de32ff5386814c511b7384fdbfe31017c5cc",
+    "git_adapter": "adfacbc302901473960a4648934c1671d47178109249ae997c28b1e13c958385",
+    "gateway": "4883d82a29daa8e01ed758c9bf305b1f135a4cf465505a46280d6d43b4b60b21",
+    "activation_owner": "fe78fd02fad1cb8633578132c3de660bd51e5b208524018a43f007811b291e16",
+    "schema_fixture": "9f7e5de645466e23399f088aea357b3d9ff8ac5529df1d45cac18171394b510c",
+    "prototype_composition": "3614980e31d9d229c23efdd58b2f8dcdf02b38df7c8ce879c859046519fbc14e",
+    "build": "4dd7c04f2cacdb8f9c13f6ad25f9f5aa54b526cb05ed071152b659152969a723",
+    "sparse_driver": "2c56b5c6ec124ed56998ef6b83c3df1c6ff525c882292608e2d65cf4b8708e1a",
+    "gofer": "79ee9830d3d6b93ea7346277700b378d6bdfc4d05e3e7af5f11b0c1980c3f1ab",
+    "activation_transaction": "54bb1807132e5d96603be17565da5de37a865850d1d0c8b1e0a1c29553072f47"
+  },
+  "new_benchmarks_run": false,
+  "recorded_at": "2026-09-09T07:57:11.190490+00:00",
+  "dox": {
+    "affected_markdown_links": "Passed: 70 relative links across seven applicable documents; the analysis owner covers both new defect records and retains reciprocal parent links.",
+    "prototype_owning_contracts": "Updated analysis contracts, defect records and the prototype handoff; owning production boundaries and child indexes are unchanged.",
+    "parent_docs_left_unchanged": "Workspace and kernel/development/app contracts retain their production ownership and behavior; both fixes remain in the analysis compiler patch. UUI/dev-core presentation contracts are unchanged.",
+    "framework_completeness": "Passed: required framework sections in the workspace and all 17 independent repository roots."
+  },
+  "final_build": {
+    "exit_code": 0,
+    "observed_at": "2026-09-09T07:52:24.391642+00:00",
+    "kernel_sha256": "ba8f676424fa69e5cefff5d5e92ef1c54f8117bef4a9bde94e02cf281f9ec696",
+    "custom_runsc_sha256": "025b4abb440df1bb13a2f416070a25de183c308e6a864107fc225ea5a920c21b",
+    "source_sha256": {
+      "defaults/scripts/activation-conflicts.ts": "adfacbc302901473960a4648934c1671d47178109249ae997c28b1e13c958385",
+      "kernel/development/analysis/gofer_probe.go": "79ee9830d3d6b93ea7346277700b378d6bdfc4d05e3e7af5f11b0c1980c3f1ab",
+      "kernel/development/analysis/gofer_probe.py": "a5cf069a3697ef59bbb37183a1457086dc2e05789c1d888842833fb87a6346db",
+      "kernel/development/analysis/sparse_activation_test.go": "fe78fd02fad1cb8633578132c3de660bd51e5b208524018a43f007811b291e16",
+      "kernel/development/analysis/sparse_schema_test.go": "9f7e5de645466e23399f088aea357b3d9ff8ac5529df1d45cac18171394b510c",
+      "kernel/development/analysis/run.py": "4dd7c04f2cacdb8f9c13f6ad25f9f5aa54b526cb05ed071152b659152969a723",
+      "kernel/development/analysis/prototype.go": "3614980e31d9d229c23efdd58b2f8dcdf02b38df7c8ce879c859046519fbc14e",
+      "kernel/development/analysis/sparse_test.go": "2c56b5c6ec124ed56998ef6b83c3df1c6ff525c882292608e2d65cf4b8708e1a",
+      "kernel/development/analysis/activation-transaction.patch": "54bb1807132e5d96603be17565da5de37a865850d1d0c8b1e0a1c29553072f47",
+      "kernel/development/manager.go": "76c1bcf2d83291b1e931861f36046e4b605153e7afc34faa810ee55c780a4b4b"
+    },
+    "note": "Final opt-in build includes synchronous package reindex waiting and bounded independent sandbox shutdown. The existing native browser fixture passes with these binaries; original production sources remain unchanged by these compiler-overlay fixes.",
+    "runtime_path": "/workspace/8020/kernel/.development/workflow-prototype/runsc",
+    "runtime_independent_of_experiment_binary": true,
+    "log": ".development/workflow-indexing-fix/prototype-shutdown-build.log",
+    "activation_implementation_prefix_sha256": "a5a4fed5b4701874eb802394a16b5260d972fc68af80e6fd9a0d4e9d2ec0b68d"
+  },
+  "source_sha256_note": "Final build and native browser inputs; earlier focused activation, schema and sparse records retain their own source hashes and timing boundaries. This update changes shared reindex/shutdown owners, not the filesystem or merge implementation.",
+  "deferred_compatibility": {
+    "scope": "Broader qualification; not a prototype delivery gate without demonstrated package need.",
+    "tracked_symlinks_in_current_source_repositories": 0,
+    "known_failure": "The standalone namespace check fails reading a retained symlink descriptor after unlink.",
+    "record": "gofer-namespace-results.json",
+    "earlier_negative_control": "symlink-handle-failure.txt"
+  },
+  "dev_core_check": {
+    "command": "deno task check",
+    "exit_code": 0,
+    "working_directory": "/workspace/8020/dev-core",
+    "log": ".development/workflow-gofer-build/private-git-dev-core-check.log",
+    "observed_at": "2026-09-09T07:30:23.613147+00:00"
+  },
+  "native_sparse": {
+    "command": "python3 kernel/development/analysis/run.py sparse",
+    "exit_code": 0,
+    "record": "sparse-runtime-results.json",
+    "log": ".development/workflow-gofer-build/private-git-sparse.log",
+    "duration_seconds": 11.18,
+    "observed_at": "2026-09-09T07:29:53.566768626Z",
+    "checks": [
+      "native private history survives shared garbage collection and source removal",
+      "unresolved Git state survives sandbox recreation",
+      "borrowed objects remain read-only without private asset copies",
+      "replacement shared repository can be fetched without replacing private history"
+    ]
+  },
+  "known_lifecycle_diagnostics": {
+    "startup": {
+      "resolved_in_prototype": true,
+      "record": "synchronous-reindex-failure.json"
+    },
+    "shutdown": {
+      "resolved_in_two_developer_prototype": true,
+      "record": "development-shutdown-failure.json",
+      "remaining": "The harness does not assert individual kernel exit status; more than eight concurrent developer shutdowns remain unqualified."
+    }
+  },
+  "prototype_owner_checks": {
+    "app": {
+      "exit_code": 0,
+      "race": true,
+      "log": ".development/workflow-indexing-fix/owner-race.log"
+    },
+    "development": {
+      "exit_code": 0,
+      "race": true,
+      "log": ".development/workflow-indexing-fix/shutdown-owner-race.log"
+    }
+  },
+  "manual_review": {
+    "observed_at": "2026-09-09T08:16:03.784601+00:00",
+    "instance_root": "/tmp/8020-prototype-review",
+    "url": "http://127.0.0.1:8082/",
+    "ssh_port": 22222,
+    "kernel_pid": 50358,
+    "kernel_sha256": "ba8f676424fa69e5cefff5d5e92ef1c54f8117bef4a9bde94e02cf281f9ec696",
+    "launcher": "kernel/development/analysis/start-prototype.py",
+    "launcher_sha256": "f90976d412b4c33e1d51e32811aeb6f756bebfaed2582fb7427aab3becd5b55f",
+    "login_http_status": 200,
+    "runtime_ready": true,
+    "database_initialized": true,
+    "login_user": "reviewer",
+    "credentials_file": "/tmp/8020-prototype-review/review-login.txt",
+    "demo_package": "the8020/conflict-demo",
+    "activation_status": "conflicted",
+    "conflicting_files": [
+      "label.txt",
+      "removed.txt"
+    ],
+    "helper_exit_status": 3,
+    "helper_output": ".development/workflow-prototype/review-conflicts.txt",
+    "process_session": 45316,
+    "notes": "Running manual review instance; seeded through two ordinary development sandboxes and activate. The existing compiled browser evidence covers UUI resolution/continuation and deletions; that browser suite was not repeated for this launcher.",
+    "setup_failures_resolved": [
+      "Workspace filesystem rejected Unix socket chmod; native /tmp instance storage is used.",
+      "Symlinked image roots failed gVisor mount confinement; prepared images are materialized once as native instance paths."
+    ],
+    "persistence_limit": "Instance state survives ordinary process restarts but is disposable under host /tmp cleanup. Prepared logins and demo state are not recreated by the launcher.",
+    "production_adoption": false,
+    "verification": {
+      "startup": "Login HTTP 200, runtime_ready=true, initialized database READY, ordinary user creation and two development sandboxes.",
+      "seeded_conflicts": "Ordinary create/activate, peer activate, then native text and modify/delete conflicts with exit 3; left unresolved for manual review.",
+      "dox": "Required framework sections in 18 workspace/repository roots; seven affected-document links, direct ownership and reciprocal parent links pass; child indexes unchanged.",
+      "parent_docs_left_unchanged": "Production and package ownership is unchanged; only the opt-in analysis launcher and its handoff were added.",
+      "broader_checks": "No browser suite, benchmark, filesystem or concurrency qualification rerun for this handoff."
+    }
+  }
+}

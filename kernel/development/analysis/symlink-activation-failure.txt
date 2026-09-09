@@ -1,0 +1,7 @@
+workflow runtime profile: current
+=== RUN   TestWorkflowAnalysisActivation
+    workflow_sparse_activation_test.go:1817: exec "set -e; cd /workspace/packages/the8020/dev-core; rm symbolic/remove && mv symbolic/from symbolic/moved && ln -sfn /tmp/private-link-target symbolic/changed": development sandbox exec: exit status 1: rm: cannot remove 'symbolic/remove': Operation not supported: 
+--- FAIL: TestWorkflowAnalysisActivation (29.04s)
+FAIL
+FAIL	the8020/kernel/development	29.045s
+FAIL

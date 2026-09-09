@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+set -euo pipefail
+exec deno run -A /workspace/skills/builtin/the8020-dev-uui-control/scripts/uui.ts "$@"

@@ -528,8 +528,8 @@ below.
 
 - Root-owned paths include `.vscode/`, `go.mod`, `go.sum`, `.go-version`,
   `.gitignore`, `install.sh`, `run.sh`, `release-tag.sh`, release resolver
-  tests, `Dockerfile`, `.dockerignore`, `docker-entrypoint_test.sh`, and
-  root-level project documentation.
+  tests, `Dockerfile`, `.dockerignore`, `docker-entrypoint_test.sh`,
+  `install-development-assets.sh`, and root-level project documentation.
 
 # 80|20
 
@@ -598,7 +598,7 @@ below.
   checksum-verified project-local Go toolchain and node-local gVisor, generates
   the generic protocol, builds `kernel`, `admin`, and the dedicated `logd`,
   initializes the selected instance layout when absent, atomically refreshes
-  platform-owned `node/kernel/runtime/definitions/` and read-only development
+  platform-owned `node/kernel/runtime/definitions/`, read-only development
   helper scripts, and materializes verified service and development images under
   `node/kernel/runtime/images/`. Complete generic image-input digests make
   unchanged installs fast; required packages and Deno bundling execute inside
@@ -630,13 +630,13 @@ below.
   remains alive; runtime recovery never gates the console.
   `THE8020_SKIP_RUNTIME_HOST=true` forwards the rootless-only install mode.
 - The source workspace `/workspace/8020/` contains sibling package repositories
-  `admin-core`, `admin-db`, `db`, `demo`, `dev-core`, `jobs`, `packages`,
-  `secrets`, `services`, `system`, `users`, and `uui`, alongside `kernel`; the
-  kernel repository contains no source package copies. Each package owns its
-  formatting, linting, type checking, tests, browser bundles, release, and
-  activation readiness. Initialized instances clone indexed repositories into
-  their mapped `packages/<namespace>/<repository>/` tree, which service
-  sandboxes mount read-only.
+  `admin-core`, `admin-db`, `db`, `demo`, `dev-core`, `dev-skills`, `jobs`,
+  `packages`, `secrets`, `services`, `system`, `users`, and `uui`, alongside
+  `kernel`; the kernel repository contains no source package copies. Each
+  package owns its formatting, linting, type checking, tests, browser bundles,
+  release, and activation readiness. Initialized instances clone indexed
+  repositories into their mapped `packages/<namespace>/<repository>/` tree,
+  which service sandboxes mount read-only.
 - The sibling `the8020/branding` repository owns the shared brand assets and
   editable logo sources; branding assets live outside the kernel repository.
 - The sibling `admin-core` repository's `programs/packages` program lists
@@ -654,6 +654,15 @@ below.
   commits changes into shared package roots. Activation creates one commit per
   selected changed package, retains root's home and installed system changes,
   and never pushes configured remotes.
+- Agent development always starts with `8020-dev` and the relevant domain
+  skills. The independent [dev-skills package](../dev-skills/AGENTS.md) owns
+  shipped guidance and discovery policy. Its activated root is mounted read-only
+  at `/workspace/skills/builtin`; `workspace.md` also supplies
+  `/workspace/AGENTS.md` and `/workspace/CLAUDE.md`. A persistent writable mount
+  exposes `users/<user-id>/dev-sandbox/skills/` at `/workspace/skills/custom`.
+  Package activation updates built-ins; private skills survive activation and
+  ordinary lifecycle operations. The mounted bootstrap delegates discovery to
+  the package and reaches retained homes without rebuilding their system roots.
 - The platform-owned instance `scripts/` tree is mounted read-only and
   executable at `/workspace/scripts` in development sandboxes. Its `activate`
   helper calls the same typed activation path as UUI, requires a commit message

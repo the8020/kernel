@@ -1,0 +1,7 @@
+workflow runtime profile: current
+=== RUN   TestWorkflowAnalysisSparse
+    workflow_sparse_test.go:243: source edit changed parent directory identity or lost Git submount: before="29:3:755\n/workspace/shared-git/objects\n" after="29:8:700" error=development sandbox exec: exit status 1: cat: .git/objects/info/alternates: No such file or directory
+--- FAIL: TestWorkflowAnalysisSparse (3.98s)
+FAIL
+FAIL	the8020/kernel/development	3.981s
+FAIL

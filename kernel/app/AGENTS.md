@@ -18,6 +18,13 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 # Local Contracts
 
+- `sandbox_access.go` connects authenticated native sandbox ingress to the
+  ordinary users authenticate program and service router. Allowance issuance
+  executes as the verified sandbox owner; service requests require a signed
+  token for that owner and retain target-Worker account/session validation.
+  Native provenance follows the existing authenticated peer transport; payloads
+  remain bounded, and credentials never enter diagnostics.
+
 - Public API: `Config`, `RegisterHandlers`, `Main`, `Run`, and
   `ErrRestartRequested`.
 - Dependencies are the generated definitions/registration callback plus the
@@ -134,6 +141,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   supplies it to the sandbox activation gateway, then registers the generated
   handlers before any administrative command can create a sandbox. The small
   built-in development mount profile is canonical.
+- Development composition supplies a loopback system-URL getter from the active
+  `network.main_port`; each sandbox start receives the current value without
+  embedding instance configuration in package-owned guidance.
 - Development-manager initialization starts inherited development-sandbox
   deletion asynchronously without restoring process state or scanning all
   sandbox records; durable overlay and system state remain available for an

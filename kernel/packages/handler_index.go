@@ -226,6 +226,9 @@ func (s *Store) indexCandidateHandlers(ctx context.Context, candidates []deploym
 	result := map[string]packageHandlers{}
 	resolved := map[string]ProgramDefinition{}
 	for _, candidate := range candidates {
+		if candidate.Commit == "" {
+			continue
+		}
 		item, err := readPackageHandlers(candidate.Root, candidate.PackageID)
 		if err == nil {
 			item, err = s.resolveHandlerPrograms(ctx, item, selected, nil, resolved)

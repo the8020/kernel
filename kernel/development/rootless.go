@@ -140,7 +140,11 @@ func (d *RunscDriver) Start(ctx context.Context, start SandboxStart) error {
 			}
 			continue
 		}
-		canonical, err := canonicalDirectory(mount.HostSource)
+		resolve := canonicalDirectory
+		if mount.Behavior == MountReadOnly {
+			resolve = canonicalMountSource
+		}
+		canonical, err := resolve(mount.HostSource)
 		if err != nil {
 			return fmt.Errorf("development mount %s source: %w", mount.ID, err)
 		}
@@ -249,8 +253,8 @@ func developmentSpec(start SandboxStart, bundle string) specs.Spec {
 	}
 	capabilities := append([]string(nil), developmentRootCapabilities...)
 	spec := specs.Spec{Version: specs.Version, Process: &specs.Process{
-		Terminal: false, User: specs.User{UID: 0, GID: 0}, Args: []string{"/bin/bash", "/opt/development/sandbox.sh"},
-		Env: []string{"PATH=" + developmentPath, "HOME=/root", "USER=root", "LOGNAME=root", "DENO_DIR=/root/.cache/deno", "DENO_NO_UPDATE_CHECK=1", "DENO_NO_PROMPT=1", "DEVELOPMENT_USER_ID=" + start.UserID, "DEVELOPMENT_ACTIVATION_ENDPOINT=" + start.Endpoint, "DEVELOPMENT_ACTIVATION_TOKEN=" + start.Token},
+		Terminal: false, User: specs.User{UID: 0, GID: 0}, Args: []string{"/bin/bash", "/workspace/scripts/development-init.sh"},
+		Env: []string{"PATH=" + developmentPath, "HOME=/root", "USER=root", "LOGNAME=root", "DENO_DIR=/root/.cache/deno", "DENO_NO_UPDATE_CHECK=1", "DENO_NO_PROMPT=1", "DEVELOPMENT_USER_ID=" + start.UserID, "DEVELOPMENT_SYSTEM_URL=" + start.SystemURL, "DEVELOPMENT_ACTIVATION_ENDPOINT=" + start.Endpoint, "DEVELOPMENT_ACTIVATION_TOKEN=" + start.Token},
 		Cwd: "/workspace", Capabilities: &specs.LinuxCapabilities{Bounding: capabilities, Effective: capabilities, Permitted: capabilities}, NoNewPrivileges: true,
 	}, Root: &specs.Root{Path: start.RootFS, Readonly: false}, Hostname: start.SandboxID, Mounts: mounts, Annotations: annotations,
 		Linux: &specs.Linux{Namespaces: []specs.LinuxNamespace{{Type: specs.PIDNamespace}, {Type: specs.IPCNamespace}, {Type: specs.UTSNamespace}, {Type: specs.MountNamespace}}, MaskedPaths: []string{"/proc/acpi", "/proc/kcore", "/proc/keys", "/proc/timer_list", "/sys/firmware"}, ReadonlyPaths: []string{"/proc/bus", "/proc/fs", "/proc/irq", "/proc/sys", "/proc/sysrq-trigger"}},
@@ -440,6 +444,21 @@ func copySandboxNetworkFile(source, destination string) error {
 }
 
 func canonicalDirectory(path string) (string, error) {
+	value, err := canonicalMountSource(path)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(value)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", errors.New("path is not a directory")
+	}
+	return value, nil
+}
+
+func canonicalMountSource(path string) (string, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
@@ -452,8 +471,8 @@ func canonicalDirectory(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !info.IsDir() {
-		return "", errors.New("path is not a directory")
+	if !info.IsDir() && !info.Mode().IsRegular() {
+		return "", errors.New("mount source is not a directory or regular file")
 	}
 	return filepath.Clean(value), nil
 }

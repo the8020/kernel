@@ -9,7 +9,8 @@ import (
 type Candidate struct {
 	PackageID string
 	Root      string
-	Commit    string
+	// An empty commit removes the package. Root remains its installed path.
+	Commit string
 }
 
 type SchemaHook interface {

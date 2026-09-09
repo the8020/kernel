@@ -109,6 +109,9 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   ID/commit/success synchronization results, and local creation through one
   generic private runtime-operation bridge; the supervisor interprets no package
   semantics.
+- `kernel.packages.delete(packageId, true)` requires explicit confirmation and
+  delegates to `package.delete`. It removes installed code through activation
+  while retaining physical database data.
 - `kernel.database` sends compiled SQL and explicitly tagged values to the Go
   kernel and returns ordered rows, affected counts, and optional insert IDs.
   Transactions use opaque kernel-held tokens. Optional `timeoutMs` bounds

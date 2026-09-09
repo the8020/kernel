@@ -372,7 +372,7 @@ func (e *Evaluator) Prepare(ctx context.Context, candidates []deployment.Candida
 	ctx = lockedContext
 	databaseCandidates := make([]database.DeploymentCandidate, len(candidates))
 	for index, candidate := range candidates {
-		if _, err := workspacepackages.ParsePackageID(candidate.PackageID); err != nil || !filepath.IsAbs(candidate.Root) || candidate.Commit == "" {
+		if _, err := workspacepackages.ParsePackageID(candidate.PackageID); err != nil || !filepath.IsAbs(candidate.Root) {
 			return fmt.Errorf("invalid schema candidate %s", candidate.PackageID)
 		}
 		databaseCandidates[index] = database.DeploymentCandidate{PackageID: candidate.PackageID, CandidateCommit: candidate.Commit}
@@ -521,6 +521,9 @@ func (e *Evaluator) incrementalItems(ctx context.Context, candidates []deploymen
 	packageIDs := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
 		packageIDs = append(packageIDs, candidate.PackageID)
+		if candidate.Commit == "" {
+			continue
+		}
 		item := workspacepackages.Package{ID: candidate.PackageID, Path: candidate.Root, Valid: true}
 		discovered, err := discoverPackage(item, candidate.Commit, identities)
 		if err != nil {

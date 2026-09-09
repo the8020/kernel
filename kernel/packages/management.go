@@ -691,6 +691,13 @@ func (s *Store) packageDestination(packageID string) (string, bool, error) {
 		return "", false, err
 	}
 	destination := filepath.Join(s.packagesRoot, identity.Namespace, identity.Repository)
+	if namespace, err := os.Lstat(filepath.Dir(destination)); err == nil {
+		if !namespace.IsDir() || namespace.Mode()&os.ModeSymlink != 0 {
+			return "", false, errors.New("package namespace is not a real directory")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", false, err
+	}
 	info, err := os.Lstat(destination)
 	if errors.Is(err, os.ErrNotExist) {
 		return destination, false, nil

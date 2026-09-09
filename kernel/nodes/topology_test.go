@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"golang.org/x/net/websocket"
+	"the8020/kernel/auth"
 	"the8020/kernel/database"
 	"the8020/kernel/execution"
 )
@@ -144,6 +145,7 @@ func TestForwardingRecipientRequiresSharedAuthentication(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := manager.Start(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Test-Local-Authentication", strconv.FormatBool(auth.LocalTransport(request.Context())))
 		if request.Header.Get("the8020-authorization") != "Bearer end-user-token" || request.Header.Get("Cookie") != "the8020_auth=end-user-cookie" || request.Header.Get("Authorization") != "" {
 			http.Error(writer, "credential boundary changed", 400)
 			return
@@ -179,6 +181,7 @@ func TestForwardingRecipientRequiresSharedAuthentication(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "http://the8020/service", nil)
 	request.Header.Set("the8020-authorization", "Bearer end-user-token")
 	request.Header.Set("Cookie", "the8020_auth=end-user-cookie")
+	request.Header.Set("the8020-internal-local-authentication", "true")
 	if err := peer.Proxy("nod-aaaaaaaaaa", recorder, request); err != nil {
 		t.Fatal(err)
 	}
@@ -187,6 +190,16 @@ func TestForwardingRecipientRequiresSharedAuthentication(t *testing.T) {
 	response.Body.Close()
 	if response.StatusCode != http.StatusOK || string(body) != "forwarded" {
 		t.Fatalf("status=%d body=%q", response.StatusCode, body)
+	}
+	if response.Header.Get("Test-Local-Authentication") != "false" {
+		t.Fatal("public header forged native provenance")
+	}
+	localRecorder := httptest.NewRecorder()
+	if err := peer.Proxy("nod-aaaaaaaaaa", localRecorder, request.WithContext(auth.WithLocalTransport(request.Context()))); err != nil {
+		t.Fatal(err)
+	}
+	if localRecorder.Header().Get("Test-Local-Authentication") != "true" {
+		t.Fatal("authenticated peer lost native provenance")
 	}
 	front := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if err := peer.Proxy("nod-aaaaaaaaaa", writer, request); err != nil {

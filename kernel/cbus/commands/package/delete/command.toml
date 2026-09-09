@@ -1,0 +1,27 @@
+version = 1
+id = "kernel.packages.delete"
+path = ["kernel.packages.delete"]
+summary = "Delete a package"
+description = "Removes the selected package and its installed source through the activation workflow. Database tables are retired and their data retained. Requires --confirm; uncommitted source changes are rejected."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/package/delete/delete.go"
+symbol = "New"
+[[parameters]]
+name = "package_id"
+type = "string"
+position = 0
+required = true
+description = "Package ID (namespace/repository)."
+[[parameters]]
+name = "confirm"
+type = "boolean"
+option = "confirm"
+required = false
+description = "Confirm deletion of the package and its installed source."
+[[result]]
+name = "deleted"
+type = "boolean"
+[[examples]]
+command = "kernel.packages.delete acme/example --confirm"

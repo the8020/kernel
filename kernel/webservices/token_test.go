@@ -32,6 +32,12 @@ func TestJWTGateRejectsBeforeColdExecutionAndUsesHeaderPrecedence(t *testing.T) 
 			if err != nil {
 				t.Fatal(err)
 			}
+			claims["transport"] = "local"
+			local, err := signer.SignToken(claims)
+			if err != nil {
+				t.Fatal(err)
+			}
+			delete(claims, "transport")
 			claims["exp"] = time.Now().Add(-time.Second).Unix()
 			expired, err := signer.SignToken(claims)
 			if err != nil {
@@ -57,10 +63,12 @@ func TestJWTGateRejectsBeforeColdExecutionAndUsesHeaderPrecedence(t *testing.T) 
 				header *string
 				clear  bool
 			}{
-				{"", nil, false}, {"invalid", nil, true}, {expired, nil, true}, {valid, &badHeader, false}, {valid, &emptyHeader, false},
+				{"", nil, false}, {"invalid", nil, true}, {expired, nil, true}, {valid, &badHeader, false}, {valid, &emptyHeader, false}, {local, nil, true},
 			} {
 				response := httptest.NewRecorder()
-				manager.ServeHTTP(response, request(input.cookie, input.header))
+				incoming := request(input.cookie, input.header)
+				incoming.Header.Set("the8020-internal-local-authentication", "true")
+				manager.ServeHTTP(response, incoming)
 				if response.Code != http.StatusUnauthorized {
 					t.Fatalf("invalid token status %d", response.Code)
 				}
@@ -85,6 +93,12 @@ func TestJWTGateRejectsBeforeColdExecutionAndUsesHeaderPrecedence(t *testing.T) 
 			}
 			if forwarded.header.Get("the8020-internal-username") != "alice" || forwarded.header.Get("the8020-internal-authentication") == "" {
 				t.Fatal("verified identity lost before Worker")
+			}
+			if !websocket {
+				result, err := manager.Request(t.Context(), serviceID, http.MethodGet, "/", RequestOptions{LocalAuthentication: true, Headers: http.Header{http.CanonicalHeaderKey(auth.TokenHeader): {"Bearer " + local}}})
+				if err != nil || result.StatusCode != http.StatusOK {
+					t.Fatalf("native local token rejected: %v (%d)", err, result.StatusCode)
+				}
 			}
 		})
 	}

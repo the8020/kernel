@@ -1,0 +1,133 @@
+{
+  "activation_recovery": {
+    "after": {
+      "failed_helper_ms": 4612.429,
+      "interrupted_transaction_hook_attempts": 2,
+      "interrupted_transaction_stage": "complete",
+      "passed": true,
+      "recovered_helper_ms": 215.635
+    },
+    "after-prepare": {
+      "failed_helper_ms": 4480.959,
+      "interrupted_transaction_hook_attempts": 1,
+      "interrupted_transaction_stage": "failed",
+      "passed": true,
+      "recovered_helper_ms": 3028.295
+    },
+    "before": {
+      "failed_helper_ms": 4339.052,
+      "interrupted_transaction_hook_attempts": 1,
+      "interrupted_transaction_stage": "failed",
+      "passed": true,
+      "recovered_helper_ms": 3439.106
+    },
+    "before-prepare": {
+      "failed_helper_ms": 2700.362,
+      "interrupted_transaction_hook_attempts": 0,
+      "interrupted_transaction_stage": "absent",
+      "passed": true,
+      "recovered_helper_ms": 3170.108
+    }
+  },
+  "batch_recovery": {
+    "abandoned_attempts_recovered": 2,
+    "live_attempt_preserved": true,
+    "passed": true,
+    "recovered_after_owner_release": true,
+    "recovery_ms": 415.142,
+    "released_owner_recovery_ms": 161.155,
+    "timing_boundary": "coordinator recovery with real native schema rollback; excludes preparation and helper transport"
+  },
+  "bootstrap_publication_observed": true,
+  "callback_boundary": "fixture registration/heartbeat/database-scope acknowledgements; real job, Worker, Deno evaluator, SQL and package coordinator",
+  "environment": {
+    "architecture": "arm64",
+    "go": "go1.26.5",
+    "gofer_sdk": "v0.0.0-20260815055033-7d8fb7f28de4",
+    "os": "linux"
+  },
+  "full_workflow_qualified": false,
+  "gofer_sdk_fix": {
+    "file": "pkg/sentry/fsimpl/gofer/gofer.go",
+    "before_sha256": "6c4a55a01cc36fa0118b8cca018662dd4737759566ede90d84e9f5748c60c651",
+    "after_sha256": "54cf589d9c6143f91602dd1e5ca906183d79610fa686076e5de666588054aa0d",
+    "removed_directory_file": "pkg/lisafs/handlers.go",
+    "removed_directory_before_sha256": "eaf16a4b26ec474c1f51a0703fc258a539ae02cf934869db65b74658c6670e9b",
+    "removed_directory_after_sha256": "a2b7e0951cbfe2fba22ae5903a9f3fd877a2cf8b41f080581f59c93cb436633d"
+  },
+  "guidance_source_git_tree": "d7c52089cca03bae0259f2cddce14f57877b5fb4",
+  "hook_attempts": 2,
+  "hook_counts_for_activation_id": "act-6v4orm60dc",
+  "host_power_loss_qualified": false,
+  "incompatible_schema_error": "the8020__dev_core__labels: changing column label requires a migration",
+  "incompatible_schema_rejection_ms": 2960.474,
+  "index_completion_retry": {
+    "failed_helper_ms": 2892.529,
+    "hook_attempts": 2,
+    "index_calls": 2,
+    "passed": true,
+    "retry_helper_ms": 74.018
+  },
+  "input_source_sha256": {
+    "db": "9483137adab8056a8c5f232e3eb4377d47714d54b44a8198dab785d9599ed2a2",
+    "packages": "e764268fd785c2b8cb5ba9c92195bf3a604b2d34c52f3d454d905ddf2b6e76c8",
+    "secrets": "1515d91ba088666cbd0406476c8789aeaed9f0e5ba5399467e069ebfada2b32a",
+    "system": "2e3b4a236264e4cad36814e176225e4c71afe458432f0988cb71646cbc865022"
+  },
+  "observed_at": "2026-09-09T07:30:37.165810965Z",
+  "ordinary_git_candidate_fix_and_retry": true,
+  "ordinary_package_create_delete_recreate_catalog_program_and_retained_data": true,
+  "publication_before_ack_interrupt_ms": 2456.359,
+  "published_program_runs_during_preparation": true,
+  "published_revision_following_during_preparation": true,
+  "real_schema_and_hooks_passed": true,
+  "result": {
+    "success": true,
+    "status": "committed",
+    "overlay_reset": false,
+    "packages": [
+      {
+        "package_id": "the8020/dev-core",
+        "status": "committed",
+        "previous_commit": "cb88b7de769f668a69ad4238c08fe99aa1d292c0",
+        "resulting_commit": "899387abba0e69ab82d3a19714effdbd7f497e55",
+        "commit_message": "Real schema and hooks"
+      }
+    ]
+  },
+  "retained_row": "existing data",
+  "retry_after_database_completion_with_recreated_coordinators": true,
+  "retry_does_not_complete_another_prepared_activation": true,
+  "retry_helper_ms": 220.187,
+  "schema_rejection_preserves_private_and_shared": true,
+  "service_image": {
+    "built_at": "2026-09-08T08:02:57Z",
+    "deno_version": "2.9.4",
+    "image_digest": "sha256:f7e5d6408991c92fcf3efd4e4c8aeaf18248fd49080e4a9be87b41c9b83ab1cc",
+    "runsc_release": "20260817.0",
+    "schema_version": 1,
+    "source_hash": "sha256:6253699ea6c07f3bdd15c00ce4fecbbedf4e5b15ba0dcdcbf14f752515dd9ed4"
+  },
+  "source_sha256": {
+    "../activation.go": "fcd29918aa169d822a1d748219e4c878a0c2dfda1872ada246330049491c6411",
+    "../manager.go": "76c1bcf2d83291b1e931861f36046e4b605153e7afc34faa810ee55c780a4b4b",
+    "../model.go": "e6d1909d6ffc8073704e6bad9739c994cb8a4bdbfcaa13619964297646fb76ad",
+    "activation-stage.patch": "13ff8a93b9a21f69a8a7e15a5e215fb0a0a25ba0680a3e70adfde8a6d0662e3c",
+    "activation-transaction.patch": "5a40613597256b2ac37042cfd9ba3a776e58fa23564bd3da1f09101178fe4b64",
+    "gofer_probe.go": "79ee9830d3d6b93ea7346277700b378d6bdfc4d05e3e7af5f11b0c1980c3f1ab",
+    "gofer_probe.py": "a5cf069a3697ef59bbb37183a1457086dc2e05789c1d888842833fb87a6346db",
+    "run.py": "4dd7c04f2cacdb8f9c13f6ad25f9f5aa54b526cb05ed071152b659152969a723",
+    "runtime_test.go": "d091c380b6cccf8918dddf4043f9ae69449ffa1e9787b8068f924d4221d71cfb",
+    "sparse_activation_test.go": "fe78fd02fad1cb8633578132c3de660bd51e5b208524018a43f007811b291e16",
+    "sparse_schema_test.go": "9f7e5de645466e23399f088aea357b3d9ff8ac5529df1d45cac18171394b510c",
+    "sparse_test.go": "2c56b5c6ec124ed56998ef6b83c3df1c6ff525c882292608e2d65cf4b8708e1a"
+  },
+  "staged_source_git_trees": {
+    "db": "e96930341b5fb02f2c94abbf6df5fab4937e82f2",
+    "packages": "480736b9b61e6d191e080950514378dc05a42450",
+    "secrets": "0b87fe5ebc4c591b27de272c0e32d268db471b17",
+    "system": "da78da49511abfc16880809dc7cd2fffc42485f1"
+  },
+  "successful_hooks": 2,
+  "successful_hooks_not_repeated": true
+}

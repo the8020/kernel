@@ -204,6 +204,9 @@ func (i *Indexer) ValidateCandidates(ctx context.Context, candidates []deploymen
 		fragments = append(fragments, item)
 	}
 	for _, candidate := range candidates {
+		if candidate.Commit == "" {
+			continue
+		}
 		item, err := i.discoverPackage(candidate.Root, candidate.PackageID, candidate.Commit)
 		if err != nil {
 			return fmt.Errorf("package %s commands: %w", candidate.PackageID, err)

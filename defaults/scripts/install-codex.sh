@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+"$(dirname -- "${BASH_SOURCE[0]}")/setup-agent-skills.sh"
+
 printf '\nInstalling the latest OpenAI Codex...\n\n'
 curl -fsSL https://chatgpt.com/codex/install.sh |
   CODEX_RELEASE=latest CODEX_INSTALL_DIR="$HOME/.local/bin" CODEX_NON_INTERACTIVE=1 sh

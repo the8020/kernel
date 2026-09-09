@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+"$(dirname -- "${BASH_SOURCE[0]}")/setup-agent-skills.sh"
+
 printf '\nInstalling the latest Claude Code...\n\n'
 curl -fsSL https://claude.ai/install.sh | bash
 

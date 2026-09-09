@@ -20,6 +20,7 @@ type ActivationGateway interface {
 
 // CommandExecutor is the transport-independent command-bus dispatch surface.
 type CommandExecutor interface {
+	Catalog() core.Catalog
 	Execute(context.Context, core.Request) core.Response
 }
 
@@ -33,33 +34,44 @@ func NewCommandBusGateway(executor CommandExecutor) *CommandBusGateway {
 
 func (g *CommandBusGateway) Preview(ctx context.Context, userID string, options ActivationOptions) (ActivationPreview, error) {
 	var result ActivationPreview
-	err := g.execute(ctx, "development.activate.preview", "preview", userID, options, &result)
+	err := g.execute(ctx, "dev-core.activate.preview", "preview", userID, options, &result)
 	return result, err
 }
 
 func (g *CommandBusGateway) Activate(ctx context.Context, userID string, options ActivationOptions) (ActivationResult, error) {
 	var result ActivationResult
-	err := g.execute(ctx, "development.activate.run", "activation", userID, options, &result)
+	err := g.execute(ctx, "dev-core.activate.run", "activation", userID, options, &result)
 	return result, err
 }
 
-func (g *CommandBusGateway) execute(ctx context.Context, commandID, resultField, userID string, options ActivationOptions, output any) error {
+func (g *CommandBusGateway) execute(ctx context.Context, commandName, resultField, userID string, options ActivationOptions, output any) error {
 	if g == nil || g.executor == nil {
 		return errors.New("development activation command bus is unavailable")
 	}
-	arguments := map[string]any{"user_id": userID}
-	if options.Description != "" || commandID == "development.activate.run" {
-		arguments["message"] = options.Description
-	}
-	if len(options.SelectedPackages) > 0 {
-		arguments["packages"] = strings.Join(options.SelectedPackages, ",")
-	}
-	for name, value := range map[string]string{"author_name": options.AuthorName, "author_email": options.AuthorEmail} {
-		if value != "" {
-			arguments[name] = value
+	catalog := g.executor.Catalog()
+	commandID := ""
+	for _, command := range catalog.Commands {
+		if command.Name == commandName && command.Kind == core.CommandKindPackage {
+			commandID = command.ID
+			break
 		}
 	}
-	for name, value := range map[string]map[string]string{"package_messages": options.PackageMessages, "metadata": options.Metadata} {
+	if commandID == "" {
+		return fmt.Errorf("development activation command %s is unavailable", commandName)
+	}
+	arguments := []string{userID}
+	if options.Description != "" || resultField == "activation" {
+		arguments = append(arguments, "--message", options.Description)
+	}
+	if len(options.SelectedPackages) > 0 {
+		arguments = append(arguments, "--packages", strings.Join(options.SelectedPackages, ","))
+	}
+	for name, value := range map[string]string{"author-name": options.AuthorName, "author-email": options.AuthorEmail} {
+		if value != "" {
+			arguments = append(arguments, "--"+name, value)
+		}
+	}
+	for name, value := range map[string]map[string]string{"package-messages": options.PackageMessages, "metadata": options.Metadata} {
 		if len(value) == 0 {
 			continue
 		}
@@ -67,9 +79,9 @@ func (g *CommandBusGateway) execute(ctx context.Context, commandID, resultField,
 		if err != nil {
 			return fmt.Errorf("encode activation %s: %w", name, err)
 		}
-		arguments[name] = string(encoded)
+		arguments = append(arguments, "--"+name, string(encoded))
 	}
-	response := g.executor.Execute(ctx, core.Request{ProtocolVersion: core.ProtocolVersion, CommandID: commandID, Arguments: arguments})
+	response := g.executor.Execute(ctx, core.Request{ProtocolVersion: core.ProtocolVersion, CommandID: commandID, CatalogRevision: catalog.Revision, Argv: arguments})
 	if !response.Success {
 		if response.Error != nil {
 			return response.Error

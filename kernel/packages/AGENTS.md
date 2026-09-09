@@ -13,8 +13,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   activation history, and hook phase checkpoints. Application service tables,
   declarations, defaults, and overrides belong exclusively to Deno services.
 - Own package Git source/ref inspection, clean worktree staging/replacement,
-  local repository initialization, pull/push/checkout, and transient
-  named-secret authentication.
+  local repository initialization, package deletion, pull/push/checkout, and
+  transient named-secret authentication.
 - Coordinate candidate table evaluation/synchronization, pre/post activation
   hooks, source publication, durable recovery, and targeted service refresh.
 - Do not own physical SQL generation, evaluator execution, runtime Workers,
@@ -38,6 +38,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   Bounded Git diffs yield resolved sandbox file paths, including deletions and
   both sides of renames. All nodes read the same authoritative mutable checkout;
   commit metadata must remain available for the pending revision comparison.
+- A removed package produces its sandbox directory with a trailing slash for
+  observed-import matching. Removal does not require retaining its Git objects.
 - On a source update, `ReactToSourceUpdate` requests an observed-import scan of
   current service Workers, deduplicates logical services, and requests a soft
   restart with that package revision as update identity. Import sets remain
@@ -61,6 +63,18 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   package, hook, and pending-deployment rows make retry/recovery idempotent.
   PostgreSQL holds one database advisory deployment lock throughout; SQLite uses
   local transactional serialization for its single-node role.
+- An activation candidate with an empty commit removes its package; its root is
+  the installed path. Removal executes no activation handlers from deleted code,
+  retires the package record and tables, removes its active catalog commit, and
+  publishes one revision through the same recovery/reindex path. New candidates
+  acquire local package records automatically when no desired record exists.
+- `DeletePackage` rejects uncommitted work and unsafe package/namespace paths,
+  stages installed source in the existing `.previous` activation backup, and
+  removes that backup after publication. Uninstalled desired packages can also
+  be deleted. Retained activation history and physical table data are preserved;
+  reinstalling a retired package needs no manual index edit.
+- Rollback restores previous ready package records before the schema evaluator
+  rereads their still-active source.
 - Removed table/column definitions become retired metadata and retained physical
   data. Only explicit confirmed trim performs destructive deletion. Incompatible
   type, nullability, key, index, or constraint changes reject activation.
@@ -162,6 +176,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   index propagation without application-table scans.
 - Declaration regressions include documentation-only and documented TOML
   folders, candidate activation validation, and live handler reindexing.
+- Deletion regressions cover dirty-source rejection, namespace containment,
+  interrupted publication/recovery, removed programs/handlers, cross-node
+  observation after source removal, recreation, and source-only registration.
 - Hook regressions distinguish installed bootstrap sources without extra mounts
   from staged candidates requiring read-only overrides.
 

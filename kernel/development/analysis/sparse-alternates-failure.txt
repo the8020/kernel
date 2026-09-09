@@ -1,0 +1,7 @@
+workflow runtime profile: current
+=== RUN   TestWorkflowAnalysisSparse
+    workflow_sparse_test.go:295: preview copied asset object contents: 4197749 bytes, files=map[git/.git/objects/0d/8656eb94518ce6cc9e064a9e2e91eff00b9996:1048915 git/.git/objects/39/b4b0a4e8bb8ef112daccd432de783fde581e97:1048915 git/.git/objects/3f/59db3e44f7d23be77b96314a9809b4e429e58a:1048915 git/.git/objects/9e/44fda2547a80237514d1917ad3636f9622d939:1048915], io=map[gofer_cancelled_write_bytes:57344 gofer_rchar:0 gofer_read_bytes:0 gofer_syscr:0 gofer_syscw:0 gofer_wchar:0 gofer_write_bytes:0 sentry_cancelled_write_bytes:0 sentry_rchar:170228 sentry_read_bytes:0 sentry_syscr:196 sentry_syscw:1278 sentry_wchar:4616219 sentry_write_bytes:4763648]
+--- FAIL: TestWorkflowAnalysisSparse (2.82s)
+FAIL
+FAIL	the8020/kernel/development	2.822s
+FAIL

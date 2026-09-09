@@ -1,0 +1,56 @@
+{
+  "observed_at": "2026-09-09T07:43:00.122046+00:00",
+  "scope": "Disposable prototype owner; installed runtime and production source remain unchanged.",
+  "trigger": "Explicit reindex after saving service configuration overlaps an older background refresh for the same package.",
+  "negative": {
+    "exit_code": 1,
+    "log": "=== RUN   TestExplicitIndexingWaitsForSelectedProvider\n    reindex_test.go:277: explicit request returned before the running provider completed: service index updates were not applied: acme/one: indexing is already running; newer request retained\n--- FAIL: TestExplicitIndexingWaitsForSelectedProvider (0.00s)\nFAIL\nFAIL\tthe8020/kernel/app\t1.883s\nFAIL\n",
+    "patch_sha256": "5a40613597256b2ac37042cfd9ba3a776e58fa23564bd3da1f09101178fe4b64"
+  },
+  "regression": "TestExplicitIndexingWaitsForSelectedProvider",
+  "regression_body_sha256": "059227c36d00cc3f96da07dbaab20ac3106726c96d656b9a8b34644a65449f31",
+  "owner_source_sha256": {
+    "kernel/app/reindex.go": "95e955a6541cfe6bcb077efd9585b2a8766c79fc05f3cd1f16c4877aea7a2e4d",
+    "kernel/app/reindex_test.go": "5d7e920681b123d9fde3d37c88b550c398bb6774a7935fdbe395e99e21d1d1f8",
+    "kernel/app/runtime.go": "20699d953af3f325e32f653a7ee6f69000a37c98cbfe455c6f88e2afeaa74ba9",
+    "kernel/app/runtime_test.go": "71d2f0d08961bba53d8cff238cc327e67014e7a55b17358c9177c37dbe60932f"
+  },
+  "fix": "Selected running packages publish their completion through an owner channel. Synchronous reindex publishes available packages first, releases claims, waits without the mutex, and then refreshes the remaining packages. Background requests stay coalesced; cancellation preserves pending state.",
+  "focused_checks": {
+    "exit_code": 0,
+    "log": ".development/workflow-indexing-fix/fixed.log",
+    "checks": [
+      "new configuration after an older background refresh",
+      "cancellation of a waiting command",
+      "unrelated package progress, including partially overlapping revision batches",
+      "background capacity/overflow and shutdown",
+      "failed or canceled fragment publication remains pending"
+    ]
+  },
+  "patch_sha256": "0f35007450190e847f6743e2495959d21a216c58fac831f5a524d8e6ea12a243",
+  "native_browser_qualified": true,
+  "full_workflow_qualified": false,
+  "owner_race_checks": {
+    "command": "go test -race -overlay .development/workflow-indexing-fix/overlay.json ./kernel/app -count=1",
+    "exit_code": 0,
+    "log": ".development/workflow-indexing-fix/owner-race.log"
+  },
+  "native_browser": {
+    "exit_code": 0,
+    "log": ".development/workflow-indexing-fix/native-browser.log",
+    "observed_at": "2026-09-09T07:45:41.337586+00:00",
+    "kernel_sha256": "73089e74ea49bbbb79c48a156b7dd1e03302d39fe7d794e252158a09a98407b2",
+    "controlled_overlap_injected": false,
+    "note": "The deterministic owner regression injects the overlap; the existing native harness verifies service configuration and UUI/terminal activation through the rebuilt prototype. Teardown still reports its separate development-sandbox deadline."
+  },
+  "final_prototype_verification": {
+    "exit_code": 0,
+    "log": ".development/workflow-indexing-fix/native-browser-shutdown.log",
+    "observed_at": "2026-09-09T07:54:12.775454+00:00",
+    "kernel_sha256": "ba8f676424fa69e5cefff5d5e92ef1c54f8117bef4a9bde94e02cf281f9ec696",
+    "patch_sha256": "54bb1807132e5d96603be17565da5de37a865850d1d0c8b1e0a1c29553072f47",
+    "prior_startup_and_shutdown_diagnostics_absent": true,
+    "no_live_fixture_processes": true,
+    "kernel_exit_status_asserted": false
+  }
+}

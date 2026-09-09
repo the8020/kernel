@@ -279,7 +279,7 @@ func newTestPlatform(t *testing.T) testPlatform {
 			t.Fatal(err)
 		}
 	}
-	writeTestFile(t, filepath.Join(root, "scripts", "activate"), "#!/bin/sh\n")
+	installTestDevelopmentAssets(t, root)
 	writeTestFile(t, filepath.Join(image, "usr", "bin", "base-tool"), "image-default\n")
 	for _, id := range []string{"the8020/dev-core", "the8020/demo"} {
 		packageRoot := filepath.Join(packages, filepath.FromSlash(id))
@@ -320,21 +320,28 @@ func registerTestActivationCommands(t *testing.T, registry *core.Registry, manag
 		_ = json.Unmarshal([]byte(option("metadata")), &options.Metadata)
 		return options
 	}
-	if err := registry.Register(commands[0], func(ctx context.Context, request core.Request) (core.Result, error) {
-		result, err := manager.Preview(ctx, request.Arguments["user_id"].(string), decode(request))
-		return core.Result{"preview": result}, err
-	}); err != nil {
-		t.Fatal(err)
+	registrations := make([]core.Registration, len(commands))
+	for index, command := range commands {
+		registrations[index] = core.Registration{Command: command, Handler: func(ctx context.Context, request core.Request) (core.Execution, error) {
+			var err error
+			request.Arguments, err = core.ParseKernelArguments(command, request.Argv)
+			if err != nil {
+				return core.Execution{}, err
+			}
+			userID := request.Arguments["user_id"].(string)
+			if index == 0 {
+				result, err := manager.Preview(ctx, userID, decode(request))
+				return core.Execution{Result: core.Result{"preview": result}}, err
+			}
+			result, err := manager.Activate(ctx, userID, decode(request))
+			// Match the package command: structured activation failures remain results.
+			if result.Status != "" {
+				err = nil
+			}
+			return core.Execution{Result: core.Result{"activation": result}}, err
+		}}
 	}
-	if err := registry.Register(commands[1], func(ctx context.Context, request core.Request) (core.Result, error) {
-		result, err := manager.Activate(ctx, request.Arguments["user_id"].(string), decode(request))
-		// Match the production handler: a structured activation failure is a
-		// command result, while an error without a result is a command failure.
-		if result.Status != "" {
-			return core.Result{"activation": result}, nil
-		}
-		return core.Result{"activation": result}, err
-	}); err != nil {
+	if err := registry.ReplacePackages(registrations, nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -352,8 +359,39 @@ func testActivationCommands() []core.Command {
 	runParameters := append([]core.Parameter(nil), parameters...)
 	runParameters[1].Required = true
 	return []core.Command{
-		{Version: 1, ID: "development.activate.preview", Path: []string{"development", "activate", "preview"}, Summary: "preview", Description: "preview", Parameters: parameters},
-		{Version: 1, ID: "development.activate.run", Path: []string{"development", "activate", "run"}, Summary: "activate", Description: "activate", Parameters: runParameters},
+		{Version: 1, ID: "test-preview", Name: "dev-core.activate.preview", Kind: core.CommandKindPackage, Summary: "preview", Description: "preview", Parameters: parameters},
+		{Version: 1, ID: "test-run", Name: "dev-core.activate.run", Kind: core.CommandKindPackage, Summary: "activate", Description: "activate", Parameters: runParameters},
+	}
+}
+
+func TestCommandBusGatewayUsesCurrentPackageCommand(t *testing.T) {
+	registry := core.NewRegistry(nil)
+	gateway := NewCommandBusGateway(registry)
+	options := ActivationOptions{Description: "Fix a label\nKeep the quoted 'value'", SelectedPackages: []string{"the8020/demo"}}
+	for _, generation := range []string{"first", "replacement"} {
+		registrations := []core.Registration{}
+		for index, command := range testActivationCommands() {
+			command.ID += "-" + generation
+			registrations = append(registrations, core.Registration{Command: command, Handler: func(_ context.Context, request core.Request) (core.Execution, error) {
+				want := []string{"developer", "--message", options.Description, "--packages", "the8020/demo"}
+				if request.Arguments != nil || !slices.Equal(request.Argv, want) || request.CatalogRevision != registry.Catalog().Revision {
+					t.Errorf("package command request = %#v", request)
+				}
+				if index == 0 {
+					return core.Execution{Result: core.Result{"preview": ActivationPreview{}}}, nil
+				}
+				return core.Execution{Result: core.Result{"activation": ActivationResult{Success: true, Status: "committed"}}}, nil
+			}})
+		}
+		if err := registry.ReplacePackages(registrations, nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := gateway.Preview(context.Background(), "developer", options); err != nil {
+			t.Fatal(err)
+		}
+		if result, err := gateway.Activate(context.Background(), "developer", options); err != nil || !result.Success {
+			t.Fatalf("activate = %#v, %v", result, err)
+		}
 	}
 }
 
@@ -1198,7 +1236,7 @@ func TestInheritedCleanupNeverGatesStartup(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	writeTestFile(t, filepath.Join(root, "scripts", "activate"), "#!/bin/sh\n")
+	installTestDevelopmentAssets(t, root)
 	writeTestFile(t, filepath.Join(image, "base"), "base")
 	if err := writeAtomic(record, []byte(`{"image_digest":"sha256:test"}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -1281,7 +1319,7 @@ func TestDevelopmentSpecOverlaysOnlySandboxPackages(t *testing.T) {
 	if spec.Annotations[prefix+"source"] != start.Packages || spec.Annotations[prefix+"type"] != "bind" || spec.Annotations[prefix+"share"] != "container" {
 		t.Fatalf("development package overlay annotations = %#v", spec.Annotations)
 	}
-	if len(spec.Process.Args) != 2 || spec.Process.Args[1] != "/opt/development/sandbox.sh" {
+	if len(spec.Process.Args) != 2 || spec.Process.Args[1] != "/workspace/scripts/development-init.sh" {
 		t.Fatalf("development init = %#v", spec.Process.Args)
 	}
 	environment := strings.Join(spec.Process.Env, "\n")

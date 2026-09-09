@@ -202,11 +202,15 @@ func (m *Manager) BeginDeployment(ctx context.Context, candidates []DeploymentCa
 	candidatePackages := clonePackageSet(state.PackageCommits)
 	for index := range candidates {
 		candidate := &candidates[index]
-		if candidate.PackageID == "" || candidate.CandidateCommit == "" {
-			return PendingDeployment{}, errors.New("database deployment candidate package and commit are required")
+		if candidate.PackageID == "" {
+			return PendingDeployment{}, errors.New("database deployment candidate package is required")
 		}
 		candidate.PreviousCommit = candidatePackages[candidate.PackageID]
-		candidatePackages[candidate.PackageID] = candidate.CandidateCommit
+		if candidate.CandidateCommit == "" {
+			delete(candidatePackages, candidate.PackageID)
+		} else {
+			candidatePackages[candidate.PackageID] = candidate.CandidateCommit
+		}
 	}
 	previousJSON, _ := json.Marshal(state.PackageCommits)
 	candidateJSON, _ := json.Marshal(candidatePackages)

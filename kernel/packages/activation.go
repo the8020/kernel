@@ -386,6 +386,13 @@ func (c *ActivationCoordinator) Pending(ctx context.Context) (bool, error) {
 
 func (c *ActivationCoordinator) sourceIsCandidate(ctx context.Context, candidate activationCandidate) (bool, error) {
 	path := c.packages.packagePath(candidate.PackageID)
+	if candidate.Commit == "" {
+		_, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return true, nil
+		}
+		return false, err
+	}
 	if _, err := os.Lstat(path + ".previous"); err == nil {
 		if _, destinationErr := os.Lstat(path); errors.Is(destinationErr, os.ErrNotExist) {
 			if renameErr := os.Rename(path+".previous", path); renameErr != nil {
@@ -455,13 +462,17 @@ func (c *ActivationCoordinator) begin(ctx context.Context, raw []deployment.Cand
 	candidates := make([]activationCandidate, 0, len(raw))
 	seen := map[string]bool{}
 	for _, item := range raw {
-		if seen[item.PackageID] || item.PackageID == "" || item.Commit == "" || !filepath.IsAbs(item.Root) {
+		_, identityErr := ParsePackageID(item.PackageID)
+		if seen[item.PackageID] || identityErr != nil || !filepath.IsAbs(item.Root) {
 			return nil, fmt.Errorf("invalid activation candidate %q", item.PackageID)
 		}
 		seen[item.PackageID] = true
 		entry, exists, err := c.packages.index.Get(ctx, item.PackageID)
 		if err != nil {
 			return nil, err
+		}
+		if item.Commit == "" && (!exists || item.Root != c.packages.packagePath(item.PackageID)) {
+			return nil, fmt.Errorf("invalid package deletion %q", item.PackageID)
 		}
 		previous := ""
 		if exists {
@@ -480,7 +491,11 @@ func (c *ActivationCoordinator) begin(ctx context.Context, raw []deployment.Cand
 	}
 	candidateSet := cloneCommits(previousSet)
 	for _, item := range candidates {
-		candidateSet[item.PackageID] = item.Commit
+		if item.Commit == "" {
+			delete(candidateSet, item.PackageID)
+		} else {
+			candidateSet[item.PackageID] = item.Commit
+		}
 	}
 	tx, err := c.database.BeginTx(ctx, nil)
 	if err != nil {
@@ -492,6 +507,14 @@ func (c *ActivationCoordinator) begin(ctx context.Context, raw []deployment.Cand
 		return nil, err
 	}
 	for _, item := range candidates {
+		if item.first && item.Commit != "" {
+			identity, _ := ParsePackageID(item.PackageID)
+			if _, err := tx.ExecContext(ctx, `INSERT INTO `+packagesTable+` ("packageId", "author", "repository", "local", "state", "revision", "createdAt", "updatedAt")
+				VALUES ($1, $2, $3, $4, 'desired', 0, $5, $5)
+				ON CONFLICT ("packageId") DO NOTHING`, item.PackageID, identity.Namespace, identity.Repository, true, now); err != nil {
+				return nil, err
+			}
+		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO `+activationPackagesTable+` ("activationId", "packageId", "previousCommit", "candidateCommit", "firstActivation") VALUES ($1, $2, $3, $4, $5)`, id, item.PackageID, nullableText(item.previous), item.Commit, item.first); err != nil {
 			return nil, err
 		}
@@ -536,6 +559,9 @@ func (c *ActivationCoordinator) runHooks(ctx context.Context, run *activationRun
 	var mounts []model.Mount
 	for _, candidate := range run.candidates {
 		item := candidate.Candidate
+		if item.Commit == "" {
+			continue
+		}
 		installedRoot := c.packages.packagePath(item.PackageID)
 		if staged && item.Root != installedRoot {
 			mounts = append(mounts, model.Mount{
@@ -610,9 +636,6 @@ func (c *ActivationCoordinator) finishHook(ctx context.Context, activationID, pa
 
 func (c *ActivationCoordinator) rollback(ctx context.Context, run *activationRun, cause error) error {
 	var joined error
-	if err := c.schema.Complete(ctx, false); err != nil {
-		joined = errors.Join(joined, err)
-	}
 	for _, candidate := range run.candidates {
 		if candidate.previous == "" {
 			if err := c.packages.index.SetActivation(ctx, candidate.PackageID, "failed", "", cause); err != nil {
@@ -623,6 +646,10 @@ func (c *ActivationCoordinator) rollback(ctx context.Context, run *activationRun
 		if err := c.packages.index.SetActivation(ctx, candidate.PackageID, "ready", candidate.previous, nil); err != nil {
 			joined = errors.Join(joined, err)
 		}
+	}
+	// Schema restoration reads the previous source through the ready catalog.
+	if err := c.schema.Complete(ctx, false); err != nil {
+		joined = errors.Join(joined, err)
 	}
 	c.fail(ctx, run, cause)
 	return joined
@@ -676,9 +703,13 @@ func (c *ActivationCoordinator) publish(ctx context.Context, run *activationRun)
 	defer tx.Rollback()
 	now := database.EncodeTime(c.database, c.now().UTC())
 	for _, candidate := range run.candidates {
-		result, err := tx.ExecContext(ctx, `UPDATE `+packagesTable+` SET "state" = 'ready', "activeCommit" = $1,
+		state := "ready"
+		if candidate.Commit == "" {
+			state = "retired"
+		}
+		result, err := tx.ExecContext(ctx, `UPDATE `+packagesTable+` SET "state" = $4, "activeCommit" = $1,
 			"error" = NULL, "revision" = "revision" + 1, "updatedAt" = $2 WHERE "packageId" = $3`,
-			candidate.Commit, now, candidate.PackageID)
+			nullableText(candidate.Commit), now, candidate.PackageID, state)
 		if err != nil {
 			return err
 		}

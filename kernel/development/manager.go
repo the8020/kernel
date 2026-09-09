@@ -38,6 +38,8 @@ type Config struct {
 	ImageRecord       string
 	MountProfile      []MountDefinition
 	ActivationGateway ActivationGateway
+	UserAccess        func(http.ResponseWriter, *http.Request, string, string)
+	SystemURL         func() string
 	Driver            SandboxDriver
 	RepositoryMu      *sync.RWMutex
 	Logger            *slog.Logger
@@ -449,7 +451,11 @@ func (m *Manager) startLocked(ctx context.Context, sandbox *Sandbox) error {
 		return fmt.Errorf("delete inherited development sandbox %s: %w", sandbox.SandboxID, err)
 	}
 	_ = removeDevelopmentFilestore(m.config.PackagesRoot, sandbox.SandboxID)
-	if err := m.driver.Start(ctx, SandboxStart{UserID: sandbox.UserID, SandboxID: sandbox.SandboxID, Packages: sandbox.SourcePath, RootFS: sandbox.SystemPath, Endpoint: m.endpoint, Token: sandbox.Token, Mounts: mounts}); err != nil {
+	start := SandboxStart{UserID: sandbox.UserID, SandboxID: sandbox.SandboxID, Packages: sandbox.SourcePath, RootFS: sandbox.SystemPath, Endpoint: m.endpoint, Token: sandbox.Token, Mounts: mounts}
+	if m.config.SystemURL != nil {
+		start.SystemURL = m.config.SystemURL()
+	}
+	if err := m.driver.Start(ctx, start); err != nil {
 		return err
 	}
 	use := &sandboxUse{userID: sandbox.UserID, sandboxID: sandbox.SandboxID}
@@ -932,6 +938,14 @@ func (m *Manager) serveSandbox(response http.ResponseWriter, request *http.Reque
 	}
 	if request.Header.Get("Authorization") != "Bearer "+sandbox.Token {
 		http.Error(response, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if operation == "token" || operation == "request" {
+		if m.config.UserAccess == nil {
+			http.Error(response, "native user access unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		m.config.UserAccess(response, request, sandbox.UserID, operation)
 		return
 	}
 	var options ActivationOptions

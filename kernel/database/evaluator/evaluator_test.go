@@ -243,6 +243,46 @@ func TestCandidatePreparationIsDurableAndRollbackRetiresCandidate(t *testing.T) 
 	}
 }
 
+func TestPackageRemovalRetiresTablesAndRemovesCatalogCommit(t *testing.T) {
+	evaluator, runner, manager, packageRoot := testEvaluator(t, 1)
+	ctx := context.Background()
+	if _, err := evaluator.SynchronizeAll(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	tables, err := manager.ListTables(ctx)
+	if err != nil || len(tables) != 1 {
+		t.Fatalf("tables=%v err=%v", tables, err)
+	}
+	if _, err := manager.ExecContext(ctx, `INSERT INTO "`+tables[0].TableID+`" ("id") VALUES ('keep')`); err != nil {
+		t.Fatal(err)
+	}
+	before := len(runner.calls)
+	if err := evaluator.Prepare(ctx, []deployment.Candidate{{PackageID: "acme/orders", Root: packageRoot}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) != before {
+		t.Fatal("removal executed deleted table modules")
+	}
+	if err := os.RemoveAll(packageRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := evaluator.Complete(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := manager.InspectTable(ctx, tables[0].TableID)
+	if err != nil || detail.State != "retired" {
+		t.Fatalf("removed package table=%#v err=%v", detail, err)
+	}
+	var retained string
+	if err := manager.QueryRowContext(ctx, `SELECT "id" FROM "`+tables[0].TableID+`"`).Scan(&retained); err != nil || retained != "keep" {
+		t.Fatalf("retained data=%q err=%v", retained, err)
+	}
+	state, err := manager.CatalogState(ctx)
+	if err != nil || len(state.PackageCommits) != 0 {
+		t.Fatalf("catalog state=%#v err=%v", state, err)
+	}
+}
+
 func TestUninitializedCatalogAllowsPackageRecoveryBeforeFullRetry(t *testing.T) {
 	evaluator, runner, manager, packageRoot := testEvaluator(t, 0)
 	if manager.Status().Initialized {

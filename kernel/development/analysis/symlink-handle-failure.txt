@@ -1,0 +1,43 @@
+allocated asset fixture {'files': 4, 'logical_bytes': 4194304, 'allocated_bytes': 4194304}
+mount_initialization PASS {'files': 0, 'regular_inodes': 0, 'logical_bytes': 0, 'allocated_bytes': 0, 'symlinks': 0, 'snapshot_entries': 0, 'deleted_markers': 0, 'asset_copies': 0, 'directory_allocation_included': False}
+complete_asset_namespace PASS 4
+small_edit_cost PASS {'files': 2, 'regular_inodes': 2, 'logical_bytes': 20, 'allocated_bytes': 8192, 'symlinks': 0, 'snapshot_entries': 0, 'deleted_markers': 0, 'asset_copies': 0, 'directory_allocation_included': False}
+original_before_truncate PASS Old label
+
+private_isolation PASS Old label
+
+native_symlink PASS relative symlink
+host_escape_denied PASS host sibling file is not accessible
+fresh_path_with_old_descriptor PASS shared replacement
+19
+
+old_descriptor_identity PASS before
+
+native_git_hash_coherence PASS ['be63890a152d86a29c8d7885b0817b6d9593258e', 'be63890a152d86a29c8d7885b0817b6d9593258e']
+elf_and_first_copy_mmap PASS PASS ELF retained-read retained-mmap writable-mmap
+
+mmap_isolation PASS shared source unchanged
+native_git_commit PASS label.txt
+Private label
+
+shared_git_isolation PASS shared HEAD remains Base
+mounted_git_conflict PASS {'output': 'Auto-merging label.txt\nCONFLICT (content): Merge conflict in label.txt\nAutomatic merge failed; fix conflicts and then commit the result.\n', 'markers': '<<<<<<< HEAD\nNew label\n||||||| 81807c2\nOld label\n=======\nShared label\n>>>>>>> 7cfc58be212dd49e1a69917308c010e15c876799\n', 'stages': 'Old label\nNew label\nShared label\n'}
+mounted_conflict_durability PASS markers and all three index stages survive recreation
+mounted_git_resolution PASS Resolved native merge
+
+native_namespace_tools PASS PASS executable mmap hardlink symlink rename open-handle flock local-inotify
+
+shared_file_rename PASS PASS shared-file rename, replacement, retained handles, no-op and type rejection
+
+rename_originals_and_isolation PASS source deletions and destination originals remain private
+rename_noop_and_rejection_cost PASS no-op and rejected renames do not copy or hide shared files
+shared_symlink_mutations_and_retained_descriptors FAIL panic: retained symlink = "", want "../../host-only-target"
+
+goroutine 1 [running]:
+main.main.func1(0x4080b7112038, {0xeb042, 0x16})
+	/workspace/8020/kernel/kernel/development/analysis/native_probe.go:30 +0x10c
+main.main()
+	/workspace/8020/kernel/kernel/development/analysis/native_probe.go:45 +0x228
+
+probe error [Errno 2] No such file or directory: '/workspace/8020/kernel/.development/workflow-gofer-build/workflow-gofer-c56xuv45/storage/base/links/remove'
+Full workflow remains unqualified; this probe omits required operations.

@@ -13,6 +13,7 @@ import resource
 import shutil
 import statistics
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -186,7 +187,85 @@ def correctness():
         two = git(repo, "update-ref", "refs/heads/publish", resolved, first, allowed=(0, 128))
         assert one.returncode == 0 and two.returncode != 0
         results.append({"case": "stale_publication_compare_and_swap", "pass": True})
+        # Native private branches keep the correct base across publications if
+        # the published merge retains the captured private commit as a parent.
+        # Squashing it away while leaving the private branch unchanged does not.
+        private_one = commit(repo, tree(repo, base, {"file": ("100644", body.replace(b"last", b"private-one"))}), base)
+        status, merged, _ = merge(repo, first, private_one)
+        assert status == 0
+        published = oid(repo, "commit-tree", merged, "-p", first, "-p", private_one, data=b"Publish native branch\n")
+        private_two = commit(repo, tree(repo, private_one, {"file": ("100644", body.replace(b"last", b"private-two"))}), private_one)
+        status, merged_again, _ = merge(repo, published, private_two)
+        assert status == 0 and read(repo, merged_again, "file") == body.replace(b"first", b"A").replace(b"last", b"private-two")
+        squashed = commit(repo, merged, first)
+        assert merge(repo, squashed, private_two)[0] == 1
+        results.append({"case": "native_merge_ancestry_preserves_next_activation_base", "pass": True})
     return results
+
+
+def sparse_native_conflict():
+    """Use ordinary Git conflict state without checking out unchanged assets."""
+    with tempfile.TemporaryDirectory(prefix="workflow-native-conflict-") as temp:
+        root = Path(temp)
+        repo, initial = fixture(root, 1)
+        changes = {f"assets/{n:04d}.bin": ("100644", b"asset\0" * 1024) for n in range(1024)}
+        changes.update({"label.txt": ("100644", b"Original label\n"),
+                        "untouched.txt": ("100644", b"Before\n")})
+        base = commit(repo, tree(repo, initial, changes), initial)
+        private = commit(repo, tree(repo, base, {"label.txt": ("100644", b"Your label\n")}), base)
+        shared = commit(repo, tree(repo, base, {
+            "label.txt": ("100644", b"Shared label\n"),
+            "untouched.txt": ("100644", b"Shared unrelated update\n"),
+        }), base)
+        primary = root / "active-workspace"
+        primary.mkdir()
+        later_edit = primary / "label.txt"
+        later_edit.write_bytes(b"A newer edit made after activation capture\n")
+        resolution = root / "conflict"
+        start = time.perf_counter()
+        git(repo, "worktree", "add", "--detach", "--no-checkout", str(resolution), private)
+        git(resolution, "sparse-checkout", "set", "--no-cone", "--stdin", data=b"/label.txt\n")
+        git(resolution, "read-tree", "--reset", "-u", "HEAD")
+        conflict = git(resolution, "-c", "merge.conflictStyle=diff3", "merge", "--no-edit", shared, allowed=(1,))
+        prepare_ms = (time.perf_counter() - start) * 1000
+        markers = (resolution / "label.txt").read_bytes()
+        for expected in (b"<<<<<<<", b"|||||||", b"=======", b">>>>>>>",
+                         b"Original label", b"Your label", b"Shared label"):
+            assert expected in markers, markers
+        for stage, expected in ((1, b"Original label\n"), (2, b"Your label\n"), (3, b"Shared label\n")):
+            assert git(resolution, "show", f":{stage}:label.txt").stdout == expected
+        status = git(resolution, "status", "--porcelain=v1", "-z").stdout
+        assert b"UU label.txt\0" in status, status
+        assert not any(entry[:2] in (b" D", b"D ") for entry in status.split(b"\0")), status
+        assert not (resolution / "assets").exists()
+        assert not (resolution / "untouched.txt").exists()
+        # The agent only needs an ordinary file edit, git add, and git commit.
+        start = time.perf_counter()
+        (resolution / "label.txt").write_bytes(b"Resolved label\n")
+        git(resolution, "add", "label.txt")
+        git(resolution, "commit", "-qm", "Resolve label conflict")
+        resolved = oid(resolution, "rev-parse", "HEAD")
+        assert set(oid(resolution, "show", "-s", "--format=%P", "HEAD").split()) == {private, shared}
+        # A publication retry must merge another shared advance, keeping the
+        # chosen resolution and the original workspace's newer, uncaptured edit.
+        newer = commit(repo, tree(repo, shared, {
+            "untouched.txt": ("100644", b"Another shared update during resolution\n"),
+        }), shared)
+        git(resolution, "merge", "--no-edit", newer)
+        retry_ms = (time.perf_counter() - start) * 1000
+        assert (resolution / "label.txt").read_bytes() == b"Resolved label\n"
+        assert git(resolution, "show", "HEAD:untouched.txt").stdout == b"Another shared update during resolution\n"
+        assert git(resolution, "status", "--porcelain=v1").stdout == b""
+        assert not (resolution / "assets").exists()
+        assert later_edit.read_bytes() == b"A newer edit made after activation capture\n"
+        return {"case": "sparse_native_git_conflict_resolution", "pass": True,
+                "git_conflict_exit": conflict.returncode, "conflict_status": status.decode(),
+                "conflict_file": markers.decode(), "resolved_commit": resolved,
+                "materialized_asset_files": 0, "asset_tree_entries": 1024,
+                "original_workspace_later_edit_preserved": True,
+                "prepare_and_conflict_ms": prepare_ms, "resolve_and_retry_ms": retry_ms,
+                "measurement": "one trusted host Git fixture; excludes filesystem capture, transfer, schema/hooks and publication",
+                "full_activation_qualified": False}
 
 
 def benchmark(count):
@@ -316,10 +395,163 @@ def portable_rename():
                 "fixture_bundle_bytes": (portable / "base.bundle").stat().st_size}
 
 
+def native_benchmark(count, reuse_validation=True):
+    """Explicit checkout, capture, merge and source switch; no runtime/hooks.
+
+    Capture is an ordinary private commit; publication never resets its working
+    files. Native merge ancestry is covered by correctness(). No host-power-loss
+    durability claim follows from this timing run.
+    """
+    samples = []
+    with tempfile.TemporaryDirectory(prefix="workflow-native-git-") as temp:
+        root = Path(temp)
+        source, base = fixture(root, count)
+        path = "files/0000/000000.txt"
+        original = read(source, base, path)
+        advanced = commit(source, tree(source, base, {
+            path: ("100644", original.replace(b"first", b"shared"))}), base)
+        for trial in range(5):
+            private = root / f"private-{trial}"
+            git(source, "reset", "--hard", base)
+            usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+            started = time.perf_counter()
+            git(root, "clone", "--no-local", str(source), str(private))
+            clone_ms = (time.perf_counter() - started) * 1000
+            git(source, "reset", "--hard", advanced)
+            private_body = original.replace(b"last", f"private-{trial}".encode())
+            expected = private_body.replace(b"first", b"shared")
+            (private / path).write_bytes(private_body)
+            (private / "ignored").mkdir()
+            # Capture honors ordinary ignore rules without making ignored files
+            # ephemeral. The explicit fixture edit adds this Git ignore rule.
+            (private / ".gitignore").write_text("ignored/\n")
+            (private / "ignored/artifact").write_bytes(b"durable artifact")
+            started = time.perf_counter()
+            git(private, "add", "-A")
+            git(private, "commit", "-qm", "Capture private candidate")
+            captured = oid(private, "rev-parse", "HEAD")
+            capture_ms = (time.perf_counter() - started) * 1000
+            # A save after immutable capture must neither change the candidate
+            # nor disappear when it is published.
+            (private / path).write_bytes(b"later save\n")
+            started = time.perf_counter()
+            git(source, "fetch", "-q", str(private), captured)
+            status, merged, _ = merge(source, advanced, captured)
+            assert status == 0
+            published = oid(source, "commit-tree", merged, "-p", advanced, "-p", captured, data=b"Publish native candidate\n")
+            prepare_ms = (time.perf_counter() - started) * 1000
+            candidate = root / "validation"
+            started = time.perf_counter()
+            if candidate.exists():
+                git(candidate, "reset", "--hard", published)
+            else:
+                git(source, "worktree", "add", "--detach", str(candidate), published)
+            validation_ms = (time.perf_counter() - started) * 1000
+            assert (candidate / path).read_bytes() == expected
+            started = time.perf_counter()
+            git(source, "update-ref", "HEAD", published, advanced)
+            git(source, "reset", "--hard", published)
+            publish_ms = (time.perf_counter() - started) * 1000
+            cleanup_ms = 0
+            if not reuse_validation:
+                started = time.perf_counter()
+                git(source, "worktree", "remove", str(candidate))
+                cleanup_ms = (time.perf_counter() - started) * 1000
+            after = resource.getrusage(resource.RUSAGE_CHILDREN)
+            assert (source / path).read_bytes() == expected
+            assert (private / path).read_bytes() == b"later save\n"
+            assert (private / "ignored/artifact").read_bytes() == b"durable artifact"
+            assert oid(private, "rev-parse", "HEAD") == captured
+            git(private, "diff", "--cached", "--quiet")
+            assert not (private / ".git/objects/info/alternates").exists()
+            samples.append({"clone_ms": clone_ms, "capture_ms": capture_ms,
+                "transfer_merge_commit_ms": prepare_ms, "source_switch_ms": publish_ms,
+                "validation_refresh_ms": validation_ms,
+                "validation_cleanup_ms": cleanup_ms,
+                "activation_ms": capture_ms + prepare_ms + validation_ms + publish_ms + cleanup_ms,
+                "git_user_seconds": after.ru_utime - usage.ru_utime,
+                "git_system_seconds": after.ru_stime - usage.ru_stime,
+                "git_input_blocks": after.ru_inblock - usage.ru_inblock,
+                "git_output_blocks": after.ru_oublock - usage.ru_oublock})
+        storage = [entry.stat(follow_symlinks=False) for entry in private.rglob("*")]
+        final_cleanup_ms = 0
+        if candidate.exists():
+            started = time.perf_counter()
+            git(source, "worktree", "remove", str(candidate))
+            final_cleanup_ms = (time.perf_counter() - started) * 1000
+        shutil.rmtree(source)
+        git(private, "fsck", "--full")
+        assert (private / "ignored/artifact").read_bytes() == b"durable artifact"
+        return {"tracked_files": count, "reuse_validation": reuse_validation, "samples": samples,
+            "median": {key: statistics.median(sample[key] for sample in samples) for key in samples[0]},
+            "private_logical_bytes": sum(entry.st_size for entry in storage),
+            "private_allocated_bytes": sum(entry.st_blocks * 512 for entry in storage),
+            "final_validation_cleanup_ms": final_cleanup_ms,
+            "independent_of_deleted_source": True}
+
+
+def hardlink_refresh():
+    """Characterize Git reads caused by validation links, without changing data."""
+    with tempfile.TemporaryDirectory(prefix="workflow-git-links-") as temporary:
+        root = Path(temporary)
+        repo, view = root / "repo", root / "validation"
+        repo.mkdir()
+        view.mkdir()
+        git(repo, "init", "-q")
+        for number in range(4):
+            file = repo / f"{number}.bin"
+            file.write_bytes(os.urandom(1 << 20))
+            os.utime(file, (1700000000, 1700000000))
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "Allocated assets")
+        observations = []
+
+        def status(name, expected_scans):
+            result = subprocess.run(
+                ["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=no"],
+                env=ENV | {"GIT_TRACE2_EVENT": "1"}, capture_output=True,
+                check=True, timeout=60)
+            events = [json.loads(line) for line in result.stderr.splitlines()]
+            scans = [int(event["value"]) for event in events
+                     if event.get("key") == "refresh/sum_scan"]
+            assert scans == [expected_scans] and result.stdout == b"", (name, scans, result.stdout)
+            observations.append({"case": name, "content_scans": scans[0], "clean": True})
+
+        status("before_links", 0)
+        before = (repo / "0.bin").stat()
+        # Some Git builds compare ctime only to whole-second precision.
+        time.sleep(1.05)
+        for number in range(4):
+            os.link(repo / f"{number}.bin", view / f"{number}.bin")
+        after = (repo / "0.bin").stat()
+        assert before.st_mtime_ns == after.st_mtime_ns and before.st_ctime_ns != after.st_ctime_ns
+        status("after_link_creation", 4)
+        status("after_index_refresh", 0)
+        time.sleep(1.05)
+        shutil.rmtree(view)
+        status("after_link_removal", 4)
+        status("after_second_refresh", 0)
+        return {"full_workflow_qualified": False, "host_git": oid(repo, "--version"),
+                "asset_bytes": 4 << 20, "asset_count": 4, "observations": observations,
+                "mtime_unchanged_ctime_changed": True,
+                "boundary": "native Git Trace2 content-scan counts; unchanged allocated files; no activation or disk-cold timing"}
+
+
 if __name__ == "__main__":
+    if sys.argv[1:] == ["hardlinks"]:
+        print(json.dumps(hardlink_refresh(), indent=2))
+        raise SystemExit(0)
+    if sys.argv[1:] == ["conflict"]:
+        print(json.dumps(sparse_native_conflict(), indent=2))
+        raise SystemExit(0)
+    if sys.argv[1:] in (["native"], ["native-fresh"]):
+        print(json.dumps({"native": [native_benchmark(n, sys.argv[1] == "native") for n in (100, 1000, 10000)]}, indent=2))
+        raise SystemExit(0)
+    if sys.argv[1:]:
+        raise SystemExit("usage: git_probe.py [native|native-fresh|conflict|hardlinks]")
     result = {"environment": {"kernel": platform.release(), "arch": platform.machine(),
         "cpus": os.cpu_count(), "git": subprocess.check_output(["git", "--version"], text=True).strip()},
-        "correctness": correctness() + [portable_delta(), portable_rename()],
+        "correctness": correctness() + [portable_delta(), portable_rename(), sparse_native_conflict()],
         "benchmark": [benchmark(n) for n in (100, 1000, 10000)],
         "binary": binary_benchmark()}
     usage = resource.getrusage(resource.RUSAGE_CHILDREN)

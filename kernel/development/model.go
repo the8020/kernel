@@ -111,16 +111,18 @@ type ActivationPreview struct {
 }
 
 type ActivationPackageResult struct {
-	PackageID     string   `json:"package_id"`
-	Status        string   `json:"status"`
-	PreviousHead  string   `json:"previous_commit,omitempty"`
-	ResultingHead string   `json:"resulting_commit,omitempty"`
-	CommitMessage string   `json:"commit_message,omitempty"`
-	Conflicts     []string `json:"conflicts,omitempty"`
-	Error         string   `json:"error,omitempty"`
+	PackageID        string   `json:"package_id"`
+	Status           string   `json:"status"`
+	PreviousHead     string   `json:"previous_commit,omitempty"`
+	ResultingHead    string   `json:"resulting_commit,omitempty"`
+	CommitMessage    string   `json:"commit_message,omitempty"`
+	Conflicts        []string `json:"conflicts,omitempty"`
+	ConflictWorktree string   `json:"conflict_worktree,omitempty"`
+	Error            string   `json:"error,omitempty"`
 }
 
 type ActivationResult struct {
+	Error               string                    `json:"error,omitempty"`
 	Success             bool                      `json:"success"`
 	Status              string                    `json:"status"`
 	OverlayReset        bool                      `json:"overlay_reset"`

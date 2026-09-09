@@ -1093,6 +1093,15 @@ Deno.test("typed secret and package APIs use private runtime operations", async 
     };
     assertEquals(
       await respond(
+        inContext(() => kernel.packages.delete("acme/example", true)),
+        "package.delete",
+        { package_id: "acme/example", confirm: true },
+        { deleted: true },
+      ),
+      undefined,
+    );
+    assertEquals(
+      await respond(
         inContext(() =>
           kernel.packages.index.set({
             author: "the8020",

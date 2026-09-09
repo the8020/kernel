@@ -29,9 +29,7 @@ func TestRootlessRetainedTerminals(t *testing.T) {
 	if err := os.MkdirAll(packages, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := copyDirectory(context.Background(), filepath.Join(source, "defaults/scripts"), filepath.Join(root, "scripts")); err != nil {
-		t.Fatal(err)
-	}
+	installTestDevelopmentAssets(t, root)
 	runtimeRoot := filepath.Join(root, "node/kernel/runtime/development")
 	driver := NewRootlessDriver(RootlessConfig{
 		RunscPath:   filepath.Join(source, ".development/runtime/gvisor/bin/runsc"),

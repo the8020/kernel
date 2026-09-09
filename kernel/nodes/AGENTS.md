@@ -60,6 +60,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   trusted request context. Proxying regenerates
   `the8020-internal-forwarded-nodes`; public header values never control peer
   selection, regardless of casing.
+- Native authentication transport uses the same trust boundary: proxying
+  regenerates `the8020-internal-local-authentication` from private context and
+  authenticated recipients restore it to context before removing the header.
+  Public requests cannot promote leaked local tokens to remote credentials.
 - Spillover excludes nodes already present in the forwarding path, queries
   remaining peers concurrently, ignores unreachable/non-accepting peers, and
   prefers the greatest advertised Worker then sandbox headroom.

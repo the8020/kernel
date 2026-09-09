@@ -48,6 +48,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   at most 128 bytes, and a positive safe-integer `ver`. Only Deno interprets
   session existence, account state, and authentication-version eligibility.
   Cryptography cannot detect a revoked session or disabled account by itself.
+- Optional signed `transport` is `local` or `remote` (absence means remote).
+  Local tokens require a native transport context; public HTTP, including
+  loopback requests, cannot assert it. The authenticated node recipient alone
+  may restore that marker when forwarding a native request across nodes.
 - `the8020-authorization: Bearer <jwt>` and `the8020_auth=<jwt>` carry the same
   token. Explicit header presence wins, including empty, duplicate, or malformed
   headers; it never falls back to cookies. Duplicate platform cookies fail.
@@ -66,11 +70,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 # Work Guidance
 
-- Treat cryptographic changes as protected kernel-foundation changes:
-  establish necessity, keep the contract generic, and verify its package
-  entrypoints. Account eligibility, login rules, and session policy remain in
-  users; reuse the shared runtime rather than adding an authentication
-  execution path.
+- Treat cryptographic changes as protected kernel-foundation changes: establish
+  necessity, keep the contract generic, and verify its package entrypoints.
+  Account eligibility, login rules, and session policy remain in users; reuse
+  the shared runtime rather than adding an authentication execution path.
 
 # Verification
 

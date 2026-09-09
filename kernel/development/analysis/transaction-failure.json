@@ -1,0 +1,27 @@
+{
+  "observed_failure": "workflow runtime profile: current\n=== RUN   TestWorkflowAnalysisTransaction\n    workflow_transaction_test.go:42: retry of first completion published unswitched second activation: active=second state=ready err=<nil>\n--- FAIL: TestWorkflowAnalysisTransaction (0.03s)\nFAIL\nFAIL\tthe8020/kernel/packages\t0.043s\nFAIL\n",
+  "source_sha256": {
+    "kernel/packages/activation_test.go": "106f7523e44ef984e83553f5ef39e748a0134f01c2a910462c0a9f7fb45223e0",
+    "kernel/packages/deletion_test.go": "e1aed8918fa1f63a02c8e8b5783c7d6584bc65a7da911cc11bc1734e196f6554",
+    "kernel/packages/events_test.go": "35fe8201b0abbac6f8abacb5488ec98ae489c7e703f42f0730adfb04b9e0946e",
+    "kernel/packages/packages.go": "d5ebef6df4ef9723f0ad660215e559658f4437329da92e1c05c1ef223dabccc6",
+    "kernel/packages/handlers.go": "3d2621846699a29a0a1ee76fd2509ceb7255f9ea9ef810b13d1953bb6dc4e4fd",
+    "kernel/packages/handler_index_test.go": "a96b1b1680001f3b0422176f32d1c870dc15ab9c34d31a2d68839953050de03e",
+    "kernel/packages/deletion.go": "e3731ec98ed76b0b97cde4ddadfc07d3258e678552597627d5f8742333035752",
+    "kernel/packages/management.go": "5490a2acef6ffba6a0f44d2d562afab9bc4970b2c47431ef3fbb83cc68ec5daa",
+    "kernel/packages/handler_index.go": "d5b8b057d14b4cd6b8b26e59cddde34ef33198806eaa1f44a6a17b7056bbfdcf",
+    "kernel/packages/programs.go": "63777057d5f7d956340a949d83cbc4f3111ff13e879e2105556edd92313c9fb3",
+    "kernel/packages/activation.go": "436e012e2952bd7d96f0f6b7893d5e1e66a1e87b2e418ff90001482c16ccbab2",
+    "kernel/packages/management_test.go": "20c2245b4d61b4c842d8e4c5fa0b4296261adff6b1bd81649ef858e004733ad9",
+    "kernel/packages/repository.go": "466cb743231d361276e50eae0afe95b13c7e2cd386a1d2a31b3639569740685f",
+    "kernel/database/schema_test.go": "254fbcd39e94cdb29e98ac5b8bc193cd03ad1b073fefa0a2be90b6a2f6fb7177",
+    "kernel/database/schema.go": "7b84886780ab229c69ce271a97d7c4f6081fce902c07bf4c5a27b5ef46d4618f",
+    "kernel/database/evaluator/evaluator_test.go": "f601f9d2a3d6a2d6140d01779f2be8f767ddbdad77273e24a552efa88265cdd5",
+    "kernel/database/evaluator/evaluator.go": "2ea8f6d913301be8eda1917a2ce79bc61ef82d0c786eaa1b4f0c9e1e98fd573c",
+    "kernel/development/activation.go": "fcd29918aa169d822a1d748219e4c878a0c2dfda1872ada246330049491c6411",
+    "kernel/development/manager.go": "1a0168f6d69a5e9f8e5778f50d8b3ec8edd98edd7667f7171ce6aeb031450767",
+    "kernel/development/development_test.go": "306c44a027c969a12ffdcf126dc1906efe4355ca8360c3ced05c4e9d9d2390a4",
+    "kernel/deployment/schema.go": "a8dfb3675f53e321c967dbdf37228e36bae0fb3f01d19d3d93f2efeef9ae0385"
+  },
+  "regression_source": "//go:build workflowanalysis\n\npackage packages\n\nimport (\n\t\"context\"\n\t\"path/filepath\"\n\t\"testing\"\n\n\t\"the8020/kernel/deployment\"\n)\n\n// The first helper may lose its response after durable completion, then retry\n// while a different activation has prepared but has not switched its sources.\nfunc TestWorkflowAnalysisTransaction(t *testing.T) {\n\troot, store, db := activationStore(t)\n\tactive := writeActivationPackage(t, filepath.Join(root, \"packages\"), \"acme/orders\", false)\n\tputActivePackage(t, store, \"acme/orders\", \"old\")\n\tevents := []string{}\n\tcoordinator, err := NewActivationCoordinator(ActivationCoordinatorConfig{\n\t\tDatabase: db, Schema: &activationSchemaRecorder{events: &events}, Packages: store,\n\t\tJobs: &activationJobRecorder{events: &events, failures: map[string]int{}, calls: map[string]int{}},\n\t})\n\tif err != nil {\n\t\tt.Fatal(err)\n\t}\n\tctx := context.Background()\n\tif err := coordinator.Prepare(ctx, []deployment.Candidate{{PackageID: \"acme/orders\", Root: active, Commit: \"first\"}}); err != nil {\n\t\tt.Fatal(err)\n\t}\n\tif err := coordinator.Complete(ctx, true); err != nil {\n\t\tt.Fatal(err)\n\t}\n\tif err := coordinator.Prepare(ctx, []deployment.Candidate{{PackageID: \"acme/orders\", Root: active, Commit: \"second\"}}); err != nil {\n\t\tt.Fatal(err)\n\t}\n\tif err := coordinator.Complete(ctx, true); err != nil {\n\t\tt.Fatal(err)\n\t}\n\tentry, _, err := store.index.Get(ctx, \"acme/orders\")\n\tif err != nil || entry.ActiveCommit != \"first\" || entry.State != \"activating\" {\n\t\tt.Fatalf(\"retry of first completion published unswitched second activation: active=%s state=%s err=%v\", entry.ActiveCommit, entry.State, err)\n\t}\n}\n"
+}

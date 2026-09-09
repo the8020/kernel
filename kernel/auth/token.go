@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/ed25519"
 	"errors"
 	"math"
@@ -24,6 +25,23 @@ const (
 var ErrInvalidToken = errors.New("invalid platform authentication token")
 
 type TokenClaims = jwt.MapClaims
+
+type localTransportKey struct{}
+
+// WithLocalTransport marks native ingress or an authenticated kernel peer.
+// Client-supplied HTTP headers must never call this function.
+func WithLocalTransport(ctx context.Context) context.Context {
+	return context.WithValue(ctx, localTransportKey{}, true)
+}
+
+func LocalTransport(ctx context.Context) bool {
+	local, _ := ctx.Value(localTransportKey{}).(bool)
+	return local
+}
+
+func AllowsTransport(claims TokenClaims, ctx context.Context) bool {
+	return claims["transport"] != "local" || LocalTransport(ctx)
+}
 
 // TokenUser reads only the signed execution principal, never account state.
 func TokenUser(claims TokenClaims) (execution.User, error) {
@@ -75,6 +93,9 @@ func (s *Signer) verifyTokenAt(encoded string, now time.Time) (TokenClaims, erro
 		return nil, ErrInvalidToken
 	}
 	claims := token.Claims.(jwt.MapClaims)
+	if transport, present := claims["transport"]; present && transport != "local" && transport != "remote" {
+		return nil, ErrInvalidToken
+	}
 	issued, err := claims.GetIssuedAt()
 	expires, expiryErr := claims.GetExpirationTime()
 	if err != nil || expiryErr != nil || issued == nil || expires == nil || !expires.After(issued.Time) {

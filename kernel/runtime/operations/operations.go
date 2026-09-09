@@ -35,6 +35,7 @@ import (
 	nodelist "the8020/kernel/cbus/commands/node/list"
 	noderemove "the8020/kernel/cbus/commands/node/remove"
 	nodeset "the8020/kernel/cbus/commands/node/set"
+	packagedelete "the8020/kernel/cbus/commands/package/delete"
 	packageinspectindex "the8020/kernel/cbus/commands/package/index/inspect"
 	packagelistindex "the8020/kernel/cbus/commands/package/index/list"
 	packagesetindex "the8020/kernel/cbus/commands/package/index/set"
@@ -92,6 +93,7 @@ func New(serviceSet *services.Services) (*Dispatcher, error) {
 		"node.list": nodelist.New(serviceSet), "node.remove": noderemove.New(serviceSet), "node.set": nodeset.New(serviceSet),
 		"package.index.inspect": packageinspectindex.New(serviceSet), "package.index.list": packagelistindex.New(serviceSet), "package.index.set": packagesetindex.New(serviceSet),
 		"package.inspect": packageinspect.New(serviceSet), "package.list": packagelist.New(serviceSet), "package.local.create": packagelocalcreate.New(serviceSet),
+		"package.delete":              packagedelete.New(serviceSet),
 		"package.repository.checkout": packagerepositorycheckout.New(serviceSet), "package.repository.init": packagerepositoryinit.New(serviceSet),
 		"package.repository.inspect": packagerepositoryinspect.New(serviceSet), "package.repository.list": packagerepositorylist.New(serviceSet),
 		"package.repository.pull": packagerepositorypull.New(serviceSet), "package.repository.push": packagerepositorypush.New(serviceSet),

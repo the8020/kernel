@@ -24,11 +24,21 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   Phase 2 starts only in disposable checkouts and instances; production adoption
   requires demonstrated correctness, ordinary native-tool behavior, and low
   overhead. Keep the completed terminal feature if no filesystem candidate
-  qualifies. Stop after Phase 1 is finished and verified. The user will revise
-  Phase 2 before authorizing its start; do not begin its experiments or
-  implementation automatically.
+  qualifies. Phase 1 is complete and the user has authorized Phase 2. Qualify
+  storage and publication candidates in disposable experiments before adoption;
+  immediate shared updates on untouched paths remain the working requirement.
   [WORKFLOW_IMPLEMENTATION.md](WORKFLOW_IMPLEMENTATION.md) tracks the ordered
   implementation and verification gates.
+- Judge alternatives by developer outcomes: reliable conflict resolution,
+  continued visibility of shared changes during an editing session, durable
+  private work, and low storage/I/O cost for small edits. The user's suggested
+  mechanisms are open to better alternatives. A label edit must not require
+  cloning an asset-heavy package, and one edit must not freeze the rest of its
+  package or workspace until commit/discard. Agents need ordinary access to the
+  full packages tree without an explicit package-editing gate.
+- A tested alternative that fails these outcomes does not complete the goal.
+  Keep failed candidates as evidence and leave qualification active; do not
+  treat completion of experiments or a reduced-scope proposal as achievement.
 - The mounted workspace must support ordinary Linux filesystem behavior for
   unmodified Git, Codex, Claude Code, editors, and build tools. Applications
   must use normal paths and filesystem operations without knowing whether a file
@@ -50,7 +60,7 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   Kernel owns the sandbox-scoped session name and physical terminal, and Deno
   packages own selection, workflow, and display recovery. The shared retained
   owner and browser/SSH adapters are implemented and verified; the checklist
-  records the completed Phase 1 evidence and the Phase 2 hold.
+  records the completed Phase 1 evidence and Phase 2 qualification results.
 - Untouched paths follow shared publication immediately; private edits stay
   isolated. Git must merge from each path's original observed version, preserve
   non-overlapping changes, and reject real conflicts with a nonzero helper exit.
@@ -64,10 +74,37 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   native-tool filesystem operations and concurrent developer activity against
   the existing backend; fast Git candidate preparation alone does not qualify
   workspace performance. Bound terminal history and replay work independently.
+- The measured sparse-Gofer read overhead is accepted for the prototype; normal
+  work does not repeatedly traverse the benchmark's large trees. Prioritize
+  correct writes and activation/merge behavior over additional read tuning. The
+  agent must edit ordinary files, call the activation script, resolve conflicts
+  using standard Git markers/files or unmerged index stages, and retry. Do not
+  require third-party conflict tools or a custom resolution protocol. Preserve
+  concurrent edits while presenting understandable native Git conflict state.
+- The immediate delivery priority is a working prototype, including ordinary
+  package creation/deletion and the shared CLI/UUI conflict workflow. Defer
+  optimization and broader filesystem qualification until that prototype is
+  usable; do not let those investigations delay this delivery. Preserve private
+  work, running processes and correct activation/conflict recovery throughout.
+- Provide a compact conflict-resolution screen in the development UUI using the
+  existing UUI code editor. Users select conflicting files, inspect clearly
+  labelled/colored sides, edit and resolve, then continue activation once all
+  conflicts are resolved. The package owns presentation; native Git conflict
+  files/index state remain the shared owner for UUI and the terminal helper. A
+  failed activation from either entry point must be resumable from the other,
+  including by an agent in the sandbox. The helper must print readable
+  conflicting paths and concrete resolution and continuation instructions. No
+  separate UUI-only merge state or resolver.
 - [analysis/REPORT.md](analysis/REPORT.md) records measured failures, design
   recommendations, and filesystem qualification gates. The filesystem redesign
   is pending; current activation still recreates the sandbox and does not meet
   the process-preservation and publication requirements above.
+- Phase 2 demonstrates durable native private Git repositories and publication
+  without workspace reset, including native conflicts and retained PTYs. That
+  alternative requires explicit package synchronization and initial checkouts;
+  it is rejected for workspace adoption because of stale untouched files and
+  package-size copying. Keep its measured component results distinct from
+  qualification of a suitable filesystem and publisher.
 
 ## Current implementation
 
@@ -80,8 +117,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   against retained development records; live ownership checks reject foreign
   reuse before any backend cleanup.
 - Durable state is confined to `users/<username>/dev-sandbox/`: `sandbox.toml`,
-  overlay checkpoints, and image-qualified writable system roots. Unrelated
-  files beneath `users/<username>/` are not sandbox state.
+  overlay checkpoints, private `skills/`, and image-qualified writable system
+  roots. Unrelated files beneath `users/<username>/` are not sandbox state.
 - `/workspace/packages` is a gVisor-private writable overlay over the shared
   package tree. The live gVisor filestore is disposable; explicit lifecycle
   boundaries checkpoint private package deltas beneath `dev-sandbox/runtime/`
@@ -156,8 +193,13 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   from the current development image, preserving unrelated user data. Both
   require confirmation.
 - The helper endpoint authenticates the sandbox token, fixes helper client
-  metadata, and re-enters registered activation commands; it is not a second
-  activation implementation.
+  metadata, resolves `dev-core.activate.preview` / `dev-core.activate.run` from
+  the current command catalog, and passes ordinary package-command arguments. It
+  is not a second activation implementation.
+- Activation results retain a top-level error and, for resumable native
+  conflicts, a `conflict_worktree` per package. The UUI uses sandbox inspection
+  and the platform's native Git adapter to reopen that exact attempt; terminal
+  output defaults to readable instructions, with `--json` for integrations.
 - The platform-owned instance `scripts/` tree is mounted read-only and
   executable at `/workspace/scripts`; `/workspace/scripts/activate` is the
   canonical terminal helper and remains outside the mutable image system root.
@@ -165,6 +207,39 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   native releases, persist them in root's home, and set only unattended
   full-access permissions. Root's native user-binary directory is on every
   development command PATH.
+- The activated `packages/the8020/dev-skills` package is mounted read-only at
+  `/workspace/skills/builtin`; its `workspace.md` also supplies
+  `/workspace/AGENTS.md` and `/workspace/CLAUDE.md`. Skills update through
+  ordinary package activation. Always use `8020-dev`, then its relevant domain
+  skills.
+- `Config.SystemURL` supplies the node's main HTTP URL at each sandbox start.
+  The driver exposes it as `DEVELOPMENT_SYSTEM_URL`, separately from the private
+  activation endpoint and token. Its loopback address uses development's host
+  network; an existing process retains its start-time value if the main port
+  changes. Environment explanations remain in dev-skills `workspace.md`.
+- The existing private sandbox ingress also exposes `token` and `request`.
+  Authenticate its sandbox secret before passing the loaded record's owner to
+  composition. The body cannot select a user. The existing bearer secret is
+  transferable within the host network; Unix peer identity is not claimed.
+  Composition issues an ordinary users allowance and dispatches generic service
+  requests with native transport provenance; no UUI events enter this package.
+- `/workspace/skills/custom` is a writable persistent mount backed by
+  `users/<user-id>/dev-sandbox/skills/`. It survives restart, activation, and
+  source reset; factory reset removes it with the rest of that user's sandbox.
+  The package-owned discovery helper merges both sources into native agent home
+  directories, preferring custom names and preserving unmanaged home skills.
+  Startup, CLI installation, or an explicit
+  `/workspace/scripts/setup-agent-skills.sh` refresh discovers
+  additions/removals; agents may need a catalog reload.
+- Read-only mount sources may be directories or regular files, with the same
+  canonical-path confinement and private-root exclusions. Writable source and
+  persistent mounts remain directories. The mounted
+  `/workspace/scripts/development-init.sh` installs agent discovery in the
+  retained home, then delegates to the image's existing `sandbox.sh`. Custom
+  driver profiles must supply that bootstrap and its built-in/custom mounts too.
+- Running sandboxes retain their mount bindings until their next ordinary start;
+  replacing a mounted instruction file becomes visible on that start. The
+  built-in directory exposes published skill updates through normal file reads.
 - Exec and subprocess diagnostics are bounded to one MiB. Development consoles
   retain the bounded capabilities required for APT/dpkg, use the standard
   administrative `PATH`, keep `no_new_privileges`, and remain inside gVisor.
@@ -200,6 +275,18 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   protection, checkpoint failure, and private-file restoration. The dev-core
   `test:native-idle` harness checks the real browser/SSH/metadata path with
   seconds-long deadlines and subsequent sandbox shutdown.
+- `TestDevelopmentGuidance` runs the actual helper installer and verifies stale
+  helper removal, mount flags, and rejection of protected/file-special sources.
+  `TestDevelopmentSystemURL` checks URL propagation and refresh on restart. The
+  dev-skills package owns discovery policy unit tests.
+  `THE8020_GUIDANCE_E2E=1 go test ./kernel/development -run
+  '^TestRootlessDevelopmentGuidance$' -count=1 -v`
+  verifies the sibling dev-skills package in real gVisor: built-in write denial,
+  publication through the activation helper, both agents' merged discovery,
+  private user isolation, restart/source-reset persistence, factory-reset
+  removal, workspace-guide publication, and kernel-host loopback through the
+  supplied system URL. It requires the portable runtime and the sibling
+  dev-skills source checkout; ordinary unit tests use a bootstrap double.
 
 # Child DOX Index
 

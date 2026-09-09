@@ -1,0 +1,458 @@
+{
+  "sdk": "v0.0.0-20260815055033-7d8fb7f28de4",
+  "environment": {
+    "system": "Linux",
+    "node": "0d5235689514",
+    "release": "6.10.14-linuxkit",
+    "version": "#1 SMP Thu Mar 20 16:32:56 UTC 2025",
+    "machine": "aarch64",
+    "processor": ""
+  },
+  "source_sha256": {
+    "gofer_probe.go": "803a3df6685ed72d12da48b53593e64ae15c18ff96664653b070984f6ef1733b",
+    "gofer_probe.py": "a7c0b050da10412e36e2c3436c70e4cd692bd34bb53ab7579af52a3a59d08f1b",
+    "native_probe.go": "d2f10109069c169d7f090be61450847a1cd8fbf7e3e830600a505a7c3c98c70e",
+    "git_probe.py": "2523907e0603289350f65d04eb8b5d47a44ec915987b48a3c65b1ea81e1c1a94"
+  },
+  "checks": {
+    "mount_initialization": {
+      "passed": true,
+      "detail": {
+        "files": 0,
+        "regular_inodes": 0,
+        "logical_bytes": 0,
+        "allocated_bytes": 0,
+        "symlinks": 0,
+        "snapshot_entries": 0,
+        "deleted_markers": 0,
+        "asset_copies": 0,
+        "directory_allocation_included": false
+      }
+    },
+    "complete_asset_namespace": {
+      "passed": true,
+      "detail": "4"
+    },
+    "small_edit_cost": {
+      "passed": true,
+      "detail": {
+        "files": 2,
+        "regular_inodes": 2,
+        "logical_bytes": 20,
+        "allocated_bytes": 8192,
+        "symlinks": 0,
+        "snapshot_entries": 0,
+        "deleted_markers": 0,
+        "asset_copies": 0,
+        "directory_allocation_included": false
+      }
+    },
+    "original_before_truncate": {
+      "passed": true,
+      "detail": "Old label\n"
+    },
+    "private_isolation": {
+      "passed": true,
+      "detail": "Old label\n"
+    },
+    "native_symlink": {
+      "passed": true,
+      "detail": "relative symlink"
+    },
+    "host_escape_denied": {
+      "passed": true,
+      "detail": "host sibling file is not accessible"
+    },
+    "fresh_path_with_old_descriptor": {
+      "passed": true,
+      "detail": "shared replacement\n19\n"
+    },
+    "old_descriptor_identity": {
+      "passed": true,
+      "detail": "before\n"
+    },
+    "native_git_hash_coherence": {
+      "passed": true,
+      "detail": [
+        "be63890a152d86a29c8d7885b0817b6d9593258e",
+        "be63890a152d86a29c8d7885b0817b6d9593258e"
+      ]
+    },
+    "elf_and_first_copy_mmap": {
+      "passed": true,
+      "detail": "PASS ELF retained-read retained-mmap writable-mmap\n"
+    },
+    "mmap_isolation": {
+      "passed": true,
+      "detail": "shared source unchanged"
+    },
+    "native_git_commit": {
+      "passed": true,
+      "detail": "label.txt\nPrivate label\n"
+    },
+    "shared_git_isolation": {
+      "passed": true,
+      "detail": "shared HEAD remains Base"
+    },
+    "mounted_git_conflict": {
+      "passed": true,
+      "detail": {
+        "output": "Auto-merging label.txt\nCONFLICT (content): Merge conflict in label.txt\nAutomatic merge failed; fix conflicts and then commit the result.\n",
+        "markers": "<<<<<<< HEAD\nNew label\n||||||| 39184e3\nOld label\n=======\nShared label\n>>>>>>> ae752d663b534734d05dd901ca3c1ca58f0cff4a\n",
+        "stages": "Old label\nNew label\nShared label\n"
+      }
+    },
+    "mounted_conflict_durability": {
+      "passed": true,
+      "detail": "markers and all three index stages survive recreation"
+    },
+    "mounted_git_resolution": {
+      "passed": true,
+      "detail": "Resolved native merge\n"
+    },
+    "native_namespace_tools": {
+      "passed": true,
+      "detail": "PASS executable mmap hardlink symlink rename open-handle flock local-inotify\n"
+    },
+    "shared_file_rename": {
+      "passed": false,
+      "detail": "panic: rename rename/same.txt rename/alias.txt: operation not supported\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/workspace/8020/kernel/kernel/development/analysis/native_probe.go:17\nmain.main()\n\t/workspace/8020/kernel/kernel/development/analysis/native_probe.go:34 +0x16d4\n"
+    }
+  },
+  "commands": [
+    {
+      "args": [
+        "run",
+        "--detach",
+        "--bundle=/workspace/8020/kernel/.development/workflow-gofer-build/workflow-gofer-mf3pajf7",
+        "probe"
+      ],
+      "exit": 0,
+      "seconds": 0.22882233397103846,
+      "output": ""
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "find assets -type f | wc -l"
+      ],
+      "exit": 0,
+      "seconds": 0.1217399169690907,
+      "output": "4\n"
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "printf 'New label\n' >label.txt"
+      ],
+      "exit": 0,
+      "seconds": 0.0694252080284059,
+      "output": ""
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "cat label-link"
+      ],
+      "exit": 0,
+      "seconds": 0.06840783404186368,
+      "output": "New label\n"
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "cat escape"
+      ],
+      "exit": 1,
+      "seconds": 0.07080116693396121,
+      "output": "cat: escape: No such file or directory\n"
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "sh -c 'exec 9<untouched.txt; touch /tmp/ready; while ! test -f /tmp/release; do sleep .05; done; cat <&9 >/tmp/held' </dev/null >/tmp/held-log 2>&1 &"
+      ],
+      "exit": 0,
+      "seconds": 0.06969012599438429,
+      "output": ""
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "for n in $(seq 1 100); do test -f /tmp/ready && exit 0; sleep .05; done; exit 1"
+      ],
+      "exit": 0,
+      "seconds": 0.0708498329622671,
+      "output": ""
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "cat untouched.txt; stat -c %s untouched.txt"
+      ],
+      "exit": 0,
+      "seconds": 0.07426308305002749,
+      "output": "shared replacement\n19\n"
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "touch /tmp/release; for n in $(seq 1 100); do test -s /tmp/held && exit 0; sleep .05; done; exit 1"
+      ],
+      "exit": 0,
+      "seconds": 0.12086475000251085,
+      "output": ""
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "cat /tmp/held"
+      ],
+      "exit": 0,
+      "seconds": 0.07500095805153251,
+      "output": "before\n"
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "git hash-object untouched.txt; cat untouched.txt | git hash-object --stdin"
+      ],
+      "exit": 0,
+      "seconds": 0.12004483304917812,
+      "output": "be63890a152d86a29c8d7885b0817b6d9593258e\nbe63890a152d86a29c8d7885b0817b6d9593258e\n"
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "./client workflow-file-client"
+      ],
+      "exit": 0,
+      "seconds": 0.12199079105630517,
+      "output": "PASS ELF retained-read retained-mmap writable-mmap\n"
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "set -e; git add label.txt; git diff --cached --name-only; git commit -qm 'Private label'; git log -1 --format=%s"
+      ],
+      "exit": 0,
+      "seconds": 0.4772565830498934,
+      "output": "label.txt\nPrivate label\n"
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "git -c merge.conflictStyle=diff3 merge --no-edit ae752d663b534734d05dd901ca3c1ca58f0cff4a"
+      ],
+      "exit": 1,
+      "seconds": 0.5306433760561049,
+      "output": "Auto-merging label.txt\nCONFLICT (content): Merge conflict in label.txt\nAutomatic merge failed; fix conflicts and then commit the result.\n"
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "cat label.txt"
+      ],
+      "exit": 0,
+      "seconds": 0.06932766595855355,
+      "output": "<<<<<<< HEAD\nNew label\n||||||| 39184e3\nOld label\n=======\nShared label\n>>>>>>> ae752d663b534734d05dd901ca3c1ca58f0cff4a\n"
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "git show :1:label.txt; git show :2:label.txt; git show :3:label.txt"
+      ],
+      "exit": 0,
+      "seconds": 0.2211467499146238,
+      "output": "Old label\nNew label\nShared label\n"
+    },
+    {
+      "args": [
+        "kill",
+        "probe",
+        "KILL"
+      ],
+      "exit": 0,
+      "seconds": 0.0816267920890823,
+      "output": ""
+    },
+    {
+      "args": [
+        "delete",
+        "--force",
+        "probe"
+      ],
+      "exit": 0,
+      "seconds": 0.03651487501338124,
+      "output": ""
+    },
+    {
+      "args": [
+        "run",
+        "--detach",
+        "--bundle=/workspace/8020/kernel/.development/workflow-gofer-build/workflow-gofer-mf3pajf7",
+        "probe"
+      ],
+      "exit": 0,
+      "seconds": 0.22306724998634309,
+      "output": ""
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "cat label.txt; git show :1:label.txt; git show :2:label.txt; git show :3:label.txt"
+      ],
+      "exit": 0,
+      "seconds": 0.2225917500909418,
+      "output": "<<<<<<< HEAD\nNew label\n||||||| 39184e3\nOld label\n=======\nShared label\n>>>>>>> ae752d663b534734d05dd901ca3c1ca58f0cff4a\nOld label\nNew label\nShared label\n"
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "set -e; printf 'Resolved label\n' >label.txt; git add label.txt; git commit -qm 'Resolved native merge'; git log -1 --format=%s; git ls-files -u; git merge-base --is-ancestor ae752d663b534734d05dd901ca3c1ca58f0cff4a HEAD"
+      ],
+      "exit": 0,
+      "seconds": 0.5348445010604337,
+      "output": "Resolved native merge\n"
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "./native-client"
+      ],
+      "exit": 0,
+      "seconds": 0.11959945794660598,
+      "output": "PASS executable mmap hardlink symlink rename open-handle flock local-inotify\n"
+    },
+    {
+      "args": [
+        "exec",
+        "--cwd=/workspace/packages",
+        "probe",
+        "/bin/sh",
+        "-c",
+        "./native-client rename-lower"
+      ],
+      "exit": 2,
+      "seconds": 0.0703138749813661,
+      "output": "panic: rename rename/same.txt rename/alias.txt: operation not supported\n\ngoroutine 1 [running]:\nmain.must(...)\n\t/workspace/8020/kernel/kernel/development/analysis/native_probe.go:17\nmain.main()\n\t/workspace/8020/kernel/kernel/development/analysis/native_probe.go:34 +0x16d4\n"
+    },
+    {
+      "args": [
+        "delete",
+        "--force",
+        "probe"
+      ],
+      "exit": 0,
+      "seconds": 0.08341458300128579,
+      "output": ""
+    }
+  ],
+  "full_workflow_qualified": false,
+  "mode": "namespace",
+  "timing_boundary": "functional checks; command durations include runtime exec",
+  "unimplemented_gates": [
+    "lower/directory rename, directory deletion, full metadata and hardlink semantics",
+    "transactional copy-up recovery and concurrent upstream in-place writes",
+    "hard-linked lower files and detached lower-handle mutation",
+    "private Git ownership, actual activation/schema/hooks and conflict installation",
+    "automatic pending retirement, snapshot reclamation, durable publication recovery",
+    "bounded enumeration, watcher behavior, concurrency and deployment profiles"
+  ],
+  "assets": {
+    "files": 4,
+    "logical_bytes": 4194304,
+    "allocated_bytes": 4194304
+  },
+  "small_tree": {
+    "files": 0,
+    "logical_bytes": 0
+  },
+  "small_edit_storage": {
+    "files": 2,
+    "regular_inodes": 2,
+    "logical_bytes": 20,
+    "allocated_bytes": 8192,
+    "symlinks": 0,
+    "snapshot_entries": 0,
+    "deleted_markers": 0,
+    "asset_copies": 0,
+    "directory_allocation_included": false
+  },
+  "error": "[Errno 2] No such file or directory: '/workspace/8020/kernel/.development/workflow-gofer-build/workflow-gofer-mf3pajf7/storage/base/rename/new.txt'",
+  "extension_loaded": true,
+  "runtime_errors": [],
+  "component_checks_pass": false
+}

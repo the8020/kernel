@@ -31,6 +31,8 @@ Parent DOX: [kernel/kernel/cbus DOX](../AGENTS.md).
   without hiding valid packages.
 - Candidate command manifests and their same-package programs are validated
   before package activation switches source.
+- Empty-commit removal candidates omit their command fragment from candidate
+  validation; publication uses the existing scoped reindex to remove it.
 - Dispatch package commands through the program runner as ordinary system-user
   jobs using normal shared package mounts. Discovery owns no execution policy.
 - Return the program's result without collecting console messages into the

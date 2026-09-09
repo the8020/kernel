@@ -10,6 +10,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 # Local Contracts
 
 - `Prepare` finishes before activated package files become visible.
+- `Candidate.Commit == ""` explicitly removes the selected package; `Root`
+  remains its installed path. Nonempty commits publish candidate source. Both
+  forms use the same preparation, completion, and recovery handshake.
 - `Complete(true)` records the code switch; `Complete(false)` recovers catalog
   metadata to the still-active package set.
 - Callers serialize the handshake with their existing repository lock. The

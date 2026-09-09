@@ -48,6 +48,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   Restart recovery aligns catalog state to the package tree that is actually
   active. The last failed deployment remains visible without degrading an
   otherwise ready database.
+- Empty candidate commits remove packages from the catalog commit set. Their
+  table/column metadata is retired through ordinary synchronization, preserving
+  physical tables and data until explicit trim.
 - Runtime SQL has one unified row/non-row operation and opaque kernel-held
   transactions bound to an exact Worker-execution plus request/invocation scope.
   Acquisition obeys the caller deadline; the transaction then has its own
@@ -92,8 +95,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   query workflows belong in packages; extend the kernel only for a necessary
   shared storage foundation.
 - Verify representation or transaction changes against the shared db
-  codec/driver and the affected application path, preserving query bounds,
-  short lock scopes, and connection cleanup.
+  codec/driver and the affected application path, preserving query bounds, short
+  lock scopes, and connection cleanup.
 
 # Verification
 

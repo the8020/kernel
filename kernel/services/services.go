@@ -181,6 +181,7 @@ type PackageManagementService interface {
 	InspectPackageSource(context.Context, string) (workspacepackages.SourceInspection, error)
 	ListPackageVersions(context.Context, string, int) (workspacepackages.PackageVersions, error)
 	SynchronizePackages(context.Context, []string) ([]workspacepackages.PackageSynchronization, error)
+	DeletePackage(context.Context, string) error
 	CreateLocalPackage(context.Context, string, string, string) (workspacepackages.LocalPackage, error)
 	ListPackageRepositories(context.Context) ([]workspacepackages.Repository, error)
 	InspectPackageRepository(context.Context, string) (workspacepackages.Repository, error)

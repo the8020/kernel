@@ -19,6 +19,8 @@ Parent DOX: [kernel/kernel/runtime DOX](../AGENTS.md).
 
 - Operations call handlers or managers directly; they never recurse through the
   public command registry.
+- `package.delete` shares the confirmed deletion handler with
+  `kernel.packages.delete`; source/catalog lifecycle belongs to packages.
 - `terminal.*` delegates physical PTYs to the shared console manager. It owns
   only the calling Worker's replaceable attachment references and pending-open
   cancellation. The trusted sandbox/Worker pair comes from callback context,

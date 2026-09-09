@@ -1,0 +1,898 @@
+{
+  "recorded_at_utc": "2026-09-08T09:40:11.194688+00:00",
+  "kernel_head_at_recording": "2901eadfce244936efa4ec0adb7dce0873adc76d",
+  "scope": "Disposable Phase 2 experiments; this work changes development documentation and analysis files only. Concurrent unrelated test edits were present.",
+  "environment": {
+    "kernel": "6.10.14-linuxkit",
+    "arch": "aarch64",
+    "cpus": 6,
+    "go": "1.26.5",
+    "git": "2.39.5",
+    "runsc": "release-20260817.0",
+    "platform": "rootless systrap",
+    "temporary_filesystem": "outer LinuxKit Docker OverlayFS",
+    "page_cache_flushed": false,
+    "host_scheduling_controlled": false
+  },
+  "probe_sha256": {
+    "run.py": "7a7bc59891972307ca5df1f5653e44a2f978425039c74b55e615a6a8e4f0a052",
+    "coherence_test.go": "3cd3626d71284567b0a5b777e6bb3d84596b6291500c0f367ab8412daca41831",
+    "native_test.go": "7ebba67ef643b907c7374490b6c4e8253645ff1aa591c43da2c010f9d1608dcb",
+    "native_probe.go": "4c8273f7171d0c8ecd974a0a681f0a091be71d3103dc96b79b0132b11bb56e53",
+    "git_probe.py": "68c40957c9a509819c49533fa6342baee10bd4d0e1ef46413248a92bfcba4c46"
+  },
+  "production_rootless_go_sha256": "989d728ee1791163d487f08c3805a2606ce3450d4ea3be0adaab1e1c8cea5ea9",
+  "coherence_current": {
+    "expected_exit": 1,
+    "log": "workflow runtime profile: current\n=== RUN   TestWorkflowAnalysisCoherence\n=== RUN   TestWorkflowAnalysisCoherence/size\n    workflow_coherence_test.go:85: want \"15\\n\", got \"7\\n\", error=<nil>\n=== RUN   TestWorkflowAnalysisCoherence/content\n=== RUN   TestWorkflowAnalysisCoherence/replacement\n    workflow_coherence_test.go:85: want \"replacement with a new size\\n\", got \"old inode\\n\", error=<nil>\n=== RUN   TestWorkflowAnalysisCoherence/replacement-size\n    workflow_coherence_test.go:85: want \"28\\n\", got \"10\\n\", error=<nil>\n=== RUN   TestWorkflowAnalysisCoherence/type\n    workflow_coherence_test.go:85: want \"replace.txt\\n\", got \"\", error=<nil>\n=== RUN   TestWorkflowAnalysisCoherence/removal\n    workflow_coherence_test.go:85: want \"gone\\n\", got \"stale\\n\", error=<nil>\n=== RUN   TestWorkflowAnalysisCoherence/directory-rename\n    workflow_coherence_test.go:85: want \"child\\n\", got \"stale\", error=development sandbox exec: exit status 1: cat: renamed/child: No such file or directory\n=== RUN   TestWorkflowAnalysisCoherence/negative-cache\n    workflow_coherence_test.go:85: want \"new file\\n\", got \"\", error=development sandbox exec: exit status 1: cat: added.txt: No such file or directory\n=== RUN   TestWorkflowAnalysisCoherence/private-isolation\n=== RUN   TestWorkflowAnalysisCoherence/new-git-object\n=== NAME  TestWorkflowAnalysisCoherence\n    workflow_coherence_test.go:92: path hash=\"c38f87f8c22136bce783105a70f384da68fd0bc3\\n\" differs from full stream=\"63f55e68e62b0323908dc7ffb655ebaa8e776562\\n\"\n    workflow_coherence_test.go:99: native status after shared mutations=\" M same.txt\\n\" error=<nil>\n    workflow_coherence_test.go:105: 10k traversal sample=0 duration=720.182876ms\n    workflow_coherence_test.go:105: 10k traversal sample=1 duration=617.334042ms\n    workflow_coherence_test.go:105: 10k traversal sample=2 duration=601.523167ms\n    workflow_coherence_test.go:105: 10k traversal sample=3 duration=618.624292ms\n    workflow_coherence_test.go:120: private source after abrupt runtime recreation=\"base\\n\"\n--- FAIL: TestWorkflowAnalysisCoherence (5.33s)\n    --- FAIL: TestWorkflowAnalysisCoherence/size (0.02s)\n    --- PASS: TestWorkflowAnalysisCoherence/content (0.02s)\n    --- FAIL: TestWorkflowAnalysisCoherence/replacement (0.03s)\n    --- FAIL: TestWorkflowAnalysisCoherence/replacement-size (0.03s)\n    --- FAIL: TestWorkflowAnalysisCoherence/type (0.03s)\n    --- FAIL: TestWorkflowAnalysisCoherence/removal (0.03s)\n    --- FAIL: TestWorkflowAnalysisCoherence/directory-rename (0.02s)\n    --- FAIL: TestWorkflowAnalysisCoherence/negative-cache (0.02s)\n    --- PASS: TestWorkflowAnalysisCoherence/private-isolation (0.03s)\n    --- PASS: TestWorkflowAnalysisCoherence/new-git-object (0.02s)\nFAIL\nFAIL\tthe8020/kernel/development\t5.334s\nFAIL\n"
+  },
+  "coherence_shared": {
+    "expected_exit": 0,
+    "log": "workflow runtime profile: shared\n=== RUN   TestWorkflowAnalysisCoherence\n=== RUN   TestWorkflowAnalysisCoherence/size\n=== RUN   TestWorkflowAnalysisCoherence/content\n=== RUN   TestWorkflowAnalysisCoherence/replacement\n=== RUN   TestWorkflowAnalysisCoherence/replacement-size\n=== RUN   TestWorkflowAnalysisCoherence/type\n=== RUN   TestWorkflowAnalysisCoherence/removal\n=== RUN   TestWorkflowAnalysisCoherence/directory-rename\n=== RUN   TestWorkflowAnalysisCoherence/negative-cache\n=== RUN   TestWorkflowAnalysisCoherence/private-isolation\n=== RUN   TestWorkflowAnalysisCoherence/new-git-object\n=== NAME  TestWorkflowAnalysisCoherence\n    workflow_coherence_test.go:99: native status after shared mutations=\"D  added.txt\\nRD renamed/child -> directory/child\\nAD removed.txt\\nMM replace.txt\\n M same.txt\\nTT type.txt\\nMM untouched.txt\\n?? added.txt\\n?? renamed/\\n\" error=<nil>\n    workflow_coherence_test.go:105: 10k traversal sample=0 duration=947.686167ms\n    workflow_coherence_test.go:105: 10k traversal sample=1 duration=669.737125ms\n    workflow_coherence_test.go:105: 10k traversal sample=2 duration=683.185833ms\n    workflow_coherence_test.go:105: 10k traversal sample=3 duration=693.54625ms\n    workflow_coherence_test.go:120: private source after abrupt runtime recreation=\"base\\n\"\n--- PASS: TestWorkflowAnalysisCoherence (5.85s)\n    --- PASS: TestWorkflowAnalysisCoherence/size (0.03s)\n    --- PASS: TestWorkflowAnalysisCoherence/content (0.03s)\n    --- PASS: TestWorkflowAnalysisCoherence/replacement (0.04s)\n    --- PASS: TestWorkflowAnalysisCoherence/replacement-size (0.03s)\n    --- PASS: TestWorkflowAnalysisCoherence/type (0.03s)\n    --- PASS: TestWorkflowAnalysisCoherence/removal (0.02s)\n    --- PASS: TestWorkflowAnalysisCoherence/directory-rename (0.03s)\n    --- PASS: TestWorkflowAnalysisCoherence/negative-cache (0.02s)\n    --- PASS: TestWorkflowAnalysisCoherence/private-isolation (0.02s)\n    --- PASS: TestWorkflowAnalysisCoherence/new-git-object (0.03s)\nPASS\nok  \tthe8020/kernel/development\t5.850s\n"
+  },
+  "native": {
+    "expected_exit": 0,
+    "log": "workflow runtime profile: current\n=== RUN   TestWorkflowAnalysisNative\n    workflow_native_test.go:110: initial sandbox plus independent 10k checkout=2.257353626s\n    workflow_native_test.go:128: PASS executable mmap hardlink symlink rename open-handle flock local-inotify\n    workflow_native_test.go:132: 10k traversal sample=0 duration=691.569584ms\n    workflow_native_test.go:132: 10k traversal sample=1 duration=593.398625ms\n    workflow_native_test.go:132: 10k traversal sample=2 duration=608.588334ms\n    workflow_native_test.go:132: 10k traversal sample=3 duration=598.323292ms\n    workflow_native_test.go:183: immutable commit publication preserved caller PID, cwd, open descriptor, and later saves; schema coordinator excluded\n    workflow_native_test.go:188: TRADEOFF: untouched private files do not follow shared updates until explicit Git synchronization\n    workflow_native_test.go:234: PASS native conflict exit 3, diff3 markers, all three index stages, git add/commit resolution, and retry after another shared commit\n    workflow_native_test.go:235: PASS native bundles cross the existing sandbox stream boundary in both directions; developer repository Git executes only inside the sandbox\n    workflow_native_test.go:249: PASS retained native PTY detached across both publications and conflict resolution, reattached to the same Bash PID\n    workflow_native_test.go:266: PASS abrupt runtime kill/delete/recreation preserved private commit, branch, source, untracked and ignored files without checkpoint\n    workflow_native_test.go:292: PASS native archive copy into another user's disposable sandbox after original workspace removal, including linked conflict worktree\n--- PASS: TestWorkflowAnalysisNative (10.31s)\nPASS\nok  \tthe8020/kernel/development\t10.317s\n",
+    "refreshed_at_utc": "2026-09-08T10:06:59.080690+00:00"
+  },
+  "host_fuse_access": {
+    "errno": 1,
+    "error": "Operation not permitted"
+  },
+  "git": {
+    "environment": {
+      "kernel": "6.10.14-linuxkit",
+      "arch": "aarch64",
+      "cpus": 6,
+      "git": "git version 2.39.5"
+    },
+    "correctness": [
+      {
+        "case": "disjoint_lines",
+        "merge_exit": 0,
+        "pass": true
+      },
+      {
+        "case": "same_line",
+        "merge_exit": 1,
+        "pass": true
+      },
+      {
+        "case": "identical_edit",
+        "merge_exit": 0,
+        "pass": true
+      },
+      {
+        "case": "add_add",
+        "merge_exit": 1,
+        "pass": true
+      },
+      {
+        "case": "delete_modify",
+        "merge_exit": 1,
+        "pass": true
+      },
+      {
+        "case": "rename_edit",
+        "merge_exit": 0,
+        "pass": true
+      },
+      {
+        "case": "binary_conflict",
+        "merge_exit": 1,
+        "pass": true
+      },
+      {
+        "case": "executable_and_content",
+        "merge_exit": 0,
+        "pass": true
+      },
+      {
+        "case": "symlink_conflict",
+        "merge_exit": 1,
+        "pass": true
+      },
+      {
+        "case": "whitespace_filename",
+        "merge_exit": 1,
+        "pass": true
+      },
+      {
+        "case": "first_touch_after_shared_advance",
+        "pass": true
+      },
+      {
+        "case": "mixed_first_touch_bases_with_live_untouched_paths",
+        "pass": true
+      },
+      {
+        "case": "mixed_bases_retain_shared_rename_topology",
+        "pass": true
+      },
+      {
+        "case": "resolve_then_shared_advances",
+        "pass": true
+      },
+      {
+        "case": "stale_publication_compare_and_swap",
+        "pass": true
+      },
+      {
+        "case": "native_merge_ancestry_preserves_next_activation_base",
+        "pass": true
+      },
+      {
+        "case": "portable_plain_file_delta_without_original_sandbox_or_git_history",
+        "pass": true
+      },
+      {
+        "case": "portable_git_base_bundle_retains_shared_rename",
+        "pass": true,
+        "fixture_bundle_bytes": 428
+      }
+    ],
+    "benchmark": [
+      {
+        "tracked_files": 100,
+        "dirty_files": 1,
+        "bytes_per_file": 171,
+        "samples": {
+          "index_candidate_ms": [
+            4.176707938313484,
+            4.031082964502275,
+            3.9599169977009296,
+            3.8036670302972198,
+            4.155624890699983
+          ],
+          "merge_tree_only_ms": [
+            0.699708005413413,
+            0.6887499475851655,
+            0.7391669787466526,
+            0.7055000169202685,
+            0.7085830438882113
+          ],
+          "mixed_base_candidate_ms": [
+            8.095292025245726,
+            8.183290949091315,
+            8.044542046263814,
+            8.583708084188402,
+            7.558000041171908
+          ],
+          "two_worktree_prepare_ms": [
+            18.158958991989493,
+            16.506083076819777,
+            19.1797090228647,
+            16.593916923739016,
+            16.51924999896437
+          ],
+          "worktree_cleanup_ms": [
+            2.7186659863218665,
+            2.0053329644724727,
+            2.2375419503077865,
+            2.0308749517425895,
+            1.9694999791681767
+          ]
+        },
+        "median": {
+          "index_candidate_ms": 4.031082964502275,
+          "merge_tree_only_ms": 0.7055000169202685,
+          "mixed_base_candidate_ms": 8.095292025245726,
+          "two_worktree_prepare_ms": 16.593916923739016,
+          "worktree_cleanup_ms": 2.0308749517425895
+        }
+      },
+      {
+        "tracked_files": 1000,
+        "dirty_files": 1,
+        "bytes_per_file": 171,
+        "samples": {
+          "index_candidate_ms": [
+            4.907915950752795,
+            4.862667061388493,
+            4.704082966782153,
+            4.614999983459711,
+            4.383499966934323
+          ],
+          "merge_tree_only_ms": [
+            0.6660419749096036,
+            0.669292057864368,
+            0.6531249964609742,
+            0.6781670963391662,
+            0.6897080456838012
+          ],
+          "mixed_base_candidate_ms": [
+            8.868207922205329,
+            8.5293750744313,
+            8.653625031001866,
+            9.045541984960437,
+            9.186958894133568
+          ],
+          "two_worktree_prepare_ms": [
+            70.00870909541845,
+            63.12862492632121,
+            64.20720904134214,
+            60.662791947834194,
+            59.40433300565928
+          ],
+          "worktree_cleanup_ms": [
+            9.396082954481244,
+            9.27812501322478,
+            9.59066697396338,
+            9.449291974306107,
+            9.175959043204784
+          ]
+        },
+        "median": {
+          "index_candidate_ms": 4.704082966782153,
+          "merge_tree_only_ms": 0.669292057864368,
+          "mixed_base_candidate_ms": 8.868207922205329,
+          "two_worktree_prepare_ms": 63.12862492632121,
+          "worktree_cleanup_ms": 9.396082954481244
+        }
+      },
+      {
+        "tracked_files": 10000,
+        "dirty_files": 1,
+        "bytes_per_file": 171,
+        "samples": {
+          "index_candidate_ms": [
+            12.107707909308374,
+            14.079708023928106,
+            15.363915939815342,
+            13.423292082734406,
+            12.732874951325357
+          ],
+          "merge_tree_only_ms": [
+            0.7903750520199537,
+            0.8072500349953771,
+            0.7599999662488699,
+            0.7762080058455467,
+            0.8066670270636678
+          ],
+          "mixed_base_candidate_ms": [
+            24.3250000057742,
+            30.38058301899582,
+            26.67291695252061,
+            25.02366597764194,
+            34.988165949471295
+          ],
+          "two_worktree_prepare_ms": [
+            519.6551670087501,
+            421.29250103607774,
+            423.4008330386132,
+            366.03479203768075,
+            408.77420804463327
+          ],
+          "worktree_cleanup_ms": [
+            94.8499160585925,
+            104.06608402263373,
+            93.72799994889647,
+            84.94441700167954,
+            85.72666707914323
+          ]
+        },
+        "median": {
+          "index_candidate_ms": 13.423292082734406,
+          "merge_tree_only_ms": 0.7903750520199537,
+          "mixed_base_candidate_ms": 26.67291695252061,
+          "two_worktree_prepare_ms": 421.29250103607774,
+          "worktree_cleanup_ms": 93.72799994889647
+        }
+      }
+    ],
+    "binary": {
+      "files": 10,
+      "bytes_per_file": 2097152,
+      "new_distinct_blobs_each_trial": true,
+      "candidate_ms": [
+        405.21458396688104,
+        432.49512498732656,
+        451.66716701351106
+      ],
+      "median_ms": 432.49512498732656
+    },
+    "git_subprocesses": {
+      "max_rss_kib": 77552,
+      "total_user_seconds": 2.3297470000000002,
+      "total_system_seconds": 2.993147
+    }
+  },
+  "native_reused_validation": {
+    "native": [
+      {
+        "tracked_files": 100,
+        "reuse_validation": true,
+        "samples": [
+          {
+            "clone_ms": 13.415833003818989,
+            "capture_ms": 3.909124992787838,
+            "transfer_merge_commit_ms": 6.71745790168643,
+            "source_switch_ms": 2.168291946873069,
+            "validation_refresh_ms": 5.7290829718112946,
+            "validation_cleanup_ms": 0,
+            "activation_ms": 18.52395781315863,
+            "git_user_seconds": 0.012223000000000001,
+            "git_system_seconds": 0.01677,
+            "git_input_blocks": 0,
+            "git_output_blocks": 2320
+          },
+          {
+            "clone_ms": 11.847457964904606,
+            "capture_ms": 4.435291979461908,
+            "transfer_merge_commit_ms": 7.510000024922192,
+            "source_switch_ms": 2.5785000761970878,
+            "validation_refresh_ms": 1.614582957699895,
+            "validation_cleanup_ms": 0,
+            "activation_ms": 16.138375038281083,
+            "git_user_seconds": 0.008682000000000002,
+            "git_system_seconds": 0.019126999999999998,
+            "git_input_blocks": 0,
+            "git_output_blocks": 1464
+          },
+          {
+            "clone_ms": 10.94441709574312,
+            "capture_ms": 4.348583985120058,
+            "transfer_merge_commit_ms": 7.243791944347322,
+            "source_switch_ms": 2.465749974362552,
+            "validation_refresh_ms": 1.7266249051317573,
+            "validation_cleanup_ms": 0,
+            "activation_ms": 15.78475080896169,
+            "git_user_seconds": 0.008109000000000002,
+            "git_system_seconds": 0.018159999999999996,
+            "git_input_blocks": 0,
+            "git_output_blocks": 1472
+          },
+          {
+            "clone_ms": 13.08379101101309,
+            "capture_ms": 4.3941669864580035,
+            "transfer_merge_commit_ms": 7.542958948761225,
+            "source_switch_ms": 2.4775000056251884,
+            "validation_refresh_ms": 1.7156669637188315,
+            "validation_cleanup_ms": 0,
+            "activation_ms": 16.130292904563248,
+            "git_user_seconds": 0.008181999999999995,
+            "git_system_seconds": 0.019951999999999998,
+            "git_input_blocks": 0,
+            "git_output_blocks": 1472
+          },
+          {
+            "clone_ms": 10.690707946196198,
+            "capture_ms": 3.781250095926225,
+            "transfer_merge_commit_ms": 6.843917071819305,
+            "source_switch_ms": 1.9932499853894114,
+            "validation_refresh_ms": 1.4586250763386488,
+            "validation_cleanup_ms": 0,
+            "activation_ms": 14.07704222947359,
+            "git_user_seconds": 0.012346000000000003,
+            "git_system_seconds": 0.012308,
+            "git_input_blocks": 0,
+            "git_output_blocks": 1472
+          }
+        ],
+        "median": {
+          "clone_ms": 11.847457964904606,
+          "capture_ms": 4.348583985120058,
+          "transfer_merge_commit_ms": 7.243791944347322,
+          "source_switch_ms": 2.465749974362552,
+          "validation_refresh_ms": 1.7156669637188315,
+          "validation_cleanup_ms": 0,
+          "activation_ms": 16.130292904563248,
+          "git_user_seconds": 0.008682000000000002,
+          "git_system_seconds": 0.018159999999999996,
+          "git_input_blocks": 0,
+          "git_output_blocks": 1472
+        },
+        "private_logical_bytes": 160141,
+        "private_allocated_bytes": 675840,
+        "final_validation_cleanup_ms": 2.22416699398309,
+        "independent_of_deleted_source": true
+      },
+      {
+        "tracked_files": 1000,
+        "reuse_validation": true,
+        "samples": [
+          {
+            "clone_ms": 31.519916956312954,
+            "capture_ms": 13.144582975655794,
+            "transfer_merge_commit_ms": 7.869292050600052,
+            "source_switch_ms": 7.347290986217558,
+            "validation_refresh_ms": 31.099083949811757,
+            "validation_cleanup_ms": 0,
+            "activation_ms": 59.46024996228516,
+            "git_user_seconds": 0.018957,
+            "git_system_seconds": 0.073813,
+            "git_input_blocks": 0,
+            "git_output_blocks": 17632
+          },
+          {
+            "clone_ms": 30.637709074653685,
+            "capture_ms": 9.275084012188017,
+            "transfer_merge_commit_ms": 7.437083986587822,
+            "source_switch_ms": 3.1662919791415334,
+            "validation_refresh_ms": 6.243165931664407,
+            "validation_cleanup_ms": 0,
+            "activation_ms": 26.12162590958178,
+            "git_user_seconds": 0.019334000000000004,
+            "git_system_seconds": 0.03980799999999998,
+            "git_input_blocks": 0,
+            "git_output_blocks": 9576
+          },
+          {
+            "clone_ms": 34.7907500108704,
+            "capture_ms": 12.244125013239682,
+            "transfer_merge_commit_ms": 7.942790980450809,
+            "source_switch_ms": 3.2790410332381725,
+            "validation_refresh_ms": 2.617749967612326,
+            "validation_cleanup_ms": 0,
+            "activation_ms": 26.08370699454099,
+            "git_user_seconds": 0.017035999999999996,
+            "git_system_seconds": 0.03980499999999998,
+            "git_input_blocks": 0,
+            "git_output_blocks": 9584
+          },
+          {
+            "clone_ms": 33.55270798783749,
+            "capture_ms": 12.18062499538064,
+            "transfer_merge_commit_ms": 8.029083022847772,
+            "source_switch_ms": 3.2525830902159214,
+            "validation_refresh_ms": 2.543125068768859,
+            "validation_cleanup_ms": 0,
+            "activation_ms": 26.005416177213192,
+            "git_user_seconds": 0.01602400000000001,
+            "git_system_seconds": 0.042016,
+            "git_input_blocks": 0,
+            "git_output_blocks": 9584
+          },
+          {
+            "clone_ms": 35.6545839458704,
+            "capture_ms": 14.121000072918832,
+            "transfer_merge_commit_ms": 9.186082985252142,
+            "source_switch_ms": 4.185665980912745,
+            "validation_refresh_ms": 2.988874912261963,
+            "validation_cleanup_ms": 0,
+            "activation_ms": 30.481623951345682,
+            "git_user_seconds": 0.01730699999999999,
+            "git_system_seconds": 0.046252000000000015,
+            "git_input_blocks": 0,
+            "git_output_blocks": 9584
+          }
+        ],
+        "median": {
+          "clone_ms": 33.55270798783749,
+          "capture_ms": 12.244125013239682,
+          "transfer_merge_commit_ms": 7.942790980450809,
+          "source_switch_ms": 3.2790410332381725,
+          "validation_refresh_ms": 2.988874912261963,
+          "validation_cleanup_ms": 0,
+          "activation_ms": 26.12162590958178,
+          "git_user_seconds": 0.01730699999999999,
+          "git_system_seconds": 0.042016,
+          "git_input_blocks": 0,
+          "git_output_blocks": 9584
+        },
+        "private_logical_bytes": 433741,
+        "private_allocated_bytes": 4476928,
+        "final_validation_cleanup_ms": 9.836749988608062,
+        "independent_of_deleted_source": true
+      },
+      {
+        "tracked_files": 10000,
+        "reuse_validation": true,
+        "samples": [
+          {
+            "clone_ms": 210.46087599825114,
+            "capture_ms": 56.695833103731275,
+            "transfer_merge_commit_ms": 8.875041967257857,
+            "source_switch_ms": 16.290707979351282,
+            "validation_refresh_ms": 250.84508408326656,
+            "validation_cleanup_ms": 0,
+            "activation_ms": 332.70666713360697,
+            "git_user_seconds": 0.15625799999999998,
+            "git_system_seconds": 0.455407,
+            "git_input_blocks": 0,
+            "git_output_blocks": 171000
+          },
+          {
+            "clone_ms": 136.42358302604407,
+            "capture_ms": 107.45804198086262,
+            "transfer_merge_commit_ms": 12.593084014952183,
+            "source_switch_ms": 18.24308291543275,
+            "validation_refresh_ms": 66.19529204908758,
+            "validation_cleanup_ms": 0,
+            "activation_ms": 204.48950096033514,
+            "git_user_seconds": 0.11792200000000003,
+            "git_system_seconds": 0.2881140000000001,
+            "git_input_blocks": 0,
+            "git_output_blocks": 90944
+          },
+          {
+            "clone_ms": 193.89741704799235,
+            "capture_ms": 62.68137495499104,
+            "transfer_merge_commit_ms": 8.446083054877818,
+            "source_switch_ms": 15.966125065460801,
+            "validation_refresh_ms": 57.368041947484016,
+            "validation_cleanup_ms": 0,
+            "activation_ms": 144.46162502281368,
+            "git_user_seconds": 0.11560400000000004,
+            "git_system_seconds": 0.232904,
+            "git_input_blocks": 0,
+            "git_output_blocks": 90952
+          },
+          {
+            "clone_ms": 188.0396669730544,
+            "capture_ms": 103.09795895591378,
+            "transfer_merge_commit_ms": 12.415500008501112,
+            "source_switch_ms": 16.944332979619503,
+            "validation_refresh_ms": 14.784917002543807,
+            "validation_cleanup_ms": 0,
+            "activation_ms": 147.2427089465782,
+            "git_user_seconds": 0.10477000000000003,
+            "git_system_seconds": 0.29573099999999997,
+            "git_input_blocks": 0,
+            "git_output_blocks": 90952
+          },
+          {
+            "clone_ms": 218.88583397958428,
+            "capture_ms": 88.38570793159306,
+            "transfer_merge_commit_ms": 8.922707987949252,
+            "source_switch_ms": 14.778417069464922,
+            "validation_refresh_ms": 12.576749897561967,
+            "validation_cleanup_ms": 0,
+            "activation_ms": 124.6635828865692,
+            "git_user_seconds": 0.10855000000000004,
+            "git_system_seconds": 0.2854789999999998,
+            "git_input_blocks": 0,
+            "git_output_blocks": 90976
+          }
+        ],
+        "median": {
+          "clone_ms": 193.89741704799235,
+          "capture_ms": 88.38570793159306,
+          "transfer_merge_commit_ms": 8.922707987949252,
+          "source_switch_ms": 16.290707979351282,
+          "validation_refresh_ms": 57.368041947484016,
+          "validation_cleanup_ms": 0,
+          "activation_ms": 147.2427089465782,
+          "git_user_seconds": 0.11560400000000004,
+          "git_system_seconds": 0.2881140000000001,
+          "git_input_blocks": 0,
+          "git_output_blocks": 90952
+        },
+        "private_logical_bytes": 3169714,
+        "private_allocated_bytes": 42532864,
+        "final_validation_cleanup_ms": 63.7878340203315,
+        "independent_of_deleted_source": true
+      }
+    ]
+  },
+  "native_fresh_validation": {
+    "native": [
+      {
+        "tracked_files": 100,
+        "reuse_validation": false,
+        "samples": [
+          {
+            "clone_ms": 10.661292006261647,
+            "capture_ms": 4.219083930365741,
+            "transfer_merge_commit_ms": 7.034042035229504,
+            "source_switch_ms": 2.3319170577451587,
+            "validation_refresh_ms": 5.597915966063738,
+            "validation_cleanup_ms": 2.381875063292682,
+            "activation_ms": 21.564834052696824,
+            "git_user_seconds": 0.013342,
+            "git_system_seconds": 0.018066,
+            "git_input_blocks": 0,
+            "git_output_blocks": 2344
+          },
+          {
+            "clone_ms": 10.250709019601345,
+            "capture_ms": 3.7936249282211065,
+            "transfer_merge_commit_ms": 7.072583073750138,
+            "source_switch_ms": 1.9907500827684999,
+            "validation_refresh_ms": 5.412917002104223,
+            "validation_cleanup_ms": 2.0575840026140213,
+            "activation_ms": 20.32745908945799,
+            "git_user_seconds": 0.01048,
+            "git_system_seconds": 0.018975000000000002,
+            "git_input_blocks": 0,
+            "git_output_blocks": 2344
+          },
+          {
+            "clone_ms": 12.058167019858956,
+            "capture_ms": 4.290292039513588,
+            "transfer_merge_commit_ms": 6.338416947983205,
+            "source_switch_ms": 2.165667014196515,
+            "validation_refresh_ms": 5.926917074248195,
+            "validation_cleanup_ms": 2.038832986727357,
+            "activation_ms": 20.76012606266886,
+            "git_user_seconds": 0.009191000000000001,
+            "git_system_seconds": 0.022906000000000003,
+            "git_input_blocks": 0,
+            "git_output_blocks": 2344
+          },
+          {
+            "clone_ms": 9.58433304913342,
+            "capture_ms": 3.579791053198278,
+            "transfer_merge_commit_ms": 6.315542035736144,
+            "source_switch_ms": 2.0658749854192138,
+            "validation_refresh_ms": 5.643459036946297,
+            "validation_cleanup_ms": 2.044958993792534,
+            "activation_ms": 19.649626105092466,
+            "git_user_seconds": 0.006322999999999995,
+            "git_system_seconds": 0.022691000000000003,
+            "git_input_blocks": 0,
+            "git_output_blocks": 2344
+          },
+          {
+            "clone_ms": 9.01183404494077,
+            "capture_ms": 3.4242079127579927,
+            "transfer_merge_commit_ms": 6.51824998203665,
+            "source_switch_ms": 2.020415966399014,
+            "validation_refresh_ms": 5.868750042282045,
+            "validation_cleanup_ms": 2.0209160866215825,
+            "activation_ms": 19.852539990097284,
+            "git_user_seconds": 0.019257999999999997,
+            "git_system_seconds": 0.009242,
+            "git_input_blocks": 0,
+            "git_output_blocks": 2344
+          }
+        ],
+        "median": {
+          "clone_ms": 10.250709019601345,
+          "capture_ms": 3.7936249282211065,
+          "transfer_merge_commit_ms": 6.51824998203665,
+          "source_switch_ms": 2.0658749854192138,
+          "validation_refresh_ms": 5.643459036946297,
+          "validation_cleanup_ms": 2.044958993792534,
+          "activation_ms": 20.32745908945799,
+          "git_user_seconds": 0.01048,
+          "git_system_seconds": 0.018975000000000002,
+          "git_input_blocks": 0,
+          "git_output_blocks": 2344
+        },
+        "private_logical_bytes": 160142,
+        "private_allocated_bytes": 675840,
+        "final_validation_cleanup_ms": 0,
+        "independent_of_deleted_source": true
+      },
+      {
+        "tracked_files": 1000,
+        "reuse_validation": false,
+        "samples": [
+          {
+            "clone_ms": 35.251416033133864,
+            "capture_ms": 12.247415957972407,
+            "transfer_merge_commit_ms": 6.636708043515682,
+            "source_switch_ms": 6.674290983937681,
+            "validation_refresh_ms": 31.54570795595646,
+            "validation_cleanup_ms": 9.00220894254744,
+            "activation_ms": 66.10633188392967,
+            "git_user_seconds": 0.024859999999999993,
+            "git_system_seconds": 0.075147,
+            "git_input_blocks": 0,
+            "git_output_blocks": 17808
+          },
+          {
+            "clone_ms": 28.262958978302777,
+            "capture_ms": 11.370624997653067,
+            "transfer_merge_commit_ms": 6.920624990016222,
+            "source_switch_ms": 6.69004104565829,
+            "validation_refresh_ms": 27.968417038209736,
+            "validation_cleanup_ms": 8.741250028833747,
+            "activation_ms": 61.69095810037106,
+            "git_user_seconds": 0.023402999999999993,
+            "git_system_seconds": 0.068072,
+            "git_input_blocks": 0,
+            "git_output_blocks": 17808
+          },
+          {
+            "clone_ms": 31.35279193520546,
+            "capture_ms": 11.150125064887106,
+            "transfer_merge_commit_ms": 6.941625033505261,
+            "source_switch_ms": 6.57337496522814,
+            "validation_refresh_ms": 27.459375094622374,
+            "validation_cleanup_ms": 7.24720791913569,
+            "activation_ms": 59.37170807737857,
+            "git_user_seconds": 0.020365999999999995,
+            "git_system_seconds": 0.070461,
+            "git_input_blocks": 0,
+            "git_output_blocks": 17808
+          },
+          {
+            "clone_ms": 26.586457970552146,
+            "capture_ms": 10.466125095263124,
+            "transfer_merge_commit_ms": 7.2113750502467155,
+            "source_switch_ms": 2.9967500595375896,
+            "validation_refresh_ms": 27.5460840202868,
+            "validation_cleanup_ms": 8.991083013825119,
+            "activation_ms": 57.211417239159346,
+            "git_user_seconds": 0.013772000000000006,
+            "git_system_seconds": 0.06695799999999996,
+            "git_input_blocks": 0,
+            "git_output_blocks": 17808
+          },
+          {
+            "clone_ms": 26.362207951024175,
+            "capture_ms": 10.418666992336512,
+            "transfer_merge_commit_ms": 6.737750023603439,
+            "source_switch_ms": 2.8639580123126507,
+            "validation_refresh_ms": 26.234082994051278,
+            "validation_cleanup_ms": 8.489833096973598,
+            "activation_ms": 54.74429111927748,
+            "git_user_seconds": 0.027045999999999987,
+            "git_system_seconds": 0.053803000000000045,
+            "git_input_blocks": 0,
+            "git_output_blocks": 17808
+          }
+        ],
+        "median": {
+          "clone_ms": 28.262958978302777,
+          "capture_ms": 11.150125064887106,
+          "transfer_merge_commit_ms": 6.920624990016222,
+          "source_switch_ms": 6.57337496522814,
+          "validation_refresh_ms": 27.5460840202868,
+          "validation_cleanup_ms": 8.741250028833747,
+          "activation_ms": 59.37170807737857,
+          "git_user_seconds": 0.023402999999999993,
+          "git_system_seconds": 0.068072,
+          "git_input_blocks": 0,
+          "git_output_blocks": 17808
+        },
+        "private_logical_bytes": 433741,
+        "private_allocated_bytes": 4476928,
+        "final_validation_cleanup_ms": 0,
+        "independent_of_deleted_source": true
+      },
+      {
+        "tracked_files": 10000,
+        "reuse_validation": false,
+        "samples": [
+          {
+            "clone_ms": 172.26525000296533,
+            "capture_ms": 79.78395896498114,
+            "transfer_merge_commit_ms": 8.740041987039149,
+            "source_switch_ms": 50.66800001077354,
+            "validation_refresh_ms": 210.23633400909603,
+            "validation_cleanup_ms": 76.7605829751119,
+            "activation_ms": 426.18891794700176,
+            "git_user_seconds": 0.157299,
+            "git_system_seconds": 0.5176010000000001,
+            "git_input_blocks": 0,
+            "git_output_blocks": 172728
+          },
+          {
+            "clone_ms": 112.77808307204396,
+            "capture_ms": 80.38837497588247,
+            "transfer_merge_commit_ms": 8.649374940432608,
+            "source_switch_ms": 14.335624990053475,
+            "validation_refresh_ms": 182.58149991743267,
+            "validation_cleanup_ms": 81.45387505646795,
+            "activation_ms": 367.40874988026917,
+            "git_user_seconds": 0.13452500000000006,
+            "git_system_seconds": 0.3926510000000001,
+            "git_input_blocks": 0,
+            "git_output_blocks": 172728
+          },
+          {
+            "clone_ms": 129.39125101547688,
+            "capture_ms": 84.77200008928776,
+            "transfer_merge_commit_ms": 8.395417011342943,
+            "source_switch_ms": 14.183416031301022,
+            "validation_refresh_ms": 168.02491690032184,
+            "validation_cleanup_ms": 79.94279207196087,
+            "activation_ms": 355.31854210421443,
+            "git_user_seconds": 0.112962,
+            "git_system_seconds": 0.40868800000000016,
+            "git_input_blocks": 0,
+            "git_output_blocks": 172728
+          },
+          {
+            "clone_ms": 112.73058305960149,
+            "capture_ms": 78.52279196958989,
+            "transfer_merge_commit_ms": 8.284166920930147,
+            "source_switch_ms": 14.076792052946985,
+            "validation_refresh_ms": 164.66154204681516,
+            "validation_cleanup_ms": 76.18033303879201,
+            "activation_ms": 341.7256260290742,
+            "git_user_seconds": 0.13233099999999998,
+            "git_system_seconds": 0.36743499999999996,
+            "git_input_blocks": 0,
+            "git_output_blocks": 172728
+          },
+          {
+            "clone_ms": 117.96391697134823,
+            "capture_ms": 78.70045804884285,
+            "transfer_merge_commit_ms": 8.337167091667652,
+            "source_switch_ms": 13.660249998793006,
+            "validation_refresh_ms": 196.52645906899124,
+            "validation_cleanup_ms": 103.03495801053941,
+            "activation_ms": 400.25929221883416,
+            "git_user_seconds": 0.13514899999999996,
+            "git_system_seconds": 0.39020600000000005,
+            "git_input_blocks": 0,
+            "git_output_blocks": 172744
+          }
+        ],
+        "median": {
+          "clone_ms": 117.96391697134823,
+          "capture_ms": 79.78395896498114,
+          "transfer_merge_commit_ms": 8.395417011342943,
+          "source_switch_ms": 14.183416031301022,
+          "validation_refresh_ms": 182.58149991743267,
+          "validation_cleanup_ms": 79.94279207196087,
+          "activation_ms": 367.40874988026917,
+          "git_user_seconds": 0.13452500000000006,
+          "git_system_seconds": 0.3926510000000001,
+          "git_input_blocks": 0,
+          "git_output_blocks": 172728
+        },
+        "private_logical_bytes": 3169716,
+        "private_allocated_bytes": 42532864,
+        "final_validation_cleanup_ms": 0,
+        "independent_of_deleted_source": true
+      }
+    ]
+  },
+  "first_party_workspace_shape": [
+    {
+      "package": "admin-core",
+      "tracked_files": 56,
+      "tracked_bytes": 184658
+    },
+    {
+      "package": "admin-db",
+      "tracked_files": 32,
+      "tracked_bytes": 112006
+    },
+    {
+      "package": "db",
+      "tracked_files": 56,
+      "tracked_bytes": 133966
+    },
+    {
+      "package": "demo",
+      "tracked_files": 52,
+      "tracked_bytes": 26354100
+    },
+    {
+      "package": "dev-core",
+      "tracked_files": 104,
+      "tracked_bytes": 762460
+    },
+    {
+      "package": "jobs",
+      "tracked_files": 38,
+      "tracked_bytes": 143970
+    },
+    {
+      "package": "packages",
+      "tracked_files": 70,
+      "tracked_bytes": 45545
+    },
+    {
+      "package": "secrets",
+      "tracked_files": 21,
+      "tracked_bytes": 18438
+    },
+    {
+      "package": "services",
+      "tracked_files": 56,
+      "tracked_bytes": 88868
+    },
+    {
+      "package": "system",
+      "tracked_files": 36,
+      "tracked_bytes": 22459
+    },
+    {
+      "package": "users",
+      "tracked_files": 66,
+      "tracked_bytes": 83415
+    },
+    {
+      "package": "uui",
+      "tracked_files": 140,
+      "tracked_bytes": 4490782
+    }
+  ]
+}
