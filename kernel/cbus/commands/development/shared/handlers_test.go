@@ -89,7 +89,7 @@ func TestEveryDevelopmentCommandHandlerDelegatesExactlyOnce(t *testing.T) {
 		{"sandbox.shell", SandboxShell(serviceSet), map[string]any{"user_id": "alice", "command": "pwd"}},
 		{"sandbox.reset-source", SandboxResetSource(serviceSet), map[string]any{"user_id": "alice", "confirm": true}},
 		{"sandbox.factory-reset", SandboxFactoryReset(serviceSet), map[string]any{"user_id": "alice", "confirm": true}},
-		{"activate.preview", ActivatePreview(serviceSet), map[string]any{"user_id": "alice", "packages": "the8020/dev-core"}},
+		{"activate.preview", ActivatePreview(serviceSet), map[string]any{"user_id": "alice", "packages": "the8020/dev-core", "file": "src/message.ts"}},
 		{"activate.run", ActivateRun(serviceSet), map[string]any{"user_id": "alice", "message": "Activate", "packages": "the8020/dev-core,the8020/demo", "package_messages": `{"the8020/demo":"Override"}`, "author_name": "Developer", "author_email": "developer@example.test", "metadata": `{"client":"external-cli"}`}},
 	}
 	for _, test := range tests {
@@ -97,6 +97,9 @@ func TestEveryDevelopmentCommandHandlerDelegatesExactlyOnce(t *testing.T) {
 			result, err := test.handler(context.Background(), core.Request{Arguments: test.arguments})
 			if err != nil || len(result) == 0 || recorder.calls[test.name] != 1 {
 				t.Fatalf("result=%#v calls=%d err=%v", result, recorder.calls[test.name], err)
+			}
+			if test.name == "activate.preview" && recorder.activationOptions.PreviewFile != "src/message.ts" {
+				t.Fatalf("file selection lost: %+v", recorder.activationOptions)
 			}
 		})
 	}

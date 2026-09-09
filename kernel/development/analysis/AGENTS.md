@@ -390,6 +390,12 @@ Parent DOX: [development DOX](../AGENTS.md).
   creates locks on demand; their identities remain for the instance lifetime.
   Reads use an existing shared lock or validate that no first publisher appeared
   before exposing derived state; only the OS lock is temporary.
+- Selected-file preview compares saved per-path originals with current private
+  contents, including retained Git references for directory/file moves. The
+  Gofer's changed-path response includes only the relevant reference metadata;
+  preview never creates activation captures or acknowledges edits. Load at most
+  48 KiB per text side on demand and show a notice for larger, binary, or linked
+  files. Native Git computes the hunks; dev-core owns all rendering.
 - Experiments use temporary repositories and sandbox roots. Never target a
   developer's existing sandbox or publish into source-workspace repositories.
 - The shared native fixture stages the actual sibling `dev-skills` package and
@@ -500,26 +506,28 @@ Parent DOX: [development DOX](../AGENTS.md).
   separate removed-directory enumeration fix. The `unpatched` sparse profile
   omits only the Sentry fix.
 - `python3 kernel/development/analysis/run.py activation` additionally overlays
-  the candidate activation owner. Use the ordinary helper and native Git to
-  conflict, resolve, recreate, retry and publish while preserving later edits
-  and a retained PTY. The hook receives a complete native candidate tree whose
-  unchanged assets share source inodes. Check deletion/recreation and later
-  deletion of captured new files, schema rejection, and source advancement
-  during validation. Each helper timing is one observation including runtime,
-  transport, Git, and the checking hook; it excludes real schema/hook execution.
-  Source/SDK digests identify the tested revision. The shared package owner now
-  supplies stable native locks through preparation and completion too. Recovery
-  checks every selected HEAD and clean worktree before any mutation.
-  All-switched attempts complete; partial clean switches restore previous heads
-  and roll back the exact transaction before retry. Dirty or unexpected shared
-  trees fail closed, including ambiguous interruptions within native reset.
-  Release checks retain pending conflict bytes, remove acknowledged payloads,
-  preserve identity reservations and next originals, and repeat acknowledgement
-  and release after runtime recreation. An injected lost release reply leaves
-  the attempt published; recreated retry finishes it without another prepare or
-  loss of later edits. Directory checks also preserve later removal generations,
-  reject stale acknowledgements, and publish upstream-tracked files despite an
-  older private index and matching ignore rules. Private Git initialization also
+  the candidate activation owner. It verifies on-demand text diffs for private
+  edits, additions, deletions, and retained rename references after upstream
+  advances. Use the ordinary helper and native Git to conflict, resolve,
+  recreate, retry and publish while preserving later edits and a retained PTY.
+  The hook receives a complete native candidate tree whose unchanged assets
+  share source inodes. Check deletion/recreation and later deletion of captured
+  new files, schema rejection, and source advancement during validation. Each
+  helper timing is one observation including runtime, transport, Git, and the
+  checking hook; it excludes real schema/hook execution. Source/SDK digests
+  identify the tested revision. The shared package owner now supplies stable
+  native locks through preparation and completion too. Recovery checks every
+  selected HEAD and clean worktree before any mutation. All-switched attempts
+  complete; partial clean switches restore previous heads and roll back the
+  exact transaction before retry. Dirty or unexpected shared trees fail closed,
+  including ambiguous interruptions within native reset. Release checks retain
+  pending conflict bytes, remove acknowledged payloads, preserve identity
+  reservations and next originals, and repeat acknowledgement and release after
+  runtime recreation. An injected lost release reply leaves the attempt
+  published; recreated retry finishes it without another prepare or loss of
+  later edits. Directory checks also preserve later removal generations, reject
+  stale acknowledgements, and publish upstream-tracked files despite an older
+  private index and matching ignore rules. Private Git initialization also
   rejects a developer-controlled path escaping its mount before installing valid
   metadata. Small receipts and Git worktree/index cleanup remain separate
   lifetime concerns.

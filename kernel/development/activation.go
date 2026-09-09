@@ -69,6 +69,9 @@ func deferOverlayReset(ctx context.Context) bool {
 }
 
 func (m *Manager) Preview(ctx context.Context, userID string, options ActivationOptions) (ActivationPreview, error) {
+	if err := validatePreviewFile(options); err != nil {
+		return ActivationPreview{}, err
+	}
 	unlock := m.lockUser(userID)
 	defer unlock()
 	sandbox, err := m.loadSandbox(userID)
@@ -85,6 +88,17 @@ func (m *Manager) Preview(ctx context.Context, userID string, options Activation
 	}
 	preview := ActivationPreview{Packages: []ActivationPackagePreview{}}
 	for _, change := range changes {
+		if options.PreviewFile != "" && selected[change.PackageID] {
+			for index := range change.Files {
+				file := &change.Files[index]
+				if file.Path == options.PreviewFile {
+					file.Diff, err = m.previewFileDiff(ctx, sandbox, change, file.Path)
+					if err != nil {
+						return ActivationPreview{}, err
+					}
+				}
+			}
+		}
 		m.repositoryMu.RLock()
 		repository, inspectErr := m.inspectRepository(change.PackageID)
 		m.repositoryMu.RUnlock()

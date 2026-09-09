@@ -181,6 +181,11 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   reports every changed Git package with file and added/removed-row counts;
   changes remain visible but blocked when the shared worktree is not clean and
   activation-ready.
+- Optional `preview_file` with one selected package loads only that changed
+  file's bounded `diff: {text, notice?}`. Ordinary previews omit contents. Text
+  uses native Git hunks without filesystem headers; binary, metadata-only, and
+  truncated output have explicit notices. Private source and the Git index used
+  for ordinary development are never edited by review.
 - A nonblank message is required for publication. The authenticated username is
   the default Git author name and email stem, and each package commit ends with
   a valid `[the8020.activation]` TOML appendix containing the sandbox identity

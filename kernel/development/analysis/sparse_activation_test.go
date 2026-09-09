@@ -5,6 +5,7 @@
 package development
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -22,6 +23,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/sys/unix"
 
@@ -33,7 +35,9 @@ import (
 )
 
 type analysisCapturedPath struct {
-	Path, ID string
+	Path, ID      string
+	BaseReference *analysisFileReference `json:",omitempty"`
+	FileReference *analysisFileReference `json:",omitempty"`
 }
 
 type analysisActivationPackage struct {
@@ -271,6 +275,16 @@ func (m *Manager) analysisCapturePackage(ctx context.Context, d *analysisSparseD
 	if err != nil {
 		return item, err
 	}
+	var references struct {
+		Files, Bases map[string]*analysisFileReference
+	}
+	encoded, err := json.Marshal(answer["references"])
+	if err != nil {
+		return item, err
+	}
+	if err := json.Unmarshal(encoded, &references); err != nil {
+		return item, err
+	}
 	directories, ok := answer["directories"].([]any)
 	if !ok {
 		return item, errors.New("filesystem returned invalid directory changes")
@@ -359,7 +373,7 @@ func (m *Manager) analysisCapturePackage(ctx context.Context, d *analysisSparseD
 			continue
 		}
 		if !captureFiles {
-			item.Captures = append(item.Captures, analysisCapturedPath{Path: name})
+			item.Captures = append(item.Captures, analysisCapturedPath{Path: name, BaseReference: references.Bases[id+"/"+name], FileReference: references.Files[id+"/"+name]})
 			continue
 		}
 		captureID, err := randomHex(12)
@@ -403,6 +417,101 @@ func (m *Manager) analysisCapturePackage(ctx context.Context, d *analysisSparseD
 	// A child is acknowledged before a removed parent makes it visible again.
 	sort.Slice(item.Directories, func(i, j int) bool { return len(item.Directories[i].Path) > len(item.Directories[j].Path) })
 	return item, nil
+}
+
+func analysisPreviewFileDiff(ctx context.Context, d *analysisSparseDriver, id string, capture analysisCapturedPath) (*ActivationFileDiff, error) {
+	root, err := os.OpenRoot(d.storage)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	temporary, err := os.MkdirTemp(d.storage, ".preview-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(temporary)
+	paths := []string{}
+	for index, side := range []string{"base", "upper"} {
+		ref := capture.BaseReference
+		if index == 1 {
+			ref = capture.FileReference
+		}
+		name := filepath.Join(side, id, capture.Path)
+		file, err := root.OpenFile(name, os.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+		var body []byte
+		if errors.Is(err, os.ErrNotExist) && ref != nil {
+			if _, err := workspacepackages.ParsePackageID(ref.Package); err != nil {
+				return nil, err
+			}
+			if _, err := analysisObjectID(ref.Blob); err != nil {
+				return nil, err
+			}
+			if ref.Mode&unix.S_IFMT != unix.S_IFREG {
+				return &ActivationFileDiff{Notice: "This file type has no text preview. Review it in the terminal."}, nil
+			}
+			gitDir := "--git-dir=" + filepath.Join(d.storage, "borrowed", ref.Package)
+			sizeText, err := gitCommand(ctx, d.storage, nil, gitDir, "cat-file", "-s", ref.Blob)
+			if err != nil {
+				return nil, err
+			}
+			size, err := strconv.ParseInt(strings.TrimSpace(sizeText), 10, 64)
+			if err != nil || size < 0 {
+				return nil, errors.New("invalid referenced blob size")
+			}
+			if size > 48<<10 {
+				return &ActivationFileDiff{Notice: "File exceeds the 48 KiB text preview limit. Review it in the terminal."}, nil
+			}
+			output := &boundedBuffer{limit: 48 << 10}
+			command := exec.CommandContext(ctx, "git", gitDir, "cat-file", "blob", ref.Blob)
+			command.Stdout = output
+			if err := command.Run(); err != nil {
+				return nil, err
+			}
+			if output.truncated {
+				return &ActivationFileDiff{Notice: "File exceeds the 48 KiB text preview limit. Review it in the terminal."}, nil
+			}
+			body = []byte(output.RawString())
+		} else if errors.Is(err, os.ErrNotExist) {
+			paths = append(paths, os.DevNull)
+			continue
+		} else if errors.Is(err, unix.ELOOP) {
+			return &ActivationFileDiff{Notice: "This file type has no text preview. Review it in the terminal."}, nil
+		} else if err != nil {
+			return nil, err
+		} else {
+			info, statErr := file.Stat()
+			if statErr != nil {
+				file.Close()
+				return nil, statErr
+			}
+			if !info.Mode().IsRegular() || info.Size() > 48<<10 {
+				file.Close()
+				return &ActivationFileDiff{Notice: "Large or non-text file. Review it in the terminal (text preview limit: 48 KiB)."}, nil
+			}
+			body, err = io.ReadAll(io.LimitReader(file, (48<<10)+1))
+			file.Close()
+			if err != nil {
+				return nil, err
+			}
+			if len(body) > 48<<10 {
+				return &ActivationFileDiff{Notice: "File exceeds the 48 KiB text preview limit. Review it in the terminal."}, nil
+			}
+		}
+		if bytes.ContainsRune(body, 0) || !utf8.Valid(body) {
+			return &ActivationFileDiff{Notice: "Binary file changed. A text diff is unavailable."}, nil
+		}
+		filename := filepath.Join(temporary, side)
+		if err := os.WriteFile(filename, body, 0600); err != nil {
+			return nil, err
+		}
+		paths = append(paths, filename)
+	}
+	output, err := gitCommand(ctx, temporary, nil, "diff", "--no-index", "--no-ext-diff", "--no-textconv", "--no-color", "--", paths[0], paths[1])
+	var exit *exec.ExitError
+	if err != nil && !(errors.As(err, &exit) && exit.ExitCode() == 1) {
+		return nil, err
+	}
+	return activationDiffOutput(output), nil
 }
 
 func analysisPrepareGit(ctx context.Context, d *analysisSparseDriver, sandbox Sandbox, item *analysisActivationPackage, attemptID, shared, author, email, message string) error {
@@ -1400,6 +1509,44 @@ func TestWorkflowAnalysisActivation(t *testing.T) {
 	analysisExec(t, d, sandbox, prefix+"sed -i 's/^last$/private last/' disjoint.txt")
 	writeTestFile(t, filepath.Join(shared, "disjoint.txt"), "shared newer first\n2\n3\n4\n5\n6\n7\nlast\n")
 	commitShared("Second upstream update")
+	previewHead, err := m.analysisSharedHead("the8020/dev-core")
+	if err != nil {
+		t.Fatal(err)
+	}
+	filePreview, err := m.analysisCapturePackage(ctx, sparse, sandbox, "the8020/dev-core", "", previewHead, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantedDiffs := map[string][]string{
+		"same.txt":          {"-base\n", "+private label\n"},
+		"new.txt":           {"+new before capture\n"},
+		"delete.txt":        {"-original deletion\n"},
+		"rename-source.txt": {"-first\n"},
+		"renamed.txt":       {"+first\n"},
+	}
+	for _, file := range filePreview.Captures {
+		want, ok := wantedDiffs[file.Path]
+		if !ok {
+			continue
+		}
+		diff, err := analysisPreviewFileDiff(ctx, sparse, "the8020/dev-core", file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, text := range want {
+			if !strings.Contains(diff.Text, text) {
+				t.Fatalf("preview %s = %+v, missing %q", file.Path, diff, text)
+			}
+		}
+		if strings.Contains(diff.Text, "shared label") || strings.Contains(diff.Text, "shared rename first") || strings.Contains(diff.Text, sparse.storage) {
+			t.Fatalf("diff must show the path's original and private edit only: %+v", diff)
+		}
+		delete(wantedDiffs, file.Path)
+	}
+	if len(wantedDiffs) != 0 {
+		t.Fatalf("missing preview files: %v", wantedDiffs)
+	}
+	t.Log("PASS on-demand file diffs preserve per-path originals, additions, deletions, and retained rename content after upstream advances")
 	first := activate(3)
 	if first.Status != "conflicted" || len(first.Packages) != 1 || strings.Join(first.Packages[0].Conflicts, ",") != "same.txt" {
 		t.Fatalf("expected native helper conflict: %+v", first)
@@ -1427,7 +1574,6 @@ func TestWorkflowAnalysisActivation(t *testing.T) {
 	if err := d.Delete(ctx, sandbox.SandboxID); err != nil {
 		t.Fatal(err)
 	}
-	var err error
 	sandbox, err = m.Start(ctx, sandbox.UserID)
 	if err != nil {
 		t.Fatal(err)

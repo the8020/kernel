@@ -138,6 +138,7 @@ func ActivatePreview(s *services.Services) core.Handler {
 		if err != nil {
 			return nil, err
 		}
+		options.PreviewFile = commandutil.String(request, "file")
 		result, err := service.Preview(ctx, commandutil.String(request, "user_id"), options)
 		return core.Result{"preview": result}, operation(err)
 	}

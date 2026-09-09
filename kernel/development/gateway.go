@@ -66,6 +66,9 @@ func (g *CommandBusGateway) execute(ctx context.Context, commandName, resultFiel
 	if len(options.SelectedPackages) > 0 {
 		arguments = append(arguments, "--packages", strings.Join(options.SelectedPackages, ","))
 	}
+	if resultField == "preview" && options.PreviewFile != "" {
+		arguments = append(arguments, "--file", options.PreviewFile)
+	}
 	for name, value := range map[string]string{"author-name": options.AuthorName, "author-email": options.AuthorEmail} {
 		if value != "" {
 			arguments = append(arguments, "--"+name, value)

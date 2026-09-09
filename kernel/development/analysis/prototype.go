@@ -104,6 +104,9 @@ func (m *Manager) analysisResetWorkspace(sandbox *Sandbox) error {
 }
 
 func (m *Manager) Preview(ctx context.Context, user string, options ActivationOptions) (ActivationPreview, error) {
+	if err := validatePreviewFile(options); err != nil {
+		return ActivationPreview{}, err
+	}
 	unlock := m.lockUser(user)
 	defer unlock()
 	result := ActivationPreview{Packages: []ActivationPackagePreview{}}
@@ -170,8 +173,16 @@ func (m *Manager) Preview(ctx context.Context, user string, options ActivationOp
 				paths := []string{}
 				countLines := true
 				for _, side := range []string{"base", "upper"} {
+					ref := capture.BaseReference
+					if side == "upper" {
+						ref = capture.FileReference
+					}
 					filename := filepath.Join(d.storage, side, id, capture.Path)
 					info, err := os.Lstat(filename)
+					if errors.Is(err, os.ErrNotExist) && ref != nil {
+						countLines = false
+						continue
+					}
 					if errors.Is(err, os.ErrNotExist) {
 						paths = append(paths, os.DevNull)
 						if side == "base" {
@@ -203,7 +214,14 @@ func (m *Manager) Preview(ctx context.Context, user string, options ActivationOp
 						preview.RemovedRows += removed
 					}
 				}
-				preview.Files = append(preview.Files, ActivationFile{Path: capture.Path, Change: change})
+				file := ActivationFile{Path: capture.Path, Change: change}
+				if options.PreviewFile == file.Path {
+					file.Diff, err = analysisPreviewFileDiff(ctx, d, id, capture)
+					if err != nil {
+						return err
+					}
+				}
+				preview.Files = append(preview.Files, file)
 			}
 			result.Packages = append(result.Packages, preview)
 			return nil

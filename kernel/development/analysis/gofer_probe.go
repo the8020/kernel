@@ -1532,6 +1532,29 @@ func (f *probeFS) changedPaths(prefix string) (map[string]any, error) {
 	if err != nil || len(encoded) > 1<<20 {
 		return nil, unix.E2BIG
 	}
+	// Review needs only retained blob identity, not rename source/version data.
+	type previewReference struct {
+		Package, Blob string
+		Mode          uint32
+	}
+	references := struct{ Files, Bases map[string]previewReference }{
+		Files: map[string]previewReference{}, Bases: map[string]previewReference{},
+	}
+	f.refsMu.Lock()
+	for _, name := range paths {
+		if ref, ok := f.refs.Files[name]; ok {
+			references.Files[name] = previewReference{ref.Package, ref.Blob, ref.Mode}
+		}
+		if ref, ok := f.refs.Bases[name]; ok {
+			references.Bases[name] = previewReference{ref.Package, ref.Blob, ref.Mode}
+		}
+	}
+	f.refsMu.Unlock()
+	answer["references"] = references
+	encoded, err = json.Marshal(answer)
+	if err != nil || len(encoded) >= 4<<20 {
+		return nil, unix.E2BIG
+	}
 	return answer, nil
 }
 

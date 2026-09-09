@@ -170,7 +170,7 @@ with tempfile.TemporaryDirectory(prefix="workflow-go-overlay-") as temporary:
             ("sparse_test.go", "workflow_sparse.go", "func analysisSparseRuntime(",
              ["crypto/rand", "crypto/sha256", "runtime", "strconv", "testing", "the8020/kernel/console", "the8020/kernel/sandbox/backend"]),
             ("sparse_activation_test.go", "workflow_sparse_activation.go", "type analysisActivationHook struct",
-             ["crypto/sha256", "runtime", "strconv", "testing", "the8020/kernel/console", "the8020/kernel/sandbox/backend"]),
+             ["crypto/sha256", "runtime", "testing", "the8020/kernel/console", "the8020/kernel/sandbox/backend"]),
         )
         for source, name, end, excluded in implementations:
             candidate = (HERE / source).read_text().split(end)[0]

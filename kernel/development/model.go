@@ -80,6 +80,7 @@ type ImageStatus struct {
 type ActivationOptions struct {
 	Description      string            `json:"description"`
 	SelectedPackages []string          `json:"selected_packages,omitempty"`
+	PreviewFile      string            `json:"preview_file,omitempty"`
 	PackageMessages  map[string]string `json:"package_messages,omitempty"`
 	AuthorName       string            `json:"author_name,omitempty"`
 	AuthorEmail      string            `json:"author_email,omitempty"`
@@ -87,8 +88,14 @@ type ActivationOptions struct {
 }
 
 type ActivationFile struct {
-	Path   string `json:"path"`
-	Change string `json:"change"`
+	Path   string              `json:"path"`
+	Change string              `json:"change"`
+	Diff   *ActivationFileDiff `json:"diff,omitempty"`
+}
+
+type ActivationFileDiff struct {
+	Text   string `json:"text"`
+	Notice string `json:"notice,omitempty"`
 }
 
 type ActivationPackagePreview struct {

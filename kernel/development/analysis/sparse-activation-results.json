@@ -2,7 +2,7 @@
   "actual_schema_engine_qualified": false,
   "asset_bytes": 4194304,
   "capture_release_and_recreated_receipt_passed": true,
-  "conflict_helper_ms": 1504.638,
+  "conflict_helper_ms": 1602.085,
   "deletion_publication_and_later_recreation": true,
   "directory_later_generation_recreated_retry_and_live_retirement": true,
   "directory_modify_delete_conflict_and_new_shared_child_published": true,
@@ -21,8 +21,8 @@
         "conflicts": [
           "same.txt"
         ],
-        "conflict_worktree": "/workspace/packages/.conflicts/3572d6188eaa78fa72267a4f/the8020/dev-core",
-        "error": "Resolve and commit with ordinary Git in /workspace/packages/.conflicts/3572d6188eaa78fa72267a4f/the8020/dev-core, then rerun activate. native Git: development sandbox exec: exit status 1: : Auto-merging disjoint.txt\nAuto-merging same.txt\nCONFLICT (content): Merge conflict in same.txt\nAutomatic merge failed; fix conflicts and then commit the result."
+        "conflict_worktree": "/workspace/packages/.conflicts/3266608aad1d1647120c24d4/the8020/dev-core",
+        "error": "Resolve and commit with ordinary Git in /workspace/packages/.conflicts/3266608aad1d1647120c24d4/the8020/dev-core, then rerun activate. native Git: development sandbox exec: exit status 1: : Auto-merging disjoint.txt\nAuto-merging same.txt\nCONFLICT (content): Merge conflict in same.txt\nAutomatic merge failed; fix conflicts and then commit the result."
       }
     ]
   },
@@ -35,7 +35,7 @@
   "helper_samples_per_scenario": 1,
   "host_power_loss_qualified": false,
   "host_statfs_type": "0x794c7630",
-  "last_helper_ms": 607.675,
+  "last_helper_ms": 647.66,
   "later_activation_uses_captured_private_original": true,
   "later_deletion_of_captured_new_file_preserved": true,
   "lower_rename_with_shared_edit_published": true,
@@ -45,14 +45,14 @@
   "native_uui_adapter_shares_git_stages_rejects_stale_saves_and_resolves": true,
   "nested_deletion_keeps_live_siblings": true,
   "new_shared_tracked_files_override_private_ignore_results": true,
-  "observed_at": "2026-09-09T11:22:21.288649304Z",
+  "observed_at": "2026-09-09T11:56:45.517714635Z",
   "ordinary_new_package_and_existing_edit_published_together": true,
   "ordinary_package_removal_conflicts_and_native_git_resolution": true,
   "private_git_initialization_confines_live_paths": true,
   "private_lower_aliases_survive_recreation": true,
-  "publication_release_reply_failure_ms": 608.651,
+  "publication_release_reply_failure_ms": 634.036,
   "release_reply_failure_recreated_retry_passed": true,
-  "release_reply_retry_helper_ms": 103.333,
+  "release_reply_retry_helper_ms": 112.829,
   "schema_boundary_events": [
     "prepare: complete view, old shared source, later private edit, new asset edit",
     "complete: new source visible"
@@ -68,16 +68,16 @@
   "sentry_setstat_error_overlay": true,
   "shared_advance_during_validation_rolls_back_and_retries": true,
   "source_sha256": {
-    "../activation.go": "fcd29918aa169d822a1d748219e4c878a0c2dfda1872ada246330049491c6411",
+    "../activation.go": "c0fb04783b5462cf2c0a2b98dbbf9850328840971df46e228f7c0981e72b41ed",
     "../manager.go": "b3fe72032f01a4ffaa7223e5c302fa8f57c0a95a2646fa6c76bbb72fdd801bf8",
-    "../model.go": "e6d1909d6ffc8073704e6bad9739c994cb8a4bdbfcaa13619964297646fb76ad",
+    "../model.go": "94e165bd4ca43b3ee7c17881fdff8289b172e3ea0ffe71b1dc30757153e4a2d9",
     "activation-transaction.patch": "ae79c462af2cf5b4b75d0dd84f373b3c7e5fe0da24e3548edb4fbe92a938e933",
-    "gofer_probe.go": "a447f703547ebc4be23322460ce6d3a2f374360366d731227a2343933bdb7de6",
+    "gofer_probe.go": "2911b6f4ade031afa76a5a5854509cedb76732a73eee722c44994c04b606948b",
     "gofer_probe.py": "a5cf069a3697ef59bbb37183a1457086dc2e05789c1d888842833fb87a6346db",
     "native_probe.go": "00646c92b1f8b67dcd89be4da6f396b4d895c1e43f2d56729b3fa17570fb7ed8",
-    "run.py": "fa1da24ad13d2bd238d66e0aefae8cf5d10606ee60335ec2bbe1e8f09c9efccd",
+    "run.py": "103afd77d070e9fb8709200fe0156843d5573eb7add594a33cb5a7050344fab5",
     "runtime_test.go": "d091c380b6cccf8918dddf4043f9ae69449ffa1e9787b8068f924d4221d71cfb",
-    "sparse_activation_test.go": "6f2d1eb342c25ba112d9f9b89897da6c0fe220afc316d7b757fe2486c33c13b7",
+    "sparse_activation_test.go": "087b1da137800c6027a732dd8a36d2e7c195ba28c970ce49f1e652a0cc4d8a77",
     "sparse_test.go": "93ce90dfa0d8c55f3a9263ba0c0436a920e43bb55e65a0b161b197443c98dc3e"
   },
   "successful_helper": {
@@ -88,13 +88,13 @@
       {
         "package_id": "the8020/dev-core",
         "status": "committed",
-        "previous_commit": "63f653462647ab7db82386b4ec2485264f27c04a",
-        "resulting_commit": "54df9e93018dd722a7a36f1e70bbd785619bdc54",
+        "previous_commit": "22d852d9651a5295e6b518195124f0d2927334e1",
+        "resulting_commit": "dea91f510e611af167cc2f80ee3573cb5c4e18cb",
         "commit_message": "Native helper integration"
       }
     ]
   },
-  "successful_helper_ms": 811.285,
+  "successful_helper_ms": 837.156,
   "temporary_saves_do_not_accumulate_deletion_markers": true,
   "timing_boundary": "real sandbox helper, HTTP/CBus/Manager, Git and checking schema hook; excludes actual schema engine",
   "upstream_package_deletion_preserves_private_conflict_and_resolution": true,

@@ -13,6 +13,8 @@ Parent DOX: [kernel/kernel/cbus/commands/development DOX](../AGENTS.md).
 - Requests support selection, common and per-package messages, author identity,
   and metadata. Preview is read-only; run returns package-level committed,
   not-committed, conflicted, or failed results and never pushes remotes.
+- Preview accepts `file` with exactly one selected package to include that
+  changed file's bounded native Git diff. Unselected file contents stay omitted.
 - Preview/run scan the live sandbox package overlay through the domain's
   temporary Git-index path. Lifecycle checkpoints may invoke the same domain
   scanner to persist deltas across process recreation.

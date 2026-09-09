@@ -16,6 +16,8 @@ Parent DOX: [kernel/kernel/cbus/commands/development DOX](../AGENTS.md).
 - Every handler delegates exactly once to `services.Development`; activation
   domain results remain observable even when their final status is conflicted or
   failed.
+- Preview maps the optional `file` argument to the domain's `PreviewFile`; path
+  validation and diff generation belong to development.
 
 # Work Guidance
 

@@ -1145,6 +1145,63 @@ func TestActivationPreviewReportsChangesBlockedByDirtySharedRepository(t *testin
 	}
 }
 
+func TestActivationPreviewFileDiff(t *testing.T) {
+	platform := newTestPlatform(t)
+	ctx := context.Background()
+	shared := filepath.Join(platform.root, "packages", "the8020", "dev-core")
+	writeTestFile(t, filepath.Join(shared, "removed.txt"), "removed content\n")
+	if _, err := gitCommand(ctx, shared, nil, "add", "removed.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitCommand(ctx, shared, gitIdentity("Test", "test@example.test"), "commit", "-qm", "Diff fixture"); err != nil {
+		t.Fatal(err)
+	}
+	sandbox, err := platform.manager.Create(ctx, "developer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	private := filepath.Join(platform.driver.views[sandbox.SandboxID].packages, "the8020", "dev-core")
+	writeTestFile(t, filepath.Join(private, "src/message.ts"), "private label\n")
+	writeTestFile(t, filepath.Join(private, "added [1].ts"), "added content\n")
+	if err := os.Remove(filepath.Join(private, "removed.txt")); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{
+		"src/message.ts": "+private label\n",
+		"added [1].ts":   "+added content\n",
+		"removed.txt":    "-removed content\n",
+		"":               "",
+	} {
+		preview, err := platform.manager.Preview(ctx, sandbox.UserID, ActivationOptions{SelectedPackages: []string{"the8020/dev-core"}, PreviewFile: name})
+		if err != nil || len(preview.Packages) != 1 {
+			t.Fatalf("preview: %+v, %v", preview, err)
+		}
+		found := name == ""
+		for _, file := range preview.Packages[0].Files {
+			if file.Path == name {
+				found = true
+				if file.Diff == nil || !strings.Contains(file.Diff.Text, want) {
+					t.Fatalf("diff %s = %+v", name, file.Diff)
+				}
+			} else if file.Diff != nil {
+				t.Fatalf("unrequested file diff loaded: %s", file.Path)
+			}
+		}
+		if !found {
+			t.Fatalf("file missing: %s", name)
+		}
+	}
+	for _, options := range []ActivationOptions{
+		{PreviewFile: "src/message.ts"},
+		{SelectedPackages: []string{"the8020/dev-core"}, PreviewFile: "../outside"},
+		{SelectedPackages: []string{"the8020/dev-core"}, PreviewFile: "/etc/passwd"},
+	} {
+		if _, err := platform.manager.Preview(ctx, sandbox.UserID, options); err == nil {
+			t.Fatalf("invalid file selection accepted: %+v", options)
+		}
+	}
+}
+
 func TestResetBoundaries(t *testing.T) {
 	platform := newTestPlatform(t)
 	sandbox, _ := platform.manager.Create(context.Background(), "developer")
