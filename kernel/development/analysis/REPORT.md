@@ -280,17 +280,19 @@ before `add -A`, preserving dirty entries for normal staging. The existing
 helper preview then avoids the asset-sized object writes. See
 [Git's object-writing implementation](https://github.com/git/git/blob/v2.47.3/object-file.c#L970).
 
-Git metadata now lives under `/workspace/git/`, outside the package tree. Each
-package has an ordinary `.git` reference file. Per-package `.git` mounts blocked
-native rename/removal with `EBUSY`; reference rename/removal now pass, and
-removed references stay removed across sandbox recreation without losing private
-history or conflict worktrees. The sparse activation owner also publishes
-ordinary package creation and deletion, including native deletion conflicts.
+Git metadata now lives under `/workspace/git/private/`, outside the package
+tree. Each package has an ordinary `.git` reference file. Per-package `.git`
+mounts blocked native rename/removal with `EBUSY`; reference rename/removal now
+pass, and removed references stay removed across sandbox recreation without
+losing private history or conflict worktrees. The sparse activation owner also
+publishes ordinary package creation and deletion, including native deletion
+conflicts.
 
 Shared GC previously broke private Git by removing borrowed objects. The
 prototype now links current shared object files into workspace-owned `borrowed/`
-storage during initialization and selected-package preparation, under the same
-package source lock. A permanent read-only mount exposes those links to native
+storage on first Git access and selected-package preparation. Read-only setup
+creates no lock files and validates concurrent publication; activation holds the
+package's source lock. A permanent read-only mount exposes those links to native
 Git; its writable metadata stays separate. Native GC, shared removal, runtime
 recreation, conflict resolution and replacement-repository fetch now pass. Loose
 and packed object files share their original inodes; no object payloads are
@@ -487,7 +489,7 @@ race checks pass. Initial bootstrap/full synchronization remain exclusive.
 The [source-owner regression](source-ownership-failure.json) then demonstrated
 recovery rolling back a still-running checkout between preparation and source
 switching. The package owner's lock now uses stable native files under
-`packages/.activation-locks/`, outside replaceable package directories.
+`packages/.meta/activation-locks/`, outside replaceable package directories.
 Development activation, synchronization, checkout, deletion and recovery acquire
 the same selected-package ownership in deterministic order and retain it through
 completion. Busy packages fail promptly; unrelated readers and private edits

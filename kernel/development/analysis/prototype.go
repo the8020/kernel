@@ -131,7 +131,10 @@ func (m *Manager) Preview(ctx context.Context, user string, options ActivationOp
 			continue
 		}
 		err := func() error {
-			release, err := workspacepackages.LockSources(ctx, d.shared, []string{id})
+			if changed, err := analysisPackageChanged(ctx, d, id); err != nil || !changed {
+				return err
+			}
+			validate, release, err := workspacepackages.ObserveSources(ctx, d.shared, []string{id})
 			if err != nil {
 				return err
 			}
@@ -143,11 +146,14 @@ func (m *Manager) Preview(ctx context.Context, user string, options ActivationOp
 			if eligible, err := analysisActivationEligible(d, id, head); err != nil || !eligible {
 				return err
 			}
-			if err := analysisEnsurePackageGit(ctx, d, sandbox, id, head); err != nil {
+			if err := analysisEnsurePackageGit(ctx, d, sandbox, id, head, validate); err != nil {
 				return err
 			}
 			item, err := m.analysisCapturePackage(ctx, d, sandbox, id, "", head, false)
 			if err != nil {
+				return err
+			}
+			if err := validate(); err != nil {
 				return err
 			}
 			if len(item.Captures) == 0 && len(item.Directories) == 0 {

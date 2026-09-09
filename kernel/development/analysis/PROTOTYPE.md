@@ -100,6 +100,14 @@ activate --preview
 activate --message 'Describe the change'
 ```
 
+Git support mounts share `/workspace/git/`: `private/` holds writable metadata,
+`borrowed/` retains read-only objects, and `shared/` exposes the local upstream.
+Shared package bookkeeping lives under `packages/.meta/`; its
+`activation-locks/` files are created only for activation/source publication and
+retain stable identities between operations. Sandbox startup skips per-package
+Git initialization; ordinary Git access initializes its selected package without
+creating lock files.
+
 Use `--package namespace/package` to select one package; repeat the option for
 several. A new package needs `package.toml` and its files; removing its
 directory and activating publishes the deletion. Ordinary edits require no

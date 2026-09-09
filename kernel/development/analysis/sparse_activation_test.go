@@ -46,7 +46,7 @@ type analysisActivationPackage struct {
 }
 
 func analysisPackageGit(ctx context.Context, d *RunscDriver, sandbox Sandbox, id string, input io.Reader, args ...string) (string, error) {
-	options := []string{"--git-dir=/workspace/git/" + id + "/.git", "--work-tree=/workspace/packages/" + id}
+	options := []string{"--git-dir=/workspace/git/private/" + id + "/.git", "--work-tree=/workspace/packages/" + id}
 	return analysisNativeGit(ctx, d, sandbox, "/workspace", input, append(options, args...)...)
 }
 
@@ -88,30 +88,59 @@ func (m *Manager) analysisSharedHead(id string) (string, error) {
 	return repository.Head, nil
 }
 
-func analysisEnsurePackageGit(ctx context.Context, d *analysisSparseDriver, sandbox Sandbox, id, head string) error {
+func analysisEnsurePackageGit(ctx context.Context, d *analysisSparseDriver, sandbox Sandbox, id, head string, validate func() error) error {
 	if head != "" {
-		return d.initializeGitOwned(ctx, id)
+		return d.initializeGitOwned(ctx, id, validate)
 	}
 	if _, err := os.Lstat(filepath.Join(d.storage, "git", id, ".git")); errors.Is(err, os.ErrNotExist) {
-		if err := d.ExecCommand(ctx, sandbox.SandboxID, []string{"/bin/mkdir", "-p", "/workspace/git/" + id}, nil, io.Discard); err != nil {
+		if err := d.ExecCommand(ctx, sandbox.SandboxID, []string{"/bin/mkdir", "-p", "/workspace/git/private/" + id}, nil, io.Discard); err != nil {
 			return err
 		}
 		if _, err := analysisPackageGit(ctx, d.RunscDriver, sandbox, id, nil, "-c", "init.templateDir=", "init", "--initial-branch=main"); err != nil {
 			return err
 		}
-		if _, err := analysisPackageGit(ctx, d.RunscDriver, sandbox, id, nil, "config", "remote.origin.url", "/workspace/shared-git/"+id); err != nil {
+		if _, err := analysisPackageGit(ctx, d.RunscDriver, sandbox, id, nil, "config", "remote.origin.url", "/workspace/git/shared/"+id); err != nil {
 			return err
 		}
 		if err := os.MkdirAll(filepath.Join(d.storage, "borrowed", id, "objects"), 0700); err != nil {
 			return err
 		}
-		if err := d.ExecCommand(ctx, sandbox.SandboxID, []string{"/usr/bin/tee", "/workspace/git/" + id + "/.git/objects/info/alternates"}, strings.NewReader("/workspace/borrowed-git/"+id+"/objects\n"), io.Discard); err != nil {
+		if err := d.ExecCommand(ctx, sandbox.SandboxID, []string{"/usr/bin/tee", "/workspace/git/private/" + id + "/.git/objects/info/alternates"}, strings.NewReader("/workspace/git/borrowed/"+id+"/objects\n"), io.Discard); err != nil {
 			return err
 		}
 	} else if err != nil {
 		return err
 	}
+	if validate != nil {
+		if err := validate(); err != nil {
+			return err
+		}
+	}
 	return analysisGitReference(d.storage, id)
+}
+
+// Skip clean packages before initializing Git or claiming publication ownership.
+// Capture later validates and applies ignore rules to the selected changes.
+func analysisPackageChanged(ctx context.Context, d *analysisSparseDriver, id string) (bool, error) {
+	answer, err := d.exchange(ctx, "changes", id, "list")
+	if err != nil {
+		return false, err
+	}
+	paths, pathsOK := answer["paths"].([]any)
+	directories, directoriesOK := answer["directories"].([]any)
+	if !pathsOK || !directoriesOK {
+		return false, errors.New("filesystem returned invalid package changes")
+	}
+	for _, value := range paths {
+		name, ok := value.(string)
+		if !ok {
+			return false, errors.New("filesystem returned an invalid changed path")
+		}
+		if name != id+"/.git" && !strings.HasPrefix(name, id+"/.git/") {
+			return true, nil
+		}
+	}
+	return len(directories) != 0, nil
 }
 
 func analysisActivationEligible(d *analysisSparseDriver, id, head string) (bool, error) {
@@ -293,7 +322,7 @@ func (m *Manager) analysisCapturePackage(ctx context.Context, d *analysisSparseD
 	// Native check-ignore respects the private index: tracked paths retain
 	// their ordinary semantics even when an ignore rule also matches them.
 	ignored := &boundedBuffer{limit: commandOutputLimit}
-	command := "git --git-dir=" + shellQuote("/workspace/git/"+id+"/.git") + " --work-tree=" + shellQuote("/workspace/packages/"+id) + " check-ignore -z --stdin; status=$?; test \"$status\" -le 1"
+	command := "git --git-dir=" + shellQuote("/workspace/git/private/"+id+"/.git") + " --work-tree=" + shellQuote("/workspace/packages/"+id) + " check-ignore -z --stdin; status=$?; test \"$status\" -le 1"
 	queries := append([]string(nil), names...)
 	for _, name := range directoryNames {
 		queries = append(queries, name+"/")
@@ -384,7 +413,7 @@ func analysisPrepareGit(ctx context.Context, d *analysisSparseDriver, sandbox Sa
 	index := "/tmp/activation-" + attemptID + "-" + strings.ReplaceAll(item.PackageID, "/", "-") + ".index"
 	indexGit := func(input io.Reader, args ...string) (string, error) {
 		output := &boundedBuffer{limit: commandOutputLimit}
-		argv := []string{"/usr/bin/env", "GIT_INDEX_FILE=" + index, "/usr/bin/git", "--git-dir=/workspace/git/" + item.PackageID + "/.git", "--work-tree=" + repository}
+		argv := []string{"/usr/bin/env", "GIT_INDEX_FILE=" + index, "/usr/bin/git", "--git-dir=/workspace/git/private/" + item.PackageID + "/.git", "--work-tree=" + repository}
 		err := d.ExecCommand(ctx, sandbox.SandboxID, append(argv, args...), input, output)
 		if err != nil || output.truncated {
 			return "", fmt.Errorf("prepare captured Git index: %v: %s", err, output.String())
@@ -564,7 +593,7 @@ func analysisTransferCandidate(ctx context.Context, d *analysisSparseDriver, san
 		return err
 	}
 	defer os.Remove(file.Name())
-	args := []string{"/usr/bin/git", "--git-dir=/workspace/git/" + item.PackageID + "/.git", "bundle", "create", "-", ref}
+	args := []string{"/usr/bin/git", "--git-dir=/workspace/git/private/" + item.PackageID + "/.git", "bundle", "create", "-", ref}
 	if item.Previous != "" {
 		args = append(args, "^"+item.Previous)
 	}
@@ -828,6 +857,9 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 				continue
 			}
 			item, err := func() (analysisActivationPackage, error) {
+				if changed, err := analysisPackageChanged(ctx, d, id); err != nil || !changed {
+					return analysisActivationPackage{}, err
+				}
 				release, err := workspacepackages.LockSources(ctx, m.config.PackagesRoot, []string{id})
 				if err != nil {
 					return analysisActivationPackage{}, err
@@ -840,7 +872,7 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 				if eligible, err := analysisActivationEligible(d, id, head); err != nil || !eligible {
 					return analysisActivationPackage{}, err
 				}
-				if err := analysisEnsurePackageGit(ctx, d, sandbox, id, head); err != nil {
+				if err := analysisEnsurePackageGit(ctx, d, sandbox, id, head, nil); err != nil {
 					return analysisActivationPackage{}, err
 				}
 				item, err := m.analysisCapturePackage(ctx, d, sandbox, id, attempt.ID, head, true)
@@ -1165,7 +1197,7 @@ func TestWorkflowAnalysisActivation(t *testing.T) {
 		if err := guard.initializeGit(ctx, "the8020/dev-core"); err != nil {
 			t.Fatal(err)
 		}
-		if reference, err := os.ReadFile(filepath.Join(guard.storage, "upper/the8020/dev-core/.git")); err != nil || string(reference) != "gitdir: /workspace/git/the8020/dev-core/.git\n" {
+		if reference, err := os.ReadFile(filepath.Join(guard.storage, "upper/the8020/dev-core/.git")); err != nil || string(reference) != "gitdir: /workspace/git/private/the8020/dev-core/.git\n" {
 			t.Fatalf("private Git initialization did not install its reference: %q: %v", reference, err)
 		}
 	}) {

@@ -502,12 +502,34 @@ func testSharedSourceLocks(t *testing.T) {
 			t.Fatalf("independent source owner %s busy=%t: %v: %s", id, busy, err, output)
 		}
 	}
+	validate, stopRead, err := ObserveSources(ctx, root, []string{"acme/orders"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopRead()
+	if err := validate(); err != nil {
+		t.Fatal(err)
+	}
+	if entries, err := os.ReadDir(root); err != nil || len(entries) != 0 {
+		t.Fatalf("source read created lock metadata: %v: %v", entries, err)
+	}
 	release, err := LockSources(ctx, root, []string{"acme/orders", "acme/orders"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer release()
+	if err := validate(); err == nil {
+		t.Fatal("source read missed the first concurrent publication")
+	}
+	stopRead()
 	// Replacing/removing a package directory cannot replace its lock inode.
+	lockPath := filepath.Join(root, ".meta/activation-locks/acme%2Forders")
+	if info, err := os.Stat(lockPath); err != nil || !info.Mode().IsRegular() || info.Size() != 0 {
+		t.Fatalf("expected empty package lock under .meta: %v: %v", info, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".activation-locks")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy lock directory exists: %v", err)
+	}
 	path := filepath.Join(root, "acme/orders")
 	if err := os.MkdirAll(path, 0700); err != nil {
 		t.Fatal(err)
@@ -526,6 +548,16 @@ func testSharedSourceLocks(t *testing.T) {
 	}
 	check("acme/invoices", false) // Partial acquisition released its earlier lock.
 	release()
+	validate, stopRead, err = ObserveSources(ctx, root, []string{"acme/orders"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopRead()
+	if err := validate(); err != nil {
+		t.Fatal(err)
+	}
+	check("acme/orders", true)
+	stopRead()
 	command := child("acme/orders", false, true)
 	stdin, err := command.StdinPipe()
 	if err != nil {

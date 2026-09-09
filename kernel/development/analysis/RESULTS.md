@@ -358,7 +358,7 @@ The [source ownership regression](source-ownership-failure.json) pauses an
 actual checkout after preparation returns and before directory replacement.
 Recovery previously rolled it back as interrupted, leaving the live publisher
 unable to finish its transaction. The shared package owner now supplies sorted,
-nonblocking native locks under `packages/.activation-locks/`. All existing
+nonblocking native locks under `packages/.meta/activation-locks/`. All existing
 package mutation callers, both development activation implementations and
 recovery use those locks across preparation, switching and completion. Lock
 files remain outside package directories and are never removed during package
@@ -699,9 +699,10 @@ The current fixture also applies the shared transaction patch for source
 ownership. Git gets private native metadata initialized by
 `clone --shared --no-checkout`, with a read-only retained-object alternate. This
 creates no source checkout or private object-content copy. A standard `.git`
-file points to `/workspace/git/<package>/.git`, with one private metadata mount
-outside the source tree. The retention checks above cover GC/removal/recreation;
-multi-package initialization at scale and complete object lifetime remain open.
+file points to `/workspace/git/private/<package>/.git`, with one private
+metadata mount outside the source tree. The retention checks above cover
+GC/removal/recreation; multi-package initialization at scale and complete object
+lifetime remain open.
 
 The first source edit preserves its parent directory's device/inode/mode and the
 Git reference. Helper preview reports exactly the label change. A filesystem

@@ -157,28 +157,30 @@ Parent DOX: [development DOX](../AGENTS.md).
   object alternates and no source checkout. It does not replace activation's
   publication owner or qualify schema/hooks or all packages.
 - `sparse-object-retention-failure.json` records shared GC breaking private
-  history. Initialization and selected-package preparation now hardlink shared
-  Git objects into private `borrowed/` storage under the package source lock.
-  Its permanent read-only mount remains available after shared removal; private
-  Git can never write those inodes. Native checks cover loose/packed links,
-  denied write/alias attempts, GC, shared removal, unresolved conflict recovery,
-  and replacement-repository fetch without changing the private branch. The
-  ordinary remote uses one read-only shared-root mount. Retention requires
-  hardlinks and independently complete shared repositories; shared alternates
-  and promisor objects reject initialization. Walks stop at 100,000 entries per
-  package. Links currently last for the workspace lifetime; repeated repacks,
-  reclamation, and host-crash durability remain unqualified.
+  history. First Git access and selected-package preparation hardlink shared
+  objects into private `borrowed/` storage with source-read validation or the
+  publishing package's lock. Its permanent read-only mount remains available
+  after shared removal; private Git can never write those inodes. Native checks
+  cover loose/packed links, denied write/alias attempts, GC, shared removal,
+  unresolved conflict recovery, and replacement-repository fetch without
+  changing the private branch. The ordinary remote uses one read-only
+  shared-root mount. Retention requires hardlinks and independently complete
+  shared repositories; shared alternates and promisor objects reject
+  initialization. Walks stop at 100,000 entries per package. Links currently
+  last for the workspace lifetime; repeated repacks, reclamation, and host-crash
+  durability remain unqualified.
 - Package `.git` entries are standard reference files to private metadata under
-  `/workspace/git/`, mounted outside the source tree. The native rename failure
-  in `sparse-gitdir-mount-failure.txt` rejects the former per-package submounts.
-  Reference rename/removal and recreation preserve private history and conflict
-  worktrees. Initialization confines writes to the upper and preserves existing
-  or deleted references. Activation excludes Git metadata; lower-alias discovery
-  prunes directories hidden by private files. Native activation checks cover
-  whole-package removal and private edits against an upstream package deletion.
+  `/workspace/git/private/`, mounted outside the source tree. The native rename
+  failure in `sparse-gitdir-mount-failure.txt` rejects the former per-package
+  submounts. Reference rename/removal and recreation preserve private history
+  and conflict worktrees. Initialization confines writes to the upper and
+  preserves existing or deleted references. Activation excludes Git metadata;
+  lower-alias discovery prunes directories hidden by private files. Native
+  activation checks cover whole-package removal and private edits against an
+  upstream package deletion.
 - Before exposing a later-published package's `.git`, the Gofer requests private
   initialization through its kernel-only Unix connection. The existing Git owner
-  retains objects under the package source lock and builds metadata outside
+  retains objects with source-read validation and builds metadata outside
   developer-visible mounts, then installs it through a confined directory handle
   without replacing existing state. `prototype-peer-git-results.json` records
   the earlier shared-metadata dependency and the native commit/deletion/restart
@@ -272,9 +274,9 @@ Parent DOX: [development DOX](../AGENTS.md).
   unqualified.
 - `source-ownership-failure.json` records recovery rolling back a checkout
   between preparation and source switching. The patch extends the package
-  owner's existing lock to native shared `packages/.activation-locks/` files.
-  Activation, synchronization, repository mutation, deletion and recovery use
-  that same sorted, nonblocking ownership through preparation, switching and
+  owner's existing lock to native shared `packages/.meta/activation-locks/`
+  files. Activation, synchronization, repository mutation, deletion and recovery
+  use that same sorted, nonblocking ownership through preparation, switching and
   completion. Never unlink lock files when packages move or disappear. Readers
   and private workspace edits do not acquire them. Separate processes verify
   exclusion, unrelated progress, partial-acquisition cleanup, stable ownership
@@ -377,6 +379,15 @@ Parent DOX: [development DOX](../AGENTS.md).
 
 # Local Contracts
 
+- Group sandbox Git storage under `/workspace/git/`: writable `private/`,
+  read-only retained objects in `borrowed/`, and read-only shared repositories
+  in `shared/`. Keep package-root bookkeeping under `packages/.meta/`, with
+  native source locks in `activation-locks/`. Sandbox startup never initializes
+  every package's Git metadata. Ordinary Git access initializes only its
+  selected package and creates no lock files. Activation/source publication
+  creates locks on demand; their identities remain for the instance lifetime.
+  Reads use an existing shared lock or validate that no first publisher appeared
+  before exposing derived state; only the OS lock is temporary.
 - Experiments use temporary repositories and sandbox roots. Never target a
   developer's existing sandbox or publish into source-workspace repositories.
 - The shared native fixture stages the actual sibling `dev-skills` package and

@@ -69,7 +69,7 @@ func (d *analysisSparseDriver) fileReferences(ctx context.Context, name string) 
 	if _, err := workspacepackages.ParsePackageID(id); err != nil {
 		return nil, err
 	}
-	release, err := workspacepackages.LockSources(ctx, d.shared, []string{id})
+	validate, release, err := workspacepackages.ObserveSources(ctx, d.shared, []string{id})
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +105,7 @@ func (d *analysisSparseDriver) fileReferences(ctx context.Context, name string) 
 			return nil, errors.New("rename exceeds 4,096 files")
 		}
 	}
-	return refs, nil
+	return refs, validate()
 }
 
 func (d *analysisSparseDriver) materializeReference(ctx context.Context, ref analysisFileReference) (string, error) {
@@ -177,22 +177,12 @@ func (d *analysisSparseDriver) Start(ctx context.Context, start SandboxStart) er
 		}
 	}
 	start.Mounts = append(start.Mounts, SandboxMount{MountDefinition: MountDefinition{
-		ID: "private-git", Target: "/workspace/git", Behavior: MountPersistent, Writable: true, Executable: true,
+		ID: "private-git", Target: "/workspace/git/private", Behavior: MountPersistent, Writable: true, Executable: true,
 	}, HostSource: filepath.Join(d.storage, "git")}, SandboxMount{MountDefinition: MountDefinition{
-		ID: "borrowed-git", Target: "/workspace/borrowed-git", Behavior: MountReadOnly,
+		ID: "borrowed-git", Target: "/workspace/git/borrowed", Behavior: MountReadOnly,
 	}, HostSource: filepath.Join(d.storage, "borrowed")}, SandboxMount{MountDefinition: MountDefinition{
-		ID: "shared-git", Target: "/workspace/shared-git", Behavior: MountReadOnly,
+		ID: "shared-git", Target: "/workspace/git/shared", Behavior: MountReadOnly,
 	}, HostSource: d.shared})
-	for _, id := range packageDirectories(d.shared) {
-		if info, err := os.Stat(filepath.Join(d.shared, id, ".git")); os.IsNotExist(err) {
-			continue
-		} else if err != nil || !info.IsDir() {
-			return fmt.Errorf("shared fixture requires an ordinary Git directory: %s", id)
-		}
-		if err := d.initializeGit(ctx, id); err != nil {
-			return err
-		}
-	}
 	for i := range start.Mounts {
 		if start.Mounts[i].Behavior == MountSandboxSource {
 			start.Mounts[i].HostSource = d.storage
@@ -297,16 +287,17 @@ func (d *analysisSparseDriver) serveGitInitialization(listener *net.UnixListener
 }
 
 func (d *analysisSparseDriver) initializeGit(ctx context.Context, id string) error {
-	release, err := workspacepackages.LockSources(ctx, d.shared, []string{id})
+	validate, release, err := workspacepackages.ObserveSources(ctx, d.shared, []string{id})
 	if err != nil {
 		return err
 	}
 	defer release()
-	return d.initializeGitOwned(ctx, id)
+	return d.initializeGitOwned(ctx, id, validate)
 }
 
-// The caller holds the package source lock.
-func (d *analysisSparseDriver) initializeGitOwned(ctx context.Context, id string) error {
+// A publishing caller already holds the source lock; readers validate their
+// observed source before installing metadata into the private workspace.
+func (d *analysisSparseDriver) initializeGitOwned(ctx context.Context, id string, validate func() error) error {
 	if err := d.retainGitObjects(ctx, id); err != nil {
 		return err
 	}
@@ -327,13 +318,18 @@ func (d *analysisSparseDriver) initializeGitOwned(ctx context.Context, id string
 		if _, err := gitCommand(ctx, d.storage, nil, "-c", "init.templateDir=", "clone", "--shared", "--no-checkout", filepath.Join(d.shared, id), gitRoot); err != nil {
 			return err
 		}
-		for _, args := range [][]string{{"read-tree", "HEAD"}, {"config", "remote.origin.url", "/workspace/shared-git/" + id}, {"config", "core.worktree", "/workspace/packages/" + id}} {
+		for _, args := range [][]string{{"read-tree", "HEAD"}, {"config", "remote.origin.url", "/workspace/git/shared/" + id}, {"config", "core.worktree", "/workspace/packages/" + id}} {
 			if _, err := gitCommand(ctx, gitRoot, nil, args...); err != nil {
 				return err
 			}
 		}
-		if err := os.WriteFile(filepath.Join(gitRoot, ".git/objects/info/alternates"), []byte("/workspace/borrowed-git/"+id+"/objects\n"), 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(gitRoot, ".git/objects/info/alternates"), []byte("/workspace/git/borrowed/"+id+"/objects\n"), 0600); err != nil {
 			return err
+		}
+		if validate != nil {
+			if err := validate(); err != nil {
+				return err
+			}
 		}
 		if err := private.MkdirAll(id, 0700); err != nil {
 			return err
@@ -358,12 +354,16 @@ func (d *analysisSparseDriver) initializeGitOwned(ctx context.Context, id string
 		return err
 	} else if !info.IsDir() {
 		return fmt.Errorf("private Git metadata must be an ordinary directory: %s", id)
+	} else if validate != nil {
+		if err := validate(); err != nil {
+			return err
+		}
 	}
 	return analysisGitReference(d.storage, id)
 }
 
-// The caller owns the shared package's source lock. Retain native object files
-// by hardlink, never copying payloads or replacing an existing retained name.
+// The caller locks publication or validates its source read before using these
+// retained objects. Hardlink files without copying or replacing retained names.
 // This prototype retains the links for the workspace lifetime. Shared/user
 // roots must support hardlinks; cross-filesystem storage fails explicitly.
 func (d *analysisSparseDriver) retainGitObjects(ctx context.Context, id string) error {
@@ -461,7 +461,7 @@ func analysisGitReference(storage, id string) error {
 		return err
 	}
 	defer upper.Remove(temporary)
-	_, writeErr := file.WriteString("gitdir: /workspace/git/" + id + "/.git\n")
+	_, writeErr := file.WriteString("gitdir: /workspace/git/private/" + id + "/.git\n")
 	if err := errors.Join(writeErr, file.Sync(), file.Close()); err != nil {
 		return err
 	}
@@ -594,6 +594,15 @@ func TestWorkflowAnalysisSparse(t *testing.T) {
 		t.Fatal(err)
 	}
 	prefix := "set -e; cd /workspace/packages/the8020/dev-core; "
+	if entries, err := os.ReadDir(filepath.Join(storage, "git")); err != nil || len(entries) != 0 {
+		t.Fatalf("sandbox startup initialized package Git metadata: %v: %v", entries, err)
+	}
+	if got := analysisExec(t, d, sandbox, prefix+"test ! -e /workspace/borrowed-git; test ! -e /workspace/shared-git; printf '%s\\n' /workspace/git/*; git rev-parse --absolute-git-dir; git remote get-url origin"); got != "/workspace/git/borrowed\n/workspace/git/private\n/workspace/git/shared\n/workspace/git/private/the8020/dev-core/.git\n/workspace/git/shared/the8020/dev-core\n" {
+		t.Fatalf("unexpected grouped Git layout: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(m.config.PackagesRoot, ".meta/activation-locks")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("sandbox startup or ordinary Git created publication locks: %v", err)
+	}
 	failure, failureErr := m.config.ActivationGateway.Activate(ctx, sandbox.UserID, ActivationOptions{})
 	if failureErr != nil || failure.Success || failure.Error != "activation description is required" {
 		t.Fatalf("activation result lost its preflight error: %+v: %v", failure, failureErr)
@@ -915,7 +924,7 @@ func TestWorkflowAnalysisSparse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := analysisExec(t, d, sandbox, prefix+"test ! -e .git; git --git-dir=/workspace/git/the8020/dev-core/.git rev-parse HEAD; cat same.txt"); got != privateCommit+"\nlater primary save\n" {
+	if got := analysisExec(t, d, sandbox, prefix+"test ! -e .git; git --git-dir=/workspace/git/private/the8020/dev-core/.git rev-parse HEAD; cat same.txt"); got != privateCommit+"\nlater primary save\n" {
 		t.Fatalf("removed Git reference or private history changed after recreation: %q", got)
 	}
 	analysisExec(t, d, sandbox, prefix+"printf %s "+shellQuote(reference)+" >.git; git rev-parse HEAD")
@@ -996,14 +1005,14 @@ func TestWorkflowAnalysisSparse(t *testing.T) {
 		t.Fatal("retention fixture omitted the asset objects")
 	}
 	record["borrowed_objects"] = map[string]any{"files": borrowedFiles, "logical_bytes": borrowedBytes, "copied_payload_bytes": 0, "retention": "workspace lifetime"}
-	objectPath := "/workspace/borrowed-git/the8020/dev-core/objects/" + base[:2] + "/" + base[2:]
+	objectPath := "/workspace/git/borrowed/the8020/dev-core/objects/" + base[:2] + "/" + base[2:]
 	analysisExec(t, d, sandbox, "deno eval "+shellQuote(`
 const source = `+strconv.Quote(objectPath)+`;
 Deno.readFileSync(source);
 let writable = false;
 try { Deno.openSync(source, {write: true}).close(); writable = true; } catch {}
 if (writable) throw new Error("borrowed object permits writing");
-const target = "/workspace/git/borrowed-alias";
+const target = "/workspace/git/private/borrowed-alias";
 let linked = false;
 try { Deno.linkSync(source, target); linked = true; } catch {}
 if (linked) { Deno.removeSync(target); throw new Error("borrowed object escaped into writable storage"); }
@@ -1098,6 +1107,8 @@ if (linked) { Deno.removeSync(target); throw new Error("borrowed object escaped 
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Retain replacement objects when a file operation needs them, not at startup.
+	analysisExec(t, d, sandbox, prefix+"mv replacement.txt renamed-replacement.txt")
 	packs, err := filepath.Glob(filepath.Join(shared, ".git/objects/pack/*.pack"))
 	if err != nil || len(packs) != 1 {
 		t.Fatalf("replacement fixture has no packed objects: %v: %v", packs, err)
