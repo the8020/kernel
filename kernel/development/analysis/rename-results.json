@@ -1,44 +1,29 @@
 {
   "asset_bytes": 4194304,
+  "coupled_package_selection": true,
+  "cross_package_file_move": true,
   "failed_metadata_checkpoint_restores_rename": true,
   "later_edits_preserved": true,
   "mixed_private_new_deleted_files": true,
   "native_file_and_directory_renames": true,
   "native_git_conflict_resolution_and_activation": true,
-  "observed_at": "2026-09-09T09:44:27.285016377Z",
+  "new_packages_with_and_without_git": true,
+  "observed_at": "2026-09-09T18:32:12.174921126Z",
+  "package_and_namespace_rename_delete_preview_and_activation": true,
+  "package_removal_conflict_and_native_resolution": true,
   "private_asset_copies": 0,
+  "private_git_history_preserved": true,
   "recreation": true,
   "reference_copy_up_on_edit": true,
-  "rename_command_ms": 75.838,
-  "resolved_activation_ms": 737.389,
+  "rename_command_ms": 79.535,
+  "resolved_activation_ms": 680.956,
   "source_sha256": {
-    "gofer_probe.go": "a447f703547ebc4be23322460ce6d3a2f374360366d731227a2343933bdb7de6",
-    "run.py": "fa1da24ad13d2bd238d66e0aefae8cf5d10606ee60335ec2bbe1e8f09c9efccd",
-    "sparse_activation_test.go": "c362354ebcb90bda4ecf55f75d17263424bdbb96fbe104e897de342f39814327",
-    "sparse_test.go": "0ef06b0e2124fbee6432f63652f77d106711d81bd7fa602d1d3e917cc5978caa"
+    "gofer_probe.go": "d781a86e79ee280c784c89448ff2ac6ef5b046fe44808505bf52d0b887741a2d",
+    "run.py": "6a1538b230364e7e0663a08098344caf5f21ba60a7d7ec862285222cfd2b0b3f",
+    "sparse_activation_test.go": "c4c165cde27d3d09a99a85f905574560876d28892e578a6aca72a050f79341cd",
+    "sparse_test.go": "20ba732ea64eb0ef8b9f78cade9035bfc99bdcc478bfb934a04fbaa253cb09ac"
   },
   "timing_boundary": "one native shell rename batch / one resolved helper activation, including transport; checking hook, no real schema engine",
   "validation_reuses_moved_asset_inodes": true,
-  "working_directory_and_open_file_preserved": true,
-  "prototype_build": {
-    "directory": "/workspace/8020/kernel/.development/workflow-renames",
-    "sha256": {
-      "kernel": "b95f5f3201346af80901fc2943fb5563f7f9f8263cf80e2c2eb98086a0651614",
-      "admin": "9a3818b187ade1bf9aec50ce8c28641186bc67134b2be93dcfc8053ad2d2f795",
-      "logd": "d985f89191716e7e2881d466006dc426d83004ca544013d865c1a2d431e169fb",
-      "runsc": "3c7b3501a73a61390a0c46f6e991f8450ad9616594d497f36f2d4589076a916e"
-    },
-    "log": "/workspace/8020/kernel/.development/workflow-prototype/rename-build.log",
-    "existing_review_binaries_unchanged": true
-  },
-  "regression_checks": {
-    "activation": {
-      "passed": true,
-      "log": "/workspace/8020/kernel/.development/workflow-prototype/rename-activation-regression.log"
-    },
-    "sparse": {
-      "passed": true,
-      "log": "/workspace/8020/kernel/.development/workflow-prototype/rename-sparse-regression.log"
-    }
-  }
+  "working_directory_and_open_file_preserved": true
 }

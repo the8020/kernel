@@ -60,6 +60,9 @@ func (g *CommandBusGateway) execute(ctx context.Context, commandName, resultFiel
 		return fmt.Errorf("development activation command %s is unavailable", commandName)
 	}
 	arguments := []string{userID}
+	if resultField == "activation" && options.DeferOverlayReset {
+		arguments = append(arguments, "--defer-overlay-reset")
+	}
 	if options.Description != "" || resultField == "activation" {
 		arguments = append(arguments, "--message", options.Description)
 	}

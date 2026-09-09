@@ -120,6 +120,7 @@ with tempfile.TemporaryDirectory(prefix="workflow-go-overlay-") as temporary:
             before = "func (m *Manager) Activate("
             assert candidate.count(before) == 1
             candidate = candidate.replace(before, "func (m *Manager) analysisLegacyActivate(")
+            candidate = candidate.replace("func (m *Manager) Preview(", "func (m *Manager) analysisLegacyPreview(")
             replacements[str(HERE.parent / "workflow_sparse_activation_test.go")] = str(HERE / "sparse_activation_test.go")
             if selected == "cost":
                 replacements[str(HERE.parent / "workflow_activation_cost_test.go")] = str(HERE / "activation_cost_test.go")
@@ -168,7 +169,7 @@ with tempfile.TemporaryDirectory(prefix="workflow-go-overlay-") as temporary:
                         if not source.endswith("_test.go")}
         implementations = (
             ("sparse_test.go", "workflow_sparse.go", "func analysisSparseRuntime(",
-             ["crypto/rand", "crypto/sha256", "runtime", "strconv", "testing", "the8020/kernel/console", "the8020/kernel/sandbox/backend"]),
+             ["crypto/rand", "runtime", "strconv", "testing", "the8020/kernel/console", "the8020/kernel/sandbox/backend"]),
             ("sparse_activation_test.go", "workflow_sparse_activation.go", "type analysisActivationHook struct",
              ["crypto/sha256", "runtime", "testing", "the8020/kernel/console", "the8020/kernel/sandbox/backend"]),
         )
@@ -194,7 +195,6 @@ with tempfile.TemporaryDirectory(prefix="workflow-go-overlay-") as temporary:
                 ('m := &Manager{config: config, driver: config.Driver,', 'config.Driver = analysisPrototype(config)\n\tm := &Manager{config: config, driver: config.Driver,'),
                 ('if err := os.RemoveAll(m.overlayRoot(sandbox)); err != nil {', 'if err := m.analysisResetWorkspace(&sandbox); err != nil {'),
             ],
-            "activation.go": [('func (m *Manager) Preview(', 'func (m *Manager) analysisLegacyPreview(')],
             "overlay.go": [
                 ('func (m *Manager) checkpointOverlayLocked(', 'func (m *Manager) analysisLegacyCheckpointOverlayLocked('),
                 ('func (m *Manager) restoreOverlayLocked(', 'func (m *Manager) analysisLegacyRestoreOverlayLocked('),

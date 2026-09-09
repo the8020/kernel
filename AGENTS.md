@@ -284,11 +284,12 @@ relevant child AGENTS.md
 - Active packages expose administrative commands through flat
   `cbus/commands/*.toml` and non-discoverable ordinary programs. Required
   `command` fields contain complete public names, independent of filenames or
-  package paths; `program` names a same-package program. Duplicate public names
-  fail validation, and nested command declaration folders are invalid. The
-  kernel assembles one process-local immutable catalog from those files,
-  refreshes it at startup and package lifecycle boundaries, and never persists
-  the assembled catalog. Package command arguments remain raw strings.
+  package paths; `program` requires a full `namespace/package/program` ID and
+  may target another package. Duplicate public names fail validation, and nested
+  command declaration folders are invalid. The kernel assembles one
+  process-local immutable catalog from those files, refreshes it at startup and
+  package lifecycle boundaries, and never persists the assembled catalog.
+  Package command arguments remain raw strings.
 - `the8020__packages__packages` is the authoritative desired and active package
   index. A fresh database stages the small source-owned bootstrap package list,
   evaluates and synchronizes every staged table in one job, runs package hooks,

@@ -5,10 +5,14 @@ Parent: [analysis contract](AGENTS.md).
 The prototype provides ordinary file edits over shared packages, file-level
 copy-on-write, live untouched files, durable private Git state, and activation
 without restarting the development sandbox. Ordinary package creation and
-deletion use the same activation transaction as edits. File and package
-subdirectory renames record per-file moves without copying unchanged assets;
-existing private edits move with their files. Retained Git originals feed the
-same activation and conflict workflow. [Rename check](rename-results.json).
+deletion use the same activation transaction as edits. File, directory, package,
+and namespace renames record removals and additions without copying unchanged
+assets; existing private edits move with their files. Package moves publish both
+package IDs together. New folders need a valid `package.toml`, and activation
+initializes missing Git metadata. Existing private history survives package
+moves. References in source files to a renamed package ID remain explicit source
+edits. Retained Git originals feed the same activation and conflict workflow.
+[Rename check](rename-results.json).
 
 The compiled native browser check uses two development sandboxes. A package
 created after both start appears in the peer's view; private edits stay isolated

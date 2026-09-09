@@ -51,6 +51,24 @@ func (f *fakePackages) ActivatedPackageCommit(_ context.Context, packageID strin
 
 func (f *fakePackages) PackagesRoot() string { return f.root }
 
+func (f *fakePackages) ResolveProgramWithCandidates(_ context.Context, id string, candidates map[string]deployment.Candidate) (workspacepackages.ProgramDefinition, error) {
+	identity, name, err := workspacepackages.ParseProgramID(id)
+	if err != nil {
+		return workspacepackages.ProgramDefinition{}, err
+	}
+	if candidate, exists := candidates[identity.PackageID()]; exists {
+		if candidate.Commit == "" {
+			return workspacepackages.ProgramDefinition{}, fmt.Errorf("package %s is being deleted", identity.PackageID())
+		}
+		return workspacepackages.ValidateProgram(candidate.Root, identity.PackageID(), name, candidate.Commit)
+	}
+	entry, err := f.InspectPackageIndex(identity.PackageID())
+	if err != nil || entry.State != "ready" || entry.ActiveCommit == "" {
+		return workspacepackages.ProgramDefinition{}, fmt.Errorf("package %s has no ready active commit", identity.PackageID())
+	}
+	return workspacepackages.ValidateProgram(filepath.Join(f.root, identity.Namespace, identity.Repository), identity.PackageID(), name, entry.ActiveCommit)
+}
+
 type fakePrograms struct {
 	mu             sync.Mutex
 	programID      string
@@ -180,6 +198,105 @@ func TestReindexChangesRevisionForPackageCommitAndRemovesInactiveCommands(t *tes
 	}
 }
 
+func TestCrossPackageCommandRefreshesTargetWithoutRediscoveringOwner(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "acme/target/programs/check/program.toml"), "schema = 1\ndescription = \"Check\"\n")
+	writeFile(t, filepath.Join(root, "acme/target/programs/check/program.ts"), "export default () => true;\n")
+	manifest := filepath.Join(root, "acme/commands/cbus/commands/check.toml")
+	writeFile(t, manifest, "version = 1\ncommand = \"tools.check\"\nprogram = \"acme/target/check\"\nsummary = \"Check\"\nrestart_behavior = \"none\"\n")
+	packages := &fakePackages{root: root, entries: []workspacepackages.PackageIndex{
+		{PackageID: "acme/commands", State: "ready", ActiveCommit: "owner"},
+		{PackageID: "acme/target", State: "ready", ActiveCommit: "target-first"},
+	}}
+	programs := &fakePrograms{}
+	registry := core.NewRegistry(nil)
+	indexer, _ := New(packages, programs, registry)
+	ctx := context.Background()
+	if report, err := indexer.Reindex(ctx); err != nil || report.Commands != 1 || len(report.Diagnostics) != 0 {
+		t.Fatalf("initial report=%#v error=%v", report, err)
+	}
+	command := registry.Catalog().Commands[0]
+	if command.Origin.PackageID != "acme/commands" || command.Origin.Commit != "owner" || command.ID != opaqueID("acme/commands", "owner", "tools.check") {
+		t.Fatalf("command ownership changed: %#v", command)
+	}
+	previous := indexer.fragments["acme/commands"].registrations[0]
+	request := core.Request{ProtocolVersion: core.ProtocolVersion, CommandID: command.ID}
+	if response := registry.Execute(ctx, request); !response.Success || programs.programID != "acme/target/check" || programs.expectedCommit != "target-first" {
+		t.Fatalf("initial dispatch=%#v target=%s@%s", response, programs.programID, programs.expectedCommit)
+	}
+	writeFile(t, manifest, "bad = [") // Unselected declarations must stay cached.
+	for _, commit := range []string{"target-second", "", "target-restored"} {
+		packages.entries = packages.entries[:1]
+		if commit != "" {
+			packages.entries = append(packages.entries, workspacepackages.PackageIndex{PackageID: "acme/target", State: "ready", ActiveCommit: commit})
+		}
+		report, err := indexer.Reindex(ctx, "acme/target")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if commit == "" {
+			if report.Commands != 0 || len(report.Diagnostics) != 1 || report.Diagnostics[0].PackageID != "acme/commands" {
+				t.Fatalf("deleted target report=%#v", report)
+			}
+			continue
+		}
+		if report.Commands != 1 || len(report.Diagnostics) != 0 || !reflect.DeepEqual(registry.Catalog().Commands[0], command) {
+			t.Fatalf("updated target report=%#v catalog=%#v", report, registry.Catalog())
+		}
+		if response := registry.Execute(ctx, request); !response.Success || programs.expectedCommit != commit {
+			t.Fatalf("updated dispatch=%#v commit=%s", response, programs.expectedCommit)
+		}
+	}
+	if _, err := previous.Handler(ctx, request); err != nil || programs.expectedCommit != "target-first" {
+		t.Fatalf("previous handler mutated: commit=%s error=%v", programs.expectedCommit, err)
+	}
+	programs.err = programrunner.ErrActiveCommitChanged
+	if response := registry.Execute(ctx, request); response.Error == nil || response.Error.Code != core.CodeStaleCatalog {
+		t.Fatalf("stale target error=%#v", response)
+	}
+}
+
+func TestCandidateValidationResolvesCrossPackageProgramsAcrossWholeBatch(t *testing.T) {
+	root, stage := t.TempDir(), t.TempDir()
+	owner := deployment.Candidate{PackageID: "acme/commands", Root: filepath.Join(stage, "owner"), Commit: "owner-next"}
+	target := deployment.Candidate{PackageID: "acme/target", Root: filepath.Join(stage, "target"), Commit: "target-next"}
+	manifest := "version = 1\ncommand = \"tools.check\"\nprogram = \"acme/target/check\"\nsummary = \"Check\"\nrestart_behavior = \"none\"\n"
+	writeFile(t, filepath.Join(owner.Root, "cbus/commands/check.toml"), manifest)
+	writeFile(t, filepath.Join(target.Root, "programs/check/program.toml"), "schema = 1\ndescription = \"Check\"\n")
+	writeFile(t, filepath.Join(target.Root, "programs/check/program.ts"), "export default () => true;\n")
+	packages := &fakePackages{root: root}
+	registry := core.NewRegistry(nil)
+	indexer, _ := New(packages, &fakePrograms{}, registry)
+	before := registry.Catalog()
+	ctx := context.Background()
+	if err := indexer.ValidateCandidates(ctx, []deployment.Candidate{owner, target}); err != nil {
+		t.Fatal(err)
+	}
+	// An unchanged declaration must also resolve against a staged target.
+	writeFile(t, filepath.Join(root, "acme/commands/cbus/commands/check.toml"), manifest)
+	packages.entries = []workspacepackages.PackageIndex{{PackageID: owner.PackageID, State: "ready", ActiveCommit: "owner-active"}}
+	if err := indexer.ValidateCandidates(ctx, []deployment.Candidate{target}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(target.Root, "programs/check/program.ts")); err != nil {
+		t.Fatal(err)
+	}
+	if err := indexer.ValidateCandidates(ctx, []deployment.Candidate{target}); err == nil || !strings.Contains(err.Error(), "invalid program") {
+		t.Fatalf("missing candidate program: %v", err)
+	}
+	target.Commit = ""
+	if err := indexer.ValidateCandidates(ctx, []deployment.Candidate{target}); err == nil || !strings.Contains(err.Error(), "being deleted") {
+		t.Fatalf("deleted target still referenced: %v", err)
+	}
+	owner.Commit = ""
+	if err := indexer.ValidateCandidates(ctx, []deployment.Candidate{owner, target}); err != nil {
+		t.Fatalf("removing both owner and target: %v", err)
+	}
+	if !reflect.DeepEqual(before, registry.Catalog()) || len(indexer.fragments) != 0 {
+		t.Fatal("candidate validation changed the live catalog")
+	}
+}
+
 func TestReindexOmitsBrokenAndCollidingFragments(t *testing.T) {
 	root := t.TempDir()
 	writeCommandPackage(t, root, "the8020/good", "list.toml", "good.list", "list", "")
@@ -231,7 +348,7 @@ func TestReservedKernelNameAndManifestValidation(t *testing.T) {
 	}
 
 	manifest := filepath.Join(root, "the8020", "kernel", "cbus", "commands", "arbitrary.toml")
-	writeFile(t, manifest, "version = 1\ncommand = \"example.restart\"\nprogram = \"restart\"\nsummary = \"Restart\"\nrestart_behavior = \"none\"\nunknown = true\n")
+	writeFile(t, manifest, "version = 1\ncommand = \"example.restart\"\nprogram = \"the8020/kernel/restart\"\nsummary = \"Restart\"\nrestart_behavior = \"none\"\nunknown = true\n")
 	if _, err := (&Indexer{}).discoverPackage(filepath.Join(root, "the8020", "kernel"), "the8020/kernel", "commit"); err == nil {
 		t.Fatalf("strict manifest error = %v", err)
 	}
@@ -241,7 +358,7 @@ func TestCandidateValidationRejectsInvalidProgramBeforeActivation(t *testing.T) 
 	root := t.TempDir()
 	stage := filepath.Join(root, "stage")
 	writeFile(t, filepath.Join(stage, "package.toml"), "schema = 1\ndescription = \"Candidate\"\n")
-	writeFile(t, filepath.Join(stage, "cbus", "commands", "arbitrary.toml"), "version = 1\ncommand = \"users.add\"\nprogram = \"add\"\nsummary = \"Add\"\nrestart_behavior = \"none\"\n")
+	writeFile(t, filepath.Join(stage, "cbus", "commands", "arbitrary.toml"), "version = 1\ncommand = \"users.add\"\nprogram = \"the8020/users/add\"\nsummary = \"Add\"\nrestart_behavior = \"none\"\n")
 	packages := &fakePackages{root: root}
 	indexer, _ := New(packages, &fakePrograms{}, core.NewRegistry(nil))
 	err := indexer.ValidateCandidates(context.Background(), []deployment.Candidate{{PackageID: "the8020/users", Root: stage, Commit: "candidate"}})
@@ -288,7 +405,7 @@ func writeCommandPackage(t *testing.T, root, packageID, filename, command, progr
 	writeFile(t, filepath.Join(packageRoot, "package.toml"), "schema = 1\ndescription = \"Package\"\n")
 	writeFile(t, filepath.Join(packageRoot, "programs", program, "program.toml"), "schema = 1\ndescription = \"Command program\"\ndiscoverable = false\n")
 	writeFile(t, filepath.Join(packageRoot, "programs", program, "program.ts"), "export default () => {};\n")
-	writeFile(t, filepath.Join(packageRoot, "cbus", "commands", filename), fmt.Sprintf("version = 1\ncommand = %q\nprogram = %q\nsummary = \"Command\"\nrestart_behavior = \"none\"\n%s", command, program, extra))
+	writeFile(t, filepath.Join(packageRoot, "cbus", "commands", filename), fmt.Sprintf("version = 1\ncommand = %q\nprogram = %q\nsummary = \"Command\"\nrestart_behavior = \"none\"\n%s", command, packageID+"/"+program, extra))
 }
 
 func writeFile(t *testing.T, path, value string) {
@@ -392,11 +509,21 @@ func TestCommandFieldIsRequiredAndValidated(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "tools.check.toml")
-			writeFile(t, path, "version = 1\nprogram = \"check\"\nsummary = \"Check\"\nrestart_behavior = \"none\"\n"+test.declaration+"\n")
+			writeFile(t, path, "version = 1\nprogram = \"acme/tools/check\"\nsummary = \"Check\"\nrestart_behavior = \"none\"\n"+test.declaration+"\n")
 			if _, err := readManifest(path); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error=%v, want %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestCommandProgramRequiresFullID(t *testing.T) {
+	for _, id := range []string{"check", "tools/check", "acme/tools/check/extra", "acme/../check", " acme/tools/check", "acme/tools/bad name"} {
+		path := filepath.Join(t.TempDir(), "command.toml")
+		writeFile(t, path, fmt.Sprintf("version = 1\ncommand = \"tools.check\"\nprogram = %q\nsummary = \"Check\"\nrestart_behavior = \"none\"\n", id))
+		if _, err := readManifest(path); err == nil || !strings.Contains(err.Error(), "full namespace/package/program ID") {
+			t.Fatalf("program %q: %v", id, err)
+		}
 	}
 }
 

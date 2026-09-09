@@ -61,13 +61,6 @@ type preparedActivation struct {
 	stage     string
 }
 
-type deferredOverlayResetKey struct{}
-
-func deferOverlayReset(ctx context.Context) bool {
-	value, _ := ctx.Value(deferredOverlayResetKey{}).(bool)
-	return value
-}
-
 func (m *Manager) Preview(ctx context.Context, userID string, options ActivationOptions) (ActivationPreview, error) {
 	if err := validatePreviewFile(options); err != nil {
 		return ActivationPreview{}, err
@@ -107,6 +100,7 @@ func (m *Manager) Preview(ctx context.Context, userID string, options Activation
 		}
 		preview.Packages = append(preview.Packages, ActivationPackagePreview{
 			PackageID:       change.PackageID,
+			Change:          "modified",
 			Selected:        selected[change.PackageID],
 			BaseCommit:      change.Base,
 			SharedCommit:    repository.Head,
@@ -318,7 +312,7 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 	}
 	sandbox.ConflictedPackages = nil
 	result.Success, result.Status = true, "committed"
-	if deferOverlayReset(ctx) {
+	if options.DeferOverlayReset {
 		result.OverlayResetPending = true
 		return result, nil
 	}
@@ -455,7 +449,7 @@ prepare_activation_index() {
 		command.WriteString("activation_package=" + shellQuote(item.PackageID) + "\n")
 		command.WriteString("prepare_activation_index " + shellQuote(repository) + " " + shellQuote(index) + " " + shellQuote(baseFile) + " " + shellQuote(item.Base) + "\n")
 		if details {
-			command.WriteString("GIT_INDEX_FILE=" + shellQuote(index) + " GIT_OPTIONAL_LOCKS=0 git -C " + shellQuote(repository) + " diff --cached --raw --numstat -z --find-renames --no-ext-diff --no-textconv " + shellQuote(item.Base) + "\n")
+			command.WriteString("GIT_INDEX_FILE=" + shellQuote(index) + " GIT_OPTIONAL_LOCKS=0 git -C " + shellQuote(repository) + " diff --cached --raw --numstat -z --no-renames --no-ext-diff --no-textconv " + shellQuote(item.Base) + "\n")
 		} else {
 			command.WriteString("activation_diff_status=0\n")
 			command.WriteString("GIT_INDEX_FILE=" + shellQuote(index) + " GIT_OPTIONAL_LOCKS=0 git -C " + shellQuote(repository) + " diff --cached --quiet --no-renames --no-ext-diff --no-textconv " + shellQuote(item.Base) + " || activation_diff_status=$?\n")
@@ -574,15 +568,12 @@ func parseRawNumstat(value []byte) ([]ActivationFile, int, int, error) {
 		change := "modified"
 		switch status {
 		case 'A':
-			change = "new"
+			change = "added"
 		case 'D':
 			change = "deleted"
-		case 'R', 'C':
-			if index >= len(fields) || fields[index] == "" {
-				return nil, 0, 0, errors.New("Git rename record is malformed")
-			}
-			change, path = "renamed from "+path, fields[index]
-			index++
+		case 'M', 'T':
+		default:
+			return nil, 0, 0, errors.New("Git scan must report additions, modifications, or deletions")
 		}
 		files = append(files, ActivationFile{Path: path, Change: change})
 	}

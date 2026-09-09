@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -313,6 +315,7 @@ func registerTestActivationCommands(t *testing.T, registry *core.Registry, manag
 			return value
 		}
 		options := ActivationOptions{Description: option("message"), AuthorName: option("author_name"), AuthorEmail: option("author_email")}
+		options.DeferOverlayReset, _ = request.Arguments["defer_overlay_reset"].(bool)
 		if selected := option("packages"); selected != "" {
 			options.SelectedPackages = strings.Split(selected, ",")
 		}
@@ -323,6 +326,13 @@ func registerTestActivationCommands(t *testing.T, registry *core.Registry, manag
 	registrations := make([]core.Registration, len(commands))
 	for index, command := range commands {
 		registrations[index] = core.Registration{Command: command, Handler: func(ctx context.Context, request core.Request) (core.Execution, error) {
+			// A package command returns through a separate runtime callback: only
+			// cancellation, not Go context values, crosses that process boundary.
+			callback, cancel := context.WithCancel(context.Background())
+			stop := context.AfterFunc(ctx, cancel)
+			defer stop()
+			defer cancel()
+			ctx = callback
 			var err error
 			request.Arguments, err = core.ParseKernelArguments(command, request.Argv)
 			if err != nil {
@@ -358,6 +368,7 @@ func testActivationCommands() []core.Command {
 	}
 	runParameters := append([]core.Parameter(nil), parameters...)
 	runParameters[1].Required = true
+	runParameters = append(runParameters, core.Parameter{Name: "defer_overlay_reset", Type: "boolean", Option: "defer-overlay-reset"})
 	return []core.Command{
 		{Version: 1, ID: "test-preview", Name: "dev-core.activate.preview", Kind: core.CommandKindPackage, Summary: "preview", Description: "preview", Parameters: parameters},
 		{Version: 1, ID: "test-run", Name: "dev-core.activate.run", Kind: core.CommandKindPackage, Summary: "activate", Description: "activate", Parameters: runParameters},
@@ -914,6 +925,30 @@ func TestActivationScansOnlyOnDemandCommitsAndResetsOverlay(t *testing.T) {
 	}
 }
 
+func TestSandboxHelperActivationDefersResetAcrossCommandBoundary(t *testing.T) {
+	platform := newTestPlatform(t)
+	sandbox, err := platform.manager.Create(context.Background(), "developer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shell(t, platform.manager, sandbox.UserID, "write packages/the8020/demo/notes.txt helper-change")
+	request := httptest.NewRequest(http.MethodPost, "/v1/development/sandboxes/developer/activate", strings.NewReader(`{"description":"Helper activation"}`))
+	request.Header.Set("Authorization", "Bearer "+sandbox.Token)
+	response := httptest.NewRecorder()
+	platform.manager.serveSandbox(response, request)
+	var result ActivationResult
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusOK || !result.Success || !result.OverlayResetPending || result.OverlayReset {
+		t.Fatalf("helper must receive its result before reset: status=%d result=%+v", response.Code, result)
+	}
+	waitForOverlayReset(t, platform.manager, sandbox.UserID)
+	if !platform.manager.HasSandbox(sandbox.SandboxID) {
+		t.Fatal("activation left the sandbox unavailable")
+	}
+}
+
 func TestActivationCapturesRenamesDeletionsAndBinaryButExcludesIgnoredFiles(t *testing.T) {
 	platform := newTestPlatform(t)
 	shared := filepath.Join(platform.root, "packages", "the8020", "dev-core")
@@ -956,7 +991,7 @@ func TestActivationCapturesRenamesDeletionsAndBinaryButExcludesIgnoredFiles(t *t
 		t.Fatalf("preview used %d sandbox commands, want one batched scan", platform.driver.execs-execs)
 	}
 	item := preview.Packages[0]
-	if item.PackageID != "the8020/dev-core" || item.ChangedFiles != 4 || item.AddedRows != 1 || item.RemovedRows != 1 {
+	if item.PackageID != "the8020/dev-core" || item.ChangedFiles != 5 || item.AddedRows != 2 || item.RemovedRows != 2 {
 		t.Fatalf("package summary = %#v", item)
 	}
 	files := map[string]string{}
@@ -964,9 +999,10 @@ func TestActivationCapturesRenamesDeletionsAndBinaryButExcludesIgnoredFiles(t *t
 		files[file.Path] = file.Change
 	}
 	wantFiles := map[string]string{
-		"binary.dat":     "new",
-		unusualPath:      "new",
-		"renamed.txt":    "renamed from notes.txt",
+		"binary.dat":     "added",
+		unusualPath:      "added",
+		"notes.txt":      "deleted",
+		"renamed.txt":    "added",
 		"src/message.ts": "deleted",
 	}
 	if !maps.Equal(files, wantFiles) {

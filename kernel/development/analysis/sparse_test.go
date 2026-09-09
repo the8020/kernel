@@ -62,10 +62,33 @@ type analysisFileReference struct {
 
 func (d *analysisSparseDriver) fileReferences(ctx context.Context, name string) (map[string]analysisFileReference, error) {
 	parts := strings.SplitN(name, "/", 3)
-	if len(parts) != 3 || !validRelative(parts[2]) || filepath.Clean(parts[2]) != parts[2] {
+	if !validRelative(name) || filepath.ToSlash(filepath.Clean(name)) != name {
 		return nil, errors.New("invalid rename source")
 	}
+	if len(parts) == 1 {
+		refs := map[string]analysisFileReference{}
+		for _, id := range packageDirectories(d.shared) {
+			if !strings.HasPrefix(id, name+"/") {
+				continue
+			}
+			files, err := d.fileReferences(ctx, id)
+			if err != nil {
+				return nil, err
+			}
+			for path, ref := range files {
+				refs[path] = ref
+			}
+			if len(refs) > 4096 {
+				return nil, errors.New("rename exceeds 4,096 files")
+			}
+		}
+		return refs, nil
+	}
 	id := parts[0] + "/" + parts[1]
+	relative := "."
+	if len(parts) == 3 {
+		relative = parts[2]
+	}
 	if _, err := workspacepackages.ParsePackageID(id); err != nil {
 		return nil, err
 	}
@@ -78,10 +101,10 @@ func (d *analysisSparseDriver) fileReferences(ctx context.Context, name string) 
 		return nil, err
 	}
 	root := filepath.Join(d.shared, id)
-	if _, err := gitCommand(ctx, root, nil, "--literal-pathspecs", "diff", "--quiet", "HEAD", "--", parts[2]); err != nil {
+	if _, err := gitCommand(ctx, root, nil, "--literal-pathspecs", "diff", "--quiet", "HEAD", "--", relative); err != nil {
 		return nil, fmt.Errorf("rename requires published source: %w", err)
 	}
-	entries, err := gitCommand(ctx, root, nil, "--literal-pathspecs", "ls-tree", "-r", "-z", "HEAD", "--", parts[2])
+	entries, err := gitCommand(ctx, root, nil, "--literal-pathspecs", "ls-tree", "-r", "-z", "HEAD", "--", relative)
 	if err != nil {
 		return nil, err
 	}
@@ -318,7 +341,8 @@ func (d *analysisSparseDriver) initializeGitOwned(ctx context.Context, id string
 		if _, err := gitCommand(ctx, d.storage, nil, "-c", "init.templateDir=", "clone", "--shared", "--no-checkout", filepath.Join(d.shared, id), gitRoot); err != nil {
 			return err
 		}
-		for _, args := range [][]string{{"read-tree", "HEAD"}, {"config", "remote.origin.url", "/workspace/git/shared/" + id}, {"config", "core.worktree", "/workspace/packages/" + id}} {
+		// The .git reference determines the worktree, including after mv.
+		for _, args := range [][]string{{"read-tree", "HEAD"}, {"config", "remote.origin.url", "/workspace/git/shared/" + id}} {
 			if _, err := gitCommand(ctx, gitRoot, nil, args...); err != nil {
 				return err
 			}
@@ -437,6 +461,17 @@ func analysisGitReference(storage, id string) error {
 		return err
 	}
 	defer upper.Close()
+	// Initializing retained Git for a deletion must not recreate its source root.
+	if _, err := upper.Lstat(id); os.IsNotExist(err) {
+		for name := id; name != "."; name = filepath.Dir(name) {
+			marker := fmt.Sprintf(".directories/%x", sha256.Sum256([]byte(name)))
+			if _, err := os.Stat(filepath.Join(storage, "snapshots", marker)); err == nil {
+				return nil
+			} else if !os.IsNotExist(err) {
+				return err
+			}
+		}
+	}
 	name := id + "/.git"
 	if _, err := upper.Lstat(name); err == nil || errors.Is(err, syscall.ENOTDIR) {
 		return nil
@@ -485,6 +520,10 @@ func (d *analysisSparseDriver) request(t *testing.T, action, path, id string) ma
 }
 
 func (d *analysisSparseDriver) exchange(ctx context.Context, action, path, id string) (map[string]any, error) {
+	return d.exchangeControl(ctx, map[string]any{"action": action, "path": path, "id": id})
+}
+
+func (d *analysisSparseDriver) exchangeControl(ctx context.Context, request map[string]any) (map[string]any, error) {
 	d.controlMu.Lock()
 	defer d.controlMu.Unlock()
 	deadline := time.Now().Add(15 * time.Second)
@@ -497,7 +536,7 @@ func (d *analysisSparseDriver) exchange(ctx context.Context, action, path, id st
 	if err := d.control.SetDeadline(deadline); err != nil {
 		return nil, err
 	}
-	if err := json.NewEncoder(d.control).Encode(map[string]string{"action": action, "path": path, "id": id}); err != nil {
+	if err := json.NewEncoder(d.control).Encode(request); err != nil {
 		return nil, err
 	}
 	var response map[string]any
@@ -505,9 +544,9 @@ func (d *analysisSparseDriver) exchange(ctx context.Context, action, path, id st
 		return nil, err
 	}
 	if response["error"] != nil {
-		return nil, fmt.Errorf("%s %s: %v", action, path, response)
+		return nil, fmt.Errorf("%s %s: %v", request["action"], request["path"], response)
 	}
-	if action == "release" && d.loseReleaseReply {
+	if request["action"] == "release" && d.loseReleaseReply {
 		d.loseReleaseReply = false
 		return nil, fmt.Errorf("injected lost capture-release reply")
 	}

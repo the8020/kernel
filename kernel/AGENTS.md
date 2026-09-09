@@ -47,9 +47,9 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 
 # Local Contracts
 
-- Every Go package has one responsibility and a small public API for a
-  necessary shared foundation. New concepts must cooperate with existing
-  contracts and serve more than their first application.
+- Every Go package has one responsibility and a small public API for a necessary
+  shared foundation. New concepts must cooperate with existing contracts and
+  serve more than their first application.
 - Kernel hot and periodic paths must be proportional to current work, never to
   total retained history or filesystem size. Use direct durable state, explicit
   events, bounded diagnostics, and narrow locks; reject polling scans,
@@ -67,8 +67,9 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 - Kernel command TOML is authoritative for built-in IDs, paths, help, arguments,
   results, mutation/restart metadata, handlers, and examples. Active packages
   own flat `cbus/commands/*.toml` with an explicit full public `command` name
-  and same-package TypeScript programs referenced by `program`; the in-memory
-  CBus catalog is rebuilt atomically from active package commits.
+  and ordinary TypeScript programs referenced by full
+  `namespace/package/program` IDs in `program`, including other packages; the
+  in-memory CBus catalog is rebuilt atomically from active package commits.
 - Native package identity and program/hook/event/command discovery remain in the
   kernel. Deno services owns service declarations, defaults, overrides,
   versions, storage, and administration. Go validates resolved runtime specs and
@@ -202,7 +203,8 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   retains PID control; rootless mode reports that PID cgroup enforcement and
   CNI/firewall isolation are unavailable. Shared groups have one failure,
   security, permission, and resource boundary. Jobs, modules, and programs share
-  the default compatible group; explicit placement overrides still separate work.
+  the default compatible group; explicit placement overrides still separate
+  work.
 - System-shipped and user-developed programs use the same supervisor and Worker
   path. Package command dispatch submits an ordinary `system` job against the
   shared package mount; it owns no source copies, mount overlays, or special
@@ -214,10 +216,10 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 - Development sandboxes use the same selected rootful or rootless runsc mode as
   workload isolation but a distinct editable image and lifecycle. Their writable
   package view never grants direct publication into shared package repositories;
-  the current implementation separately owns checkpointed private deltas,
-  native durable system/home storage, and Git activation. Follow development DOX
-  for the requested process-preserving publication and durable workspace
-  redesign. Sandbox lifecycle never polls package content.
+  the current implementation separately owns checkpointed private deltas, native
+  durable system/home storage, and Git activation. Follow development DOX for
+  the requested process-preserving publication and durable workspace redesign.
+  Sandbox lifecycle never polls package content.
 
 # Work Guidance
 

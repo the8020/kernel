@@ -1,32 +1,32 @@
 {
   "activation_recovery": {
     "after": {
-      "failed_helper_ms": 4612.429,
+      "failed_helper_ms": 4551.365,
       "interrupted_transaction_hook_attempts": 2,
       "interrupted_transaction_stage": "complete",
       "passed": true,
-      "recovered_helper_ms": 215.635
+      "recovered_helper_ms": 350.739
     },
     "after-prepare": {
-      "failed_helper_ms": 4480.959,
+      "failed_helper_ms": 4213.144,
       "interrupted_transaction_hook_attempts": 1,
       "interrupted_transaction_stage": "failed",
       "passed": true,
-      "recovered_helper_ms": 3028.295
+      "recovered_helper_ms": 3000.717
     },
     "before": {
-      "failed_helper_ms": 4339.052,
+      "failed_helper_ms": 4460.759,
       "interrupted_transaction_hook_attempts": 1,
       "interrupted_transaction_stage": "failed",
       "passed": true,
-      "recovered_helper_ms": 3439.106
+      "recovered_helper_ms": 2953.68
     },
     "before-prepare": {
-      "failed_helper_ms": 2700.362,
+      "failed_helper_ms": 2737.638,
       "interrupted_transaction_hook_attempts": 0,
       "interrupted_transaction_stage": "absent",
       "passed": true,
-      "recovered_helper_ms": 3170.108
+      "recovered_helper_ms": 2659.08
     }
   },
   "batch_recovery": {
@@ -34,8 +34,8 @@
     "live_attempt_preserved": true,
     "passed": true,
     "recovered_after_owner_release": true,
-    "recovery_ms": 415.142,
-    "released_owner_recovery_ms": 161.155,
+    "recovery_ms": 408.389,
+    "released_owner_recovery_ms": 249.089,
     "timing_boundary": "coordinator recovery with real native schema rollback; excludes preparation and helper transport"
   },
   "bootstrap_publication_observed": true,
@@ -55,29 +55,30 @@
     "removed_directory_before_sha256": "eaf16a4b26ec474c1f51a0703fc258a539ae02cf934869db65b74658c6670e9b",
     "removed_directory_after_sha256": "a2b7e0951cbfe2fba22ae5903a9f3fd877a2cf8b41f080581f59c93cb436633d"
   },
-  "guidance_source_git_tree": "d7c52089cca03bae0259f2cddce14f57877b5fb4",
+  "guidance_source_git_tree": "66550b2e3142bc94cfbb0bb0f7086dca0e95be75",
   "hook_attempts": 2,
-  "hook_counts_for_activation_id": "act-6v4orm60dc",
+  "hook_counts_for_activation_id": "act-tybmmd6ur3",
   "host_power_loss_qualified": false,
   "incompatible_schema_error": "the8020__dev_core__labels: changing column label requires a migration",
-  "incompatible_schema_rejection_ms": 2960.474,
+  "incompatible_schema_rejection_ms": 2678.523,
   "index_completion_retry": {
-    "failed_helper_ms": 2892.529,
+    "failed_helper_ms": 2916.152,
     "hook_attempts": 2,
     "index_calls": 2,
     "passed": true,
-    "retry_helper_ms": 74.018
+    "retry_helper_ms": 63.992
   },
   "input_source_sha256": {
-    "db": "9483137adab8056a8c5f232e3eb4377d47714d54b44a8198dab785d9599ed2a2",
-    "packages": "e764268fd785c2b8cb5ba9c92195bf3a604b2d34c52f3d454d905ddf2b6e76c8",
-    "secrets": "1515d91ba088666cbd0406476c8789aeaed9f0e5ba5399467e069ebfada2b32a",
-    "system": "2e3b4a236264e4cad36814e176225e4c71afe458432f0988cb71646cbc865022"
+    "db": "9ba0e5c4008a0469d1460369220af921f5dcbdd9ad7f2db8fa615ce997b90681",
+    "packages": "dd67e24e1d7037ca43552a4d5a238e8d8ab78d384e13f87552b069e5dfa78ea6",
+    "secrets": "8bf301b4249a71facd17c02ed7daf4c7d3dd5dac221bd515fe5432da35656589",
+    "system": "5bcea8c1517899448bb7ed84a24ff00d5d25a568d412709719de8fadb14eaf23"
   },
-  "observed_at": "2026-09-09T07:30:37.165810965Z",
+  "observed_at": "2026-09-09T18:35:29.027582759Z",
   "ordinary_git_candidate_fix_and_retry": true,
   "ordinary_package_create_delete_recreate_catalog_program_and_retained_data": true,
-  "publication_before_ack_interrupt_ms": 2456.359,
+  "package_rename_catalog_program_index_and_history": true,
+  "publication_before_ack_interrupt_ms": 2213.757,
   "published_program_runs_during_preparation": true,
   "published_revision_following_during_preparation": true,
   "real_schema_and_hooks_passed": true,
@@ -89,8 +90,8 @@
       {
         "package_id": "the8020/dev-core",
         "status": "committed",
-        "previous_commit": "cb88b7de769f668a69ad4238c08fe99aa1d292c0",
-        "resulting_commit": "899387abba0e69ab82d3a19714effdbd7f497e55",
+        "previous_commit": "6e86acc3df7b46fb9db4cac6f87534dd1568c559",
+        "resulting_commit": "8ec4db71e83304cd865ef95b9c5d238fbd3008fd",
         "commit_message": "Real schema and hooks"
       }
     ]
@@ -98,7 +99,7 @@
   "retained_row": "existing data",
   "retry_after_database_completion_with_recreated_coordinators": true,
   "retry_does_not_complete_another_prepared_activation": true,
-  "retry_helper_ms": 220.187,
+  "retry_helper_ms": 96.68,
   "schema_rejection_preserves_private_and_shared": true,
   "service_image": {
     "built_at": "2026-09-08T08:02:57Z",
@@ -109,24 +110,24 @@
     "source_hash": "sha256:6253699ea6c07f3bdd15c00ce4fecbbedf4e5b15ba0dcdcbf14f752515dd9ed4"
   },
   "source_sha256": {
-    "../activation.go": "fcd29918aa169d822a1d748219e4c878a0c2dfda1872ada246330049491c6411",
-    "../manager.go": "76c1bcf2d83291b1e931861f36046e4b605153e7afc34faa810ee55c780a4b4b",
-    "../model.go": "e6d1909d6ffc8073704e6bad9739c994cb8a4bdbfcaa13619964297646fb76ad",
+    "../activation.go": "3080735f411a543ffecf8dddd834447aca5ac2901cd07c127922bbca2b731254",
+    "../manager.go": "bf2b3efde2e3ffea94c148be8694e99ab7274c21bb67645e8a8b7cb4f2cfadad",
+    "../model.go": "971718e7de715121d38d9952ddc42b1a801ac1774a49cff8604f519c23df9626",
     "activation-stage.patch": "13ff8a93b9a21f69a8a7e15a5e215fb0a0a25ba0680a3e70adfde8a6d0662e3c",
-    "activation-transaction.patch": "5a40613597256b2ac37042cfd9ba3a776e58fa23564bd3da1f09101178fe4b64",
-    "gofer_probe.go": "79ee9830d3d6b93ea7346277700b378d6bdfc4d05e3e7af5f11b0c1980c3f1ab",
+    "activation-transaction.patch": "9389a7785124ea6656d53eb2444a8c33fcbcfa04ee643f23be5133bf57da4557",
+    "gofer_probe.go": "d781a86e79ee280c784c89448ff2ac6ef5b046fe44808505bf52d0b887741a2d",
     "gofer_probe.py": "a5cf069a3697ef59bbb37183a1457086dc2e05789c1d888842833fb87a6346db",
-    "run.py": "4dd7c04f2cacdb8f9c13f6ad25f9f5aa54b526cb05ed071152b659152969a723",
+    "run.py": "6a1538b230364e7e0663a08098344caf5f21ba60a7d7ec862285222cfd2b0b3f",
     "runtime_test.go": "d091c380b6cccf8918dddf4043f9ae69449ffa1e9787b8068f924d4221d71cfb",
-    "sparse_activation_test.go": "fe78fd02fad1cb8633578132c3de660bd51e5b208524018a43f007811b291e16",
-    "sparse_schema_test.go": "9f7e5de645466e23399f088aea357b3d9ff8ac5529df1d45cac18171394b510c",
-    "sparse_test.go": "2c56b5c6ec124ed56998ef6b83c3df1c6ff525c882292608e2d65cf4b8708e1a"
+    "sparse_activation_test.go": "c4c165cde27d3d09a99a85f905574560876d28892e578a6aca72a050f79341cd",
+    "sparse_schema_test.go": "27c7b0dd0b02b13e637c8dc203c28640787537e3d14430215f0a97df65d51c94",
+    "sparse_test.go": "20ba732ea64eb0ef8b9f78cade9035bfc99bdcc478bfb934a04fbaa253cb09ac"
   },
   "staged_source_git_trees": {
-    "db": "e96930341b5fb02f2c94abbf6df5fab4937e82f2",
-    "packages": "480736b9b61e6d191e080950514378dc05a42450",
-    "secrets": "0b87fe5ebc4c591b27de272c0e32d268db471b17",
-    "system": "da78da49511abfc16880809dc7cd2fffc42485f1"
+    "db": "4d49683c80f20727e5ca1fad9f36a115e5e7f8dd",
+    "packages": "9105631722b620ed16b159a16aad12a491f37d37",
+    "secrets": "29cb698f755f2995e0d634d06b7e51d8538df1b7",
+    "system": "1084817ae514db6aa5f196e6a31629b209314fd6"
   },
   "successful_hooks": 2,
   "successful_hooks_not_repeated": true

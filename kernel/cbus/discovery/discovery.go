@@ -30,6 +30,7 @@ type PackageSource interface {
 	ListPackageIndexes() ([]workspacepackages.PackageIndex, error)
 	InspectPackageIndex(string) (workspacepackages.PackageIndex, error)
 	ActivatedPackageCommit(context.Context, string) (string, error)
+	ResolveProgramWithCandidates(context.Context, string, map[string]deployment.Candidate) (workspacepackages.ProgramDefinition, error)
 	PackagesRoot() string
 }
 
@@ -77,7 +78,13 @@ type commandExample struct {
 
 type fragment struct {
 	packageID     string
+	declarations  []declaration
 	registrations []core.Registration
+}
+
+type declaration struct {
+	command   core.Command
+	programID string
 }
 
 func New(packages PackageSource, programs ProgramRunner, registry Registry) (*Indexer, error) {
@@ -88,15 +95,17 @@ func New(packages PackageSource, programs ProgramRunner, registry Registry) (*In
 }
 
 // Reindex replaces selected package fragments, or all fragments when omitted.
-// Filesystem discovery never reads unselected packages; collision validation
-// still covers the complete cached catalog.
+// Only selected declaration folders are read; cached references into changed
+// target packages refresh before full-catalog collision validation.
 func (i *Indexer) Reindex(ctx context.Context, packageIDs ...string) (Report, error) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	selected := map[string]bool{}
 	for _, id := range packageIDs {
 		if _, err := workspacepackages.ParsePackageID(id); err != nil {
 			return Report{}, err
 		}
+		selected[id] = true
 	}
 	cached := map[string]fragment{}
 	invalid := map[string]core.Diagnostic{}
@@ -151,8 +160,25 @@ func (i *Indexer) Reindex(ctx context.Context, packageIDs ...string) (Report, er
 		cached[entry.PackageID] = item
 	}
 	fragments := make([]fragment, 0, len(cached))
-	for _, item := range cached {
-		fragments = append(fragments, item)
+	for id, item := range cached {
+		refresh := len(packageIDs) == 0 || selected[id]
+		for _, declaration := range item.declarations {
+			identity, _, _ := workspacepackages.ParseProgramID(declaration.programID)
+			refresh = refresh || selected[identity.PackageID()]
+		}
+		if refresh {
+			resolved, err := i.resolvePrograms(ctx, item, nil)
+			if err != nil {
+				invalid[id] = core.Diagnostic{PackageID: id, Message: err.Error()}
+			} else {
+				item = resolved
+				cached[id] = item
+				delete(invalid, id)
+			}
+		}
+		if _, failed := invalid[id]; !failed {
+			fragments = append(fragments, item)
+		}
 	}
 	sort.Slice(fragments, func(a, b int) bool { return fragments[a].packageID < fragments[b].packageID })
 	registrations, validPackages, diagnostics := i.withoutCollisions(fragments)
@@ -213,6 +239,13 @@ func (i *Indexer) ValidateCandidates(ctx context.Context, candidates []deploymen
 		}
 		fragments = append(fragments, item)
 	}
+	for index, item := range fragments {
+		resolved, err := i.resolvePrograms(ctx, item, replacements)
+		if err != nil {
+			return fmt.Errorf("package %s commands: %w", item.packageID, err)
+		}
+		fragments[index] = resolved
+	}
 	_, _, diagnostics := i.withoutCollisions(fragments)
 	if len(diagnostics) > 0 {
 		return errors.New(diagnostics[0].Message)
@@ -240,14 +273,10 @@ func (i *Indexer) discoverPackage(root, packageID, commit string) (fragment, err
 			return fragment{}, fmt.Errorf("command %q is declared by both %s and %s", manifest.Command, previous, filename)
 		}
 		declared[manifest.Command] = filename
-		if _, err := workspacepackages.ValidateProgram(root, packageID, manifest.Program, commit); err != nil {
-			return fragment{}, fmt.Errorf("%s references invalid program %q: %w", filename, manifest.Program, err)
-		}
 		examples := make([]string, len(manifest.Examples))
 		for index, example := range manifest.Examples {
 			examples[index] = example.Command
 		}
-		programID := packageID + "/" + manifest.Program
 		command := core.Command{
 			Version: manifest.Version, ID: opaqueID(packageID, commit, manifest.Command), Name: manifest.Command,
 			Kind: core.CommandKindPackage, Path: []string{manifest.Command}, Summary: manifest.Summary,
@@ -256,14 +285,30 @@ func (i *Indexer) discoverPackage(root, packageID, commit string) (fragment, err
 			MutatesState: manifest.MutatesState, RestartBehavior: manifest.RestartBehavior,
 			Examples: examples, Origin: core.CommandOrigin{PackageID: packageID, Commit: commit},
 		}
-		result.registrations = append(result.registrations, core.Registration{
-			Command: command,
+		result.declarations = append(result.declarations, declaration{command: command, programID: manifest.Program})
+	}
+	sort.Slice(result.declarations, func(a, b int) bool {
+		return result.declarations[a].command.Name < result.declarations[b].command.Name
+	})
+	return result, nil
+}
+
+func (i *Indexer) resolvePrograms(ctx context.Context, item fragment, candidates map[string]deployment.Candidate) (fragment, error) {
+	// Keep handlers held by an in-flight registry snapshot immutable.
+	item.registrations = make([]core.Registration, 0, len(item.declarations))
+	for _, declaration := range item.declarations {
+		program, err := i.packages.ResolveProgramWithCandidates(ctx, declaration.programID, candidates)
+		if err != nil {
+			return fragment{}, fmt.Errorf("command %q references invalid program %q: %w", declaration.command.Name, declaration.programID, err)
+		}
+		item.registrations = append(item.registrations, core.Registration{
+			Command: declaration.command,
 			Handler: func(ctx context.Context, request core.Request) (core.Execution, error) {
 				arguments := make([]any, len(request.Argv))
 				for index := range request.Argv {
 					arguments[index] = request.Argv[index]
 				}
-				result, err := i.programs.Run(ctx, programID, commit, arguments, request.Secrets)
+				result, err := i.programs.Run(ctx, program.ID, program.Commit, arguments, request.Secrets)
 				executed := core.Execution{Result: result.Value}
 				if result.ExecutionID != "" {
 					executed.Reference = &core.ExecutionReference{
@@ -287,10 +332,7 @@ func (i *Indexer) discoverPackage(root, packageID, commit string) (fragment, err
 			},
 		})
 	}
-	sort.Slice(result.registrations, func(a, b int) bool {
-		return result.registrations[a].Command.Name < result.registrations[b].Command.Name
-	})
-	return result, nil
+	return item, nil
 }
 
 func readManifest(path string) (commandManifest, error) {
@@ -326,8 +368,8 @@ func readManifest(path string) (commandManifest, error) {
 	if manifest.Command == "kernel" || strings.HasPrefix(manifest.Command, "kernel.") {
 		return commandManifest{}, fmt.Errorf("command name %q uses reserved kernel namespace", manifest.Command)
 	}
-	if err := workspacepackages.ValidateName(manifest.Program); err != nil || strings.Contains(manifest.Program, ".") {
-		return commandManifest{}, errors.New("program must name one same-package program")
+	if _, _, err := workspacepackages.ParseProgramID(manifest.Program); err != nil {
+		return commandManifest{}, fmt.Errorf("program must be a full namespace/package/program ID: %w", err)
 	}
 	if strings.TrimSpace(manifest.Summary) == "" {
 		return commandManifest{}, errors.New("summary is required")

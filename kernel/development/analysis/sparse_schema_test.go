@@ -726,6 +726,29 @@ export default table("the8020__workflow_created__labels", {id: t.text().primaryK
 		t.Fatalf("recreated package not active: %q: %v", active, err)
 	}
 	record["ordinary_package_create_delete_recreate_catalog_program_and_retained_data"] = true
+	renamedID := "the8020/workflow-renamed"
+	beforeRename, err := gitOutput(newRoot, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	analysisExec(t, sparse.RunscDriver, sandbox, "set -e; mv /workspace/packages/"+newID+" /workspace/packages/"+renamedID+"; mkdir -p /workspace/packages/"+renamedID+"/programs/hello; printf 'schema = 1\\ndescription = \"Renamed package program\"\\nentrypoint = \"main.ts\"\\n' >/workspace/packages/"+renamedID+"/programs/hello/program.toml; printf %s "+shellQuote("export default () => 'renamed package';\n")+" >/workspace/packages/"+renamedID+"/programs/hello/main.ts")
+	if result := runLifecycle(); len(result.Packages) != 2 {
+		t.Fatalf("rename did not publish old and new package together: %+v", result)
+	}
+	if active, err := store.ActivatedPackageCommit(ctx, newID); err == nil && active != "" {
+		t.Fatalf("renamed source package still active: %s", active)
+	}
+	renamedCommit, err := store.ActivatedPackageCommit(ctx, renamedID)
+	if err != nil || renamedCommit == "" {
+		t.Fatalf("renamed package not registered: %q: %v", renamedCommit, err)
+	}
+	if read, err := programs.Run(ctx, renamedID+"/hello", renamedCommit, nil, nil); err != nil || read.Value != "renamed package" {
+		t.Fatalf("renamed package program: %+v: %v", read, err)
+	}
+	if _, err := gitCommand(ctx, filepath.Join(m.config.PackagesRoot, renamedID), nil, "merge-base", "--is-ancestor", beforeRename, "HEAD"); err != nil {
+		t.Fatalf("rename lost published Git history: %v", err)
+	}
+	record["package_rename_catalog_program_index_and_history"] = true
 	hashes := map[string]string{}
 	for _, name := range []string{"run.py", "runtime_test.go", "sparse_test.go", "sparse_activation_test.go", "sparse_schema_test.go", "gofer_probe.go", "gofer_probe.py", "activation-transaction.patch", "activation-stage.patch", "../model.go", "../manager.go", "../activation.go"} {
 		body, err := os.ReadFile(filepath.Join("analysis", name))

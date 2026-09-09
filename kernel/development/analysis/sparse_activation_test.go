@@ -18,6 +18,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -42,6 +43,7 @@ type analysisCapturedPath struct {
 
 type analysisActivationPackage struct {
 	PackageID, Worktree, Private, Shared, Previous, Published string
+	Origin, OriginHead, Parent                                string
 	Staged                                                    string
 	Removed                                                   bool
 	RemovalChecked                                            bool
@@ -50,7 +52,8 @@ type analysisActivationPackage struct {
 }
 
 func analysisPackageGit(ctx context.Context, d *RunscDriver, sandbox Sandbox, id string, input io.Reader, args ...string) (string, error) {
-	options := []string{"--git-dir=/workspace/git/private/" + id + "/.git", "--work-tree=/workspace/packages/" + id}
+	// These are object/index operations; the package worktree may be deleted.
+	options := []string{"--git-dir=/workspace/git/private/" + id + "/.git", "--work-tree=/workspace"}
 	return analysisNativeGit(ctx, d, sandbox, "/workspace", input, append(options, args...)...)
 }
 
@@ -96,23 +99,93 @@ func analysisEnsurePackageGit(ctx context.Context, d *analysisSparseDriver, sand
 	if head != "" {
 		return d.initializeGitOwned(ctx, id, validate)
 	}
+	upper, err := os.OpenRoot(filepath.Join(d.storage, "upper"))
+	if err != nil {
+		return err
+	}
+	defer upper.Close()
+	var source string
+	existingGit := false
+	if file, err := upper.OpenFile(id+"/.git", os.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0); err == nil {
+		info, statErr := file.Stat()
+		if statErr != nil {
+			file.Close()
+			return statErr
+		}
+		if info.Mode().IsRegular() {
+			body, readErr := io.ReadAll(io.LimitReader(file, 4097))
+			file.Close()
+			if readErr != nil {
+				return readErr
+			}
+			if !strings.HasPrefix(string(body), "gitdir: /workspace/git/private/") || !strings.HasSuffix(string(body), "/.git\n") {
+				return fmt.Errorf("invalid private Git reference for %s", id)
+			}
+			source = strings.TrimSuffix(strings.TrimPrefix(string(body), "gitdir: /workspace/git/private/"), "/.git\n")
+			if _, err := workspacepackages.ParsePackageID(source); err != nil {
+				return fmt.Errorf("invalid private Git reference for %s", id)
+			}
+		} else {
+			existingGit = info.IsDir()
+			file.Close()
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	if _, err := os.Lstat(filepath.Join(d.storage, "git", id, ".git")); errors.Is(err, os.ErrNotExist) {
 		if err := d.ExecCommand(ctx, sandbox.SandboxID, []string{"/bin/mkdir", "-p", "/workspace/git/private/" + id}, nil, io.Discard); err != nil {
 			return err
 		}
-		if _, err := analysisPackageGit(ctx, d.RunscDriver, sandbox, id, nil, "-c", "init.templateDir=", "init", "--initial-branch=main"); err != nil {
-			return err
-		}
-		if _, err := analysisPackageGit(ctx, d.RunscDriver, sandbox, id, nil, "config", "remote.origin.url", "/workspace/git/shared/"+id); err != nil {
-			return err
-		}
-		if err := os.MkdirAll(filepath.Join(d.storage, "borrowed", id, "objects"), 0700); err != nil {
-			return err
-		}
-		if err := d.ExecCommand(ctx, sandbox.SandboxID, []string{"/usr/bin/tee", "/workspace/git/private/" + id + "/.git/objects/info/alternates"}, strings.NewReader("/workspace/git/borrowed/"+id+"/objects\n"), io.Discard); err != nil {
-			return err
+		if source != "" && source != id || existingGit {
+			// Clone metadata inside the sandbox; the existing host filesystem owner
+			// links immutable objects because native cross-mount linkat is unavailable.
+			repository := "/workspace/git/private/" + source
+			if existingGit {
+				repository = "/workspace/packages/" + id
+			}
+			if _, err := analysisNativeGit(ctx, d.RunscDriver, sandbox, "/workspace", nil,
+				"-c", "init.templateDir=", "clone", "--shared", "--no-checkout", "--",
+				repository, "/workspace/git/private/"+id); err != nil {
+				return err
+			}
+		} else {
+			// Ordinary package creation requires no manual Git initialization.
+			if _, err := analysisNativeGit(ctx, d.RunscDriver, sandbox, "/workspace", nil,
+				"-c", "init.templateDir=", "init", "--initial-branch=main",
+				"--separate-git-dir=/workspace/git/private/"+id+"/.git", "/workspace/packages/"+id); err != nil {
+				return err
+			}
 		}
 	} else if err != nil {
+		return err
+	}
+	if source != "" && source != id || existingGit {
+		if err := analysisLinkPrivateObjects(d, id, source, existingGit); err != nil {
+			return err
+		}
+		repository := "/workspace/git/private/" + source
+		if existingGit {
+			repository = "/workspace/packages/" + id
+		}
+		// Repeat safely after interrupted preparation. Retain the source's existing
+		// alternates, not its mutable location; its own objects are linked above.
+		alternates := "/workspace/git/private/" + id + "/.git/objects/info/alternates"
+		command := "set -eu; objects=$(git -C " + shellQuote(repository) + " count-objects -v); printf '%s\\n' \"$objects\" | sed -n 's/^alternate: //p' >" + shellQuote(alternates)
+		if err := d.ExecStream(ctx, sandbox.SandboxID, command, nil, io.Discard); err != nil {
+			return err
+		}
+		git := "git --git-dir=" + shellQuote("/workspace/git/private/"+id+"/.git")
+		if err := d.ExecStream(ctx, sandbox.SandboxID, "if "+git+" rev-parse --verify --quiet HEAD >/dev/null; then "+git+" read-tree HEAD; else test \"$?\" -eq 1; fi", nil, io.Discard); err != nil {
+			return err
+		}
+	}
+	if _, err := analysisPackageGit(ctx, d.RunscDriver, sandbox, id, nil, "config", "remote.origin.url", "/workspace/git/shared/"+id); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Join(d.storage, "borrowed", id, "objects"), 0700); err != nil {
+		return err
+	}
+	if err := analysisAddAlternates(ctx, d, sandbox, id, []string{id}); err != nil {
 		return err
 	}
 	if validate != nil {
@@ -120,7 +193,90 @@ func analysisEnsurePackageGit(ctx context.Context, d *analysisSparseDriver, sand
 			return err
 		}
 	}
+	if source != "" && source != id {
+		_, err := d.exchangeControl(ctx, map[string]any{"action": "bind-git", "path": id, "id": "bind", "moves": map[string]string{id: source}})
+		return err
+	}
 	return analysisGitReference(d.storage, id)
+}
+
+func analysisLinkPrivateObjects(d *analysisSparseDriver, destination, source string, inWorktree bool) error {
+	owner := "git"
+	if inWorktree {
+		owner, source = "upper", destination
+	}
+	root, err := os.OpenRoot(filepath.Join(d.storage, owner))
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	from, err := root.OpenRoot(source + "/.git/objects")
+	if err != nil {
+		return err
+	}
+	defer from.Close()
+	private, err := os.OpenRoot(filepath.Join(d.storage, "git"))
+	if err != nil {
+		return err
+	}
+	defer private.Close()
+	to, err := private.OpenRoot(destination + "/.git/objects")
+	if err != nil {
+		return err
+	}
+	defer to.Close()
+	entries := 0
+	return fs.WalkDir(from.FS(), ".", func(name string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		entries++
+		// ponytail: the same 100,000-entry ceiling as shared object retention.
+		if entries > 100000 {
+			return errors.New("private Git retention exceeds 100,000 entries")
+		}
+		if name == "info" {
+			return fs.SkipDir
+		}
+		if entry.IsDir() {
+			return to.MkdirAll(name, 0700)
+		}
+		if !entry.Type().IsRegular() {
+			return errors.New("private Git objects must be regular files")
+		}
+		a, err := from.Open(path.Dir(name))
+		if err != nil {
+			return err
+		}
+		defer a.Close()
+		b, err := to.Open(path.Dir(name))
+		if err != nil {
+			return err
+		}
+		defer b.Close()
+		err = unix.Linkat(int(a.Fd()), path.Base(name), int(b.Fd()), path.Base(name), 0)
+		if errors.Is(err, unix.EEXIST) {
+			return nil
+		}
+		return err
+	})
+}
+
+func analysisAddAlternates(ctx context.Context, d *analysisSparseDriver, sandbox Sandbox, id string, sources []string) error {
+	if len(sources) == 0 {
+		return nil
+	}
+	var entries strings.Builder
+	for _, source := range sources {
+		if _, err := workspacepackages.ParsePackageID(source); err != nil {
+			return err
+		}
+		entries.WriteString("/workspace/git/borrowed/" + source + "/objects\n")
+	}
+	name := "/workspace/git/private/" + id + "/.git/objects/info/alternates"
+	// Replace the file so even a native local clone's linked metadata is private.
+	command := "set -eu; target=" + shellQuote(name) + "; temporary=$(mktemp \"$target.XXXXXX\"); trap 'rm -f -- \"$temporary\"' EXIT; { if [ -f \"$target\" ]; then cat -- \"$target\"; fi; cat; } | sort -u >\"$temporary\"; mv -- \"$temporary\" \"$target\""
+	return d.ExecStream(ctx, sandbox.SandboxID, command, strings.NewReader(entries.String()), io.Discard)
 }
 
 // Skip clean packages before initializing Git or claiming publication ownership.
@@ -147,29 +303,113 @@ func analysisPackageChanged(ctx context.Context, d *analysisSparseDriver, id str
 	return len(directories) != 0, nil
 }
 
-func analysisActivationEligible(d *analysisSparseDriver, id, head string) (bool, error) {
+func analysisActivationEligible(ctx context.Context, d *analysisSparseDriver, id, head string) (bool, error) {
 	if head != "" {
 		return true, nil
 	}
-	manifest, err := os.Lstat(filepath.Join(d.storage, "upper", id, "package.toml"))
+	answer, err := d.exchange(ctx, "changes", id, "list")
+	if err != nil {
+		return false, err
+	}
+	if answer["manifest"] == true {
+		return true, nil
+	}
+	if answer["exists"] == true {
+		return false, fmt.Errorf("package %s needs a regular package.toml before activation", id)
+	}
+	// Retained originals still own conflicts with an upstream package deletion.
+	git, err := os.Lstat(filepath.Join(d.storage, "git", id, ".git"))
 	if errors.Is(err, os.ErrNotExist) {
-		// An established private repository can conflict with upstream package
-		// deletion even when its untouched manifest has disappeared upstream.
-		git, err := os.Lstat(filepath.Join(d.storage, "git", id, ".git"))
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
+		return false, nil
+	}
+	return err == nil && git.IsDir(), err
+}
+
+// Read package-level namespace changes once; source contents remain lazy.
+type analysisPackageState struct {
+	Moves      map[string]string
+	Namespaces []string
+}
+
+func analysisPackageSelection(ctx context.Context, d *analysisSparseDriver, selection []string) ([]string, analysisPackageState, error) {
+	var state analysisPackageState
+	answer, err := d.exchange(ctx, "package-state", "packages", "list")
+	if err != nil {
+		return nil, state, err
+	}
+	body, err := json.Marshal(answer)
+	if err != nil {
+		return nil, state, err
+	}
+	if err := json.Unmarshal(body, &state); err != nil {
+		return nil, state, err
+	}
+	ids := map[string]bool{}
+	for _, root := range []string{d.shared, filepath.Join(d.storage, "upper"), filepath.Join(d.storage, "git"), filepath.Join(d.storage, "deleted")} {
+		for _, id := range packageDirectories(root) {
+			ids[id] = true
 		}
-		return err == nil && git.IsDir(), err
 	}
-	if err != nil || !manifest.Mode().IsRegular() {
-		return false, fmt.Errorf("invalid new package manifest %s: %v", id, err)
+	for destination, source := range state.Moves {
+		for _, id := range []string{destination, source} {
+			if _, err := workspacepackages.ParsePackageID(id); err != nil {
+				return nil, state, fmt.Errorf("cannot activate renamed package %q: %w", id, err)
+			}
+			ids[id] = true
+		}
 	}
-	return true, nil
+	selected := map[string]bool{}
+	for _, id := range selection {
+		if _, err := workspacepackages.ParsePackageID(id); err != nil {
+			return nil, state, err
+		}
+		selected[id] = true
+	}
+	for _, namespace := range state.Namespaces {
+		if !safePackageSegment(namespace) {
+			return nil, state, errors.New("invalid removed namespace")
+		}
+	}
+	if len(selection) != 0 {
+		// A move's source and destination publish together, including namespaces.
+		for changed := true; changed; {
+			before := len(selected)
+			for destination, source := range state.Moves {
+				if selected[destination] || selected[source] {
+					selected[destination], selected[source] = true, true
+				}
+			}
+			for _, namespace := range state.Namespaces {
+				include := false
+				for id := range selected {
+					include = include || strings.HasPrefix(id, namespace+"/")
+				}
+				if include {
+					for id := range ids {
+						if strings.HasPrefix(id, namespace+"/") {
+							selected[id] = true
+						}
+					}
+				}
+			}
+			changed = len(selected) != before
+		}
+	}
+	ordered := []string{}
+	for id := range ids {
+		if len(selection) == 0 || selected[id] {
+			ordered = append(ordered, id)
+		}
+	}
+	sort.Strings(ordered)
+	return ordered, state, nil
 }
 
 type analysisActivationAttempt struct {
 	ID, Phase, TransactionID string
 	Packages                 []analysisActivationPackage
+	Moves                    map[string]string
+	Namespaces               []analysisCapturedPath
 }
 
 func analysisNativeGit(ctx context.Context, d *RunscDriver, sandbox Sandbox, directory string, input io.Reader, args ...string) (string, error) {
@@ -296,11 +536,7 @@ func (m *Manager) analysisCapturePackage(ctx context.Context, d *analysisSparseD
 			return item, errors.New("filesystem returned an invalid directory path")
 		}
 		if name == id {
-			if _, err := os.Lstat(filepath.Join(d.storage, "upper", id)); errors.Is(err, os.ErrNotExist) {
-				item.Removed = true
-			} else if err != nil {
-				return item, err
-			}
+			item.Removed = answer["exists"] == false
 			directoryNames = append(directoryNames, "")
 			continue
 		}
@@ -419,6 +655,135 @@ func (m *Manager) analysisCapturePackage(ctx context.Context, d *analysisSparseD
 	return item, nil
 }
 
+func (m *Manager) Preview(ctx context.Context, user string, options ActivationOptions) (ActivationPreview, error) {
+	if err := validatePreviewFile(options); err != nil {
+		return ActivationPreview{}, err
+	}
+	unlock := m.lockUser(user)
+	defer unlock()
+	result := ActivationPreview{Packages: []ActivationPackagePreview{}}
+	sandbox, err := m.loadSandbox(user)
+	if err != nil {
+		return result, err
+	}
+	d, ok := m.driver.(*analysisSparseDriver)
+	if !ok {
+		return result, errors.New("development sandbox is not running")
+	}
+	ordered, _, err := analysisPackageSelection(ctx, d, nil)
+	if err != nil {
+		return result, err
+	}
+	for _, id := range ordered {
+		if len(options.SelectedPackages) != 0 && !slices.Contains(options.SelectedPackages, id) {
+			continue
+		}
+		err := func() error {
+			if changed, err := analysisPackageChanged(ctx, d, id); err != nil || !changed {
+				return err
+			}
+			validate, release, err := workspacepackages.ObserveSources(ctx, d.shared, []string{id})
+			if err != nil {
+				return err
+			}
+			defer release()
+			head, err := m.analysisSharedHead(id)
+			if err != nil {
+				return err
+			}
+			if eligible, err := analysisActivationEligible(ctx, d, id, head); err != nil || !eligible {
+				return err
+			}
+			if err := analysisEnsurePackageGit(ctx, d, sandbox, id, head, validate); err != nil {
+				return err
+			}
+			item, err := m.analysisCapturePackage(ctx, d, sandbox, id, "", head, false)
+			if err != nil {
+				return err
+			}
+			if err := validate(); err != nil {
+				return err
+			}
+			if len(item.Captures) == 0 && len(item.Directories) == 0 {
+				return nil
+			}
+			preview := ActivationPackagePreview{PackageID: id, Change: "modified", Selected: true, SharedCommit: head, ActivationReady: true, Files: []ActivationFile{}, ChangedFiles: len(item.Captures)}
+			if head == "" {
+				preview.Change = "added"
+			}
+			if item.Removed {
+				preview.Change = "deleted"
+			}
+			if preview.ChangedFiles == 0 {
+				preview.ChangedFiles = len(item.Directories)
+			}
+			// ponytail: line counts cover changed regular files up to 1 MiB;
+			// larger files still appear in the changed-file count.
+			for _, capture := range item.Captures {
+				change := "modified"
+				paths := []string{}
+				countLines := true
+				for _, side := range []string{"base", "upper"} {
+					ref := capture.BaseReference
+					if side == "upper" {
+						ref = capture.FileReference
+					}
+					filename := filepath.Join(d.storage, side, id, capture.Path)
+					info, err := os.Lstat(filename)
+					if errors.Is(err, os.ErrNotExist) && ref != nil {
+						countLines = false
+						continue
+					}
+					if errors.Is(err, os.ErrNotExist) {
+						paths = append(paths, os.DevNull)
+						if side == "base" {
+							change = "added"
+						} else {
+							change = "deleted"
+						}
+						continue
+					}
+					if err != nil {
+						return err
+					}
+					if !info.Mode().IsRegular() || info.Size() > 1<<20 {
+						countLines = false
+					}
+					paths = append(paths, filename)
+				}
+				if countLines {
+					stats, err := gitCommand(ctx, d.storage, nil, "diff", "--no-index", "--numstat", "--", paths[0], paths[1])
+					var exit *exec.ExitError
+					if err != nil && !(errors.As(err, &exit) && exit.ExitCode() == 1) {
+						return err
+					}
+					values := strings.Fields(stats)
+					if len(values) >= 2 {
+						added, _ := strconv.Atoi(values[0])
+						removed, _ := strconv.Atoi(values[1])
+						preview.AddedRows += added
+						preview.RemovedRows += removed
+					}
+				}
+				file := ActivationFile{Path: capture.Path, Change: change}
+				if options.PreviewFile == file.Path {
+					file.Diff, err = analysisPreviewFileDiff(ctx, d, id, capture)
+					if err != nil {
+						return err
+					}
+				}
+				preview.Files = append(preview.Files, file)
+			}
+			result.Packages = append(result.Packages, preview)
+			return nil
+		}()
+		if err != nil {
+			return result, err
+		}
+	}
+	return result, nil
+}
+
 func analysisPreviewFileDiff(ctx context.Context, d *analysisSparseDriver, id string, capture analysisCapturedPath) (*ActivationFileDiff, error) {
 	root, err := os.OpenRoot(d.storage)
 	if err != nil {
@@ -515,14 +880,13 @@ func analysisPreviewFileDiff(ctx context.Context, d *analysisSparseDriver, id st
 }
 
 func analysisPrepareGit(ctx context.Context, d *analysisSparseDriver, sandbox Sandbox, item *analysisActivationPackage, attemptID, shared, author, email, message string) error {
-	repository := "/workspace/packages/" + item.PackageID
 	git := func(input io.Reader, args ...string) (string, error) {
 		return analysisPackageGit(ctx, d.RunscDriver, sandbox, item.PackageID, input, args...)
 	}
 	index := "/tmp/activation-" + attemptID + "-" + strings.ReplaceAll(item.PackageID, "/", "-") + ".index"
 	indexGit := func(input io.Reader, args ...string) (string, error) {
 		output := &boundedBuffer{limit: commandOutputLimit}
-		argv := []string{"/usr/bin/env", "GIT_INDEX_FILE=" + index, "/usr/bin/git", "--git-dir=/workspace/git/private/" + item.PackageID + "/.git", "--work-tree=" + repository}
+		argv := []string{"/usr/bin/env", "GIT_INDEX_FILE=" + index, "/usr/bin/git", "--git-dir=/workspace/git/private/" + item.PackageID + "/.git", "--work-tree=/workspace"}
 		err := d.ExecCommand(ctx, sandbox.SandboxID, append(argv, args...), input, output)
 		if err != nil || output.truncated {
 			return "", fmt.Errorf("prepare captured Git index: %v: %s", err, output.String())
@@ -532,11 +896,24 @@ func analysisPrepareGit(ctx context.Context, d *analysisSparseDriver, sandbox Sa
 	baseSource := shared
 	if baseSource == "" {
 		baseSource = "--empty"
+		output := &boundedBuffer{limit: 128}
+		command := "git --git-dir=" + shellQuote("/workspace/git/private/"+item.PackageID+"/.git") + " rev-parse --verify --quiet HEAD; status=$?; test \"$status\" -le 1"
+		if err := d.ExecStream(ctx, sandbox.SandboxID, command, nil, output); err != nil || output.truncated {
+			return fmt.Errorf("inspect new package history: %v", err)
+		}
+		if output.String() != "" {
+			var err error
+			item.Parent, err = analysisObjectID(output.String())
+			if err != nil {
+				return err
+			}
+		}
 	}
 	if _, err := indexGit(nil, "read-tree", baseSource); err != nil {
 		return err
 	}
 	var originals, private strings.Builder
+	referencePackages := map[string]bool{}
 	hashLength := len(shared)
 	if hashLength == 0 {
 		hashLength = 40
@@ -552,6 +929,7 @@ func analysisPrepareGit(ctx context.Context, d *analysisSparseDriver, sandbox Sa
 				if _, err := analysisObjectID(ref.Blob); err != nil {
 					return err
 				}
+				referencePackages[ref.Package] = true
 				mode := "100644"
 				if ref.Mode&unix.S_IFMT == unix.S_IFLNK {
 					mode = "120000"
@@ -617,10 +995,20 @@ func analysisPrepareGit(ctx context.Context, d *analysisSparseDriver, sandbox Sa
 			}
 		}
 	}
+	sources := []string{}
+	for id := range referencePackages {
+		sources = append(sources, id)
+	}
+	sort.Strings(sources)
+	if err := analysisAddAlternates(ctx, d, sandbox, item.PackageID, sources); err != nil {
+		return err
+	}
 	commitTree := func(tree, body string, parents ...string) (string, error) {
 		args := []string{"-c", "user.name=" + author, "-c", "user.email=" + email, "commit-tree", tree}
 		for _, parent := range parents {
-			args = append(args, "-p", parent)
+			if parent != "" {
+				args = append(args, "-p", parent)
+			}
 		}
 		value, err := git(strings.NewReader(body), args...)
 		if err != nil {
@@ -635,7 +1023,7 @@ func analysisPrepareGit(ctx context.Context, d *analysisSparseDriver, sandbox Sa
 	if err != nil {
 		return err
 	}
-	base, err := commitTree(baseTree, "Observed per-path originals "+attemptID+"\n")
+	base, err := commitTree(baseTree, "Observed per-path originals "+attemptID+"\n", item.Parent)
 	if err != nil {
 		return err
 	}
@@ -705,6 +1093,8 @@ func analysisTransferCandidate(ctx context.Context, d *analysisSparseDriver, san
 	args := []string{"/usr/bin/git", "--git-dir=/workspace/git/private/" + item.PackageID + "/.git", "bundle", "create", "-", ref}
 	if item.Previous != "" {
 		args = append(args, "^"+item.Previous)
+	} else if item.OriginHead != "" {
+		args = append(args, "^"+item.OriginHead)
 	}
 	err = d.ExecCommand(ctx, sandbox.SandboxID, args, nil, file)
 	if err := errors.Join(err, file.Close()); err != nil {
@@ -778,7 +1168,7 @@ func analysisRemovalAdditions(ctx context.Context, d *analysisSparseDriver, sand
 // This native validation view shares unchanged inodes. It does not copy their
 // data, and validators receive it read-only. Lower hardlink mutation and
 // concurrent shared-directory changes must be qualified before adoption.
-func analysisValidationView(ctx context.Context, shared, previous, candidate, target string) error {
+func analysisValidationView(ctx context.Context, shared, gitRoot, previous, candidate, target string) error {
 	if err := os.MkdirAll(target, 0700); err != nil {
 		return err
 	}
@@ -811,11 +1201,11 @@ func analysisValidationView(ctx context.Context, shared, previous, candidate, ta
 	}); err != nil {
 		return err
 	}
-	changed, err := gitCommand(ctx, shared, nil, "diff", "--name-only", "-z", "--no-renames", previous, candidate)
+	changed, err := gitCommand(ctx, gitRoot, nil, "diff", "--name-only", "-z", "--no-renames", previous, candidate)
 	if err != nil {
 		return err
 	}
-	oldEntries, err := gitCommand(ctx, shared, nil, "ls-tree", "-rz", previous)
+	oldEntries, err := gitCommand(ctx, gitRoot, nil, "ls-tree", "-rz", previous)
 	if err != nil {
 		return err
 	}
@@ -842,7 +1232,7 @@ func analysisValidationView(ctx context.Context, shared, previous, candidate, ta
 		if err := root.RemoveAll(name); err != nil {
 			return err
 		}
-		entry, err := gitCommand(ctx, shared, nil, "ls-tree", "-z", candidate, "--", name)
+		entry, err := gitCommand(ctx, gitRoot, nil, "ls-tree", "-z", candidate, "--", name)
 		if err != nil {
 			return err
 		}
@@ -862,7 +1252,7 @@ func analysisValidationView(ctx context.Context, shared, previous, candidate, ta
 			}
 			continue
 		}
-		command := exec.CommandContext(ctx, "git", "-C", shared, "cat-file", "blob", fields[2])
+		command := exec.CommandContext(ctx, "git", "-C", gitRoot, "cat-file", "blob", fields[2])
 		diagnostics := &boundedBuffer{limit: commandOutputLimit}
 		command.Stderr = diagnostics
 		if fields[0] == "120000" {
@@ -943,28 +1333,38 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 			return result, err
 		}
 		attempt.Phase = "captured"
-		selected := map[string]bool{}
-		for _, id := range options.SelectedPackages {
-			if _, err := m.analysisSharedHead(id); err != nil {
-				return result, err
-			}
-			selected[id] = true
+		ordered, state, err := analysisPackageSelection(ctx, d, options.SelectedPackages)
+		if err != nil {
+			return result, err
 		}
-		ids := map[string]bool{}
-		for _, root := range []string{m.config.PackagesRoot, filepath.Join(d.storage, "upper"), filepath.Join(d.storage, "git")} {
-			for _, id := range packageDirectories(root) {
-				ids[id] = true
-			}
-		}
-		ordered := make([]string, 0, len(ids))
-		for id := range ids {
-			ordered = append(ordered, id)
-		}
-		sort.Strings(ordered)
+		attempt.Moves = map[string]string{}
+		included := map[string]bool{}
 		for _, id := range ordered {
-			if len(selected) > 0 && !selected[id] {
+			included[id] = true
+		}
+		for destination, source := range state.Moves {
+			if included[destination] && included[source] {
+				attempt.Moves[destination] = source
+			}
+		}
+		for _, namespace := range state.Namespaces {
+			selected := false
+			for _, id := range ordered {
+				selected = selected || strings.HasPrefix(id, namespace+"/")
+			}
+			if !selected {
 				continue
 			}
+			captureID, err := randomHex(12)
+			if err != nil {
+				return result, err
+			}
+			if _, err := d.exchange(ctx, "capture-directory", namespace, captureID); err != nil {
+				return result, err
+			}
+			attempt.Namespaces = append(attempt.Namespaces, analysisCapturedPath{Path: namespace, ID: captureID})
+		}
+		for _, id := range ordered {
 			item, err := func() (analysisActivationPackage, error) {
 				if changed, err := analysisPackageChanged(ctx, d, id); err != nil || !changed {
 					return analysisActivationPackage{}, err
@@ -978,7 +1378,7 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 				if err != nil {
 					return analysisActivationPackage{}, err
 				}
-				if eligible, err := analysisActivationEligible(d, id, head); err != nil || !eligible {
+				if eligible, err := analysisActivationEligible(ctx, d, id, head); err != nil || !eligible {
 					return analysisActivationPackage{}, err
 				}
 				if err := analysisEnsurePackageGit(ctx, d, sandbox, id, head, nil); err != nil {
@@ -989,6 +1389,9 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 					return item, err
 				}
 				item.Previous = head
+				if head == "" {
+					item.Origin = state.Moves[id]
+				}
 				message := activationCommitMessage(options.Description, sandbox.SandboxID, options.Metadata)
 				err = analysisPrepareGit(ctx, d, sandbox, &item, attempt.ID, head, author, email, message)
 				return item, err
@@ -1011,9 +1414,18 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 		return result, err
 	}
 	if len(options.SelectedPackages) > 0 {
+		ordered, _, err := analysisPackageSelection(ctx, d, options.SelectedPackages)
+		if err != nil {
+			return result, err
+		}
 		selected := map[string]bool{}
-		for _, id := range options.SelectedPackages {
+		for _, id := range ordered {
 			selected[id] = true
+		}
+		for destination, source := range attempt.Moves {
+			if selected[destination] || selected[source] {
+				selected[destination], selected[source] = true, true
+			}
 		}
 		for _, item := range attempt.Packages {
 			if !selected[item.PackageID] {
@@ -1125,10 +1537,26 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 			target := shared
 			if item.Previous == "" {
 				item.Staged = filepath.Join(directory, "staged", attempt.ID, item.PackageID)
+				if err := os.RemoveAll(item.Staged); err != nil {
+					return result, err
+				}
 				if err := os.MkdirAll(item.Staged, 0700); err != nil {
 					return result, err
 				}
-				if _, err := gitCommand(ctx, item.Staged, nil, "-c", "init.templateDir=", "init", "--initial-branch=main"); err != nil {
+				if item.Origin != "" {
+					item.OriginHead, err = m.analysisSharedHead(item.Origin)
+					if err != nil {
+						return result, err
+					}
+				}
+				if item.OriginHead != "" {
+					if _, err := gitCommand(ctx, directory, nil, "-c", "init.templateDir=", "clone", "--local", "--no-checkout", "--", filepath.Join(d.shared, item.Origin), item.Staged); err != nil {
+						return result, err
+					}
+					if _, err := gitCommand(ctx, item.Staged, nil, "remote", "remove", "origin"); err != nil {
+						return result, err
+					}
+				} else if _, err := gitCommand(ctx, item.Staged, nil, "-c", "init.templateDir=", "init", "--initial-branch=main"); err != nil {
 					return result, err
 				}
 				target = item.Staged
@@ -1156,6 +1584,13 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 			commitArgs := []string{"commit-tree", resolved + "^{tree}", "-F", messageFile}
 			if item.Previous != "" {
 				commitArgs = append(commitArgs, "-p", item.Previous)
+			} else {
+				if item.OriginHead != "" {
+					commitArgs = append(commitArgs, "-p", item.OriginHead)
+				}
+				if item.Parent != "" && item.Parent != item.OriginHead {
+					commitArgs = append(commitArgs, "-p", item.Parent)
+				}
 			}
 			item.Published, err = gitOutputContext(ctx, target, gitIdentity(author, email), commitArgs...)
 			if err != nil {
@@ -1163,12 +1598,19 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 			}
 			view := filepath.Join(stage, item.PackageID)
 			if item.Previous == "" {
-				if _, err := gitCommand(ctx, target, nil, "reset", "--hard", item.Published); err != nil {
+				reset := "--hard"
+				if item.OriginHead != "" {
+					if err := analysisValidationView(ctx, filepath.Join(d.shared, item.Origin), target, item.OriginHead, item.Published, target); err != nil {
+						return result, err
+					}
+					reset = "--mixed"
+				}
+				if _, err := gitCommand(ctx, target, nil, "reset", reset, item.Published); err != nil {
 					return result, err
 				}
 				view = target
 			} else {
-				if err := analysisValidationView(ctx, shared, item.Previous, item.Published, view); err != nil {
+				if err := analysisValidationView(ctx, shared, shared, item.Previous, item.Published, view); err != nil {
 					return result, err
 				}
 			}
@@ -1251,6 +1693,17 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 				}
 			}
 		}
+	}
+	for _, capture := range attempt.Namespaces {
+		if _, err := d.exchange(ctx, "acknowledge-directory", capture.Path, capture.ID); err != nil {
+			return result, err
+		}
+		if _, err := d.exchange(ctx, "release", capture.Path, capture.ID); err != nil {
+			return result, err
+		}
+	}
+	if _, err := d.exchangeControl(ctx, map[string]any{"action": "acknowledge-moves", "path": "packages", "id": "acknowledge", "moves": attempt.Moves}); err != nil {
+		return result, err
 	}
 	if err := os.Remove(journal); err != nil {
 		return result, err
@@ -2115,6 +2568,10 @@ Deno.writeTextFileSync("/workspace/packages/the8020/dev-core/same.txt", "edited 
 }
 
 func TestWorkflowAnalysisRename(t *testing.T) {
+	if !t.Run("roots", analysisPackageRenames) {
+		return
+	}
+
 	m, sparse, sandbox, shared := analysisSparseRuntime(t, "rename", 4)
 	m.SetSchemaDeployment(analysisActivationHook{
 		prepare:  func(context.Context, string, []deployment.Candidate) error { return nil },
@@ -2289,6 +2746,9 @@ func TestWorkflowAnalysisRename(t *testing.T) {
 		"native_git_conflict_resolution_and_activation": true, "later_edits_preserved": true, "private_asset_copies": 0,
 		"validation_reuses_moved_asset_inodes": true, "rename_command_ms": renameMS, "resolved_activation_ms": activationMS,
 		"failed_metadata_checkpoint_restores_rename": true, "reference_copy_up_on_edit": true,
+		"package_and_namespace_rename_delete_preview_and_activation": true, "coupled_package_selection": true,
+		"private_git_history_preserved": true, "new_packages_with_and_without_git": true,
+		"package_removal_conflict_and_native_resolution": true, "cross_package_file_move": true,
 		"timing_boundary": "one native shell rename batch / one resolved helper activation, including transport; checking hook, no real schema engine"}
 	hashes := map[string]string{}
 	for _, name := range []string{"gofer_probe.go", "sparse_test.go", "sparse_activation_test.go", "run.py"} {
@@ -2307,4 +2767,133 @@ func TestWorkflowAnalysisRename(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("rename batch %.1f ms; resolved activation %.1f ms; zero private asset copies", renameMS, activationMS)
+}
+
+func analysisPackageRenames(t *testing.T) {
+	m, sparse, sandbox, _ := analysisSparseRuntime(t, "moves", 1)
+	ctx, d := context.Background(), sparse.RunscDriver
+	m.SetSchemaDeployment(analysisActivationHook{prepare: func(context.Context, string, []deployment.Candidate) error { return nil }, complete: func(context.Context, string, bool) error { return nil }})
+	for _, id := range []string{"rename/original", "oldspace/one", "oldspace/two"} {
+		root := filepath.Join(sparse.shared, id)
+		writeTestFile(t, filepath.Join(root, "package.toml"), "schema = 1\n")
+		for _, name := range []string{"one.txt", "two.txt", "three.txt"} {
+			writeTestFile(t, filepath.Join(root, "folder", name), name+"\n")
+		}
+		initializeTestRepository(t, m, id, "Fixture", "fixture@example.test", "Package rename fixture")
+	}
+	original := filepath.Join(sparse.shared, "rename/original")
+	writeTestFile(t, filepath.Join(original, "asset.bin"), strings.Repeat("asset\x00", 200000))
+	if _, err := gitCommand(ctx, original, nil, "add", "asset.bin"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitCommand(ctx, original, gitIdentity("Fixture", "fixture@example.test"), "commit", "-qm", "Add asset"); err != nil {
+		t.Fatal(err)
+	}
+	asset, err := os.Stat(filepath.Join(original, "asset.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateHead := analysisExec(t, d, sandbox, "set -e; cd /workspace/packages/rename/original; printf 'private label\\n' >label.txt; git add label.txt; git -c user.name=Fixture -c user.email=fixture@example.test commit -qm 'Private history'; git rev-parse HEAD")
+	analysisExec(t, d, sandbox, "set -e; cd /workspace/packages; mv rename/original rename/intermediate; mv rename/intermediate rename/final; test ! -e rename/original; test ! -e rename/intermediate; test -f rename/final/asset.bin; test \"$(git -C rename/final rev-parse --show-toplevel)\" = /workspace/packages/rename/final; mv rename/final/folder rename/final/renamed-folder")
+	for _, id := range []string{"rename/final", "rename/original"} {
+		preview, err := m.Preview(ctx, sandbox.UserID, ActivationOptions{SelectedPackages: []string{id}, PreviewFile: "package.toml"})
+		if err != nil || len(preview.Packages) != 1 {
+			t.Fatalf("preview %s: %+v, %v", id, preview, err)
+		}
+		kind := "added"
+		if id == "rename/original" {
+			kind = "deleted"
+		}
+		if preview.Packages[0].Change != kind {
+			t.Fatalf("package change: %+v", preview.Packages[0])
+		}
+		for _, file := range preview.Packages[0].Files {
+			if file.Change != kind {
+				t.Fatalf("file change for %s: %+v", id, file)
+			}
+		}
+	}
+	if _, err := os.Stat(filepath.Join(sparse.storage, "upper/rename/final/asset.bin")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rename copied its asset: %v", err)
+	}
+	activate := func(ids ...string) ActivationResult {
+		t.Helper()
+		result, err := m.Activate(ctx, sandbox.UserID, ActivationOptions{Description: "Package lifecycle", SelectedPackages: ids})
+		if err != nil || !result.Success {
+			t.Fatalf("activate %v: %+v, %v", ids, result, err)
+		}
+		return result
+	}
+	result := activate("rename/final")
+	if len(result.Packages) != 2 {
+		t.Fatalf("package rename was not coupled: %+v", result)
+	}
+	if _, err := os.Stat(original); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("old package remains: %v", err)
+	}
+	final := filepath.Join(sparse.shared, "rename/final")
+	publishedAsset, err := os.Stat(filepath.Join(final, "asset.bin"))
+	if err != nil || !os.SameFile(asset, publishedAsset) {
+		t.Fatalf("activation copied renamed asset: %v", err)
+	}
+	if _, err := gitCommand(ctx, final, nil, "merge-base", "--is-ancestor", strings.TrimSpace(privateHead), "HEAD"); err != nil {
+		t.Fatalf("lost private Git history: %v", err)
+	}
+	analysisExec(t, d, sandbox, "set -e; cd /workspace/packages; test ! -e rename/original; test -f rename/final/renamed-folder/one.txt; git -C rename/final status --porcelain >/dev/null; mv oldspace newspace; test ! -e oldspace; test -f newspace/one/package.toml; test -f newspace/two/package.toml")
+	upstream := filepath.Join(sparse.shared, "oldspace/one")
+	writeTestFile(t, filepath.Join(upstream, "folder/one.txt"), "Concurrent upstream edit\n")
+	if _, err := gitCommand(ctx, upstream, gitIdentity("Fixture", "fixture@example.test"), "commit", "-qam", "Concurrent edit before namespace activation"); err != nil {
+		t.Fatal(err)
+	}
+	conflicted, err := m.Activate(ctx, sandbox.UserID, ActivationOptions{Description: "Namespace rename", SelectedPackages: []string{"newspace/one"}})
+	if err == nil || conflicted.Status != "conflicted" || len(conflicted.Packages) != 1 || !slices.Contains(conflicted.Packages[0].Conflicts, "folder/one.txt") {
+		t.Fatalf("namespace rename lost upstream conflict: %+v, %v", conflicted, err)
+	}
+	worktree := conflicted.Packages[0].ConflictWorktree
+	analysisExec(t, d, sandbox, "set -e; cd "+shellQuote(worktree)+"; git rm folder/one.txt; git -c user.name=Fixture -c user.email=fixture@example.test commit -qm 'Confirm old package removal'")
+	result = activate("newspace/one")
+	if len(result.Packages) != 4 {
+		t.Fatalf("namespace rename was not coupled: %+v", result)
+	}
+	for _, id := range []string{"newspace/one", "newspace/two"} {
+		if _, err := os.Stat(filepath.Join(sparse.shared, id, ".git")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Removing the namespace must retire each package; ordinary CLI creation
+	// remains activatable with neither a prior catalog entry nor git init.
+	analysisExec(t, d, sandbox, "set -e; cd /workspace/packages; rm -r newspace; mkdir -p plain/new; printf 'schema = 1\\n' >plain/new/package.toml; printf 'new file\\n' >plain/new/label.txt; test ! -e plain/new/.git")
+	activate("newspace/one", "newspace/two", "plain/new")
+	for _, id := range []string{"newspace/one", "newspace/two"} {
+		if _, err := os.Stat(filepath.Join(sparse.shared, id)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("package deletion %s: %v", id, err)
+		}
+	}
+	if _, err := gitCommand(ctx, filepath.Join(sparse.shared, "plain/new"), nil, "rev-parse", "HEAD"); err != nil {
+		t.Fatal(err)
+	}
+	analysisExec(t, d, sandbox, "mv /workspace/packages/rename/final/label.txt /workspace/packages/plain/new/moved-label.txt")
+	for _, change := range []struct{ id, name, kind string }{{"rename/final", "label.txt", "deleted"}, {"plain/new", "moved-label.txt", "added"}} {
+		preview, err := m.Preview(ctx, sandbox.UserID, ActivationOptions{SelectedPackages: []string{change.id}, PreviewFile: change.name})
+		if err != nil || len(preview.Packages) != 1 || len(preview.Packages[0].Files) != 1 || preview.Packages[0].Files[0].Change != change.kind {
+			t.Fatalf("cross-package move preview: %+v, %v", preview, err)
+		}
+	}
+	activate("rename/final", "plain/new")
+	if _, err := os.Stat(filepath.Join(final, "label.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cross-package source remains: %v", err)
+	}
+	if body, err := os.ReadFile(filepath.Join(sparse.shared, "plain/new/moved-label.txt")); err != nil || string(body) != "private label\n" {
+		t.Fatalf("cross-package destination: %q, %v", body, err)
+	}
+	analysisExec(t, d, sandbox, "set -e; cd /workspace/packages; mkdir -p plain/initialized; printf 'schema = 1\\n' >plain/initialized/package.toml; git -C plain/initialized init -q; git -C plain/initialized add package.toml; git -C plain/initialized -c user.name=Fixture -c user.email=fixture@example.test commit -qm 'Agent commit'")
+	activate("plain/initialized")
+	preview, err := m.Preview(ctx, sandbox.UserID, ActivationOptions{})
+	if err != nil || len(preview.Packages) != 0 {
+		t.Fatalf("clean lifecycle preview: %+v, %v", preview, err)
+	}
+	analysisExec(t, d, sandbox, "set -e; mkdir -p /workspace/packages/plain/invalid; printf bad >/workspace/packages/plain/invalid/source.txt")
+	if _, err := m.Preview(ctx, sandbox.UserID, ActivationOptions{SelectedPackages: []string{"plain/invalid"}}); err == nil || !strings.Contains(err.Error(), "package.toml") {
+		t.Fatalf("missing manifest must be actionable: %v", err)
+	}
 }

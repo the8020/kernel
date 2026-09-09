@@ -974,8 +974,8 @@ func (m *Manager) serveSandbox(response http.ResponseWriter, request *http.Reque
 		}
 		_ = json.NewEncoder(response).Encode(result)
 	case "activate":
-		activationContext := context.WithValue(request.Context(), deferredOverlayResetKey{}, true)
-		result, err := m.config.ActivationGateway.Activate(activationContext, userID, options)
+		options.DeferOverlayReset = true
+		result, err := m.config.ActivationGateway.Activate(request.Context(), userID, options)
 		if err != nil || !result.Success {
 			response.WriteHeader(http.StatusConflict)
 		}

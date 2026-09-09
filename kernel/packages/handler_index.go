@@ -181,7 +181,7 @@ func (s *Store) resolveHandlerPrograms(ctx context.Context, item packageHandlers
 		if program, exists := resolved[id]; exists {
 			return program, true, nil
 		}
-		program, err := s.resolveProgram(ctx, id, candidates)
+		program, err := s.ResolveProgramWithCandidates(ctx, id, candidates)
 		if err == nil {
 			resolved[id] = program
 		}

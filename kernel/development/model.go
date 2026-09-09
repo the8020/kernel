@@ -78,13 +78,14 @@ type ImageStatus struct {
 }
 
 type ActivationOptions struct {
-	Description      string            `json:"description"`
-	SelectedPackages []string          `json:"selected_packages,omitempty"`
-	PreviewFile      string            `json:"preview_file,omitempty"`
-	PackageMessages  map[string]string `json:"package_messages,omitempty"`
-	AuthorName       string            `json:"author_name,omitempty"`
-	AuthorEmail      string            `json:"author_email,omitempty"`
-	Metadata         map[string]string `json:"metadata,omitempty"`
+	Description       string            `json:"description"`
+	SelectedPackages  []string          `json:"selected_packages,omitempty"`
+	PreviewFile       string            `json:"preview_file,omitempty"`
+	PackageMessages   map[string]string `json:"package_messages,omitempty"`
+	AuthorName        string            `json:"author_name,omitempty"`
+	AuthorEmail       string            `json:"author_email,omitempty"`
+	Metadata          map[string]string `json:"metadata,omitempty"`
+	DeferOverlayReset bool              `json:"defer_overlay_reset,omitempty"`
 }
 
 type ActivationFile struct {
@@ -100,6 +101,7 @@ type ActivationFileDiff struct {
 
 type ActivationPackagePreview struct {
 	PackageID       string           `json:"package_id"`
+	Change          string           `json:"change"`
 	Selected        bool             `json:"selected"`
 	BaseCommit      string           `json:"base_commit,omitempty"`
 	SharedCommit    string           `json:"current_shared_commit,omitempty"`

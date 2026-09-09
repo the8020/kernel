@@ -132,9 +132,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   The optional boolean `uui` defaults to false and identifies interactive
   programs. Both flags are exposed in package inspection and ready-program
   metadata; neither changes generic invocation. UUI Home uses their conjunction,
-  while explicit program selectors retain all ready programs. Package command
-  candidates validate their referenced same-package program before source
-  publication.
+  while explicit program selectors retain all ready programs. Commands, hooks,
+  and events share `ResolveProgramWithCandidates` for full
+  `namespace/package/program` references: all staged replacements take
+  precedence over ready active packages, and deleted targets fail validation.
 - Explicit program selectors use `ListPrograms`: ready package program manifests
   only, including non-discoverable runnable programs, bounded to 2,000 entries.
   They do not inspect Git status, services, or recursive files.

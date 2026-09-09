@@ -96,10 +96,12 @@ func ParseProgramID(value string) (Identity, string, error) {
 // program. Activation owns checkout publication; invocation does not inspect
 // Git, scan the package tree, or prepare a private copy of package sources.
 func (s *Store) ResolveProgram(ctx context.Context, programID string) (ProgramDefinition, error) {
-	return s.resolveProgram(ctx, programID, nil)
+	return s.ResolveProgramWithCandidates(ctx, programID, nil)
 }
 
-func (s *Store) resolveProgram(ctx context.Context, programID string, candidates map[string]deployment.Candidate) (ProgramDefinition, error) {
+// ResolveProgramWithCandidates resolves against staged replacements first, then
+// ready active packages. An empty candidate commit marks a deleted package.
+func (s *Store) ResolveProgramWithCandidates(ctx context.Context, programID string, candidates map[string]deployment.Candidate) (ProgramDefinition, error) {
 	identity, name, err := ParseProgramID(programID)
 	if err != nil {
 		return ProgramDefinition{}, err

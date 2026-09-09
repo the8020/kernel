@@ -10,9 +10,10 @@ Parent DOX: [development DOX](../AGENTS.md).
 - `run.py prototype` builds separate opt-in kernel/admin/logd binaries under
   `.development/workflow-prototype` from the same sparse driver and activation
   owners used by the native fixtures. `prototype.go` supplies per-user driver
-  connections, native preview, and lifecycle integration. The build copies its
-  custom `runsc` into that output directory and embeds that path; later
-  experiment builds cannot replace the prototype's runtime. Set
+  connections and lifecycle integration; `sparse_activation_test.go` owns the
+  preview and activation used by both fixtures and the compiled prototype. The
+  build copies its custom `runsc` into that output directory and embeds that
+  path; later experiment builds cannot replace the prototype's runtime. Set
   `WORKFLOW_PROTOTYPE_OUTPUT` to build a separate output while a review instance
   is using the existing binaries. Installed binaries and SDK caches remain
   untouched.
@@ -424,6 +425,23 @@ Parent DOX: [development DOX](../AGENTS.md).
   private edits. Renaming an asset directory must not copy its unedited payloads
   into private storage. Keep verification focused on this operation and its
   existing activation/conflict path; broader qualification remains deferred.
+- Package and namespace renames also retain their original/current package IDs
+  in `.references`. Activation includes both ends of a move and all packages of
+  a removed namespace in one transaction, then acknowledges the captured
+  namespace and rebases any later private moves. Discovery reads the merged
+  manifest, including retained blob references, and never resurrects removed
+  package roots while initializing Git.
+- Plain new package folders need a regular `package.toml`; activation
+  initializes missing Git metadata. Existing private Git history is retained,
+  and managed `.git` redirects are rebound through the filesystem owner. Managed
+  metadata leaves `core.worktree` unset so ordinary Git follows a moved
+  redirect's parent. Cross-package captures add the required retained object
+  stores to native Git alternates. New shared repositories remain independent;
+  package renames reuse existing source and Git-object inodes instead of copying
+  unchanged assets. Private metadata cloning runs in the sandbox; its filesystem
+  owner links immutable private objects through confined directory handles.
+  Object/index preparation does not require the removed package directory to
+  exist.
 - Hand over the runnable prototype once those checks pass. Further qualification
   stays recorded as unfinished and must not delay manual use.
 - Do not make exceptional symlink/descriptor compatibility a prototype delivery
@@ -531,6 +549,14 @@ Parent DOX: [development DOX](../AGENTS.md).
   rejects a developer-controlled path escaping its mount before installing valid
   metadata. Small receipts and Git worktree/index cleanup remain separate
   lifetime concerns.
+- `run.py rename` also checks package/namespace preview and activation, coupled
+  package selection, retained private history, unchanged asset inodes, ordinary
+  package creation with and without Git, cross-package file moves, namespace
+  removal conflicts resolved through ordinary Git, and actionable
+  missing-manifest errors through the same preview owner compiled into the
+  prototype. The schema profile also checks retirement of the old catalog entry,
+  registration and program execution under the new ID, and retention of the
+  published Git history.
 - `python3 kernel/development/analysis/run.py cost` measures five sequential
   label edits and complete helper activations against four and 2,048 tracked
   one-MiB random assets. The checking hook verifies shared asset inodes and

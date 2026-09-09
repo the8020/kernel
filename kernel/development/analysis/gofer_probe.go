@@ -167,6 +167,7 @@ type probeReference struct {
 }
 type probeReferences struct {
 	Files, Bases map[string]probeReference
+	Moves        map[string]string // Current package root -> original package root.
 }
 
 func (f *probeFS) reference(name string, base bool) (probeReference, bool) {
@@ -185,15 +186,18 @@ func (f *probeFS) updateReferences(change func(*probeReferences)) error {
 	defer f.refsMu.Unlock()
 	// ponytail: bounded prototype change sets; replace this metadata checkpoint
 	// with per-operation records if large pending rename sets become common.
-	next := probeReferences{Files: map[string]probeReference{}, Bases: map[string]probeReference{}}
+	next := probeReferences{Files: map[string]probeReference{}, Bases: map[string]probeReference{}, Moves: map[string]string{}}
 	for name, ref := range f.refs.Files {
 		next.Files[name] = ref
 	}
 	for name, ref := range f.refs.Bases {
 		next.Bases[name] = ref
 	}
+	for name, source := range f.refs.Moves {
+		next.Moves[name] = source
+	}
 	change(&next)
-	if maps.Equal(f.refs.Files, next.Files) && maps.Equal(f.refs.Bases, next.Bases) {
+	if maps.Equal(f.refs.Files, next.Files) && maps.Equal(f.refs.Bases, next.Bases) && maps.Equal(f.refs.Moves, next.Moves) {
 		return nil
 	}
 	data, err := json.Marshal(next)
@@ -1185,6 +1189,7 @@ func (fd *probeControl) RenameAt(oldName string, dir lisafs.ControlFDImpl, newNa
 	}
 	type movedEntry struct {
 		old, new string
+		origin   string
 		private  bool
 		stat     lisafs.Statx
 		ref      *probeReference
@@ -1205,6 +1210,20 @@ func (fd *probeControl) RenameAt(oldName string, dir lisafs.ControlFDImpl, newNa
 		entry := movedEntry{old: name, new: newPath + strings.TrimPrefix(name, oldPath), private: private, stat: s}
 		switch s.Mode & unix.S_IFMT {
 		case unix.S_IFDIR:
+			if strings.Count(entry.old, "/") == 1 && strings.Count(entry.new, "/") == 1 {
+				f.refsMu.Lock()
+				entry.origin = f.refs.Moves[entry.old]
+				f.refsMu.Unlock()
+				if entry.origin == "" {
+					hidden, err := f.hiddenDirectory(entry.old)
+					if err != nil {
+						return err
+					}
+					if _, err := f.lower.Lstat(entry.old + "/.git"); err == nil && !hidden {
+						entry.origin = entry.old
+					}
+				}
+			}
 		case unix.S_IFREG, unix.S_IFLNK:
 			if !private {
 				if ref, ok := f.reference(name, false); ok {
@@ -1309,22 +1328,33 @@ func (fd *probeControl) RenameAt(oldName string, dir lisafs.ControlFDImpl, newNa
 		}
 	}
 	if isDir {
-		marker := directoryMarker(oldPath)
-		backup := fmt.Sprintf(".rename-marker-%d", time.Now().UnixNano())
-		if err := f.snapshots.Link(marker, backup); err == nil {
-			defer func() {
-				if complete {
-					f.snapshots.Remove(backup)
+		removed := []string{oldPath}
+		// A namespace move must expose a removal for each contained package too.
+		if !strings.Contains(oldPath, "/") {
+			for _, entry := range entries {
+				if entry.stat.Mode&unix.S_IFMT == unix.S_IFDIR && strings.Count(entry.old, "/") == 1 {
+					removed = append(removed, entry.old)
 				}
-			}()
-			undo = append(undo, func() error { return f.snapshots.Rename(backup, marker) })
-		} else if errors.Is(err, os.ErrNotExist) {
-			undo = append(undo, func() error { return f.snapshots.Remove(marker) })
-		} else {
-			return err
+			}
 		}
-		if err := f.writeDirectoryMarker(oldPath); err != nil {
-			return err
+		for _, name := range removed {
+			marker := directoryMarker(name)
+			backup := fmt.Sprintf(".rename-marker-%d", time.Now().UnixNano())
+			if err := f.snapshots.Link(marker, backup); err == nil {
+				defer func() {
+					if complete {
+						f.snapshots.Remove(backup)
+					}
+				}()
+				undo = append(undo, func() error { return f.snapshots.Rename(backup, marker) })
+			} else if errors.Is(err, os.ErrNotExist) {
+				undo = append(undo, func() error { return f.snapshots.Remove(marker) })
+			} else {
+				return err
+			}
+			if err := f.writeDirectoryMarker(name); err != nil {
+				return err
+			}
 		}
 	}
 	if err := f.upper.MkdirAll(to.name(), 0700); err != nil {
@@ -1378,6 +1408,10 @@ func (fd *probeControl) RenameAt(oldName string, dir lisafs.ControlFDImpl, newNa
 		}
 		for _, entry := range entries {
 			if entry.stat.Mode&unix.S_IFMT == unix.S_IFDIR {
+				if entry.origin != "" {
+					delete(refs.Moves, entry.old)
+					refs.Moves[entry.new] = entry.origin
+				}
 				continue
 			}
 			_, wasReference := refs.Files[entry.old]
@@ -1409,7 +1443,10 @@ func (f *probeFS) serveControl(file *os.File) {
 	scanner := bufio.NewScanner(file)
 	encoder := json.NewEncoder(file)
 	for scanner.Scan() {
-		var request struct{ Action, Path, ID string }
+		var request struct {
+			Action, Path, ID string
+			Moves            map[string]string
+		}
 		var answer map[string]any
 		err := json.Unmarshal(scanner.Bytes(), &request)
 		if err == nil && (!safeProbePath(request.Path) || !safeProbePath(request.ID) || strings.Contains(request.ID, "/") || strings.HasPrefix(request.ID, ".") || len(request.ID) > 64) {
@@ -1417,6 +1454,26 @@ func (f *probeFS) serveControl(file *os.File) {
 		}
 		if err == nil {
 			switch request.Action {
+			case "package-state":
+				f.publicationMu.RLock()
+				var directories []string
+				directories, err = f.directoryChanges("")
+				namespaces := []string{}
+				for _, name := range directories {
+					if !strings.Contains(name, "/") {
+						namespaces = append(namespaces, name)
+					}
+				}
+				f.refsMu.Lock()
+				answer = map[string]any{"moves": maps.Clone(f.refs.Moves), "namespaces": namespaces}
+				f.refsMu.Unlock()
+				f.publicationMu.RUnlock()
+			case "acknowledge-moves":
+				err = f.acknowledgeMoves(request.Moves)
+				answer = map[string]any{"status": "acknowledged"}
+			case "bind-git":
+				err = f.bindGit(request.Path, request.Moves[request.Path])
+				answer = map[string]any{"status": "bound"}
 			case "changes":
 				answer, err = f.changedPaths(request.Path)
 			case "capture":
@@ -1468,6 +1525,12 @@ func (f *probeFS) changedPaths(prefix string) (map[string]any, error) {
 			if err != nil {
 				return err
 			}
+			if strings.HasPrefix(name, prefix+"/.git/") || name == prefix+"/.git" {
+				if entry.IsDir() {
+					return fs.SkipDir
+				}
+				return nil
+			}
 			if !entry.IsDir() {
 				names[name] = true
 			}
@@ -1497,37 +1560,29 @@ func (f *probeFS) changedPaths(prefix string) (map[string]any, error) {
 		paths = append(paths, name)
 	}
 	sort.Strings(paths)
-	directories := []string{}
-	if dir, err := f.snapshots.Open(".directories"); err == nil {
-		entries, readErr := dir.ReadDir(4097)
-		dir.Close()
-		if readErr != nil && readErr != io.EOF {
-			return nil, readErr
-		}
-		if len(entries) > 4096 {
-			return nil, unix.E2BIG
-		}
-		for _, entry := range entries {
-			marker := ".directories/" + entry.Name()
-			file, err := f.snapshots.OpenFile(marker, os.O_RDONLY|unix.O_NOFOLLOW, 0)
-			if err != nil {
-				return nil, err
-			}
-			data, err := io.ReadAll(io.LimitReader(file, 4097))
-			file.Close()
-			name := string(data)
-			if err != nil || len(data) > 4096 || !safeProbePath(name) || marker != directoryMarker(name) {
-				return nil, unix.EIO
-			}
-			if name == prefix || strings.HasPrefix(name, prefix+"/") {
-				directories = append(directories, name)
-			}
-		}
+	directories, err := f.directoryChanges(prefix)
+	if err != nil {
+		return nil, err
+	}
+	visible, _, err := f.lookup(prefix)
+	exists := err == nil
+	if exists {
+		visible.Close()
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
-	sort.Strings(directories)
-	answer := map[string]any{"paths": paths, "directories": directories}
+	manifest := false
+	if file, _, err := f.lookup(prefix + "/package.toml"); err == nil {
+		info, err := stat(file)
+		file.Close()
+		if err != nil {
+			return nil, err
+		}
+		manifest = info.Mode&unix.S_IFMT == unix.S_IFREG
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	answer := map[string]any{"paths": paths, "directories": directories, "exists": exists, "manifest": manifest}
 	encoded, err := json.Marshal(answer)
 	if err != nil || len(encoded) > 1<<20 {
 		return nil, unix.E2BIG
@@ -1556,6 +1611,101 @@ func (f *probeFS) changedPaths(prefix string) (map[string]any, error) {
 		return nil, unix.E2BIG
 	}
 	return answer, nil
+}
+
+func (f *probeFS) directoryChanges(prefix string) ([]string, error) {
+	directories := []string{}
+	if dir, err := f.snapshots.Open(".directories"); err == nil {
+		entries, readErr := dir.ReadDir(4097)
+		dir.Close()
+		if readErr != nil && readErr != io.EOF {
+			return nil, readErr
+		}
+		if len(entries) > 4096 {
+			return nil, unix.E2BIG
+		}
+		for _, entry := range entries {
+			marker := ".directories/" + entry.Name()
+			file, err := f.snapshots.OpenFile(marker, os.O_RDONLY|unix.O_NOFOLLOW, 0)
+			if err != nil {
+				return nil, err
+			}
+			data, err := io.ReadAll(io.LimitReader(file, 4097))
+			file.Close()
+			name := string(data)
+			if err != nil || len(data) > 4096 || !safeProbePath(name) || marker != directoryMarker(name) {
+				return nil, unix.EIO
+			}
+			if prefix == "" || name == prefix || strings.HasPrefix(name, prefix+"/") {
+				directories = append(directories, name)
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	sort.Strings(directories)
+	return directories, nil
+}
+
+// Publication changes the original root for a later, still-private rename.
+func (f *probeFS) acknowledgeMoves(moves map[string]string) error {
+	published := map[string]string{}
+	for destination, source := range moves {
+		if !safeProbePath(source) || !safeProbePath(destination) || strings.Count(source, "/") != 1 || strings.Count(destination, "/") != 1 {
+			return unix.EINVAL
+		}
+		published[source] = destination
+	}
+	f.publicationMu.Lock()
+	defer f.publicationMu.Unlock()
+	return f.updateReferences(func(refs *probeReferences) {
+		for current, source := range refs.Moves {
+			if destination, ok := published[source]; ok {
+				if current == destination {
+					delete(refs.Moves, current)
+				} else {
+					refs.Moves[current] = destination
+				}
+			}
+		}
+	})
+}
+
+func (f *probeFS) bindGit(destination, source string) error {
+	if !safeProbePath(source) || !safeProbePath(destination) || strings.Count(source, "/") != 1 || strings.Count(destination, "/") != 1 {
+		return unix.EINVAL
+	}
+	f.publicationMu.Lock()
+	defer f.publicationMu.Unlock()
+	name := destination + "/.git"
+	file, err := f.upper.OpenFile(name, os.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return err
+	}
+	body, err := io.ReadAll(io.LimitReader(file, 4097))
+	file.Close()
+	if err != nil {
+		return err
+	}
+	want := "gitdir: /workspace/git/private/" + destination + "/.git\n"
+	if string(body) == want {
+		return nil
+	}
+	if string(body) != "gitdir: /workspace/git/private/"+source+"/.git\n" {
+		return unix.ESTALE
+	}
+	temporary := destination + "/.git-bind-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	if err := f.upper.WriteFile(temporary, []byte(want), 0600); err != nil {
+		return err
+	}
+	defer f.upper.Remove(temporary)
+	if err := syncRootPath(f.upper, temporary); err != nil {
+		return err
+	}
+	if err := f.upper.Rename(temporary, name); err != nil {
+		return err
+	}
+	return syncRootPath(f.upper, destination)
 }
 
 func safeProbePath(name string) bool {

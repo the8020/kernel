@@ -181,6 +181,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   reports every changed Git package with file and added/removed-row counts;
   changes remain visible but blocked when the shared worktree is not clean and
   activation-ready.
+- Preview uses `added`, `modified`, and `deleted` consistently for package and
+  file changes. File/directory moves appear as deletions and additions, matching
+  the selected-file diff. This presentation does not disable Git's merge rename
+  detection. Whole-package lifecycle support belongs to the sparse prototype.
 - Optional `preview_file` with one selected package loads only that changed
   file's bounded `diff: {text, notice?}`. Ordinary previews omit contents. Text
   uses native Git hunks without filesystem headers; binary, metadata-only, and
@@ -201,6 +205,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   metadata, resolves `dev-core.activate.preview` / `dev-core.activate.run` from
   the current command catalog, and passes ordinary package-command arguments. It
   is not a second activation implementation.
+- Helper activation carries `defer_overlay_reset` explicitly through the package
+  command and runtime callback. Go context values cannot cross that boundary.
+  The ingress flushes the successful response before resetting the overlay;
+  destroying its caller during the command can cancel the replacement start.
 - Activation results retain a top-level error and, for resumable native
   conflicts, a `conflict_worktree` per package. The UUI uses sandbox inspection
   and the platform's native Git adapter to reopen that exact attempt; terminal
@@ -273,6 +281,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   exclusion, read-only helper mounting, repeated helper activation and clean
   overlay resets, source and factory reset, root identity, and absence of a
   developer account.
+- `TestSandboxHelperActivationDefersResetAcrossCommandBoundary` removes context
+  values at the package-command boundary and checks response-before-reset and
+  sandbox availability. The dev-core native recovery fixture covers that same
+  path through actual Deno Workers, the helper, and browser terminal reopening.
 - The opt-in `TestRootlessRetainedTerminals` uses disposable native gVisor PTYs
   to check two independent shells across detach/reattach/switch, detached
   output, explicit close, and process exit. Enable `THE8020_TERMINAL_E2E=1`. It

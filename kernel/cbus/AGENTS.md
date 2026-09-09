@@ -18,9 +18,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   over the administrative Unix socket.
 - Generated Go registers only `kernel.*` recovery/lifecycle/event commands and
   the explicitly deferred command families. Active packages contribute flat
-  `cbus/commands/*.toml` descriptors and same-package programs at runtime. Each
-  descriptor's required `command` is its full public name; neither its filename
-  nor its owning package supplies a prefix. `kernel.*` is reserved.
+  `cbus/commands/*.toml` descriptors at runtime. Each required `program` is a
+  full `namespace/package/program` ID and may target another package. The
+  required `command` is its full public name; neither its filename nor its
+  owning package supplies a prefix. `kernel.*` is reserved.
 - The registry atomically publishes complete immutable snapshots. Execution
   loads one snapshot and holds no registry lock while a command runs.
 - The package filesystem plus active database commits are the source of truth.

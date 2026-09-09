@@ -703,28 +703,12 @@ func (r *commandRuntime) ResolveSandbox(string) (model.SandboxSpec, error) {
 }
 
 type commandPackageSource struct {
+	*workspacepackages.Store
 	root string
 }
 
-func (p commandPackageSource) PackagesRoot() string { return p.root }
-func (p commandPackageSource) ListPackageIndexes() ([]workspacepackages.PackageIndex, error) {
-	return []workspacepackages.PackageIndex{{PackageID: "acme/commands", State: "ready", ActiveCommit: "active"}}, nil
-}
-func (p commandPackageSource) InspectPackageIndex(id string) (workspacepackages.PackageIndex, error) {
-	if id != "acme/commands" {
-		return workspacepackages.PackageIndex{}, os.ErrNotExist
-	}
-	return workspacepackages.PackageIndex{PackageID: id, State: "ready", ActiveCommit: "active"}, nil
-}
 func (p commandPackageSource) ActivatedPackageCommit(context.Context, string) (string, error) {
 	return "active", nil
-}
-func (p commandPackageSource) ResolveProgram(_ context.Context, id string) (workspacepackages.ProgramDefinition, error) {
-	identity, name, err := workspacepackages.ParseProgramID(id)
-	if err != nil {
-		return workspacepackages.ProgramDefinition{}, err
-	}
-	return workspacepackages.ValidateProgram(filepath.Join(p.root, identity.Namespace, identity.Repository), identity.PackageID(), name, "active")
 }
 
 func commandPackages(t *testing.T) commandPackageSource {
@@ -732,9 +716,9 @@ func commandPackages(t *testing.T) commandPackageSource {
 	root := t.TempDir()
 	for path, content := range map[string]string{
 		"acme/commands/package.toml":                 "schema = 1\ndescription = \"Command fixture\"\n",
-		"acme/commands/cbus/commands/arbitrary.toml": "version = 1\ncommand = \"acme.commands.check\"\nprogram = \"check\"\nsummary = \"Check job execution\"\nrestart_behavior = \"none\"\n",
-		"acme/commands/programs/check/program.toml":  "schema = 1\ndescription = \"Check job execution\"\n",
-		"acme/commands/programs/check/program.ts": `
+		"acme/commands/cbus/commands/arbitrary.toml": "version = 1\ncommand = \"acme.commands.check\"\nprogram = \"acme/runner/check\"\nsummary = \"Check job execution\"\nrestart_behavior = \"none\"\n",
+		"acme/runner/programs/check/program.toml":    "schema = 1\ndescription = \"Check job execution\"\n",
+		"acme/runner/programs/check/program.ts": `
 import { context } from "@the8020/context";
 import { answer } from "/p/acme/dependency/mod.ts";
 export default async (...args: unknown[]) => {
@@ -782,7 +766,15 @@ export const workerFunctions = {
 			t.Fatal(err)
 		}
 	}
-	return commandPackageSource{root: root}
+	index := &hookPackageIndex{entries: map[string]workspacepackages.PackageIndex{
+		"acme/commands": {PackageID: "acme/commands", State: "ready", ActiveCommit: "active"},
+		"acme/runner":   {PackageID: "acme/runner", State: "ready", ActiveCommit: "runner-active"},
+	}}
+	store, err := workspacepackages.New(workspacepackages.Config{WorkspaceRoot: root, PackagesRoot: root, IndexStore: index})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return commandPackageSource{Store: store, root: root}
 }
 
 func verifyPersistedRuntimeLogs(t *testing.T, logs *logging.Manager, sandboxID string) {
@@ -798,7 +790,7 @@ func verifyPersistedRuntimeLogs(t *testing.T, logs *logging.Manager, sandboxID s
 			r := located.Record
 			switch r.Message {
 			case "job console before await", "job console after await":
-				if r.Username != "system" || r.Object != "program:acme/commands/check" || !identity.Is(r.WorkerID, "wrk") || !identity.Is(r.ContextID, "ctx") || !identity.Is(r.JobID, "job") || r.NodeID != "nod-0123456789" {
+				if r.Username != "system" || r.Object != "program:acme/runner/check" || !identity.Is(r.WorkerID, "wrk") || !identity.Is(r.ContextID, "ctx") || !identity.Is(r.JobID, "job") || r.NodeID != "nod-0123456789" {
 					t.Fatalf("incorrect managed job attribution: %#v", r)
 				}
 				if r.Message == "job console before await" {
@@ -894,7 +886,7 @@ func verifyCommandJob(t *testing.T, spec model.SandboxSpec, source commandPackag
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report, err := indexer.Reindex(context.Background()); err != nil || report.Commands != 1 {
+	if report, err := indexer.Reindex(context.Background()); err != nil || report.Commands != 1 || len(report.Diagnostics) != 0 {
 		t.Fatalf("command catalog=%#v error=%v", report, err)
 	}
 	user, _ := execution.UserForUsername("alice")
@@ -913,7 +905,7 @@ func verifyCommandJob(t *testing.T, spec model.SandboxSpec, source commandPackag
 	if !reflect.DeepEqual(response.Result, want) {
 		t.Fatalf("command result=%#v want=%#v", response.Result, want)
 	}
-	if response.Execution == nil || !identity.Is(response.Execution.ExecutionID, "job") || response.Execution.SandboxID != spec.SandboxID || response.Execution.LogPosition == "" {
+	if response.Execution == nil || response.Execution.ProgramID != "acme/runner/check" || !identity.Is(response.Execution.ExecutionID, "job") || response.Execution.SandboxID != spec.SandboxID || response.Execution.LogPosition == "" {
 		t.Fatalf("real command lost log reference: %#v", response.Execution)
 	}
 	remaining, err := client.Workers(ctx, spec)
