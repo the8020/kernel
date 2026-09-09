@@ -32,6 +32,10 @@ Parent DOX: [kernel/defaults DOX](../AGENTS.md).
 - Agent installers are opt-in, target persistent sandbox root storage, and
   configure unattended full-access behavior. They also repeat discovery setup
   for the selected agent config directories before installing the CLI.
+- Register `codex` and `claude` with `/usr/local/bin` symlinks to their native
+  `~/.local/bin` entries. Both commands must work immediately in the invoking
+  shell even when its PATH omits `~/.local/bin`; do not require sourcing a
+  profile or restarting Bash. Verify by name without a temporary PATH override.
 - `setup-agent-skills.sh` delegates to the activated package's read-only
   `/workspace/skills/builtin/setup-agent-skills.sh` through Bash. The package
   owns combining built-ins and `/workspace/skills/custom` into both agents'
@@ -52,7 +56,8 @@ Parent DOX: [kernel/defaults DOX](../AGENTS.md).
 # Verification
 
 - Kernel development unit tests exercise installers with isolated homes and
-  upstream installer doubles.
+  upstream installer doubles, including immediate invocation in the same parent
+  shell without `~/.local/bin` on PATH and repeated installation.
 - Existing development and activation tests verify the shared activation path.
 - `TestDevelopmentGuidance` verifies helper installation and mount confinement.
   The opt-in `TestRootlessDevelopmentGuidance` verifies the real dev-skills

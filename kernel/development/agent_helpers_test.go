@@ -98,6 +98,16 @@ INSTALL
 esac
 `
 	writeExecutableTestFile(t, filepath.Join(bin, "curl"), fakeCurl)
+	// Relocate system command registration into the isolated test PATH.
+	writeExecutableTestFile(t, filepath.Join(bin, "ln"), `#!/bin/bash
+set -eu
+args=("$@")
+last=$((${#args[@]} - 1))
+case "${args[last]}" in
+  /usr/local/bin/*) args[last]="$TEST_SYSTEM_BIN/${args[last]##*/}" ;;
+esac
+exec /usr/bin/ln "${args[@]}"
+`)
 
 	codexDir := filepath.Join(home, ".codex")
 	if err := os.MkdirAll(codexDir, 0o700); err != nil {
@@ -123,7 +133,8 @@ esac
 		t.Fatal(err)
 	}
 
-	testPath := strings.Join([]string{bin, filepath.Join(home, ".local", "bin"), "/usr/bin", "/bin"}, ":")
+	// Browser and SSH shells can omit ~/.local/bin before installation.
+	testPath := strings.Join([]string{bin, "/usr/bin", "/bin"}, ":")
 	for _, test := range []struct {
 		script string
 		want   []string
@@ -132,8 +143,9 @@ esac
 		{"install-claude.sh", []string{"Installing the latest Claude Code", "test-version (Claude Code)", "👍 Claude Code installed in YOLO mode", "  claude"}},
 	} {
 		for run := 0; run < 2; run++ {
-			command := exec.Command(filepath.Join(scriptsRoot, test.script))
-			command.Env = append(os.Environ(), "HOME="+home, "PATH="+testPath, "CODEX_HOME=", "CLAUDE_CONFIG_DIR=")
+			name := strings.TrimSuffix(strings.TrimPrefix(test.script, "install-"), ".sh")
+			command := exec.Command("bash", "--noprofile", "--norc", "-c", `set -e; "$1"; test "$(command -v "$2")" = "$TEST_SYSTEM_BIN/$2"; "$2" --version`, "test", filepath.Join(scriptsRoot, test.script), name)
+			command.Env = append(os.Environ(), "HOME="+home, "PATH="+testPath, "TEST_SYSTEM_BIN="+bin, "CODEX_HOME=", "CLAUDE_CONFIG_DIR=")
 			output, err := command.CombinedOutput()
 			if err != nil {
 				t.Fatalf("%s run %d: %v\n%s", test.script, run+1, err, output)

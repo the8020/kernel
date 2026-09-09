@@ -38,5 +38,6 @@ chmod 0600 "$claude_settings_temp"
 mv -f -- "$claude_settings_temp" "$claude_settings"
 trap - EXIT
 
-PATH="$HOME/.local/bin:$PATH" claude --version
+ln -sfnT -- "$HOME/.local/bin/claude" /usr/local/bin/claude
+claude --version
 printf '\n👍 Claude Code installed in YOLO mode.\n\nRun it with:\n  claude\n\n'

@@ -31,5 +31,6 @@ chmod 0600 "$codex_config_temp"
 mv -f -- "$codex_config_temp" "$codex_config"
 trap - EXIT
 
-PATH="$HOME/.local/bin:$PATH" codex --version
+ln -sfnT -- "$HOME/.local/bin/codex" /usr/local/bin/codex
+codex --version
 printf '\n👍 Codex installed in YOLO mode.\n\nRun it with:\n  codex\n\n'

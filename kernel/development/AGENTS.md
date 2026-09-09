@@ -210,8 +210,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   canonical terminal helper and remains outside the mutable image system root.
   `install-codex.sh` and `install-claude.sh` opt in to the vendors' latest
   native releases, persist them in root's home, and set only unattended
-  full-access permissions. Root's native user-binary directory is on every
-  development command PATH.
+  full-access permissions. Installers register `/usr/local/bin` symlinks so
+  browser and SSH shells can invoke both tools immediately even when their PATH
+  overrides omit root's native user-binary directory.
 - The activated `packages/the8020/dev-skills` package is mounted read-only at
   `/workspace/skills/builtin`; its `workspace.md` also supplies
   `/workspace/AGENTS.md` and `/workspace/CLAUDE.md`. Skills update through
