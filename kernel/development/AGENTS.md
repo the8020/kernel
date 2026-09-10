@@ -121,6 +121,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Durable state is confined to `users/<username>/dev-sandbox/`: `sandbox.toml`,
   sparse workspace data, private `skills/`, and image-qualified writable system
   roots. Unrelated files beneath `users/<username>/` are not sandbox state.
+- Development uses the same installed runsc as ordinary workloads, selected by
+  the existing rootless/full runtime configuration. Only development mounts
+  enable the sparse Gofer and its additional host syscall allowances.
 - `/workspace/packages` uses the sparse Gofer over the live shared tree. Private
   files, originals, deletion records, captures and native Git state live beneath
   `dev-sandbox/workspace/` and survive sandbox loss. Activation acknowledges its

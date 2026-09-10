@@ -42,7 +42,10 @@ type probeExtension struct {
 }
 
 func (*probeExtension) Name() string { return "workflow-sparse-probe" }
-func (*probeExtension) SeccompRules() seccomp.SyscallRules {
+func (e *probeExtension) SeccompRules() seccomp.SyscallRules {
+	if e.fs == nil {
+		return seccomp.SyscallRules{}
+	}
 	// os.Root uses confined descriptor-relative operations. Keep the stock
 	// filter and add only the syscall forms used by this experiment.
 	return seccomp.MakeSyscallRules(map[uintptr]seccomp.SyscallRule{

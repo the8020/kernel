@@ -13,10 +13,13 @@ table's new `published` stage changes its database constraint. Keep the existing
 instance/volume for its data and any private work; it is not migrated or deleted
 by the build.
 
-Keep all built executables together when relocating them: the kernel finds the
-development `runsc` beside itself. Existing legacy checkpoints containing
-private edits stop sandbox startup with recovery instructions instead of losing
-those edits. Activate or export them using the previous kernel before switching.
+The installer puts one common `runsc` under `node/kernel/bin/` for services,
+jobs and development. The kernel/admin/logd directory contains no second engine.
+Docker keeps the binary payload outside its data volume and refreshes the node
+link at startup, preserving existing data when the engine changes. Existing
+legacy checkpoints containing private edits stop sandbox startup with recovery
+instructions. Activate or export them using the previous kernel before
+switching.
 
 The prototype provides ordinary file edits over shared packages, file-level
 copy-on-write, live untouched files, durable private Git state, and activation
@@ -94,13 +97,13 @@ python3 kernel/development/analysis/run.py prototype
 ```
 
 Outputs are in `.development/workflow-prototype/`: `kernel`, `admin`, `logd`,
-`runsc`, and `package-workspace/`. The kernel uses the custom `runsc` beside its
-executable, independently of later experiment builds. The build uses the same
-tested compiler overlays as the installer and leaves existing instances and the
-cached upstream SDK untouched. Staged package sources omit environment files and
-host Git metadata. Rebuilding replaces these generated inputs; it does not
-replace an existing review instance's packages. To build alongside a running
-review instance:
+`runsc`, and `package-workspace/`. On first setup, the launcher installs this
+runsc under the review instance's `node/kernel/bin/` for both workload types.
+The build uses the same tested compiler overlays as the installer and leaves
+existing instances and the cached upstream SDK untouched. Staged package sources
+omit environment files and host Git metadata. Rebuilding replaces these
+generated inputs; it does not replace an existing review instance's packages. To
+build alongside a running review instance:
 
 ```sh
 WORKFLOW_PROTOTYPE_OUTPUT=/workspace/8020/kernel/.development/workflow-renames \
@@ -157,7 +160,9 @@ python3 kernel/development/analysis/run.py schema
 
 The package-owned `dev-core/programs/development-test/prototype_browser.ts`
 fixture exercises installer-built binaries through the existing native UUI
-harness. From `/workspace/8020/uui`, using the prepared runtime images:
+harness. Its `--runtime-root` must contain the newly built common runsc under
+`node/kernel/bin/` alongside prepared runtime images; an older stock runsc
+cannot run development mounts. From `/workspace/8020/uui`:
 
 ```sh
 /workspace/8020/kernel/.development/runtime/development/rootfs/usr/bin/deno run -A --import-map=deno.local.json browser_e2e.ts \

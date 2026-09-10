@@ -5,7 +5,8 @@ SOURCE_ROOT=${1:-}
 RUNTIME_SOURCE="$SOURCE_ROOT/defaults/config/runtime"
 MANIFEST=${2:-"$RUNTIME_SOURCE/versions.toml"}
 RUNTIME_ROOT=${3:-"$SOURCE_ROOT/node/kernel/runtime"}
-if [[ -z "$SOURCE_ROOT" || ! -f "$MANIFEST" ]]; then
+RUNSC_SOURCE="$RUNTIME_ROOT/../bin/runsc"
+if [[ -z "$SOURCE_ROOT" || ! -f "$MANIFEST" || ! -x "$RUNSC_SOURCE" ]]; then
   echo "usage: defaults/config/runtime/install-host.sh <source-root> [versions-file] [node-runtime-root]" >&2
   exit 2
 fi
@@ -178,7 +179,7 @@ fi
 INSTALL_GVISOR=true
 if command -v runsc >/dev/null 2>&1 && command -v containerd-shim-runsc-v1 >/dev/null 2>&1; then
   CURRENT_GVISOR=$(runsc --version 2>/dev/null | grep -Eo 'release-[0-9]{8}\.[0-9]+' | head -n1 | sed 's/^release-//' || true)
-  if [[ -n "$CURRENT_GVISOR" ]] && version_at_least "$CURRENT_GVISOR" "$GVISOR_RELEASE"; then
+  if [[ -n "$CURRENT_GVISOR" ]] && version_at_least "$CURRENT_GVISOR" "$GVISOR_RELEASE" && cmp -s "$RUNSC_SOURCE" "$(command -v runsc)"; then
     INSTALL_GVISOR=false
     echo "preserving compatible gVisor $CURRENT_GVISOR" >&2
   fi
@@ -194,7 +195,8 @@ if [[ "$INSTALL_GVISOR" == true ]]; then
   verify_sha512 "$SHIM_SHA" "$GVISOR_EXTRACT/containerd-shim-runsc-v1"
   for target in /usr/local/bin/runsc /usr/local/bin/containerd-shim-runsc-v1 /usr/local/bin/gvisor-bin; do backup_target "$target"; done
   echo "privileged change: installing pinned gVisor binaries under /usr/local/bin" >&2
-  install -m 0755 "$GVISOR_EXTRACT/runsc" /usr/local/bin/runsc
+  install -m 0755 "$RUNSC_SOURCE" /usr/local/bin/runsc.new
+  mv -f -- /usr/local/bin/runsc.new /usr/local/bin/runsc
   install -m 0755 "$GVISOR_EXTRACT/containerd-shim-runsc-v1" /usr/local/bin/containerd-shim-runsc-v1
   rm -rf -- /usr/local/bin/gvisor-bin
   install -d -m 0755 /usr/local/bin/gvisor-bin

@@ -54,9 +54,20 @@ Parent DOX: [kernel/defaults DOX](../../AGENTS.md).
   subsequent non-root chroot smoke verifies installed runtime imports. Full
   construction uses the same staged generic runtime and pinned image definition
   through BuildKit when host authority exists.
-- Portable installation publishes the complete pinned gVisor execution payload:
-  `runsc` and every release-provided `gvisor-bin/` companion remain adjacent
-  under `node/kernel/bin/` so runtime startup never downloads missing helpers.
+- Portable installation publishes the common source-built gVisor `runsc` and
+  pinned release-provided `gvisor-bin/` companions under `node/kernel/bin/`.
+  Services, jobs, development and native image construction use that same
+  engine. Its source input defaults to `.development/workflow-gofer-build/runsc`
+  and must report the pinned release with the `(the8020)` build marker. Image
+  freshness hashes the installed binary. Publication replaces it atomically.
+  Docker moves this complete binary directory into its image-owned runtime
+  payload and links the node path to it, so existing volumes cannot retain an
+  obsolete engine. Full host setup installs the same engine for containerd and
+  preserves an existing one only when bytes match.
+- The generated SDK is tied to the pinned upstream release. Development mounts
+  alone enable the private package filesystem and its additional Gofer seccomp
+  rules; ordinary service/job mounts keep their existing filesystem and filter.
+  Shared filesystem fixes remain compiled into both paths.
 - The service image runs non-root and includes only pinned Deno, generic runtime
   modules/protocol, the pinned Kysely dependency used by the database SDK, the
   pinned Zod dependency used by the HTTP self-types, and explicitly required

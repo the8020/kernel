@@ -21,8 +21,9 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   major.minor line before using the same installer and runtime payload folders.
 - Copy semantic directories rather than enumerating executables or helper files.
 - Builder images include Python 3 for the ordinary installer's workspace build.
-  The complete executable directory includes the custom development `runsc`; the
-  kernel resolves it beside its own executable after Docker relocation.
+  The initialized instance includes one common `node/kernel/bin/runsc` for
+  services, jobs and development. `.development/bin/` contains
+  kernel/admin/logd; do not add another runsc to the Docker executable payload.
 - Invoke the portable smoke helper from the instance's installed runtime
   definitions. Keep all startup credentials in process memory and preserve
   existing login users. Parse `users.list` JSON with the already bundled Deno
@@ -51,7 +52,9 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   readiness, failure diagnostics, the curl dependency, existing-user detection
   with reordered JSON properties, one-time bootstrap and restart bypass after
   user removal, retry after failed creation, and rejection of invalid user
-  responses without a completion marker.
+  responses without a completion marker. It also replaces an old volume's
+  runtime directory with the image payload link, repeats the smoke on restart,
+  and verifies private work remains intact.
 - Build both the version-selected deploy image and the local tagged-checkout
   kernel image; exercise first-user bootstrap on a fresh instance.
 

@@ -11,9 +11,10 @@ RUNTIME_LOCK=${RUNTIME_DEFINITION%.json}.lock
 BUILD_SCRIPT="$(dirname "$CONTAINERFILE")/build.sh"
 WORK_ROOT=${6:-"$SOURCE_ROOT/node/kernel/runtime"}
 RUNSC_DESTINATION=${7:-"$SOURCE_ROOT/node/kernel/bin/runsc"}
+RUNSC_SOURCE=${8:-"$SOURCE_ROOT/.development/workflow-gofer-build/runsc"}
 PROTOCOL_SOURCE="$RUNTIME_SOURCE/protocol/generated.ts"
-if [[ -z "$SOURCE_ROOT" || ! -f "$MANIFEST" || ! -f "$CONTAINERFILE" || ! -f "$BUILD_SCRIPT" || ! -f "$RUNTIME_DEFINITION" || ! -f "$RUNTIME_LOCK" || ! -f "$PROTOCOL_SOURCE" || -z "$WORK_ROOT" || -z "$RUNSC_DESTINATION" ]]; then
-  echo "usage: defaults/config/runtime/install-portable.sh <source-root> [image-root] [versions-file] [Containerfile] [deno-config] [work-root] [runsc-destination]" >&2
+if [[ -z "$SOURCE_ROOT" || ! -f "$MANIFEST" || ! -f "$CONTAINERFILE" || ! -f "$BUILD_SCRIPT" || ! -f "$RUNTIME_DEFINITION" || ! -f "$RUNTIME_LOCK" || ! -f "$PROTOCOL_SOURCE" || -z "$WORK_ROOT" || -z "$RUNSC_DESTINATION" || ! -x "$RUNSC_SOURCE" ]]; then
+  echo "usage: defaults/config/runtime/install-portable.sh <source-root> [image-root] [versions-file] [Containerfile] [deno-config] [work-root] [runsc-destination] [built-runsc]" >&2
   exit 2
 fi
 
@@ -82,6 +83,10 @@ case $(uname -m) in
 esac
 
 GVISOR_RELEASE=$(toml_value gvisor release)
+if ! "$RUNSC_SOURCE" --version | grep -Fxq "runsc version release-$GVISOR_RELEASE (the8020)"; then
+  echo "built runsc does not match the pinned 80|20 runtime release" >&2
+  exit 1
+fi
 DENO_VERSION=$(toml_value deno version)
 GVISOR_ARCHIVE="$DOWNLOADS/gvisor.tar.bz2"
 download "https://storage.googleapis.com/gvisor/releases/release/$GVISOR_RELEASE/$GVISOR_ARCH/gvisor.tar.bz2" "$GVISOR_ARCHIVE"
@@ -104,7 +109,8 @@ fi
 if [[ "$RUNSC_DESTINATION" != "$GVISOR_ROOT/runsc" ]]; then
   RUNSC_DESTINATION_ROOT=$(dirname "$RUNSC_DESTINATION")
   install -d -m 0700 "$RUNSC_DESTINATION_ROOT"
-  install -m 0555 "$GVISOR_ROOT/runsc" "$RUNSC_DESTINATION"
+  install -m 0555 "$RUNSC_SOURCE" "$RUNSC_DESTINATION.new"
+  mv -f -- "$RUNSC_DESTINATION.new" "$RUNSC_DESTINATION"
   rm -rf -- "$RUNSC_DESTINATION_ROOT/gvisor-bin"
   if [[ -d "$GVISOR_ROOT/gvisor-bin" ]]; then
     install -d -m 0700 "$RUNSC_DESTINATION_ROOT/gvisor-bin"
@@ -114,7 +120,7 @@ fi
 
 SOURCE_INPUT=$(
   "$RUNTIME_SOURCE/stage-service-runtime.sh" "$SOURCE_ROOT" --sources | xargs -0 sha256sum
-  sha256sum "$RUNTIME_SOURCE/deno/deno.json" "$RUNTIME_SOURCE/deno/deno.lock" "$CONTAINERFILE" "$BUILD_SCRIPT" "$RUNTIME_DEFINITION" "$RUNTIME_LOCK" "$MANIFEST" "$RUNTIME_SOURCE/install-portable.sh" "$RUNTIME_SOURCE/materialize-oci-rootfs.sh" "$RUNTIME_SOURCE/run-rootfs-build.sh" "$RUNTIME_SOURCE/stage-service-runtime.sh" "$RUNTIME_SOURCE/bundle-runtime.sh" "$PROTOCOL_SOURCE" "$GVISOR_ROOT/runsc"
+  sha256sum "$RUNTIME_SOURCE/deno/deno.json" "$RUNTIME_SOURCE/deno/deno.lock" "$CONTAINERFILE" "$BUILD_SCRIPT" "$RUNTIME_DEFINITION" "$RUNTIME_LOCK" "$MANIFEST" "$RUNTIME_SOURCE/install-portable.sh" "$RUNTIME_SOURCE/materialize-oci-rootfs.sh" "$RUNTIME_SOURCE/run-rootfs-build.sh" "$RUNTIME_SOURCE/stage-service-runtime.sh" "$RUNTIME_SOURCE/bundle-runtime.sh" "$PROTOCOL_SOURCE" "$RUNSC_DESTINATION"
   printf '%s\n' "$BASE_MANIFEST" "$ARCHITECTURE"
 )
 SOURCE_HASH="sha256:$(printf '%s' "$SOURCE_INPUT" | sha256sum | awk '{print $1}')"
@@ -203,10 +209,10 @@ EOF
 
   SMOKE_OUTPUT="$SMOKE_STAGE/output.log"
   cleanup_smoke() {
-    "$GVISOR_ROOT/runsc" --root="$SMOKE_RUNSC_ROOT" --rootless=true --platform=systrap --network=none --overlay2="root:dir=$SMOKE_OVERLAY" delete --force "$SMOKE_ID" >/dev/null 2>&1 || true
+    "$RUNSC_DESTINATION" --root="$SMOKE_RUNSC_ROOT" --rootless=true --platform=systrap --network=none --overlay2="root:dir=$SMOKE_OVERLAY" delete --force "$SMOKE_ID" >/dev/null 2>&1 || true
   }
   trap 'cleanup_smoke; rm -rf -- "${GVISOR_STAGE:-}" "${ROOTFS_STAGE:-}" "${SMOKE_STAGE:-}"' EXIT
-  if ! "$GVISOR_ROOT/runsc" \
+  if ! "$RUNSC_DESTINATION" \
     --allow-rootfs-tar-annotation --root="$SMOKE_RUNSC_ROOT" --rootless=true --platform=systrap --directfs=false \
     --file-access=exclusive --file-access-mounts=shared --network=none --overlay2="root:dir=$SMOKE_OVERLAY" \
     --log="$SMOKE_STAGE/runsc.log" run --bundle="$SMOKE_BUNDLE" "$SMOKE_ID" >"$SMOKE_OUTPUT" 2>&1; then

@@ -4,6 +4,7 @@ set -euo pipefail
 readonly INSTANCE_ROOT=/8020
 readonly KERNEL=/usr/local/bin/kernel
 readonly ADMIN=/usr/local/bin/admin
+readonly RUNTIME_BIN=/usr/local/share/the8020/runtime-bin
 readonly DENO="$INSTANCE_ROOT/node/kernel/runtime/images/rootless/rootfs/usr/bin/deno"
 readonly PORTABLE_SMOKE="$INSTANCE_ROOT/node/kernel/runtime/definitions/smoke-portable.sh"
 readonly BOOTSTRAP_DONE="$INSTANCE_ROOT/node/docker/initial-user.done"
@@ -22,6 +23,16 @@ if ! command -v curl >/dev/null 2>&1; then
   echo "curl is required for container startup; rebuild using the current the8020/deploy Dockerfile" >&2
   exit 1
 fi
+if [[ ! -x "$RUNTIME_BIN/runsc" ]]; then
+  echo "the image's bundled sandbox runtime is missing" >&2
+  exit 1
+fi
+
+# Runtime executables follow the image, including with an existing data volume.
+rm -rf -- "$INSTANCE_ROOT/node/kernel/bin"
+ln -s -- "$RUNTIME_BIN" "$INSTANCE_ROOT/node/kernel/bin"
+# A retained smoke record may describe a different image's engine.
+rm -f -- "$INSTANCE_ROOT/node/kernel/runtime/images/rootless/smoke.json"
 
 initial_username=${THE8020_USERNAME:-admin}
 initial_password=${THE8020_PASSWORD:-admin}

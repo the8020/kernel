@@ -7,16 +7,22 @@ Parent DOX: [development DOX](../AGENTS.md).
 
 # Ownership
 
-- `install.sh` calls `run.py build` to compile kernel/admin/logd and the custom
-  development runsc into `.development/bin`. `run.py prototype` uses the same
-  compiler inputs in `.development/workflow-prototype` and additionally stages
-  current sibling package sources for disposable review. `prototype.go` supplies
-  per-user connections and lifecycle integration; `sparse_activation_test.go`
-  owns shared preview/activation. The kernel finds runsc beside its executable,
-  including after Docker copies the complete binary directory. Builds replace
-  runsc atomically and fetch the pinned SDK into a fresh cache when necessary.
+- `install.sh` calls `run.py build` to compile kernel/admin/logd into
+  `.development/bin` and the common runsc into
+  `.development/workflow-gofer-build`. Runtime installation publishes runsc once
+  under `node/kernel/bin/`; both ordinary and development sandboxes use the
+  configured runtime path. `run.py prototype` additionally stages runsc and
+  sibling package sources in `.development/workflow-prototype` for disposable
+  review. Its launcher installs that runsc into the review node for both
+  workload types. `prototype.go` supplies per-user connections and lifecycle
+  integration; `sparse_activation_test.go` owns shared preview/activation.
   `WORKFLOW_PROTOTYPE_OUTPUT` changes only the separate review output. SDK cache
   files remain untouched by compiler overlays.
+- The pinned generated SDK 7d8fb7f28de4 comes from source 50e1502a95d3,
+  release-20260817.0. The build verifies the manifest release and embeds
+  `release-20260817.0 (the8020)`. The extra Gofer seccomp rules require a
+  prepared development filesystem; ordinary mounts add no rules. Shared SDK
+  filesystem error/removed-handle fixes remain common to both paths.
 - Bare Go tests and the older characterization profiles use the baseline
   backend. They do not verify the installed workflow. Run the native browser
   `activation_processes.ts` fixture against installer-built binaries before
@@ -475,6 +481,15 @@ Parent DOX: [development DOX](../AGENTS.md).
   a one-MiB encoded list.
 
 # Verification
+
+- After `run.py build`, run `go test -overlay sdk-overlay.json` with the
+  explicit `gofer_probe.go` and `gofer_probe_test.go` paths from
+  `.development/workflow-gofer-build`. It verifies ordinary mounts and security
+  filters remain stock while development retains its required rules.
+- Consolidation also requires the existing service/job rootless E2E using the
+  built common runsc, the portable runtime smoke, and `activation_processes.ts`
+  with that same binary installed beneath the fixture runtime root. Native
+  checks do not replace Docker build/run or privileged containerd qualification.
 
 - The ordinary installer and both Dockerfiles use `run.py build`, requiring
   Python 3 only during building. Verify fresh-cache SDK preparation and execute

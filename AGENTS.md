@@ -588,10 +588,11 @@ below.
 - `install.sh` requires Python 3 for the existing workspace prototype builder.
   Its `run.py build` mode compiles the same filesystem, activation and shared
   transaction inputs as `run.py prototype`, without staging sibling packages.
-  Keep `kernel`, `admin`, `logd`, and development `runsc` together when copying
-  executables; runtime lookup never embeds the source checkout's build path.
-  Bare Go owner tests still characterize the baseline sources. Release checks
-  must also run the native development fixture with `.development/bin/kernel`.
+  Keep `kernel`, `admin`, and `logd` together when copying executables. Install
+  the common built `runsc` once under `node/kernel/bin/` for services, jobs and
+  development; Docker must not ship a second development-only engine. Bare Go
+  owner tests still characterize the baseline sources. Release checks must also
+  run the native development fixture with `.development/bin/kernel`.
 - With Deno on PATH, `bash docker-entrypoint_test.sh` verifies startup progress,
   HTTP 200 readiness, failure diagnostics, the curl dependency, and structural
   existing-login-user detection, one-time bootstrap, restart bypass after user
@@ -604,10 +605,10 @@ below.
 - `install.sh` owns platform build and runtime-image freshness. It provisions a
   checksum-verified project-local Go toolchain and node-local gVisor, generates
   the generic protocol, builds `kernel`, `admin`, the dedicated `logd`, and the
-  development `runsc` through `kernel/development/analysis/run.py build`,
-  initializes the selected instance layout when absent, atomically refreshes
-  platform-owned `node/kernel/runtime/definitions/`, read-only development
-  helper scripts, and materializes verified service and development images under
+  common `runsc` through `kernel/development/analysis/run.py build`, initializes
+  the selected instance layout when absent, atomically refreshes platform-owned
+  `node/kernel/runtime/definitions/`, read-only development helper scripts, and
+  materializes verified service and development images under
   `node/kernel/runtime/images/`. Complete generic image-input digests make
   unchanged installs fast; required packages and Deno bundling execute inside
   the isolated image build as defined by the runtime DOX. The default

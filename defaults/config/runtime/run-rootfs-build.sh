@@ -33,7 +33,7 @@ if [[ ${THE8020_OUTER_CONTAINER_BUILD:-false} == true ]]; then
   exit 0
 fi
 
-RUNSC="$RUNTIME_ROOT/gvisor/bin/runsc"
+RUNSC="$RUNTIME_ROOT/../bin/runsc"
 STAGE=$(mktemp -d "$RUNTIME_ROOT/tmp/image-build.XXXXXX")
 ID="the8020-image-build-$$"
 mkdir -p "$STAGE/root" "$STAGE/bundle" "$STAGE/output"

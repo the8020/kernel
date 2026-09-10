@@ -16,10 +16,15 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
+# Generated Go SDK for release-20260817.0, source commit 50e1502a95d3.
 SDK = "v0.0.0-20260815055033-7d8fb7f28de4"
+RELEASE = tomllib.loads((ROOT / "defaults/config/runtime/versions.toml").read_text())["gvisor"]["release"]
+assert RELEASE == "20260817.0", "Update the generated gVisor SDK together with the pinned release"
+LINKER_FLAGS = f"-X 'gvisor.dev/gvisor/runsc/version.version=release-{RELEASE} (the8020)'"
 BUILD = ROOT / ".development/workflow-gofer-build"
 
 
@@ -88,7 +93,7 @@ def main():
         GOMODCACHE=str(ROOT / ".development/go-mod-cache"),
     )
     subprocess.run([
-        str(ROOT / ".development/toolchains/go/bin/go"), "build", "-mod=mod",
+        str(ROOT / ".development/toolchains/go/bin/go"), "build", "-mod=mod", "-ldflags", LINKER_FLAGS,
         "-overlay", str(overlay), "-o", "runsc", "main.go",
     ], cwd=BUILD, env=env, check=True)
     subprocess.run([

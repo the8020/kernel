@@ -38,7 +38,10 @@ fi
 EOF
 cat > "$TEST_ROOT/bin/smoke" <<'EOF'
 #!/usr/bin/env bash
-exit 0
+set -euo pipefail
+[[ "$1" -ef "$CASE_ROOT/runtime-bin/runsc" ]]
+[[ ! -e "$4" ]]
+touch "$4"
 EOF
 cat > "$TEST_ROOT/bin/curl" <<'EOF'
 #!/usr/bin/env bash
@@ -57,6 +60,13 @@ export PATH="$TEST_ROOT/bin:$PATH" THE8020_NETWORK_MAIN_PORT=18080
 prepare() {
   export CASE_MODE=$1 CASE_ROOT="$TEST_ROOT/$1"
   mkdir -p "$CASE_ROOT/instance"
+  mkdir -p "$CASE_ROOT/runtime-bin" "$CASE_ROOT/instance/node/kernel/bin" \
+    "$CASE_ROOT/instance/node/kernel/runtime/images/rootless" "$CASE_ROOT/instance/users/admin"
+  printf 'new runtime\n' > "$CASE_ROOT/runtime-bin/runsc"
+  chmod +x "$CASE_ROOT/runtime-bin/runsc"
+  printf 'old runtime\n' > "$CASE_ROOT/instance/node/kernel/bin/runsc"
+  printf 'private work\n' > "$CASE_ROOT/instance/users/admin/work.txt"
+  touch "$CASE_ROOT/instance/node/kernel/runtime/images/rootless/smoke.json"
   touch "$CASE_ROOT/instance/kernel.toml"
   while IFS= read -r line; do
     case "$line" in
@@ -64,6 +74,7 @@ prepare() {
       readonly\ KERNEL=*) printf 'readonly KERNEL=%q\n' "$TEST_ROOT/bin/kernel" ;;
       readonly\ DENO=*) printf 'readonly DENO=%q\n' "$(command -v deno)" ;;
       readonly\ ADMIN=*) printf 'readonly ADMIN=%q\n' "$TEST_ROOT/bin/admin" ;;
+      readonly\ RUNTIME_BIN=*) printf 'readonly RUNTIME_BIN=%q\n' "$CASE_ROOT/runtime-bin" ;;
       readonly\ PORTABLE_SMOKE=*) printf 'readonly PORTABLE_SMOKE=%q\n' "$TEST_ROOT/bin/smoke" ;;
       *) printf '%s\n' "$line" ;;
     esac
@@ -97,6 +108,8 @@ printf '%s\n' 200 > "$CASE_ROOT/http-status"
 wait_for '80|20 is ready' "$CASE_ROOT/output"
 [[ ! -f "$CASE_ROOT/user-created" ]]
 [[ -f "$CASE_ROOT/instance/node/docker/initial-user.done" ]]
+[[ -L "$CASE_ROOT/instance/node/kernel/bin" ]]
+grep -Fxq 'private work' "$CASE_ROOT/instance/users/admin/work.txt"
 grep -Fq 'initial user bootstrap skipped' "$CASE_ROOT/output"
 grep -Fxq 'http://127.0.0.1:18080/the8020/uui/login/' "$CASE_ROOT/curl.args"
 grep -Fxq -- '--noproxy' "$CASE_ROOT/curl.args"
@@ -136,6 +149,8 @@ bash "$CASE_ROOT/entrypoint.sh" > "$CASE_ROOT/output" 2>&1 &
 entrypoint_pid=$!
 wait_for '80|20 is ready' "$CASE_ROOT/output"
 [[ ! -f "$CASE_ROOT/users-calls" && ! -f "$CASE_ROOT/user-created" ]]
+[[ -L "$CASE_ROOT/instance/node/kernel/bin" ]]
+grep -Fxq 'private work' "$CASE_ROOT/instance/users/admin/work.txt"
 ! grep -Fq 'waiting for package initialization and user commands' "$CASE_ROOT/output"
 kill -TERM "$entrypoint_pid"
 wait "$entrypoint_pid" 2>/dev/null || true
@@ -176,4 +191,4 @@ if PATH=/nonexistent "$BASH" "$CASE_ROOT/entrypoint.sh" > "$CASE_ROOT/output" 2>
 fi
 grep -Fq 'curl is required for container startup' "$CASE_ROOT/output"
 
-echo 'Docker entrypoint checks passed: one-time account bootstrap, restart bypass, failed-creation retry, HTTP readiness, diagnostics, and structural login-user detection.'
+echo 'Docker entrypoint checks passed: common runtime replacement without losing private work, fresh runtime smoke, one-time account bootstrap, restart bypass, failed-creation retry, HTTP readiness, diagnostics, and structural login-user detection.'

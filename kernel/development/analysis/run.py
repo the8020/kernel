@@ -84,7 +84,7 @@ with tempfile.TemporaryDirectory(prefix="workflow-go-overlay-") as temporary:
         sdk_overlay, sdk_fixes = gofer_probe.sdk_overlay(setstat=profile != "unpatched")
         env["WORKFLOW_SPARSE_SDK_FIX"] = json.dumps(sdk_fixes)
         subprocess.run([
-            go_command, "build", "-mod=mod",
+            go_command, "build", "-mod=mod", "-ldflags", gofer_probe.LINKER_FLAGS,
             "-overlay", str(sdk_overlay), "-o", "runsc", "main.go"], cwd=build, check=True,
             env=env | {"CGO_ENABLED": "0", "GOMODCACHE": str(ROOT / ".development/go-mod-cache")})
         source = HERE.parent / "rootless.go"
@@ -166,8 +166,12 @@ with tempfile.TemporaryDirectory(prefix="workflow-go-overlay-") as temporary:
         destination = (ROOT / ".development/bin" if installed_build else
                        Path(os.environ.get("WORKFLOW_PROTOTYPE_OUTPUT", str(ROOT / ".development/workflow-prototype")))).resolve()
         destination.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(build / "runsc", destination / ".runsc-stage")
-        os.replace(destination / ".runsc-stage", destination / "runsc")
+        if installed_build:
+            # The runtime installer publishes runsc once under node/kernel/bin.
+            (destination / "runsc").unlink(missing_ok=True)
+        else:
+            shutil.copy2(build / "runsc", destination / ".runsc-stage")
+            os.replace(destination / ".runsc-stage", destination / "runsc")
         replacements = {source: target for source, target in replacements.items()
                         if not source.endswith("_test.go")}
         implementations = (
@@ -194,7 +198,7 @@ with tempfile.TemporaryDirectory(prefix="workflow-go-overlay-") as temporary:
         replacements[str(HERE.parent / target.name)] = str(target)
         for name, transforms in {
             "manager.go": [
-                ('m := &Manager{config: config, driver: config.Driver,', 'config.Driver, err = analysisPrototype(config)\n\tif err != nil { return nil, err }\n\tm := &Manager{config: config, driver: config.Driver,'),
+                ('m := &Manager{config: config, driver: config.Driver,', 'config.Driver = analysisPrototype(config)\n\tm := &Manager{config: config, driver: config.Driver,'),
                 ('if err := os.RemoveAll(m.overlayRoot(sandbox)); err != nil {', 'if err := m.analysisResetWorkspace(&sandbox); err != nil {'),
             ],
             "overlay.go": [

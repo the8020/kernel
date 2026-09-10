@@ -36,7 +36,7 @@ if not READY.is_file():
     for relative in ("runtime/images/rootless", "runtime/images/development", "bin/gvisor-bin"):
         shutil.copytree(RUNTIME / relative, INSTANCE / "node/kernel" / relative,
                         symlinks=True, dirs_exist_ok=True)
-    shutil.copy2(RUNTIME / "bin/runsc", INSTANCE / "node/kernel/bin/runsc")
+    shutil.copy2(BUILD / "runsc", INSTANCE / "node/kernel/bin/runsc")
     packages = tomllib.loads((ROOT / "defaults/bootstrap-packages.toml").read_text())
     for package in packages["packages"]:
         package_id = package["id"]

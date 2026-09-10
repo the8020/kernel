@@ -18,19 +18,12 @@ type analysisPrototypeDriver struct {
 	sandboxes sync.Map
 }
 
-func analysisPrototype(config Config) (SandboxDriver, error) {
+func analysisPrototype(config Config) SandboxDriver {
 	base, ok := config.Driver.(*RunscDriver)
 	if !ok {
-		return config.Driver, nil
+		return config.Driver
 	}
-	executable, err := os.Executable()
-	if err != nil {
-		return nil, err
-	}
-	native := *base
-	// Docker and native installation copy this complete executable directory.
-	native.config.RunscPath = filepath.Join(filepath.Dir(executable), "runsc")
-	return &analysisPrototypeDriver{RunscDriver: &native, users: config.UsersRoot}, nil
+	return &analysisPrototypeDriver{RunscDriver: base, users: config.UsersRoot}
 }
 
 func (d *analysisPrototypeDriver) Start(ctx context.Context, start SandboxStart) error {
