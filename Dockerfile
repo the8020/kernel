@@ -13,7 +13,7 @@ ENV CGO_ENABLED=0 \
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
-        bash bzip2 ca-certificates curl git \
+        bash bzip2 ca-certificates curl git python3 \
     && rm -rf /var/lib/apt/lists/*
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]

@@ -1,6 +1,6 @@
 //go:build ignore
 
-// Included only by run.py prototype. The installed kernel remains unchanged.
+// Included by the installer and run.py prototype from the same build inputs.
 package development
 
 import (
@@ -18,17 +18,29 @@ type analysisPrototypeDriver struct {
 	sandboxes sync.Map
 }
 
-func analysisPrototype(config Config) SandboxDriver {
+func analysisPrototype(config Config) (SandboxDriver, error) {
 	base, ok := config.Driver.(*RunscDriver)
 	if !ok {
-		return config.Driver
+		return config.Driver, nil
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, err
 	}
 	native := *base
-	native.config.RunscPath = "WORKFLOW_PROTOTYPE_RUNSC"
-	return &analysisPrototypeDriver{RunscDriver: &native, users: config.UsersRoot}
+	// Docker and native installation copy this complete executable directory.
+	native.config.RunscPath = filepath.Join(filepath.Dir(executable), "runsc")
+	return &analysisPrototypeDriver{RunscDriver: &native, users: config.UsersRoot}, nil
 }
 
 func (d *analysisPrototypeDriver) Start(ctx context.Context, start SandboxStart) error {
+	var legacy overlayStateDocument
+	if err := readTOML(filepath.Join(d.users, start.UserID, "dev-sandbox", "runtime", "overlay", "state.toml"), &legacy); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if len(legacy.Packages) != 0 {
+		return errors.New("development sandbox has legacy private edits; activate or export them using the previous kernel before upgrading")
+	}
 	storage := filepath.Join(d.users, start.UserID, "dev-sandbox", "workspace")
 	for _, name := range []string{"lower", "upper", "base", "deleted", "snapshots"} {
 		if err := os.MkdirAll(filepath.Join(storage, name), 0700); err != nil {

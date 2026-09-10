@@ -58,11 +58,20 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Activation transactions use shared `act-` IDs. The initial database insert is
   exclusive, rejects collisions, and shares that identity across hook and
   activation history throughout recovery.
-- Activation is prepare schema → pre-activate hooks → atomically switch source →
-  publish package records → post-activate hooks → complete. Durable activation,
-  package, hook, and pending-deployment rows make retry/recovery idempotent.
-  PostgreSQL holds one database advisory deployment lock throughout; SQLite uses
-  local transactional serialization for its single-node role.
+- Installed activation is prepare schema → pre-activate hooks → switch source →
+  post-activate hooks → publish package records/revision → index and clean up →
+  complete. The `published` stage retains retryable indexing/cleanup without
+  repeating schema or hooks. Pending work is bound to an explicit activation ID;
+  independent package sets can progress while overlapping publications reject.
+  These installed contracts are compiled from the shared transaction patch in
+  [development analysis](../development/analysis/AGENTS.md).
+- Native locks under `packages/.meta/activation-locks/` are created on demand by
+  publication, retained for stable identity and acquired in sorted order.
+  Repository operations, development activation and recovery share this owner.
+  Read-only observation never creates a lock and detects a first publisher
+  appearing during its source read.
+- Published commits and their revision come from one database snapshot.
+  Preparing another activation never hides an already published package.
 - An activation candidate with an empty commit removes its package; its root is
   the installed path. Removal executes no activation handlers from deleted code,
   retires the package record and tables, removes its active catalog commit, and

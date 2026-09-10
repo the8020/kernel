@@ -22,8 +22,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 - SQLite is the single-node default. It stores `system.db` beneath the mapped
   instance database root, uses strict tables and WAL, and serializes schema work
-  locally. PostgreSQL uses one database advisory lock across initialization and
-  deployment.
+  locally. PostgreSQL uses a database advisory lock for schema/catalog mutation;
+  installed activation does not retain it while awaiting package hooks.
 - Readiness distinguishes `UNAVAILABLE`, `CONNECTED`, `INITIALIZING`, `READY`,
   and `INITIALIZATION_FAILED`. Catalog failure blocks the service plane but
   never the command socket or raw SQL recovery path.
@@ -43,11 +43,13 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Catalog list and table inspection never evaluate activated TypeScript.
   Per-table comparison and definition scans are explicit deeper operations so
   routine administration remains fast.
-- Package/schema switching uses one durable pending record. Candidate schema is
-  prepared before source replacement; completion records the active commit set.
-  Restart recovery aligns catalog state to the package tree that is actually
-  active. The last failed deployment remains visible without degrading an
-  otherwise ready database.
+- Installed package/schema switching uses activation-ID-bound pending records,
+  limited to 256 independent pending deployments of at most 256 packages each.
+  Overlapping package sets reject; completion updates only the matching
+  deployment's package state. Candidate schema precedes source replacement, and
+  recovery aligns catalog state with active source. The installed compiler
+  overlay and its concurrency checks are owned by
+  [development analysis](../development/analysis/AGENTS.md).
 - Empty candidate commits remove packages from the catalog commit set. Their
   table/column metadata is retired through ordinary synchronization, preserving
   physical tables and data until explicit trim.

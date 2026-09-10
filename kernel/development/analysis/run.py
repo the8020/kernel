@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run opt-in workflow experiments against production code in disposable roots."""
+"""Build the development workspace prototype or run its disposable checks."""
 
 import hashlib
 import json
@@ -13,13 +13,15 @@ from datetime import datetime, timezone
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
+go_command = os.environ.get("THE8020_BUILD_GO", str(ROOT / ".development/toolchains/go/bin/go"))
 
 if (len(sys.argv) not in (2, 3)
-        or sys.argv[1] not in ("runtime", "fuse", "races", "git", "coherence", "native", "upper", "sparse", "activation", "schema", "transaction", "cost", "rename", "prototype")
+        or sys.argv[1] not in ("runtime", "fuse", "races", "git", "coherence", "native", "upper", "sparse", "activation", "schema", "transaction", "cost", "rename", "prototype", "build")
         or (len(sys.argv) == 3 and sys.argv[2] not in ("current", "shared", "unpatched"))
         or (len(sys.argv) == 3 and sys.argv[2] == "unpatched" and sys.argv[1] != "sparse")):
-    raise SystemExit("usage: run.py runtime|fuse|races|git|coherence|native|upper|sparse|activation|schema|transaction|cost|rename|prototype [current|shared|unpatched]")
-selected = sys.argv[1]
+    raise SystemExit("usage: run.py runtime|fuse|races|git|coherence|native|upper|sparse|activation|schema|transaction|cost|rename|prototype|build [current|shared|unpatched]")
+installed_build = sys.argv[1] == "build"
+selected = "prototype" if installed_build else sys.argv[1]
 profile = sys.argv[2] if len(sys.argv) == 3 else "current"
 print("workflow runtime profile:", profile, flush=True)
 
@@ -82,7 +84,7 @@ with tempfile.TemporaryDirectory(prefix="workflow-go-overlay-") as temporary:
         sdk_overlay, sdk_fixes = gofer_probe.sdk_overlay(setstat=profile != "unpatched")
         env["WORKFLOW_SPARSE_SDK_FIX"] = json.dumps(sdk_fixes)
         subprocess.run([
-            str(ROOT / ".development/toolchains/go/bin/go"), "build", "-mod=mod",
+            go_command, "build", "-mod=mod",
             "-overlay", str(sdk_overlay), "-o", "runsc", "main.go"], cwd=build, check=True,
             env=env | {"CGO_ENABLED": "0", "GOMODCACHE": str(ROOT / ".development/go-mod-cache")})
         source = HERE.parent / "rootless.go"
@@ -160,11 +162,12 @@ with tempfile.TemporaryDirectory(prefix="workflow-go-overlay-") as temporary:
         changed.write_text(candidate)
         replacements[str(source)] = str(changed)
     if selected == "prototype":
-        # Compile the tested owners into an opt-in binary, without test
-        # fixtures or changes to the installed kernel/runtime.
-        destination = Path(os.environ.get("WORKFLOW_PROTOTYPE_OUTPUT", str(ROOT / ".development/workflow-prototype"))).resolve()
+        # The installer and disposable review use exactly the same owners.
+        destination = (ROOT / ".development/bin" if installed_build else
+                       Path(os.environ.get("WORKFLOW_PROTOTYPE_OUTPUT", str(ROOT / ".development/workflow-prototype")))).resolve()
         destination.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(build / "runsc", destination / "runsc")
+        shutil.copy2(build / "runsc", destination / ".runsc-stage")
+        os.replace(destination / ".runsc-stage", destination / "runsc")
         replacements = {source: target for source, target in replacements.items()
                         if not source.endswith("_test.go")}
         implementations = (
@@ -187,12 +190,11 @@ with tempfile.TemporaryDirectory(prefix="workflow-go-overlay-") as temporary:
             target.write_text(candidate)
             replacements[str(HERE.parent / name)] = str(target)
         target = Path(temporary) / "workflow_prototype.go"
-        target.write_text((HERE / "prototype.go").read_text().replace("//go:build ignore", "")
-                          .replace("WORKFLOW_PROTOTYPE_RUNSC", str(destination / "runsc")))
+        target.write_text((HERE / "prototype.go").read_text().replace("//go:build ignore", ""))
         replacements[str(HERE.parent / target.name)] = str(target)
         for name, transforms in {
             "manager.go": [
-                ('m := &Manager{config: config, driver: config.Driver,', 'config.Driver = analysisPrototype(config)\n\tm := &Manager{config: config, driver: config.Driver,'),
+                ('m := &Manager{config: config, driver: config.Driver,', 'config.Driver, err = analysisPrototype(config)\n\tif err != nil { return nil, err }\n\tm := &Manager{config: config, driver: config.Driver,'),
                 ('if err := os.RemoveAll(m.overlayRoot(sandbox)); err != nil {', 'if err := m.analysisResetWorkspace(&sandbox); err != nil {'),
             ],
             "overlay.go": [
@@ -212,13 +214,18 @@ with tempfile.TemporaryDirectory(prefix="workflow-go-overlay-") as temporary:
             replacements[str(source)] = str(target)
     overlay.write_text(json.dumps({"Replace": replacements}))
     if selected == "prototype":
-        go = str(ROOT / ".development/toolchains/go/bin/go")
+        go = go_command
         subprocess.run([go, "run", "./kernel/cbus/gen"], cwd=ROOT, env=env, check=True)
+        gofmt = Path(subprocess.check_output([go, "env", "GOROOT"], env=env, text=True).strip()) / "bin/gofmt"
+        subprocess.run([str(gofmt), "-w", *map(str, (ROOT / ".development/generated").rglob("*.go"))], check=True)
         for name in ("kernel", "admin", "logd"):
             cwd = ROOT if name == "logd" else ROOT / ".development/generated"
             package = "./kernel/logd" if name == "logd" else "./cmd/" + name
-            subprocess.run([go, "build", "-mod=mod", "-overlay", str(overlay),
+            subprocess.run([go, "build", "-mod=mod", "-trimpath", "-overlay", str(overlay),
                             "-o", str(destination / name), package], cwd=cwd, env=env, check=True)
+        if installed_build:
+            print("Built process-preserving development workspace:", destination, flush=True)
+            raise SystemExit(0)
         sources = destination / "package-workspace"
         if sources.exists():
             shutil.rmtree(sources)
@@ -235,7 +242,6 @@ with tempfile.TemporaryDirectory(prefix="workflow-go-overlay-") as temporary:
                 target = sources / package.name / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source, target)
-        subprocess.run(["git", "apply", str(HERE / "activation-stage.patch")], cwd=sources / "packages", check=True)
         print("Prototype binaries:", destination, flush=True)
         raise SystemExit(0)
     if selected == "transaction":

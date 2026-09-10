@@ -2,21 +2,29 @@ Parent DOX: [development DOX](../AGENTS.md).
 
 # Purpose
 
-- Investigate development workspace isolation, publication, durability, and
-  terminal lifetime with reproducible, disposable experiments.
+- Build the installed workspace prototype and investigate its isolation,
+  publication, durability and terminal lifetime with disposable experiments.
 
 # Ownership
 
-- `run.py prototype` builds separate opt-in kernel/admin/logd binaries under
-  `.development/workflow-prototype` from the same sparse driver and activation
-  owners used by the native fixtures. `prototype.go` supplies per-user driver
-  connections and lifecycle integration; `sparse_activation_test.go` owns the
-  preview and activation used by both fixtures and the compiled prototype. The
-  build copies its custom `runsc` into that output directory and embeds that
-  path; later experiment builds cannot replace the prototype's runtime. Set
-  `WORKFLOW_PROTOTYPE_OUTPUT` to build a separate output while a review instance
-  is using the existing binaries. Installed binaries and SDK caches remain
-  untouched.
+- `install.sh` calls `run.py build` to compile kernel/admin/logd and the custom
+  development runsc into `.development/bin`. `run.py prototype` uses the same
+  compiler inputs in `.development/workflow-prototype` and additionally stages
+  current sibling package sources for disposable review. `prototype.go` supplies
+  per-user connections and lifecycle integration; `sparse_activation_test.go`
+  owns shared preview/activation. The kernel finds runsc beside its executable,
+  including after Docker copies the complete binary directory. Builds replace
+  runsc atomically and fetch the pinned SDK into a fresh cache when necessary.
+  `WORKFLOW_PROTOTYPE_OUTPUT` changes only the separate review output. SDK cache
+  files remain untouched by compiler overlays.
+- Bare Go tests and the older characterization profiles use the baseline
+  backend. They do not verify the installed workflow. Run the native browser
+  `activation_processes.ts` fixture against installer-built binaries before
+  release; it asserts unchanged process identities through both activation
+  paths.
+- Existing legacy overlay checkpoints with private edits block sandbox startup;
+  users must activate or export them with the previous kernel. Never silently
+  discard private work when selecting the sparse backend.
 - [PROTOTYPE.md](PROTOTYPE.md) owns prototype build, operation, and native UUI
   verification instructions. Optimization and broader qualification are
   deferred.
@@ -291,10 +299,10 @@ Parent DOX: [development DOX](../AGENTS.md).
   without repeating schema work, hooks or revision publication. Published
   attempts retain their package claims and reject rollback. Ordinary, bootstrap
   and recovery paths share finalization; checks also reject a failed
-  completion-record write. `activation-stage.patch` adds the matching enum value
-  only to the copied packages table definition used by the native schema test.
-  Full runtime convergence and startup handling remain separate qualification
-  gates.
+  completion-record write. The ordinary packages table now declares the matching
+  enum value; `activation-stage.patch` retains the original experimental change
+  as evidence and is no longer applied by builds or fixtures. Full runtime
+  convergence and startup handling remain separate qualification gates.
 - `batch-recovery-failure.json` records one busy attempt preventing recovery of
   unrelated abandoned attempts. Its negative control retains the current safety
   checks and substitutes single-attempt dispatch. Recovery now snapshots at most
@@ -408,8 +416,9 @@ Parent DOX: [development DOX](../AGENTS.md).
 - The schema fixture records original package-input hashes, the stage-definition
   patch digest, and Git trees of the final staged packages before bootstrap.
 - Characterization of a defect is evidence, not an accepted behavior contract.
-- Keep prototypes separate from production and distinguish measured results,
-  proposed behavior, and remaining validation gates.
+- Ordinary installs include the accepted working prototype. Keep disposable
+  experiments separate from installed instances and distinguish measured
+  results, current behavior and remaining qualification gates.
 - Evaluate asset-heavy packages as well as small-file counts. Record initial and
   recurring bytes copied, allocated storage, freshness of unrelated files in the
   same package, and conflict behavior while the developer keeps editing. A
@@ -467,6 +476,10 @@ Parent DOX: [development DOX](../AGENTS.md).
 
 # Verification
 
+- The ordinary installer and both Dockerfiles use `run.py build`, requiring
+  Python 3 only during building. Verify fresh-cache SDK preparation and execute
+  the native browser fixture using these binaries, including a relocated binary
+  directory. It checks retained processes and refusal to ignore legacy edits.
 - `python3 kernel/development/analysis/start-prototype.py` exercises the manual
   launch path using already built artifacts. Check login readiness and ordinary
   administration; use the existing native browser record for merge/deletion
@@ -672,9 +685,9 @@ Parent DOX: [development DOX](../AGENTS.md).
   schema/hooks, and the actual helper. Automatic cleanup after retained handles
   close, snapshot reclamation, transactional recovery, and conflict installation
   over later edits remain unimplemented.
-- Go experiments compile through a temporary source overlay and stay outside
-  normal production verification. Their successful completion characterizes
-  observed defects; it does not certify a completed redesign.
+- Go experiments compile through temporary source overlays. The installed build
+  reuses the sparse, activation and shared transaction inputs; other profiles
+  remain characterization checks and do not certify the installed workflow.
 - `terminal_state_probe.ts` runs with the local Deno executable and
   `--no-config --no-lock`. It compares stock xterm serialization against
   uninterrupted continuation and records `terminal-state-results.json`; unequal

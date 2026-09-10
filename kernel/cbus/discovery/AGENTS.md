@@ -33,6 +33,10 @@ Parent DOX: [kernel/kernel/cbus DOX](../AGENTS.md).
   fragments.
 - Package fragments are validated independently. A broken fragment is omitted
   without hiding valid packages.
+- The installed transaction overlay inspects declarations outside the catalog
+  lock and rejects stale publication snapshots. Its implementation and
+  concurrent refresh checks are in
+  [development analysis](../../development/analysis/AGENTS.md).
 - Candidate command manifests and program references resolve through the shared
   package resolver against the entire candidate batch, then ready active
   packages, before activation switches source. Removing a referenced program or

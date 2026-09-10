@@ -261,13 +261,19 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   revision-read failures gate the public plane; a failure to start one affected
   service remains local, keeps its revision pending, and retries without taking
   unrelated services offline.
-- Local activation and the shared-state monitor use the same serialized revision
-  consumer. A source update scans current service Worker imports and publishes
+- Local activation and the shared-state monitor use the same revision consumer.
+  A source update scans current service Worker imports and publishes
   deduplicated soft-restart intent before reindexing changed package fragments;
   the generic index follower then applies restart markers on every node.
   Scan/publication failures retain the update for retry without gating unrelated
   traffic. Composition injects Worker inspection and generic lifecycle methods;
   package code owns source-update orchestration. Followers never copy sources.
+- The installed transaction overlay claims selected package IDs under short
+  memory locks, performs indexing outside them, and retains later requests.
+  Synchronous callers wait only for selected busy owners after releasing other
+  claims. The monitor queues at most 16 bounded background batches; shutdown
+  cancels and joins them. Its implementation and focused checks are in
+  [development analysis](../development/analysis/AGENTS.md).
 - The runtime monitor uses cheap scalar package/index revisions on its normal
   cadence. Shared node topology refresh is independently bounded and never
   becomes a per-request or one-second full-table dependency; runtime callbacks

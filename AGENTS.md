@@ -388,11 +388,10 @@ relevant child AGENTS.md
   shut down. Sandbox idle shutdown follows the last ordinary console or retained
   terminal's destruction. Private source must follow shared updates only on
   untouched paths, merge from actual originals, and remain recoverable and
-  transportable without periodic scanning. The current runtime still uses
-  explicit overlay checkpoints and activation recreation; the pending redesign
-  and its evidence are owned by [development DOX](kernel/development/AGENTS.md).
-  Durable workspace and system/home state remain beneath
-  `users/<username>/dev-sandbox/`.
+  transportable without periodic scanning. Ordinary installation and Docker
+  builds compile the process-preserving workspace prototype described by
+  [development DOX](kernel/development/AGENTS.md). Durable workspace and
+  system/home state remain beneath `users/<username>/dev-sandbox/`.
 - Development images keep Deno installed for developer commands but run no
   background runtime or filesystem scanner. Their `sandbox.sh` initializes the
   fresh runtime filesystem and replaces itself with `sleep`; persistence is a
@@ -586,6 +585,13 @@ below.
   entrypoint's first-user path; a browser flow that creates its own test user
   does not verify that path. Report Docker build/run coverage separately from
   native runtime tests when Docker is unavailable.
+- `install.sh` requires Python 3 for the existing workspace prototype builder.
+  Its `run.py build` mode compiles the same filesystem, activation and shared
+  transaction inputs as `run.py prototype`, without staging sibling packages.
+  Keep `kernel`, `admin`, `logd`, and development `runsc` together when copying
+  executables; runtime lookup never embeds the source checkout's build path.
+  Bare Go owner tests still characterize the baseline sources. Release checks
+  must also run the native development fixture with `.development/bin/kernel`.
 - With Deno on PATH, `bash docker-entrypoint_test.sh` verifies startup progress,
   HTTP 200 readiness, failure diagnostics, the curl dependency, and structural
   existing-login-user detection, one-time bootstrap, restart bypass after user
@@ -597,7 +603,8 @@ below.
   configuration.
 - `install.sh` owns platform build and runtime-image freshness. It provisions a
   checksum-verified project-local Go toolchain and node-local gVisor, generates
-  the generic protocol, builds `kernel`, `admin`, and the dedicated `logd`,
+  the generic protocol, builds `kernel`, `admin`, the dedicated `logd`, and the
+  development `runsc` through `kernel/development/analysis/run.py build`,
   initializes the selected instance layout when absent, atomically refreshes
   platform-owned `node/kernel/runtime/definitions/`, read-only development
   helper scripts, and materializes verified service and development images under

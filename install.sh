@@ -40,6 +40,10 @@ if ! git --version >/dev/null 2>&1; then
   echo "git is installed but cannot be executed" >&2
   exit 1
 fi
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "python3 is required to build the development workspace" >&2
+  exit 1
+fi
 if [[ ! -d "$INSTANCE_ROOT" ]]; then
   echo "instance root does not exist: $INSTANCE_ROOT" >&2
   exit 1
@@ -138,13 +142,7 @@ export GOWORK=off
 echo "platform build [1/5]: generating protocols and building Go binaries" >&2
 "$GO_CMD" mod download
 "$GO_CMD" mod verify
-"$GO_CMD" run ./kernel/cbus/gen
-GOFMT_CMD="$($GO_CMD env GOROOT)/bin/gofmt"
-find "$DEVELOPMENT_DIR/generated" -name '*.go' -type f -print0 | xargs -0 "$GOFMT_CMD" -w
-"$GO_CMD" -C "$DEVELOPMENT_DIR/generated" list -mod=mod ./... >/dev/null
-"$GO_CMD" -C "$DEVELOPMENT_DIR/generated" build -mod=readonly -trimpath -o "$DEVELOPMENT_DIR/bin/kernel" ./cmd/kernel
-"$GO_CMD" -C "$DEVELOPMENT_DIR/generated" build -mod=readonly -trimpath -o "$DEVELOPMENT_DIR/bin/admin" ./cmd/admin
-"$GO_CMD" build -mod=readonly -trimpath -o "$DEVELOPMENT_DIR/bin/logd" ./kernel/logd
+THE8020_BUILD_GO="$GO_CMD" python3 "$SOURCE_ROOT/kernel/development/analysis/run.py" build
 
 KERNEL="$DEVELOPMENT_DIR/bin/kernel"
 KERNEL_CONFIG="$INSTANCE_ROOT/kernel.toml"

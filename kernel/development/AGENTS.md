@@ -96,9 +96,11 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   conflicting paths and concrete resolution and continuation instructions. No
   separate UUI-only merge state or resolver.
 - [analysis/REPORT.md](analysis/REPORT.md) records measured failures, design
-  recommendations, and filesystem qualification gates. The filesystem redesign
-  is pending; current activation still recreates the sandbox and does not meet
-  the process-preservation and publication requirements above.
+  recommendations, and remaining filesystem qualification gates. `install.sh`
+  and both Docker builds now include the process-preserving workspace prototype
+  through `analysis/run.py build`; `run.py prototype` builds the same owners for
+  separate review. The unoverlaid Go sources retain the old backend for baseline
+  experiments and are not the installed activation implementation.
 - Phase 2 demonstrates durable native private Git repositories and publication
   without workspace reset, including native conflicts and retained PTYs. That
   alternative requires explicit package synchronization and initial checkouts;
@@ -117,13 +119,16 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   against retained development records; live ownership checks reject foreign
   reuse before any backend cleanup.
 - Durable state is confined to `users/<username>/dev-sandbox/`: `sandbox.toml`,
-  overlay checkpoints, private `skills/`, and image-qualified writable system
+  sparse workspace data, private `skills/`, and image-qualified writable system
   roots. Unrelated files beneath `users/<username>/` are not sandbox state.
-- `/workspace/packages` is a gVisor-private writable overlay over the shared
-  package tree. The live gVisor filestore is disposable; explicit lifecycle
-  boundaries checkpoint private package deltas beneath `dev-sandbox/runtime/`
-  and restore them on start. There is no periodic checkpoint timer, autosave
-  loop, filesystem scanner, full-tree copy, or serialized file-content format.
+- `/workspace/packages` uses the sparse Gofer over the live shared tree. Private
+  files, originals, deletion records, captures and native Git state live beneath
+  `dev-sandbox/workspace/` and survive sandbox loss. Activation acknowledges its
+  captured changes without restarting processes or discarding later edits. There
+  is no periodic checkpoint timer, autosave loop or full-tree copy. A legacy
+  checkpoint containing private edits blocks startup with instructions to
+  activate or export those edits using the previous kernel; never silently
+  ignore that work when switching backends.
 - Node-local `development.idle_timeout` defaults to two hours with no ordinary
   consoles, pending opens, retained terminals, or active shell commands. A
   detached or exited retained terminal still protects its sandbox until the
@@ -149,34 +154,22 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   malformed roots, and never creates, starts, restarts, or mutates a sandbox.
 - Development sandboxes run as Linux root and have no `developer` account or
   `/home/developer`. Rootless runsc processes use the kernel-created identity
-  mapping for Linux UID/GID `0..65535`. Runsc directfs avoids gofer round trips
-  while retaining gVisor's exact donated-mount boundary and the private package
-  overlay.
+  mapping for Linux UID/GID `0..65535`. The development runsc uses the sparse
+  Gofer with directfs disabled, retaining the exact donated-mount boundary.
 - Manager startup never waits for inherited runsc cleanup or scans sandbox
   records. User lifecycle calls load only
   `users/<user_id>/dev-sandbox/sandbox.toml`. Only listing and cold identity
   registration enumerate user records. Per-user and per-sandbox-ID locks
   serialize lifecycle and inherited cleanup. The console broker resolves active
   development targets through `HasSandbox`, never by decoding a username.
-- Git scans happen only during explicit activation preview/run or lifecycle
-  checkpointing. Activation creates one commit per selected changed package,
-  uses Git merge/cherry-pick machinery, never pushes, preserves unselected
-  changes, and recreates the same registered sandbox with a clean overlay. Local
-  edits never affect the database. After candidate commits are staged, the
-  shared schema deployment hook validates and synchronizes affected tables
-  before Git references/source are published; failure leaves shared code and
-  unrelated private changes intact.
-- One kernel-owned non-login sandbox command scans all initialized package
-  repositories in a preview or activation. Disposable per-package indexes live
-  only in the sandbox's `/tmp`, reset when the shared base changes or an index
-  is invalid, and refresh incrementally across scans; patch capture reads the
-  exact index produced by its scan instead of rebuilding the package tree. New
-  untracked files excluded by the repository's standard Git ignore rules are
-  never previewed, checkpointed, or activated; already tracked paths retain
-  normal Git modification and deletion behavior even if later ignore rules match
-  them. Preview computes detailed raw and line statistics; activation and
-  lifecycle capture use a cheap changed/not-changed comparison before exporting
-  patches because those paths do not return file statistics.
+- Preview and activation enumerate private changes and prepare native Git only
+  for selected packages. Activation uses each path's retained original for
+  merging, never pushes, and preserves unselected changes and running processes.
+  Local edits never affect the database. The shared transaction validates and
+  synchronizes candidates before publication. Native conflict worktrees retain
+  failed attempts for either the CLI or UUI to resolve and continue. The
+  detailed filesystem, native Git and publication contracts live in
+  [analysis/AGENTS.md](analysis/AGENTS.md).
 - Preview always returns an array, including `packages = []` after reset. It
   reports every changed Git package with file and added/removed-row counts;
   changes remain visible but blocked when the shared worktree is not clean and
@@ -184,7 +177,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Preview uses `added`, `modified`, and `deleted` consistently for package and
   file changes. File/directory moves appear as deletions and additions, matching
   the selected-file diff. This presentation does not disable Git's merge rename
-  detection. Whole-package lifecycle support belongs to the sparse prototype.
+  detection. Package and namespace moves publish both ends together; new package
+  folders need a manifest, and activation initializes missing Git metadata.
 - Optional `preview_file` with one selected package loads only that changed
   file's bounded `diff: {text, notice?}`. Ordinary previews omit contents. Text
   uses native Git hunks without filesystem headers; binary, metadata-only, and
@@ -205,10 +199,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   metadata, resolves `dev-core.activate.preview` / `dev-core.activate.run` from
   the current command catalog, and passes ordinary package-command arguments. It
   is not a second activation implementation.
-- Helper activation carries `defer_overlay_reset` explicitly through the package
-  command and runtime callback. Go context values cannot cross that boundary.
-  The ingress flushes the successful response before resetting the overlay;
-  destroying its caller during the command can cancel the replacement start.
+- The legacy helper option `defer_overlay_reset` still crosses the ordinary
+  package-command boundary for baseline checks. Installed activation never
+  requests an overlay reset; CLI and UUI share the same process-preserving
+  owner.
 - Activation results retain a top-level error and, for resumable native
   conflicts, a `conflict_worktree` per package. The UUI uses sandbox inspection
   and the platform's native Git adapter to reopen that exact attempt; terminal
@@ -269,6 +263,12 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 # Verification
 
+- Run the package-owned `activation_processes.ts` native fixture with the
+  ordinary `.development/bin/kernel` and `admin`. It checks both activation
+  entry points, unchanged long-running process IDs/start times, and preservation
+  of legacy private work. Its invocation is in `analysis/PROTOTYPE.md`.
+- The baseline Go tests below do not by themselves verify installed activation;
+  the installer compiles the tested prototype overlay into its binaries.
 - Unit tests cover opaque IDs, collision rejection, direct ensure/reuse/restart,
   bounded and confined authorized-key reads without lifecycle mutation, user
   isolation, overlay checkpoint/restore, explicit batched Git scans,

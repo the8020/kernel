@@ -27,12 +27,20 @@ def sdk_overlay(setstat):
     """Share disposable SDK fixes without changing cached or installed inputs."""
     cached = ROOT / ".development/go-mod-cache" / ("gvisor.dev/gvisor@" + SDK)
     local = BUILD / ("sdk-" + SDK)
+    module = "module the8020-workflow-gofer-probe\n\ngo 1.26.5\n\n" + f"require gvisor.dev/gvisor {SDK}\n"
+    if not cached.exists():
+        # A clean release build has no experiment-populated module cache.
+        (BUILD / "go.mod").write_text(module)
+        subprocess.run([
+            os.environ.get("THE8020_BUILD_GO", str(ROOT / ".development/toolchains/go/bin/go")),
+            "mod", "download", "gvisor.dev/gvisor@" + SDK,
+        ], cwd=BUILD, check=True, env=os.environ | {
+            "GOWORK": "off", "GOMODCACHE": str(ROOT / ".development/go-mod-cache"),
+        })
     if not local.exists():
         # Go forbids overlays under GOMODCACHE. Hardlinks avoid a second SDK copy.
         shutil.copytree(cached, local, copy_function=os.link, symlinks=True)
-    (BUILD / "go.mod").write_text(
-        "module the8020-workflow-gofer-probe\n\ngo 1.26.5\n\n"
-        f"require gvisor.dev/gvisor {SDK}\n\nreplace gvisor.dev/gvisor => ./{local.name}\n")
+    (BUILD / "go.mod").write_text(module + f"\nreplace gvisor.dev/gvisor => ./{local.name}\n")
     stat_needle = "// regular file data, so there's no cache to truncate either.)\n\t\t\treturn nil"
     directory_needle = ("\t\tif fd.controlFD.node.isDeleted() {\n\t\t\treturn unix.EINVAL\n\t\t}\n"
                         "\t\treturn fd.impl.Getdent64")

@@ -225,13 +225,6 @@ func TestWorkflowAnalysisSchema(t *testing.T) {
 	for _, name := range []string{"db", "packages", "secrets", "system"} {
 		from, to := filepath.Join(source, name), filepath.Join(m.config.PackagesRoot, "the8020", name)
 		stagedHashes[name] = analysisStagePackage(t, from, to)
-		if name == "packages" {
-			patch := exec.Command("git", "apply", filepath.Join(source, "kernel/kernel/development/analysis/activation-stage.patch"))
-			patch.Dir = to
-			if output, err := patch.CombinedOutput(); err != nil {
-				t.Fatalf("patch disposable activation stage definition: %v: %s", err, output)
-			}
-		}
 		initializeTestRepository(t, m, "the8020/"+name, "Fixture", "fixture@example.test", "Schema fixture sources")
 		tree, err := gitOutput(to, "rev-parse", "HEAD^{tree}")
 		if err != nil {

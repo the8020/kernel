@@ -216,17 +216,19 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 - Development sandboxes use the same selected rootful or rootless runsc mode as
   workload isolation but a distinct editable image and lifecycle. Their writable
   package view never grants direct publication into shared package repositories;
-  the current implementation separately owns checkpointed private deltas, native
-  durable system/home storage, and Git activation. Follow development DOX for
-  the requested process-preserving publication and durable workspace redesign.
+  ordinary installation compiles the sparse workspace and process-preserving
+  activation from the existing prototype inputs. Its compiler overlay also
+  supplies the shared transaction and indexing contracts documented under
+  development analysis. Native durable system/home storage remains separate.
+  Follow development DOX for the build boundary and remaining qualification.
   Sandbox lifecycle never polls package content.
 
 # Work Guidance
 
 - The kernel is holy: change Go foundations only when absolutely necessary and
   with great care. Establish why the capability requires node authority or
-  generic execution support; keep application policy and unrelated
-  functionality in standalone Deno packages.
+  generic execution support; keep application policy and unrelated functionality
+  in standalone Deno packages.
 - Extend the smallest shared owner with an explicit reusable contract, then
   verify its regression and the affected package path. Do not add a caller
   workaround or parallel implementation to avoid fixing the owning foundation.

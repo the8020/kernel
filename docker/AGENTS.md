@@ -20,6 +20,9 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 - The deploy Dockerfile selects the newest kernel patch for its requested
   major.minor line before using the same installer and runtime payload folders.
 - Copy semantic directories rather than enumerating executables or helper files.
+- Builder images include Python 3 for the ordinary installer's workspace build.
+  The complete executable directory includes the custom development `runsc`; the
+  kernel resolves it beside its own executable after Docker relocation.
 - Invoke the portable smoke helper from the instance's installed runtime
   definitions. Keep all startup credentials in process memory and preserve
   existing login users. Parse `users.list` JSON with the already bundled Deno
@@ -28,10 +31,10 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   account.
 - Initial-account bootstrap runs once per persistent instance volume. After
   successful creation or confirming an existing login user, write the private
-  `node/docker/initial-user.done` marker. Later starts skip all user commands and
-  their Deno JSON parser, including after users are deleted or disabled. Failed
-  bootstrap leaves no marker and retries on the next start. The marker belongs
-  to the container entrypoint; image building and Go never create it.
+  `node/docker/initial-user.done` marker. Later starts skip all user commands
+  and their Deno JSON parser, including after users are deleted or disabled.
+  Failed bootstrap leaves no marker and retries on the next start. The marker
+  belongs to the container entrypoint; image building and Go never create it.
 - Login readiness probes immediately and waits 100 milliseconds between failed
   attempts, keeping the five-minute deadline and bounded serial requests.
 - Runtime containers need the documented unconfined outer seccomp profile for

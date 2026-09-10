@@ -2,6 +2,22 @@
 
 Parent: [analysis contract](AGENTS.md).
 
+Ordinary `install.sh` and both Docker builds now include this implementation.
+The installer calls `run.py build` and copies no test package snapshots. Python
+3 is a build prerequisite. Published 0.6.2 builds used the legacy backend, which
+restarted the development sandbox after activation; the separate prototype build
+was the only path including the implementation below.
+
+Use a fresh test instance when moving from 0.6.2 to this build: the activation
+table's new `published` stage changes its database constraint. Keep the existing
+instance/volume for its data and any private work; it is not migrated or deleted
+by the build.
+
+Keep all built executables together when relocating them: the kernel finds the
+development `runsc` beside itself. Existing legacy checkpoints containing
+private edits stop sandbox startup with recovery instructions instead of losing
+those edits. Activate or export them using the previous kernel before switching.
+
 The prototype provides ordinary file edits over shared packages, file-level
 copy-on-write, live untouched files, durable private Git state, and activation
 without restarting the development sandbox. Ordinary package creation and
@@ -78,13 +94,13 @@ python3 kernel/development/analysis/run.py prototype
 ```
 
 Outputs are in `.development/workflow-prototype/`: `kernel`, `admin`, `logd`,
-`runsc`, and `package-workspace/`. The kernel uses the custom `runsc` from that
-output directory, independently of later experiment builds. Keep that directory
-in place when running the prototype. The build uses the tested compiler overlays
-and leaves installed instances and the cached upstream SDK untouched. Staged
-package sources omit environment files and host Git metadata. Rebuilding
-replaces these generated inputs; it does not replace an existing review
-instance's packages. To build alongside a running review instance:
+`runsc`, and `package-workspace/`. The kernel uses the custom `runsc` beside its
+executable, independently of later experiment builds. The build uses the same
+tested compiler overlays as the installer and leaves existing instances and the
+cached upstream SDK untouched. Staged package sources omit environment files and
+host Git metadata. Rebuilding replaces these generated inputs; it does not
+replace an existing review instance's packages. To build alongside a running
+review instance:
 
 ```sh
 WORKFLOW_PROTOTYPE_OUTPUT=/workspace/8020/kernel/.development/workflow-renames \
@@ -140,7 +156,7 @@ python3 kernel/development/analysis/run.py schema
 ```
 
 The package-owned `dev-core/programs/development-test/prototype_browser.ts`
-fixture exercises the compiled prototype through the existing native UUI
+fixture exercises installer-built binaries through the existing native UUI
 harness. From `/workspace/8020/uui`, using the prepared runtime images:
 
 ```sh
@@ -148,19 +164,25 @@ harness. From `/workspace/8020/uui`, using the prepared runtime images:
   --source-root=/workspace/8020/kernel \
   --package-workspace=/workspace/8020/kernel/.development/workflow-prototype/package-workspace \
   --runtime-root=/workspace/8020/kernel/.development/named-terminal-test \
-  --kernel=/workspace/8020/kernel/.development/workflow-prototype/kernel \
-  --admin=/workspace/8020/kernel/.development/workflow-prototype/admin \
+  --kernel=/workspace/8020/kernel/.development/bin/kernel \
+  --admin=/workspace/8020/kernel/.development/bin/admin \
   --browser=/usr/bin/chromium \
   --fixture=../dev-core/programs/development-test/prototype_browser.ts
 ```
 
-Optimization, broader filesystem compatibility, host-power-loss qualification,
-and production adoption remain deferred. Ordinary symlink deletion, rename and
-Git conflict side selection pass the activation check, but reading an already
-open symlink after unlink still fails the separate namespace check. That case
-remains deferred compatibility work. Directory renames are covered by the
-focused rename check. Existing benchmark records retain their original source
-hashes and timing boundaries.
+For the focused activation lifetime check, use the same invocation with
+`--fixture=../dev-core/programs/development-test/activation_processes.ts`. It
+checks process IDs/start times through both activation entry points and refuses
+startup over a legacy checkpoint with private work. Use a relocated copy of the
+complete executable directory to verify packaging.
+
+Optimization, broader filesystem compatibility and host-power-loss qualification
+remain deferred. Ordinary symlink deletion, rename and Git conflict side
+selection pass the activation check, but reading an already open symlink after
+unlink still fails the separate namespace check. That case remains deferred
+compatibility work. Directory renames are covered by the focused rename check.
+Existing benchmark records retain their original source hashes and timing
+boundaries.
 
 The browser exposed two lifecycle defects, now repaired in the prototype:
 explicit reindex waits for selected busy packages and applies current state;
