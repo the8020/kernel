@@ -69,8 +69,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   registered running target; omission ensures the user's development sandbox.
   Composition opens the package display owner before attaching the physical
   native view. Missing/exited processes are recreated; a surviving process keeps
-  its environment and working directory. Malformed/duplicate parameters, missing
-  PTY requests, and occupied input control still fail explicitly.
+  its environment and working directory. A new SSH attachment takes control from
+  the previous browser or SSH connection without restarting the process.
+  Malformed/duplicate parameters and missing PTY requests still fail explicitly.
 - Retained attachment uses the shared console owner's native display stream.
   Deno supplies recovered VT display bytes; Go interprets no terminal state. SSH
   EOF/disconnection releases the attachment without PTY EOF or hangup. Native
@@ -100,8 +101,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   including a contextual working-directory prompt and a plain-`xterm` Nano
   full-screen session.
 - `terminal_test.go` uses real SSH authentication/channels and the retained
-  broker to verify repeated attachment, selector rejection, raw input, and
-  disconnect without native EOF or process recreation. The sibling dev-core
+  broker to verify competing attachment takeover, selector rejection, raw input,
+  and disconnect without native EOF or process recreation. The sibling dev-core
   native browser fixture also attaches OpenSSH to its running htop process and
   returns to the browser; package tests qualify the VT display projection
   separately.

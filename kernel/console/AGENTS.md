@@ -46,12 +46,14 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   after exit/destruction, or claim a missing processor at the current sequence.
   Claiming preserves the shell but starts fresh display state. Per-name pending
   opens are bounded and cancellable; locks never span provider I/O.
-- `OpenTerminalView` binds a native transport to an existing terminal and its
-  exclusive controller. Its opaque display pipe is supplied by the sole
-  processor through `NextView`/`WriteView`/`FinishView`. Each write is at most
-  64 KiB and acknowledges transport consumption. The package must send outside
-  its canonical parser queue and bound slow views. Missing processor ownership,
-  mismatched sandbox IDs, and stale view IDs fail explicitly.
+- `OpenTerminalView` binds a native transport to an existing terminal and takes
+  exclusive input/resize control from any prior browser or native attachment.
+  Target and processor validation precede takeover. Its opaque display pipe is
+  supplied by the sole processor through `NextView`/`WriteView`/`FinishView`.
+  Each write is at most 64 KiB and acknowledges transport consumption. The
+  package must send outside its canonical parser queue and bound slow views.
+  Missing processor ownership, mismatched sandbox IDs, and stale view IDs fail
+  explicitly.
 - `TakeControl` atomically revokes the prior input/resize lease across browser
   and SSH transports. View cancellation or processor loss interrupts blocked
   display I/O without ending the physical process. Native EOF on a retained

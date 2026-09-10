@@ -27,8 +27,8 @@ type terminalView struct {
 }
 
 // OpenTerminalView attaches an existing PTY after transport authentication. It
-// neither ensures a sandbox nor opens a process. Its output comes exclusively
-// from the Deno display owner; replaying raw query bytes would duplicate replies.
+// takes input control without ensuring a sandbox or opening a process. Its output
+// comes from the Deno display owner; raw query bytes would duplicate replies.
 func (m *Manager) OpenTerminalView(ctx context.Context, id, sandboxID string, size backend.ConsoleSize) (backend.Console, error) {
 	t, err := m.Terminal(id)
 	if err != nil {
@@ -43,7 +43,7 @@ func (m *Manager) OpenTerminalView(ctx context.Context, id, sandboxID string, si
 	if !hasProcessor {
 		return nil, errors.New("terminal display owner is unavailable")
 	}
-	a, err := t.Attach(true)
+	a, err := t.TakeControl()
 	if err != nil {
 		return nil, err
 	}

@@ -18,12 +18,24 @@ func TestTerminalViewUsesProcessorDisplayAndDetachesWithoutEOF(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
+	previous, err := terminal.Attach(true)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := m.OpenTerminalView(ctx, terminal.id, "sbx-bbbbbbbbbb", terminal.size); err == nil {
 		t.Fatal("accepted mismatched sandbox")
+	}
+	select {
+	case <-previous.detached:
+		t.Fatal("invalid target revoked the controller")
+	default:
 	}
 	view, err := m.OpenTerminalView(ctx, terminal.id, "", terminal.size)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := previous.Write([]byte("stale")); !errors.Is(err, ErrTerminalDetached) {
+		t.Fatalf("previous controller retained input: %v", err)
 	}
 	request, err := processor.NextView(ctx)
 	if err != nil {
@@ -79,7 +91,7 @@ func TestTerminalViewUsesProcessorDisplayAndDetachesWithoutEOF(t *testing.T) {
 }
 
 func TestTerminalViewTakeoverAndProcessorLossInterruptBlockedIO(t *testing.T) {
-	for _, action := range []string{"takeover", "processor", "close", "cancel"} {
+	for _, action := range []string{"takeover", "native-takeover", "processor", "close", "cancel"} {
 		t.Run(action, func(t *testing.T) {
 			m, terminal, opened := newRetainedTerminal(t)
 			processor, err := terminal.AttachProcessor(0)
@@ -103,6 +115,12 @@ func TestTerminalViewTakeoverAndProcessorLossInterruptBlockedIO(t *testing.T) {
 				if _, err := terminal.TakeControl(); err != nil {
 					t.Fatal(err)
 				}
+			case "native-takeover":
+				next, err := m.OpenTerminalView(ctx, terminal.id, "", terminal.Info().Size)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer next.Close()
 			case "processor":
 				_ = processor.Close()
 			case "close":

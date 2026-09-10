@@ -86,6 +86,7 @@ func TestSSHRetainedTerminalSelectionAndDetach(t *testing.T) {
 		}
 		_ = s.Close()
 	}
+	var previous *gossh.Session
 	for i := 0; i < 2; i++ {
 		s, err := client.NewSession()
 		if err != nil {
@@ -121,6 +122,18 @@ func TestSSHRetainedTerminalSelectionAndDetach(t *testing.T) {
 		if got := receiveBytes(t, provider.process.input); string(got) != "\x1b[A\x03" {
 			t.Fatalf("input = %q", got)
 		}
+		if i == 0 {
+			previous = s
+			continue // The next SSH connection must take over this live attachment.
+		}
+		finished := make(chan error, 1)
+		go func() { finished <- previous.Wait() }()
+		select {
+		case <-finished:
+		case <-ctx.Done():
+			t.Fatal("SSH takeover left the previous session attached")
+		}
+		_ = previous.Close()
 		_ = stdin.Close()
 		_ = s.Wait()
 		_ = s.Close()
