@@ -33,9 +33,9 @@ Parent DOX: [sandbox DOX](../AGENTS.md).
 - `go.mod` pins the generated SDK for runtime release `20260817.0`. Update that
   pin with `defaults/config/runtime/versions.toml` and requalify native
   behavior.
-- `sdk.patch` is limited to dependency error and descriptor correctness:
-  propagate shared-file SetStat failures, return Linux `ENOENT` for an open
-  removed directory, and read retained symlink descriptors with correct error
+- `sdk.patch` corrects dependency error and descriptor handling: propagate
+  shared-file SetStat failures, return Linux `ENOENT` for an open removed
+  directory, and read retained symlink descriptors with correct error
   propagation. Linux's
   [directory iterator](https://github.com/torvalds/linux/blob/master/fs/readdir.c)
   and
@@ -43,6 +43,12 @@ Parent DOX: [sandbox DOX](../AGENTS.md).
   define the descriptor behavior. Apply corrections only to a disposable
   verified SDK copy; never mutate the module cache or rewrite project sources.
   Remove each correction when the pinned upstream dependency supplies it.
+- The same patch removes the upstream CLI's temporary embedded-sidecar import,
+  omitting the unused cloud-checkpoint helper from the executable. Ordinary
+  sandbox execution and local checkpoints retain their existing paths. Cloud
+  checkpoints require the matching external helper; absence returns the upstream
+  missing-sidecar error. Remove this hunk when upstream retires the embedding
+  import.
 
 # Work Guidance
 

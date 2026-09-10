@@ -32,3 +32,11 @@
  		}
  		return fd.impl.Getdent64(uint32(req.Count), seek0, func(dirent Dirent64) {
  			// Paste the dirent into the payload buffer without having the dirent
+--- a/runsc/cli/maincli/maincli.go
++++ b/runsc/cli/maincli/maincli.go
+@@ -27,5 +27 @@
+-
+-	// TODO(gvisor.dev/issue/13718): Temporary.
+-	// Remove this import once sidecar binaries are replaced by on-disk binaries.
+-	_ "gvisor.dev/gvisor/runsc/gvisorbinaries/embed"
+ )

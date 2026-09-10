@@ -59,8 +59,9 @@ Parent DOX: [kernel/defaults DOX](../../AGENTS.md).
 - Portable installation publishes the common source-built gVisor `runsc` and
   pinned release-provided sentry prewarmer under `node/kernel/bin/`. The
   platform does not use the standalone metrics server or GCS checkpoint
-  sidecars; omit them from installed binaries. The SDK's embedded checkpoint
-  fallback remains upstream-owned. Services, jobs, development and native image
+  sidecars; omit them from installed binaries and omit the SDK's embedded
+  checkpoint fallback at compilation. Cloud checkpoints require a separately
+  installed matching helper. Services, jobs, development and native image
   construction use that same engine. Link `gvisor-bin/gvisor_sentry` to
   `../runsc` so both entrypoints execute the same patched engine. Its source
   input defaults to `.development/runtime-bin/runsc` and must report the pinned
