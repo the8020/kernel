@@ -1,7 +1,0 @@
-workflow runtime profile: current
-=== RUN   TestWorkflowAnalysisActivation
-    workflow_sparse_activation_test.go:1197: file-only activation did not reject directory intent: {"success":false,"status":"failed","overlay_reset":false,"packages":[]}
---- FAIL: TestWorkflowAnalysisActivation (10.23s)
-FAIL
-FAIL	the8020/kernel/development	10.238s
-FAIL

@@ -12,7 +12,9 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"the8020/kernel/database"
 	"the8020/kernel/deployment"
@@ -27,6 +29,7 @@ type fakeJobs struct {
 	failAt       int
 	dependencies map[string][]string
 	descriptor   func(evaluationItem) database.TableDescriptor
+	beforeRun    func(context.Context, evaluationRequest) error
 }
 
 type guardedCatalog struct {
@@ -40,7 +43,7 @@ func (c *guardedCatalog) ActivatedPackageCommit(_ context.Context, packageID str
 	return "", c.err
 }
 
-func (f *fakeJobs) Run(_ context.Context, _, _ string, options jobs.Options) (jobs.Record, error) {
+func (f *fakeJobs) Run(ctx context.Context, _, _ string, options jobs.Options) (jobs.Record, error) {
 	f.calls = append(f.calls, options)
 	if f.failAt > 0 && len(f.calls) == f.failAt {
 		return jobs.Record{}, errors.New("evaluator failed")
@@ -52,6 +55,11 @@ func (f *fakeJobs) Run(_ context.Context, _, _ string, options jobs.Options) (jo
 		return jobs.Record{}, errors.New("evaluator input was not one argument")
 	}
 	request := options.Arguments[0].(evaluationRequest)
+	if f.beforeRun != nil {
+		if err := f.beforeRun(ctx, request); err != nil {
+			return jobs.Record{}, err
+		}
+	}
 	tables := make([]database.EvaluatedTable, 0, len(request.Tables))
 	for _, item := range request.Tables {
 		descriptor := database.TableDescriptor{
@@ -116,6 +124,99 @@ func testEvaluator(t *testing.T, tableCount int) (*Evaluator, *fakeJobs, *databa
 
 func tableFile(index int) string {
 	return "table" + leftPad(index, 4) + ".ts"
+}
+
+func TestUnrelatedDeploymentPassesWaitingEvaluator(t *testing.T) {
+	evaluator, runner, manager, orders := testEvaluator(t, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := evaluator.SynchronizeAll(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	oldCommit := manager.Status().PackageSetHash
+	if _, err := manager.ExecContext(ctx, `INSERT INTO "acme__orders__table0000" ("id") VALUES ('retained')`); err != nil {
+		t.Fatal(err)
+	}
+	invoices := filepath.Join(filepath.Dir(orders), "invoices")
+	if err := os.MkdirAll(filepath.Join(invoices, "tables"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{"package.toml": "schema = 1\ndescription = \"Invoices\"\n", "tables/table0000.ts": "export default {};\n"} {
+		if err := os.WriteFile(filepath.Join(invoices, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	started, release := make(chan struct{}), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer unblock()
+	runner.beforeRun = func(ctx context.Context, request evaluationRequest) error {
+		if request.Tables[0].PackageCommit == "orders-new" {
+			close(started)
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		return nil
+	}
+	const first, second = "act-mmmmmmmmmm", "act-nnnnnnnnnn"
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- evaluator.Prepare(ctx, first, []deployment.Candidate{{PackageID: "acme/orders", Root: orders, Commit: "orders-new"}})
+	}()
+	select {
+	case <-started:
+	case err := <-firstDone:
+		t.Fatalf("first deployment did not start evaluation: %v", err)
+	case <-ctx.Done():
+		unblock()
+		<-firstDone
+		t.Fatal("first evaluation did not start")
+	}
+	secondDone := make(chan error, 1)
+	go func() {
+		err := evaluator.Prepare(ctx, second, []deployment.Candidate{{PackageID: "acme/invoices", Root: invoices, Commit: "invoices-new"}})
+		if err == nil {
+			err = evaluator.Complete(ctx, second, true)
+		}
+		secondDone <- err
+	}()
+	select {
+	case err := <-secondDone:
+		if err != nil {
+			unblock()
+			<-firstDone
+			t.Fatalf("unrelated deployment could not complete during evaluation: %v", err)
+		}
+	case <-time.After(time.Second):
+		unblock()
+		<-firstDone
+		<-secondDone
+		t.Fatal("unrelated deployment waited for another package's evaluation")
+	}
+	if pending, exists, err := manager.PendingDeploymentFor(ctx, first); err != nil || !exists || pending.Stage != "evaluating" {
+		t.Errorf("unrelated completion changed the first deployment: %+v: %v", pending, err)
+	}
+	unblock()
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	restored, err := New(Config{Packages: evaluator.packages, Jobs: runner, Database: manager})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.Complete(ctx, first, false); err != nil {
+		t.Fatal(err)
+	}
+	state, err := manager.CatalogState(ctx)
+	if err != nil || state.PackageCommits["acme/invoices"] != "invoices-new" || state.PackageCommits["acme/orders"] == "orders-new" || state.PackageSetHash == oldCommit || manager.Status().PendingDeployment {
+		t.Fatalf("rollback lost another deployment's publication: %+v: %v", state, err)
+	}
+	var row string
+	if err := manager.QueryRowContext(ctx, `SELECT "id" FROM "acme__orders__table0000"`).Scan(&row); err != nil || row != "retained" {
+		t.Fatalf("rollback lost data: %q: %v", row, err)
+	}
 }
 
 func leftPad(value, width int) string {
@@ -198,13 +299,13 @@ func TestExplicitSynchronizationRequiresActivatedSourceButCandidateUsesStage(t *
 	if err := os.WriteFile(filepath.Join(candidate, "tables", "next.ts"), []byte("export default {};\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := evaluator.Prepare(ctx, []deployment.Candidate{{PackageID: "acme/orders", Root: candidate, Commit: "candidate"}}); err != nil {
+	if err := evaluator.Prepare(ctx, "act-0123456789", []deployment.Candidate{{PackageID: "acme/orders", Root: candidate, Commit: "candidate"}}); err != nil {
 		t.Fatal(err)
 	}
 	if len(guard.calls) != 2 || len(runner.calls) != before+1 || len(runner.calls[before].Mounts) != 1 || runner.calls[before].Mounts[0].Source != candidate {
 		t.Fatalf("candidate guard=%#v call=%#v", guard.calls, runner.calls[before:])
 	}
-	if err := evaluator.Complete(ctx, true); err != nil {
+	if err := evaluator.Complete(ctx, "act-0123456789", true); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -224,7 +325,7 @@ func TestCandidatePreparationIsDurableAndRollbackRetiresCandidate(t *testing.T) 
 	if err := os.WriteFile(filepath.Join(candidate, "tables", "new_table.ts"), []byte("export default {};\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := evaluator.Prepare(context.Background(), []deployment.Candidate{{PackageID: "acme/orders", Root: candidate, Commit: "candidate"}}); err != nil {
+	if err := evaluator.Prepare(context.Background(), "act-0123456789", []deployment.Candidate{{PackageID: "acme/orders", Root: candidate, Commit: "candidate"}}); err != nil {
 		t.Fatal(err)
 	}
 	if !manager.Status().PendingDeployment {
@@ -234,7 +335,7 @@ func TestCandidatePreparationIsDurableAndRollbackRetiresCandidate(t *testing.T) 
 	if err != nil || detail.State != "active" {
 		t.Fatalf("prepared table = %#v, %v", detail, err)
 	}
-	if err := evaluator.Complete(context.Background(), false); err != nil {
+	if err := evaluator.Complete(context.Background(), "act-0123456789", false); err != nil {
 		t.Fatal(err)
 	}
 	detail, err = manager.InspectTable(context.Background(), "acme__orders__new_table")
@@ -257,7 +358,7 @@ func TestPackageRemovalRetiresTablesAndRemovesCatalogCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := len(runner.calls)
-	if err := evaluator.Prepare(ctx, []deployment.Candidate{{PackageID: "acme/orders", Root: packageRoot}}); err != nil {
+	if err := evaluator.Prepare(ctx, "act-0123456789", []deployment.Candidate{{PackageID: "acme/orders", Root: packageRoot}}); err != nil {
 		t.Fatal(err)
 	}
 	if len(runner.calls) != before {
@@ -266,7 +367,7 @@ func TestPackageRemovalRetiresTablesAndRemovesCatalogCommit(t *testing.T) {
 	if err := os.RemoveAll(packageRoot); err != nil {
 		t.Fatal(err)
 	}
-	if err := evaluator.Complete(ctx, true); err != nil {
+	if err := evaluator.Complete(ctx, "act-0123456789", true); err != nil {
 		t.Fatal(err)
 	}
 	detail, err := manager.InspectTable(ctx, tables[0].TableID)
@@ -288,7 +389,7 @@ func TestUninitializedCatalogAllowsPackageRecoveryBeforeFullRetry(t *testing.T) 
 	if manager.Status().Initialized {
 		t.Fatal("test catalog unexpectedly initialized")
 	}
-	if err := evaluator.Prepare(context.Background(), []deployment.Candidate{{
+	if err := evaluator.Prepare(context.Background(), "act-0123456789", []deployment.Candidate{{
 		PackageID: "acme/orders", Root: packageRoot, Commit: "replacement",
 	}}); err != nil {
 		t.Fatal(err)
@@ -296,7 +397,7 @@ func TestUninitializedCatalogAllowsPackageRecoveryBeforeFullRetry(t *testing.T) 
 	if len(runner.calls) != 0 || manager.Status().PendingDeployment {
 		t.Fatalf("uninitialized recovery evaluated=%d pending=%t", len(runner.calls), manager.Status().PendingDeployment)
 	}
-	if err := evaluator.Complete(context.Background(), true); err != nil {
+	if err := evaluator.Complete(context.Background(), "act-0123456789", true); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -343,7 +444,7 @@ func TestPendingDeploymentRecoveryAlignsTheActivePackageTree(t *testing.T) {
 		t.Fatal(err)
 	}
 	tableID := "acme__orders__table0000"
-	if _, err := manager.BeginDeployment(ctx, []database.DeploymentCandidate{{PackageID: "acme/orders", CandidateCommit: "candidate"}}); err != nil {
+	if _, err := manager.BeginDeployment(ctx, "act-0123456789", []database.DeploymentCandidate{{PackageID: "acme/orders", CandidateCommit: "candidate"}}); err != nil {
 		t.Fatal(err)
 	}
 	descriptor := database.TableDescriptor{
@@ -415,11 +516,13 @@ func TestIncrementalPreparationEvaluatesOnlyChangedAndDependentTables(t *testing
 		t.Fatal("candidate commit did not change")
 	}
 	before := len(runner.calls)
-	if err := evaluator.Prepare(ctx, []deployment.Candidate{{PackageID: "acme/orders", Root: candidate, Commit: newCommit}}); err != nil {
+	if err := evaluator.Prepare(ctx, "act-0123456789", []deployment.Candidate{{PackageID: "acme/orders", Root: candidate, Commit: newCommit}}); err != nil {
 		t.Fatal(err)
 	}
-	if evaluator.releaseDeployment == nil || evaluator.deploymentContext == nil {
-		t.Fatal("schema deployment lock was not retained through source activation")
+	if _, release, err := manager.AcquireActivationLock(ctx, "act-0123456789"); err != nil {
+		t.Fatalf("prepare retained operation ownership across the source switch: %v", err)
+	} else {
+		release()
 	}
 	modules := []string{}
 	for _, call := range runner.calls[before:] {
@@ -437,11 +540,11 @@ func TestIncrementalPreparationEvaluatesOnlyChangedAndDependentTables(t *testing
 	if err != nil || retired.State != "retired" {
 		t.Fatalf("deleted definition = %#v, %v", retired, err)
 	}
-	if err := evaluator.Complete(ctx, false); err != nil {
+	if err := evaluator.Complete(ctx, "act-0123456789", false); err != nil {
 		t.Fatal(err)
 	}
-	if evaluator.releaseDeployment != nil || evaluator.deploymentContext != nil {
-		t.Fatal("schema deployment lock was not released after completion")
+	if _, exists, err := manager.PendingDeploymentFor(ctx, "act-0123456789"); err != nil || exists {
+		t.Fatalf("schema deployment remained pending after completion: %v", err)
 	}
 }
 

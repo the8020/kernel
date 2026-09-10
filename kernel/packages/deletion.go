@@ -13,8 +13,6 @@ import (
 // DeletePackage publishes a removal through the same schema and catalog
 // transaction as other source changes. Physical database data is retained.
 func (s *Store) DeletePackage(ctx context.Context, packageID string) error {
-	s.repositoryMu.Lock()
-	defer s.repositoryMu.Unlock()
 	unlock, err := s.lockPackage(ctx, packageID)
 	if err != nil {
 		return err
@@ -35,6 +33,10 @@ func (s *Store) DeletePackage(ctx context.Context, packageID string) error {
 		}
 	}
 	hook := s.schemaDeployment()
+	transactionID, err := activationID()
+	if err != nil {
+		return err
+	}
 	if hook == nil {
 		return errors.New("package activation is unavailable")
 	}
@@ -43,21 +45,21 @@ func (s *Store) DeletePackage(ctx context.Context, packageID string) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if err := hook.Prepare(ctx, []deployment.Candidate{{PackageID: packageID, Root: path}}); err != nil {
+	if err := hook.Prepare(ctx, transactionID, []deployment.Candidate{{PackageID: packageID, Root: path}}); err != nil {
 		return err
 	}
 	if exists {
 		if err := os.Rename(path, path+".previous"); err != nil {
-			return errors.Join(err, hook.Complete(context.WithoutCancel(ctx), false))
+			return errors.Join(err, hook.Complete(context.WithoutCancel(ctx), transactionID, false))
 		}
 		if err := syncPackageDirectory(filepath.Dir(path)); err != nil {
 			if restoreErr := os.Rename(path+".previous", path); restoreErr != nil {
-				return errors.Join(err, restoreErr, hook.Complete(context.WithoutCancel(ctx), true))
+				return errors.Join(err, restoreErr, hook.Complete(context.WithoutCancel(ctx), transactionID, true))
 			}
-			return errors.Join(err, hook.Complete(context.WithoutCancel(ctx), false))
+			return errors.Join(err, hook.Complete(context.WithoutCancel(ctx), transactionID, false))
 		}
 	}
-	completionErr := hook.Complete(ctx, true)
+	completionErr := hook.Complete(ctx, transactionID, true)
 	if completionErr != nil {
 		if _, indexed, err := s.index.Get(context.WithoutCancel(ctx), packageID); err != nil || indexed {
 			return fmt.Errorf("complete package removal: %w", errors.Join(completionErr, err))

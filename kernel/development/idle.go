@@ -88,7 +88,7 @@ func (m *Manager) expireIdle(use *sandboxUse) {
 		if m.config.Logger != nil {
 			m.config.Logger.Error("idle development sandbox stop failed", "sandbox_id", use.sandboxID, "error", err)
 		}
-		// Preserve the sandbox after checkpoint failure; retry after another idle interval.
+		// Preserve ownership after stop failure; retry after another idle interval.
 		use.mu.Lock()
 		use.idleSince = time.Now()
 		m.armIdleLocked(use)

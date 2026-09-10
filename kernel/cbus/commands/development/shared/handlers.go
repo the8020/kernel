@@ -153,7 +153,6 @@ func ActivateRun(s *services.Services) core.Handler {
 		if err != nil {
 			return nil, err
 		}
-		options.DeferOverlayReset = commandutil.Bool(request, "defer_overlay_reset")
 		result, activationErr := service.Activate(ctx, commandutil.String(request, "user_id"), options)
 		if result.Status != "" {
 			return core.Result{"activation": result}, nil

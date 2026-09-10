@@ -203,30 +203,46 @@ func (m *Manager) Close(ctx context.Context) error {
 		active = append(active, activeSandbox{sandboxID: key.(string), userID: use.userID})
 		return true
 	})
-	for _, item := range active {
+	closeSandbox := func(item activeSandbox) error {
 		unlock := m.lockUser(item.userID)
+		defer unlock()
 		sandbox, err := m.loadSandbox(item.userID)
 		if err != nil || sandbox.SandboxID != item.sandboxID {
-			joined = errors.Join(joined, err)
-			unlock()
-			continue
+			return err
 		}
-		checkpointErr := m.checkpointOverlayLocked(ctx, sandbox)
 		stopErr := m.driver.Stop(ctx, item.sandboxID)
 		deleteErr := m.driver.Delete(ctx, item.sandboxID)
-		joined = errors.Join(joined, checkpointErr, stopErr, deleteErr)
+		result := errors.Join(stopErr, deleteErr)
 		if deleteErr != nil {
-			unlock()
-			continue
+			return result
 		}
 		_ = removeDevelopmentFilestore(m.config.PackagesRoot, item.sandboxID)
 		m.forgetSandbox(item.sandboxID)
 		sandbox.State = StateStopped
-		sandbox.ActivationActive, sandbox.WritesPaused = false, false
+		sandbox.ActivationActive = false
 		sandbox.UpdatedAt = time.Now().UTC()
-		joined = errors.Join(joined, m.saveSandbox(sandbox))
-		unlock()
+		return errors.Join(result, m.saveSandbox(sandbox))
 	}
+	var next atomic.Int64
+	var wait sync.WaitGroup
+	var resultMu sync.Mutex
+	// ponytail: at most eight independent teardowns; tune against actual shutdown
+	// load if larger developer counts exhaust the common shutdown deadline.
+	for range min(8, len(active)) {
+		wait.Go(func() {
+			for {
+				index := int(next.Add(1) - 1)
+				if index >= len(active) {
+					return
+				}
+				err := closeSandbox(active[index])
+				resultMu.Lock()
+				joined = errors.Join(joined, err)
+				resultMu.Unlock()
+			}
+		})
+	}
+	wait.Wait()
 	if m.server != nil {
 		joined = errors.Join(joined, m.server.Shutdown(ctx))
 	}
@@ -451,7 +467,7 @@ func (m *Manager) startLocked(ctx context.Context, sandbox *Sandbox) error {
 		return fmt.Errorf("delete inherited development sandbox %s: %w", sandbox.SandboxID, err)
 	}
 	_ = removeDevelopmentFilestore(m.config.PackagesRoot, sandbox.SandboxID)
-	start := SandboxStart{UserID: sandbox.UserID, SandboxID: sandbox.SandboxID, Packages: sandbox.SourcePath, RootFS: sandbox.SystemPath, Endpoint: m.endpoint, Token: sandbox.Token, Mounts: mounts}
+	start := SandboxStart{UserID: sandbox.UserID, SandboxID: sandbox.SandboxID, Packages: sandbox.SourcePath, WorkspaceRoot: filepath.Join(m.sandboxRoot(*sandbox), "workspace"), RootFS: sandbox.SystemPath, Endpoint: m.endpoint, Token: sandbox.Token, Mounts: mounts}
 	if m.config.SystemURL != nil {
 		start.SystemURL = m.config.SystemURL()
 	}
@@ -460,17 +476,6 @@ func (m *Manager) startLocked(ctx context.Context, sandbox *Sandbox) error {
 	}
 	use := &sandboxUse{userID: sandbox.UserID, sandboxID: sandbox.SandboxID}
 	m.owned.Store(sandbox.SandboxID, use)
-	if err := m.restoreOverlayLocked(ctx, sandbox); err != nil {
-		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = m.driver.Kill(cleanup, sandbox.SandboxID)
-		if deleteErr := m.driver.Delete(cleanup, sandbox.SandboxID); deleteErr != nil {
-			return errors.Join(err, deleteErr)
-		}
-		_ = removeDevelopmentFilestore(m.config.PackagesRoot, sandbox.SandboxID)
-		m.forgetSandbox(sandbox.SandboxID)
-		return err
-	}
 	sandbox.State = StateReady
 	sandbox.UpdatedAt = time.Now().UTC()
 	sandbox.CanSafelyReset = canSafelyReset(sandbox)
@@ -564,9 +569,6 @@ func (m *Manager) stopLocked(ctx context.Context, userID string, kill bool) (San
 	if _, active := m.owned.Load(sandbox.SandboxID); !active {
 		return sandbox, nil
 	}
-	if err := m.checkpointOverlayLocked(ctx, sandbox); err != nil {
-		return sandbox, fmt.Errorf("checkpoint development overlay before stop: %w", err)
-	}
 	sandbox.State, sandbox.UpdatedAt = StateStopping, time.Now().UTC()
 	_ = m.saveSandbox(sandbox)
 	if kill {
@@ -596,9 +598,6 @@ func (m *Manager) Restart(ctx context.Context, userID string) (Sandbox, error) {
 		return Sandbox{}, err
 	}
 	if _, active := m.owned.Load(sandbox.SandboxID); active {
-		if err := m.checkpointOverlayLocked(ctx, sandbox); err != nil {
-			return sandbox, fmt.Errorf("checkpoint development overlay before restart: %w", err)
-		}
 		_ = m.driver.Stop(ctx, sandbox.SandboxID)
 		if err := m.driver.Delete(ctx, sandbox.SandboxID); err != nil {
 			return sandbox, err
@@ -706,7 +705,7 @@ func (m *Manager) ResetSource(ctx context.Context, userID string, confirmed bool
 		_ = removeDevelopmentFilestore(m.config.PackagesRoot, sandbox.SandboxID)
 		m.forgetSandbox(sandbox.SandboxID)
 	}
-	if err := os.RemoveAll(m.overlayRoot(sandbox)); err != nil {
+	if err := m.resetWorkspace(&sandbox); err != nil {
 		return sandbox, err
 	}
 	sandbox.SourcePath, sandbox.ConflictedPackages, sandbox.State = "", nil, StateResetting
@@ -794,7 +793,7 @@ func (m *Manager) loadSandbox(userID string) (Sandbox, error) {
 	}
 	if !owned && sandbox.State != StateStopped && sandbox.State != StateFailed {
 		sandbox.State = StateStopped
-		sandbox.ActivationActive, sandbox.WritesPaused = false, false
+		sandbox.ActivationActive = false
 		sandbox.UpdatedAt = time.Now().UTC()
 		if err := m.saveSandbox(sandbox); err != nil {
 			return Sandbox{}, err
@@ -846,7 +845,7 @@ func (m *Manager) saveSandbox(sandbox Sandbox) error {
 }
 
 func canSafelyReset(sandbox *Sandbox) bool {
-	if sandbox == nil || sandbox.ActivationActive || sandbox.WritesPaused {
+	if sandbox == nil || sandbox.ActivationActive {
 		return false
 	}
 	switch sandbox.State {
@@ -974,19 +973,22 @@ func (m *Manager) serveSandbox(response http.ResponseWriter, request *http.Reque
 		}
 		_ = json.NewEncoder(response).Encode(result)
 	case "activate":
-		options.DeferOverlayReset = true
 		result, err := m.config.ActivationGateway.Activate(request.Context(), userID, options)
+		if err != nil {
+			result.Error = err.Error()
+		}
 		if err != nil || !result.Success {
 			response.WriteHeader(http.StatusConflict)
 		}
 		_ = json.NewEncoder(response).Encode(result)
-		if result.Success && result.OverlayResetPending {
-			if flusher, ok := response.(http.Flusher); ok {
-				flusher.Flush()
-			}
-			go m.resetOverlayAfterHelper(userID)
-		}
 	default:
 		http.NotFound(response, request)
 	}
+}
+
+func removeDevelopmentFilestore(packagesRoot, sandboxID string) error {
+	if !validDevelopmentSandboxID(sandboxID) {
+		return errors.New("safe development sandbox ID is required")
+	}
+	return os.Remove(filepath.Join(packagesRoot, ".gvisor.filestore."+sandboxID))
 }

@@ -389,7 +389,7 @@ relevant child AGENTS.md
   terminal's destruction. Private source must follow shared updates only on
   untouched paths, merge from actual originals, and remain recoverable and
   transportable without periodic scanning. Ordinary installation and Docker
-  builds compile the process-preserving workspace prototype described by
+  builds compile the ordinary process-preserving workspace sources described by
   [development DOX](kernel/development/AGENTS.md). Durable workspace and
   system/home state remain beneath `users/<username>/dev-sandbox/`.
 - Development images keep Deno installed for developer commands but run no
@@ -585,14 +585,14 @@ below.
   entrypoint's first-user path; a browser flow that creates its own test user
   does not verify that path. Report Docker build/run coverage separately from
   native runtime tests when Docker is unavailable.
-- `install.sh` requires Python 3 for the existing workspace prototype builder.
-  Its `run.py build` mode compiles the same filesystem, activation and shared
-  transaction inputs as `run.py prototype`, without staging sibling packages.
-  Keep `kernel`, `admin`, and `logd` together when copying executables. Install
-  the common built `runsc` once under `node/kernel/bin/` for services, jobs and
-  development; Docker must not ship a second development-only engine. Bare Go
-  owner tests still characterize the baseline sources. Release checks must also
-  run the native development fixture with `.development/bin/kernel`.
+- `build.sh` generates protocol/command glue and compiles ordinary production
+  sources plus the common native runsc module. Never extract implementations
+  from test files, apply project-source compiler overlays, or retain replaced
+  backends. Keep `kernel`, `admin`, and `logd` together when copying
+  executables. Install runsc once under `node/kernel/bin/` for services, jobs,
+  and development. Ordinary Go tests compile the same project sources as the
+  installed binaries; native fixtures additionally verify filesystem and process
+  behavior.
 - With Deno on PATH, `bash docker-entrypoint_test.sh` verifies startup progress,
   HTTP 200 readiness, failure diagnostics, the curl dependency, and structural
   existing-login-user detection, one-time bootstrap, restart bypass after user
@@ -605,8 +605,8 @@ below.
 - `install.sh` owns platform build and runtime-image freshness. It provisions a
   checksum-verified project-local Go toolchain and node-local gVisor, generates
   the generic protocol, builds `kernel`, `admin`, the dedicated `logd`, and the
-  common `runsc` through `kernel/development/analysis/run.py build`, initializes
-  the selected instance layout when absent, atomically refreshes platform-owned
+  common `runsc` through `build.sh`, initializes the selected instance layout
+  when absent, atomically refreshes platform-owned
   `node/kernel/runtime/definitions/`, read-only development helper scripts, and
   materializes verified service and development images under
   `node/kernel/runtime/images/`. Complete generic image-input digests make

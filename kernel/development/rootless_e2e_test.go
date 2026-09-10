@@ -38,15 +38,15 @@ func TestRootfulDevelopmentE2E(t *testing.T) {
 	runDevelopmentE2E(t, false)
 }
 
-func TestRootlessDevelopmentOverlayProbe(t *testing.T) {
-	if os.Getenv("THE8020_DEVELOPMENT_OVERLAY_PROBE") != "1" {
-		t.Skip("set THE8020_DEVELOPMENT_OVERLAY_PROBE=1 to probe the pinned gVisor overlay")
+func TestRootlessWorkspacePersistence(t *testing.T) {
+	if os.Getenv("THE8020_DEVELOPMENT_E2E") != "1" {
+		t.Skip("set THE8020_DEVELOPMENT_E2E=1 for native workspace checks")
 	}
 	sourceRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)
 	}
-	runsc := filepath.Join(sourceRoot, ".development", "runtime", "gvisor", "bin", "runsc")
+	runsc := filepath.Join(sourceRoot, ".development", "bin", "runsc")
 	imageRoot := filepath.Join(sourceRoot, ".development", "runtime", "development", "rootfs")
 	root := t.TempDir()
 	rootfs := filepath.Join(root, "rootfs")
@@ -62,7 +62,7 @@ func TestRootlessDevelopmentOverlayProbe(t *testing.T) {
 	})
 	installTestDevelopmentAssets(t, root)
 	start := SandboxStart{
-		UserID: "overlayprobe", SandboxID: "sbx-0123456789", Packages: packages, RootFS: rootfs,
+		WorkspaceRoot: filepath.Join(root, "workspace"), UserID: "workspace", SandboxID: "sbx-0123456789", Packages: packages, RootFS: rootfs,
 		Mounts: []SandboxMount{
 			{MountDefinition: MountDefinition{ID: "packages", Target: "/workspace/packages", Behavior: MountSandboxSource, Writable: true}, HostSource: packages},
 			{MountDefinition: MountDefinition{ID: "temporary", Target: "/tmp", Behavior: MountEphemeral, Writable: true}},
@@ -98,8 +98,8 @@ func TestRootlessDevelopmentOverlayProbe(t *testing.T) {
 	if err := driver.Start(context.Background(), start); err != nil {
 		t.Fatal(err)
 	}
-	if output, err := driver.Exec(context.Background(), start.SandboxID, "cat /workspace/packages/changed.txt; test ! -e /workspace/packages/added.txt"); err != nil || string(output) != "lower-one\n" {
-		t.Fatalf("fresh overlay after restart = %q, %v", output, err)
+	if output, err := driver.Exec(context.Background(), start.SandboxID, "cat /workspace/packages/changed.txt; cat /workspace/packages/added.txt"); err != nil || string(output) != "privateadded" {
+		t.Fatalf("persistent workspace after restart = %q, %v", output, err)
 	}
 }
 
@@ -109,7 +109,7 @@ func runDevelopmentE2E(t *testing.T, rootless bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runsc := filepath.Join(sourceRoot, ".development", "runtime", "gvisor", "bin", "runsc")
+	runsc := filepath.Join(sourceRoot, ".development", "bin", "runsc")
 	if !rootless {
 		runsc, err = exec.LookPath("runsc")
 		if err != nil {
@@ -212,7 +212,7 @@ func runDevelopmentE2E(t *testing.T, rootless bool) {
 	if err := json.Unmarshal([]byte(activationJSON), &activation); err != nil || !activation.Success {
 		t.Fatalf("helper activation = %q, %v", activationJSON, err)
 	}
-	waitForOverlayReset(t, manager, sandbox.UserID)
+	assertActivationComplete(t, manager, sandbox.UserID)
 	if contents, err := os.ReadFile(filepath.Join(packages, "the8020", "dev-core", "ssh-proof.txt")); err != nil || string(contents) != "changed through SSH\n" {
 		t.Fatalf("SSH package edit was not activated: %q, %v", contents, err)
 	}
@@ -234,7 +234,7 @@ func runDevelopmentE2E(t *testing.T, rootless bool) {
 	if err := json.Unmarshal([]byte(secondJSON), &second); err != nil || !second.Success || packageResult(second, "the8020/demo").Status != "committed" {
 		t.Fatalf("second helper activation = %q, %v", secondJSON, err)
 	}
-	waitForOverlayReset(t, manager, sandbox.UserID)
+	assertActivationComplete(t, manager, sandbox.UserID)
 	if contents, err := os.ReadFile(filepath.Join(packages, "the8020", "demo", "second-activation.txt")); err != nil || string(contents) != "second activation\n" {
 		t.Fatalf("second activation was not published: %q, %v", contents, err)
 	}
@@ -253,20 +253,16 @@ func runDevelopmentE2E(t *testing.T, rootless bool) {
 	shell(t, manager, sandbox.UserID, "test ! -e /root/.config/editor/proof && test ! -e /home/developer && ! getent passwd developer && ! command -v the8020-proof && ! command -v aptitude && grep -F private /workspace/packages/the8020/dev-core/src/message.ts")
 }
 
-func waitForOverlayReset(t *testing.T, manager *Manager, userID string) {
+func assertActivationComplete(t *testing.T, manager *Manager, userID string) {
 	t.Helper()
-	deadline := time.Now().Add(20 * time.Second)
-	for time.Now().Before(deadline) {
-		sandbox, inspectErr := manager.Inspect(userID)
-		if inspectErr == nil && sandbox.State == StateReady && sandbox.LastActivationResult != nil && sandbox.LastActivationResult.OverlayReset && !sandbox.LastActivationResult.OverlayResetPending {
-			preview, previewErr := manager.Preview(context.Background(), userID, ActivationOptions{})
-			if previewErr == nil && len(preview.Packages) == 0 {
-				return
-			}
-		}
-		time.Sleep(50 * time.Millisecond)
+	sandbox, err := manager.Inspect(userID)
+	if err != nil || sandbox.State != StateReady || sandbox.LastActivationResult == nil || !sandbox.LastActivationResult.Success {
+		t.Fatalf("activation incomplete: %+v: %v", sandbox, err)
 	}
-	t.Fatal("development overlay did not reset after helper activation")
+	preview, err := manager.Preview(context.Background(), userID, ActivationOptions{})
+	if err != nil || len(preview.Packages) != 0 {
+		t.Fatalf("published files remain pending: %+v: %v", preview, err)
+	}
 }
 
 // This fixture proves SSH/PTY behavior; authentication policy runs in users-package tests.

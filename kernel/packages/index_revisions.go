@@ -91,9 +91,13 @@ func (f *IndexRevisionFollower) Poll(ctx context.Context) (PackageSetUpdate, err
 	return update, nil
 }
 
+// Acknowledge ignores older completions without advancing the latest snapshot.
 func (f *IndexRevisionFollower) Acknowledge(revision uint64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if revision > 0 && (revision <= f.revision || revision < f.pending) {
+		return nil
+	}
 	if revision == 0 || revision != f.pending {
 		return fmt.Errorf("index revision %d is not pending", revision)
 	}

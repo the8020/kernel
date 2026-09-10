@@ -34,15 +34,17 @@ type PackageRevisionFollower struct {
 	pendingCommits  map[string]string
 }
 
-func NewPackageRevisionFollower(ctx context.Context, store *Store, installed map[string]string) (*PackageRevisionFollower, error) {
+// NewPackageRevisionFollower captures the published baseline immediately before
+// the caller builds its initial full local index. Later publications remain visible.
+func NewPackageRevisionFollower(ctx context.Context, store *Store) (*PackageRevisionFollower, error) {
 	if store == nil {
 		return nil, errors.New("package store is required")
 	}
-	revision, err := store.index.Revision(ctx)
+	revision, commits, err := store.index.Published(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("read package-set revision: %w", err)
+		return nil, fmt.Errorf("read published package set: %w", err)
 	}
-	return &PackageRevisionFollower{store: store, revision: revision, commits: cloneCommits(installed)}, nil
+	return &PackageRevisionFollower{store: store, revision: revision, commits: commits}, nil
 }
 
 func (f *PackageRevisionFollower) Poll(ctx context.Context) (PackageSetUpdate, error) {
@@ -58,17 +60,14 @@ func (f *PackageRevisionFollower) Poll(ctx context.Context) (PackageSetUpdate, e
 	if revision == f.revision {
 		return PackageSetUpdate{}, nil
 	}
-	entries, err := f.store.index.List(ctx)
+	publishedRevision, target, err := f.store.index.Published(ctx)
 	if err != nil {
-		return PackageSetUpdate{}, fmt.Errorf("load active package set: %w", err)
+		return PackageSetUpdate{}, fmt.Errorf("read published package set: %w", err)
 	}
-	target := make(map[string]string, len(entries))
-	for _, entry := range entries {
-		if entry.State != "ready" || entry.ActiveCommit == "" {
-			continue
-		}
-		target[entry.PackageID] = entry.ActiveCommit
+	if publishedRevision < revision {
+		return PackageSetUpdate{}, fmt.Errorf("package-set revision moved backwards from %d to %d", revision, publishedRevision)
 	}
+	revision = publishedRevision
 	changed := changedPackageIDs(f.commits, target)
 	update := PackageSetUpdate{Revision: revision, Packages: changed}
 	for _, packageID := range changed {
@@ -82,11 +81,14 @@ func (f *PackageRevisionFollower) Poll(ctx context.Context) (PackageSetUpdate, e
 	return update, nil
 }
 
-// Acknowledge advances local observation only after the caller has completed
-// every targeted service action. A failed action therefore retries safely.
+// Acknowledge advances after targeted work completes or enters its owning retry
+// queue. Older completions never consume a newer pending snapshot.
 func (f *PackageRevisionFollower) Acknowledge(revision uint64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if revision > 0 && (revision <= f.revision || revision < f.pendingRevision) {
+		return nil
+	}
 	if revision == 0 || revision != f.pendingRevision || f.pendingCommits == nil {
 		return fmt.Errorf("package-set revision %d is not pending", revision)
 	}

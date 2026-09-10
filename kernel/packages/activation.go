@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"sync"
+	"strings"
 	"time"
 
 	"the8020/kernel/database"
@@ -18,14 +18,16 @@ import (
 )
 
 const (
-	activationsTable        = `"the8020__packages__activations"`
-	activationPackagesTable = `"the8020__packages__activation_packages"`
-	hookRunsTable           = `"the8020__packages__hook_runs"`
+	activationsTable           = `"the8020__packages__activations"`
+	activationPackagesTable    = `"the8020__packages__activation_packages"`
+	hookRunsTable              = `"the8020__packages__hook_runs"`
+	unfinishedActivationStages = `('staged', 'schema_synchronized', 'pre_activated', 'code_switched', 'post_activated', 'published')`
 )
 
 type activationDatabase interface {
 	database.Store
 	AcquireDeploymentLock(context.Context) (context.Context, func(), error)
+	AcquireActivationLock(context.Context, string) (context.Context, func(), error)
 }
 
 type ActivationCoordinatorConfig struct {
@@ -49,9 +51,6 @@ type ActivationCoordinator struct {
 	validateCandidates func(context.Context, []deployment.Candidate) error
 	reindex            func(context.Context, []string) error
 	now                func() time.Time
-	mu                 sync.Mutex
-	current            *activationRun
-	release            func()
 }
 
 type activationRun struct {
@@ -89,82 +88,73 @@ func NewActivationCoordinator(config ActivationCoordinatorConfig) (*ActivationCo
 	}, nil
 }
 
-func (c *ActivationCoordinator) Prepare(ctx context.Context, candidates []deployment.Candidate) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.current != nil {
-		return errors.New("package activation is already in progress")
+func (c *ActivationCoordinator) Prepare(ctx context.Context, transactionID string, candidates []deployment.Candidate) error {
+	ctx, release, err := c.database.AcquireActivationLock(ctx, transactionID)
+	if err != nil {
+		return err
 	}
+	defer release()
 	handlers, err := c.validate(ctx, candidates)
 	if err != nil {
 		return err
 	}
-	lockedContext, release, err := c.database.AcquireDeploymentLock(ctx)
-	if err != nil {
-		return err
-	}
-	keepLock := false
-	defer func() {
-		if !keepLock {
-			release()
-		}
-	}()
-	run, err := c.begin(lockedContext, candidates)
+	run, err := c.begin(ctx, transactionID, candidates)
 	if err != nil {
 		return err
 	}
 	run.handlers = handlers
-	c.current = run
-	if err := c.schema.Prepare(lockedContext, candidates); err != nil {
-		_ = c.rollback(context.WithoutCancel(lockedContext), run, err)
-		c.current = nil
-		return err
+	if err := c.schema.Prepare(ctx, run.id, candidates); err != nil {
+		rollbackErr := c.rollback(context.WithoutCancel(ctx), run, err)
+		return errors.Join(err, rollbackErr)
 	}
-	if err := c.setStage(lockedContext, run.id, "schema_synchronized", nil); err != nil {
-		_ = c.rollback(context.WithoutCancel(lockedContext), run, err)
-		c.current = nil
-		return err
+	if err := c.setStage(ctx, run.id, "schema_synchronized", nil); err != nil {
+		rollbackErr := c.rollback(context.WithoutCancel(ctx), run, err)
+		return errors.Join(err, rollbackErr)
 	}
-	if err := c.runHooks(lockedContext, run, "pre-activate", true); err != nil {
-		_ = c.rollback(context.WithoutCancel(lockedContext), run, err)
-		c.current = nil
-		return err
+	if err := c.runHooks(ctx, run, "pre-activate", true); err != nil {
+		rollbackErr := c.rollback(context.WithoutCancel(ctx), run, err)
+		return errors.Join(err, rollbackErr)
 	}
-	if err := c.setStage(lockedContext, run.id, "pre_activated", nil); err != nil {
-		_ = c.rollback(context.WithoutCancel(lockedContext), run, err)
-		c.current = nil
-		return err
+	if err := c.setStage(ctx, run.id, "pre_activated", nil); err != nil {
+		rollbackErr := c.rollback(context.WithoutCancel(ctx), run, err)
+		return errors.Join(err, rollbackErr)
 	}
-	for _, candidate := range run.candidates {
-		if err := c.packages.index.SetActivation(lockedContext, candidate.PackageID, "activating", "", nil); err != nil {
-			_ = c.rollback(context.WithoutCancel(lockedContext), run, err)
-			c.current = nil
-			return err
-		}
-	}
-	c.release = release
-	keepLock = true
+	// Existing packages retain their published availability. The activation row
+	// owns pending work; shared source remains mutable during publication.
 	return nil
 }
 
-func (c *ActivationCoordinator) Complete(ctx context.Context, activated bool) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.current == nil {
-		run, err := c.loadPending(ctx)
-		if err != nil || run == nil {
-			return err
-		}
-		c.current = run
+func (c *ActivationCoordinator) Complete(ctx context.Context, transactionID string, activated bool) error {
+	ctx, release, err := c.database.AcquireActivationLock(ctx, transactionID)
+	if err != nil {
+		return err
 	}
-	run := c.current
-	defer func() {
-		c.current = nil
-		if c.release != nil {
-			c.release()
-			c.release = nil
+	defer release()
+	var stage string
+	if err := c.database.QueryRowContext(ctx, `SELECT "stage" FROM `+activationsTable+` WHERE "activationId" = $1`, transactionID).Scan(&stage); err != nil {
+		// A caller may lose execution before Prepare creates its durable row.
+		// Aborting that exact unused ID has no work to undo.
+		if errors.Is(err, sql.ErrNoRows) && !activated {
+			return nil
 		}
-	}()
+		return err
+	}
+	if stage == "complete" || stage == "failed" {
+		if activated != (stage == "complete") {
+			return fmt.Errorf("activation %s already ended as %s", transactionID, stage)
+		}
+		return nil
+	}
+	run, err := c.loadActivation(ctx, transactionID)
+	if err != nil {
+		return err
+	}
+	if stage == "published" {
+		if !activated {
+			return fmt.Errorf("activation %s is already published; finish activation instead of rolling it back", transactionID)
+		}
+		return c.finish(ctx, run)
+	}
 	if !activated {
 		cause := run.failure
 		if cause == nil {
@@ -183,7 +173,7 @@ func (c *ActivationCoordinator) Complete(ctx context.Context, activated bool) er
 	if err := c.setStage(ctx, run.id, "post_activated", nil); err != nil {
 		return err
 	}
-	if err := c.schema.Complete(ctx, true); err != nil {
+	if err := c.schema.Complete(ctx, run.id, true); err != nil {
 		c.incomplete(ctx, run, err)
 		return err
 	}
@@ -191,23 +181,13 @@ func (c *ActivationCoordinator) Complete(ctx context.Context, activated bool) er
 		c.incomplete(ctx, run, err)
 		return err
 	}
-	if c.reindex != nil {
-		if err := c.reindex(ctx, run.packageIDs()); err != nil {
-			return fmt.Errorf("reindex packages: %w", err)
-		}
-	}
-	return nil
+	return c.finish(ctx, run)
 }
 
 // Bootstrap runs both hooks for the source set already staged by the
 // installer, then publishes its package and service records. Schema tables
 // have already been synchronized, so there is no second schema pass.
 func (c *ActivationCoordinator) Bootstrap(ctx context.Context, commits map[string]string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.current != nil {
-		return errors.New("package activation is already in progress")
-	}
 	lockedContext, release, err := c.database.AcquireDeploymentLock(ctx)
 	if err != nil {
 		return err
@@ -226,13 +206,20 @@ func (c *ActivationCoordinator) Bootstrap(ctx context.Context, commits map[strin
 	if err != nil {
 		return err
 	}
-	run, err := c.begin(ctx, candidates)
+	transactionID, err := activationID()
+	if err != nil {
+		return err
+	}
+	ctx, releaseActivation, err := c.database.AcquireActivationLock(ctx, transactionID)
+	if err != nil {
+		return err
+	}
+	defer releaseActivation()
+	run, err := c.begin(ctx, transactionID, candidates)
 	if err != nil {
 		return err
 	}
 	run.handlers = handlers
-	c.current = run
-	defer func() { c.current = nil }()
 	if err := c.setStage(ctx, run.id, "schema_synchronized", nil); err != nil {
 		return err
 	}
@@ -257,28 +244,68 @@ func (c *ActivationCoordinator) Bootstrap(ctx context.Context, commits map[strin
 		c.incomplete(ctx, run, err)
 		return err
 	}
-	if c.reindex != nil {
-		if err := c.reindex(ctx, run.packageIDs()); err != nil {
-			return fmt.Errorf("reindex packages: %w", err)
-		}
-	}
-	return nil
+	return c.finish(ctx, run)
 }
 
-// Recover resumes a switched activation and safely abandons an unswitched or
-// partially switched one. Hook completion records make every retry targeted.
+// Recover visits a bounded snapshot of unfinished attempts. Busy or failed
+// attempts remain visible without preventing recovery of unrelated packages.
 func (c *ActivationCoordinator) Recover(ctx context.Context) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	lockedContext, release, err := c.database.AcquireDeploymentLock(ctx)
+	rows, err := c.database.QueryContext(ctx, `SELECT "activationId" FROM `+activationsTable+` WHERE "stage" IN `+unfinishedActivationStages+` ORDER BY "startedAt", "activationId" LIMIT 257`)
+	if err != nil {
+		return err
+	}
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	err = errors.Join(rows.Err(), rows.Close())
+	if err != nil {
+		return err
+	}
+	if len(ids) > 256 {
+		return errors.New("activation recovery exceeds the 256 unfinished-attempt limit")
+	}
+	var failures error
+	for _, id := range ids {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(failures, err)
+		}
+		if err := c.recoverActivation(ctx, id); err != nil {
+			failures = errors.Join(failures, fmt.Errorf("recover activation %s: %w", id, err))
+		}
+	}
+	return failures
+}
+
+func (c *ActivationCoordinator) recoverActivation(ctx context.Context, id string) error {
+	run, err := c.loadActivation(ctx, id)
+	if err != nil {
+		return err
+	}
+	releaseSources, err := LockSources(ctx, c.packages.packagesRoot, run.packageIDs())
+	if err != nil {
+		return err
+	}
+	defer releaseSources()
+	ctx, release, err := c.database.AcquireActivationLock(ctx, run.id)
 	if err != nil {
 		return err
 	}
 	defer release()
-	ctx = lockedContext
-	run, err := c.loadPending(ctx)
-	if err != nil || run == nil {
+	var stage string
+	if err := c.database.QueryRowContext(ctx, `SELECT "stage" FROM `+activationsTable+` WHERE "activationId" = $1`, run.id).Scan(&stage); err != nil {
 		return err
+	}
+	if stage == "complete" || stage == "failed" {
+		return nil
+	}
+	if stage == "published" {
+		return c.finish(ctx, run)
 	}
 	candidates := make([]deployment.Candidate, len(run.candidates))
 	for i := range run.candidates {
@@ -289,12 +316,6 @@ func (c *ActivationCoordinator) Recover(ctx context.Context) error {
 		return err
 	}
 	run.handlers = handlers
-	c.current = run
-	defer func() { c.current = nil }()
-	var stage string
-	if err := c.database.QueryRowContext(ctx, `SELECT "stage" FROM `+activationsTable+` WHERE "activationId" = $1`, run.id).Scan(&stage); err != nil {
-		return err
-	}
 	codeSwitched := stage == "code_switched" || stage == "post_activated"
 	if !codeSwitched {
 		switched := make([]activationCandidate, 0, len(run.candidates))
@@ -325,7 +346,7 @@ func (c *ActivationCoordinator) Recover(ctx context.Context) error {
 			for index := range run.candidates {
 				candidates[index] = run.candidates[index].Candidate
 			}
-			if err := c.schema.Prepare(ctx, candidates); err != nil {
+			if err := c.schema.Prepare(ctx, run.id, candidates); err != nil {
 				c.incomplete(ctx, run, err)
 				return err
 			}
@@ -347,7 +368,7 @@ func (c *ActivationCoordinator) Recover(ctx context.Context) error {
 			return err
 		}
 	}
-	// Complete inline while retaining the mutex.
+	// Complete while retaining this activation's operation ownership.
 	if err := c.runHooks(ctx, run, "post-activate", false); err != nil {
 		c.incomplete(ctx, run, err)
 		return err
@@ -355,7 +376,7 @@ func (c *ActivationCoordinator) Recover(ctx context.Context) error {
 	if err := c.setStage(ctx, run.id, "post_activated", nil); err != nil {
 		return err
 	}
-	if err := c.schema.Complete(ctx, true); err != nil {
+	if err := c.schema.Complete(ctx, run.id, true); err != nil {
 		c.incomplete(ctx, run, err)
 		return err
 	}
@@ -363,23 +384,11 @@ func (c *ActivationCoordinator) Recover(ctx context.Context) error {
 		c.incomplete(ctx, run, err)
 		return err
 	}
-	for _, candidate := range run.candidates {
-		if err := finalizePackageDirectory(c.packages.packagePath(candidate.PackageID)); err != nil {
-			return err
-		}
-	}
-	if c.reindex != nil {
-		if err := c.reindex(ctx, run.packageIDs()); err != nil {
-			return fmt.Errorf("reindex packages: %w", err)
-		}
-	}
-	return nil
+	return c.finish(ctx, run)
 }
 
 // Pending reports whether startup has an unfinished activation to recover.
 func (c *ActivationCoordinator) Pending(ctx context.Context) (bool, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	run, err := c.loadPending(ctx)
 	return run != nil, err
 }
@@ -449,24 +458,47 @@ func (c *ActivationCoordinator) restoreSources(ctx context.Context, candidates [
 	return joined
 }
 
-func (c *ActivationCoordinator) begin(ctx context.Context, raw []deployment.Candidate) (*activationRun, error) {
-	if len(raw) == 0 {
-		return nil, errors.New("activation candidates are required")
+func (c *ActivationCoordinator) begin(ctx context.Context, id string, raw []deployment.Candidate) (*activationRun, error) {
+	if !idgen.Is(id, "act") {
+		return nil, errors.New("invalid activation identity")
 	}
-	var pending string
-	if err := c.database.QueryRowContext(ctx, `SELECT "activationId" FROM `+activationsTable+` WHERE "stage" NOT IN ('complete', 'failed') ORDER BY "startedAt" LIMIT 1`).Scan(&pending); err == nil {
-		return nil, fmt.Errorf("package activation %s must be recovered first", pending)
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		return nil, err
+	if len(raw) == 0 || len(raw) > 256 {
+		return nil, errors.New("activation requires 1..256 candidates")
 	}
-	candidates := make([]activationCandidate, 0, len(raw))
 	seen := map[string]bool{}
-	for _, item := range raw {
+	parameters := make([]string, len(raw))
+	arguments := make([]any, len(raw))
+	for index, item := range raw {
 		_, identityErr := ParsePackageID(item.PackageID)
 		if seen[item.PackageID] || identityErr != nil || !filepath.IsAbs(item.Root) {
 			return nil, fmt.Errorf("invalid activation candidate %q", item.PackageID)
 		}
 		seen[item.PackageID] = true
+		parameters[index], arguments[index] = fmt.Sprintf("$%d", index+1), item.PackageID
+	}
+	ctx, release, err := c.database.AcquireDeploymentLock(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	// ponytail: cap unfinished activations at 256; normalize active package
+	// claims if deployments outgrow this bounded, stage-indexed lookup.
+	var pendingCount int
+	if err := c.database.QueryRowContext(ctx, `SELECT COUNT(*) FROM (SELECT 1 FROM `+activationsTable+` WHERE "stage" IN `+unfinishedActivationStages+` LIMIT 256) pending`).Scan(&pendingCount); err != nil {
+		return nil, err
+	}
+	if pendingCount == 256 {
+		return nil, errors.New("too many unfinished package activations (maximum 256)")
+	}
+	var pending, packageID string
+	if err := c.database.QueryRowContext(ctx, `SELECT a."activationId", p."packageId" FROM `+activationsTable+` a JOIN `+activationPackagesTable+` p ON p."activationId" = a."activationId"
+		WHERE a."stage" IN `+unfinishedActivationStages+` AND p."packageId" IN (`+strings.Join(parameters, ",")+`) LIMIT 1`, arguments...).Scan(&pending, &packageID); err == nil {
+		return nil, fmt.Errorf("package %s belongs to unfinished activation %s", packageID, pending)
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	candidates := make([]activationCandidate, 0, len(raw))
+	for _, item := range raw {
 		entry, exists, err := c.packages.index.Get(ctx, item.PackageID)
 		if err != nil {
 			return nil, err
@@ -481,10 +513,6 @@ func (c *ActivationCoordinator) begin(ctx context.Context, raw []deployment.Cand
 		candidates = append(candidates, activationCandidate{Candidate: item, previous: previous, first: previous == ""})
 	}
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].PackageID < candidates[j].PackageID })
-	id, err := activationID()
-	if err != nil {
-		return nil, err
-	}
 	previousSet, err := c.activeCommits(ctx)
 	if err != nil {
 		return nil, err
@@ -576,7 +604,9 @@ func (c *ActivationCoordinator) runHooks(ctx context.Context, run *activationRun
 	if run.handlers == nil {
 		candidates := make([]deployment.Candidate, 0, len(selected))
 		for _, candidate := range run.candidates {
-			candidates = append(candidates, selected[candidate.PackageID])
+			if candidate.Commit != "" {
+				candidates = append(candidates, selected[candidate.PackageID])
+			}
 		}
 		handlers, err := c.packages.indexCandidateHandlers(ctx, candidates)
 		if err != nil {
@@ -648,11 +678,15 @@ func (c *ActivationCoordinator) rollback(ctx context.Context, run *activationRun
 		}
 	}
 	// Schema restoration reads the previous source through the ready catalog.
-	if err := c.schema.Complete(ctx, false); err != nil {
+	if err := c.schema.Complete(ctx, run.id, false); err != nil {
 		joined = errors.Join(joined, err)
 	}
-	c.fail(ctx, run, cause)
-	return joined
+	run.failure = cause
+	if joined != nil {
+		c.incomplete(ctx, run, errors.Join(cause, joined))
+		return joined
+	}
+	return c.setStage(context.WithoutCancel(ctx), run.id, "failed", cause)
 }
 
 func (c *ActivationCoordinator) fail(ctx context.Context, run *activationRun, failure error) {
@@ -694,7 +728,7 @@ func (c *ActivationCoordinator) activeCommits(ctx context.Context) (map[string]s
 }
 
 // publish exposes every candidate, advances the package-set revision once,
-// and marks the activation complete in one transaction.
+// and records the remaining local finalization in one transaction.
 func (c *ActivationCoordinator) publish(ctx context.Context, run *activationRun) error {
 	tx, err := c.database.BeginTx(ctx, nil)
 	if err != nil {
@@ -724,22 +758,47 @@ func (c *ActivationCoordinator) publish(ctx context.Context, run *activationRun)
 	if _, err := tx.ExecContext(ctx, `INSERT INTO "the8020__system__revisions" ("domain", "revision", "updatedAt") VALUES ('packages', 1, $1) ON CONFLICT ("domain") DO UPDATE SET "revision" = "the8020__system__revisions"."revision" + 1, "updatedAt" = excluded."updatedAt"`, now); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE `+activationsTable+` SET "stage" = 'complete', "error" = NULL,
-		"updatedAt" = $1, "completedAt" = $1 WHERE "activationId" = $2`, now, run.id); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE `+activationsTable+` SET "stage" = 'published', "error" = NULL,
+		"updatedAt" = $1, "completedAt" = NULL WHERE "activationId" = $2`, now, run.id); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
+// finish resumes after durable publication without repeating schema work, hooks
+// or the package revision. Failed indexing and backup cleanup remain retryable.
+func (c *ActivationCoordinator) finish(ctx context.Context, run *activationRun) (err error) {
+	defer func() {
+		if err != nil {
+			c.incomplete(ctx, run, err)
+		}
+	}()
+	if c.reindex != nil {
+		if err := c.reindex(ctx, run.packageIDs()); err != nil {
+			return fmt.Errorf("reindex packages: %w", err)
+		}
+	}
+	for _, candidate := range run.candidates {
+		if err := finalizePackageDirectory(c.packages.packagePath(candidate.PackageID)); err != nil {
+			return err
+		}
+	}
+	return c.setStage(ctx, run.id, "complete", nil)
+}
+
 func (c *ActivationCoordinator) loadPending(ctx context.Context) (*activationRun, error) {
 	var id string
-	err := c.database.QueryRowContext(ctx, `SELECT "activationId" FROM `+activationsTable+` WHERE "stage" NOT IN ('complete', 'failed') ORDER BY "startedAt" DESC LIMIT 1`).Scan(&id)
+	err := c.database.QueryRowContext(ctx, `SELECT "activationId" FROM `+activationsTable+` WHERE "stage" IN `+unfinishedActivationStages+` ORDER BY "startedAt", "activationId" LIMIT 1`).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	return c.loadActivation(ctx, id)
+}
+
+func (c *ActivationCoordinator) loadActivation(ctx context.Context, id string) (*activationRun, error) {
 	rows, err := c.database.QueryContext(ctx, `SELECT "packageId", "previousCommit", "candidateCommit", "firstActivation" FROM `+activationPackagesTable+` WHERE "activationId" = $1 ORDER BY "packageId"`, id)
 	if err != nil {
 		return nil, err

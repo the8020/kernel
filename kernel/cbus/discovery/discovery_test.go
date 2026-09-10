@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -94,6 +95,97 @@ func (f *fakePrograms) Run(_ context.Context, programID, expectedCommit string, 
 		WorkerID: "wrk-abcdefghij", ContextID: "ctx-abcdefghij", ParentContextID: "ctx-0123456789",
 		LogPosition: "before-command", QueuedAt: time.Unix(123, 0).UTC(), FinishedAt: time.Unix(125, 0).UTC(),
 	}, f.err
+}
+
+type pausedCommandSource struct {
+	PackageSource
+	paused           atomic.Bool
+	started, release chan struct{}
+}
+
+func (s *pausedCommandSource) ActivatedPackageCommit(ctx context.Context, id string) (string, error) {
+	commit, err := s.PackageSource.ActivatedPackageCommit(ctx, id)
+	if id == "acme/one" && s.paused.CompareAndSwap(false, true) {
+		close(s.started)
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+	return commit, err
+}
+
+func TestCommandReindexAllowsConcurrentInspectionAndKeepsNewFragments(t *testing.T) {
+	for _, scenario := range []string{"unrelated", "same-package", "full"} {
+		t.Run(scenario, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			root := t.TempDir()
+			packages := &fakePackages{root: root}
+			for _, id := range []string{"acme/one", "acme/two"} {
+				writeCommandPackage(t, root, id, "list.toml", strings.ReplaceAll(id, "/", ".")+".list", "list", "")
+				packages.entries = append(packages.entries, workspacepackages.PackageIndex{PackageID: id, State: "ready", ActiveCommit: "first"})
+			}
+			registry := core.NewRegistry(nil)
+			indexer, err := New(packages, &fakePrograms{}, registry)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := indexer.Reindex(ctx); err != nil {
+				t.Fatal(err)
+			}
+			paused := &pausedCommandSource{PackageSource: packages, started: make(chan struct{}), release: make(chan struct{})}
+			indexer.packages = paused
+			release := sync.OnceFunc(func() { close(paused.release) })
+			var work sync.WaitGroup
+			defer func() { release(); cancel(); work.Wait() }()
+			one, two := make(chan error, 1), make(chan error, 1)
+			selected := []string{"acme/one"}
+			if scenario == "full" {
+				selected = nil
+			}
+			work.Go(func() { _, err := indexer.Reindex(ctx, selected...); one <- err })
+			select {
+			case <-paused.started:
+			case <-ctx.Done():
+				t.Fatal("older command inspection did not pause")
+			}
+			n := 0
+			if scenario == "unrelated" {
+				n = 1
+			}
+			packages.entries[n].ActiveCommit = "second"
+			id := packages.entries[n].PackageID
+			work.Go(func() { _, err := indexer.Reindex(ctx, id); two <- err })
+			blocked := false
+			select {
+			case err := <-two:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(time.Second):
+				blocked = true
+			}
+			release()
+			if err := <-one; err != nil {
+				t.Fatal(err)
+			}
+			if blocked {
+				<-two
+				t.Fatal("command refresh waited behind another package's inspection")
+			}
+			catalog := registry.Catalog()
+			if len(catalog.Commands) != 2 {
+				t.Fatalf("lost package commands: %#v", catalog)
+			}
+			for _, command := range catalog.Commands {
+				if command.Origin.PackageID == id && command.Origin.Commit != "second" {
+					t.Fatalf("older inspection overwrote the new command fragment: %#v", command)
+				}
+			}
+		})
+	}
 }
 
 func TestPackageCommandPreservesStructuredProgramErrors(t *testing.T) {

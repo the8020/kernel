@@ -165,25 +165,25 @@ func TestSharedStateReconciliationGatesFailuresAndRestoresReadyDatabase(t *testi
 	settings := &sharedSettingsStub{}
 	packages := &sharedPackageStateStub{}
 	gate := &servicePlaneGateStub{}
-	if err := reconcileSharedState(context.Background(), db, settings, gate, packages); err != nil || !gate.available || settings.calls != 1 || packages.calls != 1 {
+	if err := reconcileSharedState(context.Background(), db, settings, gate, packages.Refresh); err != nil || !gate.available || settings.calls != 1 || packages.calls != 1 {
 		t.Fatalf("ready reconciliation gate=%#v settings=%#v packages=%#v err=%v", gate, settings, packages, err)
 	}
 	db.err = errors.New("connection lost")
-	if err := reconcileSharedState(context.Background(), db, settings, gate, packages); !errors.Is(err, db.err) || gate.available || gate.reason != "database unavailable" || settings.calls != 1 || packages.calls != 1 {
+	if err := reconcileSharedState(context.Background(), db, settings, gate, packages.Refresh); !errors.Is(err, db.err) || gate.available || gate.reason != "database unavailable" || settings.calls != 1 || packages.calls != 1 {
 		t.Fatalf("connection failure gate=%#v settings=%#v err=%v", gate, settings, err)
 	}
 	db.err = nil
 	settings.err = errors.New("invalid shared setting")
-	if err := reconcileSharedState(context.Background(), db, settings, gate, packages); !errors.Is(err, settings.err) || gate.available || gate.reason != "global settings unavailable" || !errors.Is(db.marked, settings.err) || packages.calls != 1 {
+	if err := reconcileSharedState(context.Background(), db, settings, gate, packages.Refresh); !errors.Is(err, settings.err) || gate.available || gate.reason != "global settings unavailable" || !errors.Is(db.marked, settings.err) || packages.calls != 1 {
 		t.Fatalf("configuration failure gate=%#v marked=%v err=%v", gate, db.marked, err)
 	}
 	settings.err = nil
 	packages.err = errors.New("package checkout unavailable")
-	if err := reconcileSharedState(context.Background(), db, settings, gate, packages); !errors.Is(err, packages.err) || gate.available || gate.reason != "package state unavailable" || packages.calls != 2 {
+	if err := reconcileSharedState(context.Background(), db, settings, gate, packages.Refresh); !errors.Is(err, packages.err) || gate.available || gate.reason != "package state unavailable" || packages.calls != 2 {
 		t.Fatalf("package failure gate=%#v packages=%#v err=%v", gate, packages, err)
 	}
 	packages.err = nil
-	if err := reconcileSharedState(context.Background(), db, settings, gate, packages); err != nil || !gate.available || packages.calls != 3 {
+	if err := reconcileSharedState(context.Background(), db, settings, gate, packages.Refresh); err != nil || !gate.available || packages.calls != 3 {
 		t.Fatalf("recovery gate=%#v err=%v", gate, err)
 	}
 }
@@ -263,7 +263,7 @@ func TestTargetedIndexFailureDoesNotGateHealthyServicesOrRepeatDiscovery(t *test
 		return nil, failure
 	}, retry: func(context.Context) error { retries++; return failure }}
 	for range 2 {
-		if err := reconcileSharedState(context.Background(), db, settings, gate, shared); err != nil || !gate.available {
+		if err := reconcileSharedState(context.Background(), db, settings, gate, shared.Refresh); err != nil || !gate.available {
 			t.Fatalf("gate=%#v error=%v", gate, err)
 		}
 	}
@@ -450,7 +450,7 @@ func TestSharedStateHealthDeadlineDoesNotBoundOrdinaryIndexJobs(t *testing.T) {
 	defer cancel()
 	db := &sharedStateDatabaseStub{status: database.Status{State: database.StateReady}}
 	packages := &sharedPackageStateStub{}
-	if err := reconcileSharedState(ctx, db, &sharedSettingsStub{}, &servicePlaneGateStub{}, packages); err != nil {
+	if err := reconcileSharedState(ctx, db, &sharedSettingsStub{}, &servicePlaneGateStub{}, packages.Refresh); err != nil {
 		t.Fatal(err)
 	}
 	probeDeadline, _ := db.context.Deadline()

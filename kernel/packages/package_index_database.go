@@ -20,6 +20,7 @@ type PackageIndexStore interface {
 	Put(context.Context, PackageIndex) error
 	SetActivation(context.Context, string, string, string, error) error
 	Revision(context.Context) (uint64, error)
+	Published(context.Context) (uint64, map[string]string, error)
 }
 
 type DatabasePackageIndexStore struct{ database database.Store }
@@ -46,6 +47,34 @@ func (s *DatabasePackageIndexStore) Revision(ctx context.Context) (uint64, error
 		return 0, errors.New("package-set revision cannot be negative")
 	}
 	return uint64(revision), nil
+}
+
+// Published reads one database snapshot. Preparing an activation does not
+// unpublish the previous active commit; only publication or retirement changes it.
+func (s *DatabasePackageIndexStore) Published(ctx context.Context) (uint64, map[string]string, error) {
+	rows, err := s.database.QueryContext(ctx, `SELECT r.revision, p."packageId", p."activeCommit"
+		FROM (SELECT COALESCE((SELECT "revision" FROM "the8020__system__revisions"
+			WHERE "domain" = 'packages'), 0) AS revision) r
+		LEFT JOIN `+packagesTable+` p ON p."state" <> 'retired' AND p."activeCommit" <> ''`)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer rows.Close()
+	var revision int64
+	commits := map[string]string{}
+	for rows.Next() {
+		var packageID, commit sql.NullString
+		if err := rows.Scan(&revision, &packageID, &commit); err != nil {
+			return 0, nil, err
+		}
+		if revision < 0 {
+			return 0, nil, errors.New("package-set revision cannot be negative")
+		}
+		if packageID.Valid {
+			commits[packageID.String] = commit.String
+		}
+	}
+	return uint64(revision), commits, rows.Err()
 }
 
 func (s *DatabasePackageIndexStore) List(ctx context.Context) ([]PackageIndex, error) {

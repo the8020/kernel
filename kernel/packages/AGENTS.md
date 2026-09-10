@@ -63,13 +63,13 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   complete. The `published` stage retains retryable indexing/cleanup without
   repeating schema or hooks. Pending work is bound to an explicit activation ID;
   independent package sets can progress while overlapping publications reject.
-  These installed contracts are compiled from the shared transaction patch in
-  [development analysis](../development/analysis/AGENTS.md).
+  Ordinary package tests exercise these same production sources.
 - Native locks under `packages/.meta/activation-locks/` are created on demand by
   publication, retained for stable identity and acquired in sorted order.
   Repository operations, development activation and recovery share this owner.
-  Read-only observation never creates a lock and detects a first publisher
-  appearing during its source read.
+  Release explicitly unlocks before closing so a concurrent child fork cannot
+  prolong source ownership. Read-only observation never creates a lock and
+  detects a first publisher appearing during its source read.
 - Published commits and their revision come from one database snapshot.
   Preparing another activation never hides an already published package.
 - An activation candidate with an empty commit removes its package; its root is

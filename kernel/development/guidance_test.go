@@ -232,7 +232,7 @@ test ! -e /workspace/skills/builtin/new-shipped
 	if err := json.Unmarshal([]byte(output), &activation); err != nil || !activation.Success {
 		t.Fatalf("skill activation: %q, %v", output, err)
 	}
-	waitForOverlayReset(t, manager, sandbox.UserID)
+	assertActivationComplete(t, manager, sandbox.UserID)
 	publishedCheck := `set -eu
 grep -Fq 'Published skill edit' /workspace/skills/builtin/8020-dev/SKILL.md
 /workspace/scripts/setup-agent-skills.sh

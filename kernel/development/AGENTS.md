@@ -18,97 +18,27 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 # Local Contracts
 
-## Requested workflow
-
-- Implement and verify persistent native terminals before filesystem/Git work.
-  Phase 2 starts only in disposable checkouts and instances; production adoption
-  requires demonstrated correctness, ordinary native-tool behavior, and low
-  overhead. Keep the completed terminal feature if no filesystem candidate
-  qualifies. Phase 1 is complete and the user has authorized Phase 2. Qualify
-  storage and publication candidates in disposable experiments before adoption;
-  immediate shared updates on untouched paths remain the working requirement.
-  [WORKFLOW_IMPLEMENTATION.md](WORKFLOW_IMPLEMENTATION.md) tracks the ordered
-  implementation and verification gates.
-- Judge alternatives by developer outcomes: reliable conflict resolution,
-  continued visibility of shared changes during an editing session, durable
-  private work, and low storage/I/O cost for small edits. The user's suggested
-  mechanisms are open to better alternatives. A label edit must not require
-  cloning an asset-heavy package, and one edit must not freeze the rest of its
-  package or workspace until commit/discard. Agents need ordinary access to the
-  full packages tree without an explicit package-editing gate.
-- A tested alternative that fails these outcomes does not complete the goal.
-  Keep failed candidates as evidence and leave qualification active; do not
-  treat completion of experiments or a reduced-scope proposal as achievement.
-- The mounted workspace must support ordinary Linux filesystem behavior for
-  unmodified Git, Codex, Claude Code, editors, and build tools. Applications
-  must use normal paths and filesystem operations without knowing whether a file
-  is shared or private. Validate executable loading, mmap, locks, atomic saves,
-  links, open-handle behavior, and file watching; ordinary read/write tests
-  alone do not qualify a backend. Persistence bookkeeping stays below this
-  interface.
-- Activation must preserve running sandbox processes. Named terminal sessions
-  must survive navigation, refresh, switching views, and logout, with multiple
-  sessions selectable in the development-test program. Explicit session close
-  and sandbox shutdown end them; kernel-owned idle deadlines also apply.
-- Use unmodified htop for Phase 1 interactive compatibility checks: actual
-  rendering, keyboard shortcuts, scrolling, resizing, and recovery across
-  disconnects. The user waived separate Codex/Claude Code interface tests.
-  Retain the terminal protocol, input/paste, lifetime, and performance checks.
-- Prefer reusing the shared native console/PTY boundary beneath SSH and UUI for
-  persistent terminals. Give the PTY a lifetime independent of client sockets;
-  reconnect reuses a live process and a named open recreates a missing one.
-  Kernel owns the sandbox-scoped session name and physical terminal, and Deno
-  packages own selection, workflow, and display recovery. The shared retained
-  owner and browser/SSH adapters are implemented and verified; the checklist
-  records the completed Phase 1 evidence and Phase 2 qualification results.
-- Untouched paths follow shared publication immediately; private edits stay
-  isolated. Git must merge from each path's original observed version, preserve
-  non-overlapping changes, and reject real conflicts with a nonzero helper exit.
-  Conflicting paths, originals, both sides, and applicable text markers must
-  remain available inside the workspace for resolution and retry.
-- Private source must survive runtime loss and transfer to another sandbox as
-  readable/reapplicable state without periodic scanning or autosave. Publication
-  must preserve later writes, avoid long shared locks, and never reset the
-  sandbox to clear an overlay.
-- Reliability and low system overhead are acceptance gates. Benchmark actual
-  native-tool filesystem operations and concurrent developer activity against
-  the existing backend; fast Git candidate preparation alone does not qualify
-  workspace performance. Bound terminal history and replay work independently.
-- The measured sparse-Gofer read overhead is accepted for the prototype; normal
-  work does not repeatedly traverse the benchmark's large trees. Prioritize
-  correct writes and activation/merge behavior over additional read tuning. The
-  agent must edit ordinary files, call the activation script, resolve conflicts
-  using standard Git markers/files or unmerged index stages, and retry. Do not
-  require third-party conflict tools or a custom resolution protocol. Preserve
-  concurrent edits while presenting understandable native Git conflict state.
-- The immediate delivery priority is a working prototype, including ordinary
-  package creation/deletion and the shared CLI/UUI conflict workflow. Defer
-  optimization and broader filesystem qualification until that prototype is
-  usable; do not let those investigations delay this delivery. Preserve private
-  work, running processes and correct activation/conflict recovery throughout.
-- Provide a compact conflict-resolution screen in the development UUI using the
-  existing UUI code editor. Users select conflicting files, inspect clearly
-  labelled/colored sides, edit and resolve, then continue activation once all
-  conflicts are resolved. The package owns presentation; native Git conflict
-  files/index state remain the shared owner for UUI and the terminal helper. A
-  failed activation from either entry point must be resumable from the other,
-  including by an agent in the sandbox. The helper must print readable
-  conflicting paths and concrete resolution and continuation instructions. No
-  separate UUI-only merge state or resolver.
-- [analysis/REPORT.md](analysis/REPORT.md) records measured failures, design
-  recommendations, and remaining filesystem qualification gates. `install.sh`
-  and both Docker builds now include the process-preserving workspace prototype
-  through `analysis/run.py build`; `run.py prototype` builds the same owners for
-  separate review. The unoverlaid Go sources retain the old backend for baseline
-  experiments and are not the installed activation implementation.
-- Phase 2 demonstrates durable native private Git repositories and publication
-  without workspace reset, including native conflicts and retained PTYs. That
-  alternative requires explicit package synchronization and initial checkouts;
-  it is rejected for workspace adoption because of stale untouched files and
-  package-size copying. Keep its measured component results distinct from
-  qualification of a suitable filesystem and publisher.
-
-## Current implementation
+- Production implementations live in ordinary source. Builds never extract test
+  code, rewrite project source, or retain replaced backends for comparison.
+- Native tests assert behavior directly. Keep diagnostics for failures and
+  resource assertions; do not retain prototype report builders or result files.
+- Keep this native owner limited to sandbox authority, protected filesystem/Git
+  operations, durable publication/recovery, and process lifetime. Deno packages
+  own command presentation, screens, and user workflows.
+- Untouched files follow shared publication immediately; private edits remain
+  isolated. Merge from each path's original observed version, preserve later
+  edits, and retain native conflict worktrees for CLI/UUI continuation. Retained
+  originals keep upstream-deleted packages eligible for conflict recovery even
+  before the developer's private Git repository has a commit.
+- Small edits must not copy whole repositories or asset histories. Ordinary
+  tools use ordinary paths, without an explicit package-editing gate. Private
+  source survives runtime loss without periodic scanning or autosave.
+- Publication preserves running processes and named terminals. Explicit close,
+  sandbox shutdown, and kernel-owned idle deadlines govern their lifetimes.
+- Keep native filesystem checks for Git, atomic saves, links, executable
+  loading, mmap, retained handles, and private Git object retention. Broader
+  filesystem compatibility and host-power-loss qualification remain separate
+  gates.
 
 - The authenticated lowercase alphanumeric `user_id` is the only control-plane
   key. The shared kernel principal contract guarantees 3-32 characters. The
@@ -141,8 +71,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   timers never enumerate user records. Admission and idle stop share the
   per-user lifecycle lock, and old releases cannot affect replacement sandboxes.
   Runtime setting changes retain each original idle start. Expiry uses ordinary
-  checkpoint/stop; checkpoint failure preserves the sandbox, logs the failure,
-  and retries after another idle interval. No application package owns a timer.
+  stop; failure preserves ownership, logs the failure, and retries after another
+  idle interval. Private files are already persistent. No application package
+  owns a timer.
 - The writable OCI system root, including `/root`, is initialized from the
   current development image only when the sandbox is first created or after a
   confirmed factory reset. Its recorded image-qualified path and image
@@ -170,9 +101,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   merging, never pushes, and preserves unselected changes and running processes.
   Local edits never affect the database. The shared transaction validates and
   synchronizes candidates before publication. Native conflict worktrees retain
-  failed attempts for either the CLI or UUI to resolve and continue. The
-  detailed filesystem, native Git and publication contracts live in
-  [analysis/AGENTS.md](analysis/AGENTS.md).
+  failed attempts for either the CLI or UUI to resolve and continue.
+  `workspace.go` owns native workspace/Git transport; `activation.go` owns
+  capture, candidate preparation, publication, and journal recovery.
 - Preview always returns an array, including `packages = []` after reset. It
   reports every changed Git package with file and added/removed-row counts;
   changes remain visible but blocked when the shared worktree is not clean and
@@ -193,19 +124,15 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   and sanitized technical metadata.
 - Repository locking is independent of the per-user lifecycle lock. Never hold
   the lifecycle lock merely to inspect a shared repository.
-- Source reset discards overlay changes and recorded bases while preserving the
-  recorded system root and image provenance. Factory reset is the sole path that
-  removes exactly `users/<user>/dev-sandbox/` and initializes a replacement root
-  from the current development image, preserving unrelated user data. Both
-  require confirmation.
+- Source reset discards private workspace changes and recorded bases while
+  preserving the recorded system root and image provenance. Factory reset is the
+  sole path that removes exactly `users/<user>/dev-sandbox/` and initializes a
+  replacement root from the current development image, preserving unrelated user
+  data. Both require confirmation.
 - The helper endpoint authenticates the sandbox token, fixes helper client
   metadata, resolves `dev-core.activate.preview` / `dev-core.activate.run` from
   the current command catalog, and passes ordinary package-command arguments. It
   is not a second activation implementation.
-- The legacy helper option `defer_overlay_reset` still crosses the ordinary
-  package-command boundary for baseline checks. Installed activation never
-  requests an overlay reset; CLI and UUI share the same process-preserving
-  owner.
 - Activation results retain a top-level error and, for resumable native
   conflicts, a `conflict_worktree` per package. The UUI uses sandbox inspection
   and the platform's native Git adapter to reopen that exact attempt; terminal
@@ -261,55 +188,71 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   migrations, background reconciliation, or per-file persistence exceptions.
 - Keep temporary runtime files temporary and durable sandbox files beneath the
   one `dev-sandbox` root.
-- `ACTIVATION_PERFORMANCE.md` records the representative scan matrix and the
-  evidence behind retained and rejected activation optimizations.
 
 # Verification
 
-- Run the package-owned `activation_processes.ts` native fixture with the
-  ordinary `.development/bin/kernel` and `admin`. It checks both activation
-  entry points, unchanged long-running process IDs/start times, and preservation
-  of legacy private work. Its invocation is in `analysis/PROTOTYPE.md`.
-- The baseline Go tests below do not by themselves verify installed activation;
-  the installer compiles the tested prototype overlay into its binaries.
-- Unit tests cover opaque IDs, collision rejection, direct ensure/reuse/restart,
-  bounded and confined authorized-key reads without lifecycle mutation, user
-  isolation, overlay checkpoint/restore, explicit batched Git scans,
-  ignored-artifact exclusion, disposable-index recovery, schema-before-source
-  activation and rollback, activation/reset boundaries, repository-lock
-  separation, inherited-cleanup races, bounded diagnostics, and OCI mount
-  policy.
-- The real gVisor E2E covers SSH/PTY behavior, APT/dpkg persistence across
-  restart, temporary `/run`, directfs package isolation, ignored-artifact
-  exclusion, read-only helper mounting, repeated helper activation and clean
-  overlay resets, source and factory reset, root identity, and absence of a
-  developer account.
-- `TestSandboxHelperActivationDefersResetAcrossCommandBoundary` removes context
-  values at the package-command boundary and checks response-before-reset and
-  sandbox availability. The dev-core native recovery fixture covers that same
-  path through actual Deno Workers, the helper, and browser terminal reopening.
-- The opt-in `TestRootlessRetainedTerminals` uses disposable native gVisor PTYs
-  to check two independent shells across detach/reattach/switch, detached
-  output, explicit close, and process exit. Enable `THE8020_TERMINAL_E2E=1`. It
-  does not replace browser or htop display qualification.
-- Short-timeout unit tests cover last-console release, reconnect, running shell
-  protection, checkpoint failure, and private-file restoration. The dev-core
-  `test:native-idle` harness checks the real browser/SSH/metadata path with
-  seconds-long deadlines and subsequent sandbox shutdown.
-- `TestDevelopmentGuidance` runs the actual helper installer and verifies stale
-  helper removal, mount flags, and rejection of protected/file-special sources.
-  `TestDevelopmentSystemURL` checks URL propagation and refresh on restart. The
-  dev-skills package owns discovery policy unit tests.
-  `THE8020_GUIDANCE_E2E=1 go test ./kernel/development -run
-  '^TestRootlessDevelopmentGuidance$' -count=1 -v`
-  verifies the sibling dev-skills package in real gVisor: built-in write denial,
-  publication through the activation helper, both agents' merged discovery,
-  private user isolation, restart/source-reset persistence, factory-reset
-  removal, workspace-guide publication, and kernel-host loopback through the
-  supplied system URL. It requires the portable runtime and the sibling
-  dev-skills source checkout; ordinary unit tests use a bootstrap double.
+- `go test ./kernel/development ./kernel/packages ./kernel/database/...`
+  compiles the same ordinary sources as the installer. Transaction regressions
+  live in their owning packages, including
+  `packages/activation_transaction_test.go`.
+- Build with `./build.sh`.
+  `THE8020_DEVELOPMENT_E2E=1 go test
+  ./kernel/development -run '^TestNative' -count=1 -timeout=15m -v`
+  exercises the common `.development/bin/runsc` and prepared development/service
+  images. Prepare `.development/runtime/development/{rootfs,image.json}` and the
+  service image used by `activation_schema_test.go`. Native fixtures use short
+  disposable `/tmp` paths for Unix sockets. Shared/private storage must support
+  hardlinks. These checks qualify rootless gVisor; full containerd, live
+  PostgreSQL concurrency, arbitrary filesystem compatibility, and
+  host-power-loss safety require their separate checks.
+- Native tests cover private originals, live shared reads, ignored files,
+  rename/link/delete semantics, retained Git objects after shared removal/GC,
+  sparse conflicts, concurrent/later edits, interrupted publication, schema and
+  hook recovery, package creation/removal, and retained PTYs. Test fault
+  injection belongs at test transports and executables, never in shipped code.
+- The native schema fixture uses one-second Worker idle and sandbox keepalive
+  timeouts, runs ordinary idle-sandbox maintenance, and joins it before runtime
+  teardown. Recovery candidates must not retain one sandbox each until the
+  complete fixture exits.
+- Run heavy native and browser fixtures in a separate environment with explicit
+  CPU, memory, and runtime limits. Keep checks on shared development instances
+  small and sequential; stop if responsiveness degrades.
+- Unit tests cover identity collisions, user isolation, lifecycle and idle
+  admission, independent shutdown, bounded diagnostics, authorized-key
+  confinement, reset boundaries, mount policy, and helper guidance.
+- `TestRootlessDevelopmentE2E` covers native SSH/PTY, APT/dpkg persistence,
+  helper activation, source/factory reset and root identity. Set
+  `THE8020_DEVELOPMENT_E2E=1`; rootful qualification requires its separate
+  `THE8020_DEVELOPMENT_ROOTFUL_E2E=1` gate on an authorized host.
+- `THE8020_TERMINAL_E2E=1` enables retained-terminal checks. The package-owned
+  browser/SSH and short-idle fixtures qualify display and end-to-end lifetimes.
+- `THE8020_GUIDANCE_E2E=1` enables `TestRootlessDevelopmentGuidance` for real
+  dev-skills publication, merged discovery, mount protection, private skills,
+  and system-URL access. Unit guidance checks use a bootstrap double.
+- The sibling UUI harness stages disposable nodes and packages. From `uui/`,
+  with Deno on PATH and a prepared runtime root containing service/development
+  images and the current common runsc under `node/kernel/bin/`:
+
+  ```sh
+  THE8020_JOB_DEFAULT_MAXIMUM_PARALLEL_WORKERS=8 \
+  deno run -A --import-map=deno.local.json browser_e2e.ts \
+    --source-root=/workspace/8020/kernel \
+    --package-workspace=/workspace/8020 \
+    --runtime-root=/workspace/8020/kernel/.development/named-terminal-test \
+    --kernel=/workspace/8020/kernel/.development/bin/kernel \
+    --admin=/workspace/8020/kernel/.development/bin/admin \
+    --browser=/usr/bin/chromium \
+    --fixture=../dev-core/programs/development-test/activation_processes.ts
+  ```
+
+  This fixture checks CLI/UUI process continuity and the legacy-private-work
+  guard. Use `activation_browser.ts` for conflict editing and
+  `activation_concurrency.ts` for independent publication and overlap rejection.
+  Set the eight-Worker capacity at process startup for nested shell/activation
+  and hook jobs. Repeat the process fixture with relocated binaries to verify
+  packaging; keep `kernel`, `admin`, and `logd` together.
 
 # Child DOX Index
 
-- [analysis/AGENTS.md](analysis/AGENTS.md): disposable workflow experiments,
-  measurements, and recommendations; production behavior stays owned here.
+- [testdata/AGENTS.md](testdata/AGENTS.md): native syscall client used only by
+  workspace integration tests.

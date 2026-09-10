@@ -40,10 +40,6 @@ if ! git --version >/dev/null 2>&1; then
   echo "git is installed but cannot be executed" >&2
   exit 1
 fi
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "python3 is required to build the development workspace" >&2
-  exit 1
-fi
 if [[ ! -d "$INSTANCE_ROOT" ]]; then
   echo "instance root does not exist: $INSTANCE_ROOT" >&2
   exit 1
@@ -142,7 +138,7 @@ export GOWORK=off
 echo "platform build [1/5]: generating protocols and building Go binaries" >&2
 "$GO_CMD" mod download
 "$GO_CMD" mod verify
-THE8020_BUILD_GO="$GO_CMD" python3 "$SOURCE_ROOT/kernel/development/analysis/run.py" build
+THE8020_BUILD_GO="$GO_CMD" "$SOURCE_ROOT/build.sh"
 
 KERNEL="$DEVELOPMENT_DIR/bin/kernel"
 KERNEL_CONFIG="$INSTANCE_ROOT/kernel.toml"

@@ -6,14 +6,15 @@ import (
 )
 
 type SandboxStart struct {
-	UserID    string
-	SandboxID string
-	Packages  string
-	RootFS    string
-	Endpoint  string
-	SystemURL string
-	Token     string
-	Mounts    []SandboxMount
+	UserID        string
+	SandboxID     string
+	Packages      string
+	WorkspaceRoot string
+	RootFS        string
+	Endpoint      string
+	SystemURL     string
+	Token         string
+	Mounts        []SandboxMount
 }
 
 // SandboxMount is one validated profile mount with its canonical host source.
@@ -31,8 +32,6 @@ type SandboxDriver interface {
 	Exec(context.Context, string, string) ([]byte, error)
 	ExecStream(context.Context, string, string, io.Reader, io.Writer) error
 	ExecCommand(context.Context, string, []string, io.Reader, io.Writer) error
-	Pause(context.Context, string) error
-	Resume(context.Context, string) error
 	Stop(context.Context, string) error
 	Kill(context.Context, string) error
 	Delete(context.Context, string) error

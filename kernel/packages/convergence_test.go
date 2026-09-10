@@ -12,12 +12,18 @@ import (
 
 type countingPackageIndex struct {
 	PackageIndexStore
-	lists int
+	lists     int
+	snapshots int
 }
 
 func (s *countingPackageIndex) List(ctx context.Context) ([]PackageIndex, error) {
 	s.lists++
 	return s.PackageIndexStore.List(ctx)
+}
+
+func (s *countingPackageIndex) Published(ctx context.Context) (uint64, map[string]string, error) {
+	s.snapshots++
+	return s.PackageIndexStore.Published(ctx)
 }
 
 func TestPackageRevisionFollowerUsesCheapNoChangePathAndTargetsChangedPackage(t *testing.T) {
@@ -59,12 +65,12 @@ func TestPackageRevisionFollowerUsesCheapNoChangePathAndTargetsChangedPackage(t 
 
 	counter := &countingPackageIndex{PackageIndexStore: store.index}
 	store.index = counter
-	follower, err := NewPackageRevisionFollower(context.Background(), store, map[string]string{"acme/demo": firstCommit})
+	follower, err := NewPackageRevisionFollower(context.Background(), store)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if update, err := follower.Poll(context.Background()); err != nil || update.Revision != 0 || counter.lists != 0 {
-		t.Fatalf("unchanged poll=%#v lists=%d err=%v", update, counter.lists, err)
+	if update, err := follower.Poll(context.Background()); err != nil || update.Revision != 0 || counter.lists != 0 || counter.snapshots != 1 {
+		t.Fatalf("unchanged poll=%#v lists=%d snapshots=%d err=%v", update, counter.lists, counter.snapshots, err)
 	}
 
 	if err := os.Remove(filepath.Join(working, "removed.ts")); err != nil {
@@ -95,8 +101,8 @@ func TestPackageRevisionFollowerUsesCheapNoChangePathAndTargetsChangedPackage(t 
 	if !slices.Equal(update.Paths, wantPaths) {
 		t.Fatalf("changed paths = %v", update.Paths)
 	}
-	if counter.lists != 1 {
-		t.Fatalf("package rows loaded %d times", counter.lists)
+	if counter.lists != 0 || counter.snapshots != 2 {
+		t.Fatalf("package rows loaded through lists=%d snapshots=%d", counter.lists, counter.snapshots)
 	}
 	head := runTestGit(t, gitPath, working, "rev-parse", "HEAD")
 	if head != secondCommit {
@@ -105,8 +111,29 @@ func TestPackageRevisionFollowerUsesCheapNoChangePathAndTargetsChangedPackage(t 
 	if retry, err := follower.Poll(context.Background()); err != nil || retry.Revision != 2 {
 		t.Fatalf("unacknowledged revision did not retry: %#v err=%v", retry, err)
 	}
-	if err := follower.Acknowledge(2); err != nil {
+	if _, err := db.ExecContext(context.Background(), `UPDATE "the8020__system__revisions" SET "revision" = 3`); err != nil {
 		t.Fatal(err)
+	}
+	if newer, err := follower.Poll(context.Background()); err != nil || newer.Revision != 3 {
+		t.Fatalf("newer publication: %+v: %v", newer, err)
+	}
+	if err := follower.Acknowledge(2); err != nil || follower.revision != 1 || follower.pendingRevision != 3 {
+		t.Fatalf("older completion consumed the newer snapshot: %v", err)
+	}
+	if err := follower.Acknowledge(3); err != nil {
+		t.Fatal(err)
+	}
+	if err := follower.Acknowledge(2); err != nil {
+		t.Fatalf("older completed revision failed: %v", err)
+	}
+	if err := follower.Acknowledge(3); err != nil {
+		t.Fatalf("duplicate completed revision failed: %v", err)
+	}
+	if err := follower.Acknowledge(4); err == nil {
+		t.Fatal("acknowledged a future publication")
+	}
+	if err := follower.Acknowledge(0); err == nil {
+		t.Fatal("acknowledged revision zero")
 	}
 	if update, err := follower.Poll(context.Background()); err != nil || update.Revision != 0 {
 		t.Fatalf("acknowledged poll=%#v err=%v", update, err)

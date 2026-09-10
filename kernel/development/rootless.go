@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -35,7 +36,10 @@ type RunscConfig struct {
 
 type RootlessConfig = RunscConfig
 
-type RunscDriver struct{ config RunscConfig }
+type RunscDriver struct {
+	config    RunscConfig
+	sandboxes sync.Map
+}
 type RootlessDriver = RunscDriver
 
 const developmentPath = "/workspace/scripts:/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -110,7 +114,7 @@ func (d *RunscDriver) List(ctx context.Context) ([]string, error) {
 	return ids, nil
 }
 
-func (d *RunscDriver) Start(ctx context.Context, start SandboxStart) error {
+func (d *RunscDriver) start(ctx context.Context, start SandboxStart) error {
 	if err := d.validate(); err != nil {
 		return err
 	}
@@ -218,7 +222,7 @@ func (d *RunscDriver) Start(ctx context.Context, start SandboxStart) error {
 }
 
 func developmentSpec(start SandboxStart, bundle string) specs.Spec {
-	annotations := map[string]string{}
+	annotations := map[string]string{"the8020.workspace.lower": start.Packages, "the8020.workspace.control": "true", "the8020.workspace.git": "true"}
 	mounts := []specs.Mount{
 		{Destination: "/proc", Type: "proc", Source: "proc", Options: []string{"nosuid", "noexec", "nodev"}},
 		{Destination: "/dev", Type: "tmpfs", Source: "tmpfs", Options: []string{"nosuid", "mode=755", "size=65536k"}},
@@ -242,14 +246,10 @@ func developmentSpec(start SandboxStart, bundle string) specs.Spec {
 		if !mount.Writable && !mount.Executable {
 			options = append(options, "noexec")
 		}
-		mounts = append(mounts, specs.Mount{Destination: mount.Target, Type: "bind", Source: mount.HostSource, Options: options})
-		if mount.Behavior == MountSandboxSource {
-			prefix := "dev.gvisor.spec.mount." + mount.ID + "."
-			annotations[prefix+"source"] = mount.HostSource
-			annotations[prefix+"type"] = "bind"
-			annotations[prefix+"share"] = "container"
-			annotations[prefix+"options"] = strings.Join(options, ",")
+		if mount.Target == "/workspace/packages" {
+			options = append(options, "overlayfs_stale_read", "dcache=0")
 		}
+		mounts = append(mounts, specs.Mount{Destination: mount.Target, Type: "bind", Source: mount.HostSource, Options: options})
 	}
 	capabilities := append([]string(nil), developmentRootCapabilities...)
 	spec := specs.Spec{Version: specs.Version, Process: &specs.Process{
@@ -325,12 +325,6 @@ func (d *RunscDriver) OpenConsole(ctx context.Context, sandboxID string, options
 	return runscconsole.OpenConfigured(ctx, d.config.RunscPath, arguments, options.Size, d.configureCommand)
 }
 
-func (d *RunscDriver) Pause(ctx context.Context, id string) error {
-	return d.simple(ctx, id, "pause")
-}
-func (d *RunscDriver) Resume(ctx context.Context, id string) error {
-	return d.simple(ctx, id, "resume")
-}
 func (d *RunscDriver) Stop(ctx context.Context, id string) error {
 	if err := d.signal(ctx, id, "TERM"); err != nil {
 		return err
@@ -354,6 +348,13 @@ func (d *RunscDriver) Delete(ctx context.Context, id string) error {
 	output, err := d.commandOutput(ctx, args...)
 	if err != nil && !strings.Contains(output, "does not exist") && !strings.Contains(output, "not found") {
 		return fmt.Errorf("delete development sandbox: %w: %s", err, output)
+	}
+	if value, ok := d.sandboxes.LoadAndDelete(id); ok {
+		workspace := value.(*workspace)
+		if workspace.control != nil {
+			workspace.control.Close()
+		}
+		workspace.listener.Close()
 	}
 	return errors.Join(
 		os.RemoveAll(filepath.Join(d.config.SandboxRoot, id)),
@@ -400,7 +401,7 @@ func (d *RunscDriver) flags(id, operation string) []string {
 	// Directfs keeps the configured mount-descriptor boundary enforced by
 	// gVisor while avoiding a sentry-to-gofer RPC for each filesystem operation.
 	// This is upstream runsc's default and materially reduces package-tree scans.
-	flags := []string{"--root=" + d.config.RuntimeRoot, "--rootless=" + strconv.FormatBool(d.config.Rootless), "--platform=systrap", "--directfs=true", "--file-access=exclusive", "--file-access-mounts=shared", "--network=host", "--overlay2=none", "--log=" + filepath.Join(d.config.LogRoot, id, "runsc-"+operation+".log")}
+	flags := []string{"--root=" + d.config.RuntimeRoot, "--rootless=" + strconv.FormatBool(d.config.Rootless), "--platform=systrap", "--directfs=false", "--file-access=exclusive", "--file-access-mounts=shared", "--network=host", "--overlay2=none", "--log=" + filepath.Join(d.config.LogRoot, id, "runsc-"+operation+".log")}
 	if d.config.ignoreCgroups {
 		flags = append(flags, "--ignore-cgroups=true")
 	}

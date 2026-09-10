@@ -47,9 +47,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   limited to 256 independent pending deployments of at most 256 packages each.
   Overlapping package sets reject; completion updates only the matching
   deployment's package state. Candidate schema precedes source replacement, and
-  recovery aligns catalog state with active source. The installed compiler
-  overlay and its concurrency checks are owned by
-  [development analysis](../development/analysis/AGENTS.md).
+  recovery aligns catalog state with active source. Ordinary database tests
+  cover these production contracts.
 - Empty candidate commits remove packages from the catalog commit set. Their
   table/column metadata is retired through ordinary synchronization, preserving
   physical tables and data until explicit trim.

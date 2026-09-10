@@ -46,7 +46,6 @@ type Sandbox struct {
 	SourcePath           string            `toml:"source_path" json:"-"`
 	SystemPath           string            `toml:"system_path,omitempty" json:"-"`
 	State                State             `toml:"state" json:"state"`
-	WritesPaused         bool              `toml:"writes_paused" json:"writes_paused"`
 	ActivationActive     bool              `toml:"activation_active" json:"activation_active"`
 	CanSafelyReset       bool              `toml:"-" json:"can_safely_reset"`
 	ConflictedPackages   []string          `toml:"conflicted_packages,omitempty" json:"conflicted_packages,omitempty"`
@@ -78,14 +77,13 @@ type ImageStatus struct {
 }
 
 type ActivationOptions struct {
-	Description       string            `json:"description"`
-	SelectedPackages  []string          `json:"selected_packages,omitempty"`
-	PreviewFile       string            `json:"preview_file,omitempty"`
-	PackageMessages   map[string]string `json:"package_messages,omitempty"`
-	AuthorName        string            `json:"author_name,omitempty"`
-	AuthorEmail       string            `json:"author_email,omitempty"`
-	Metadata          map[string]string `json:"metadata,omitempty"`
-	DeferOverlayReset bool              `json:"defer_overlay_reset,omitempty"`
+	Description      string            `json:"description"`
+	SelectedPackages []string          `json:"selected_packages,omitempty"`
+	PreviewFile      string            `json:"preview_file,omitempty"`
+	PackageMessages  map[string]string `json:"package_messages,omitempty"`
+	AuthorName       string            `json:"author_name,omitempty"`
+	AuthorEmail      string            `json:"author_email,omitempty"`
+	Metadata         map[string]string `json:"metadata,omitempty"`
 }
 
 type ActivationFile struct {
@@ -131,12 +129,10 @@ type ActivationPackageResult struct {
 }
 
 type ActivationResult struct {
-	Error               string                    `json:"error,omitempty"`
-	Success             bool                      `json:"success"`
-	Status              string                    `json:"status"`
-	OverlayReset        bool                      `json:"overlay_reset"`
-	OverlayResetPending bool                      `json:"overlay_reset_pending,omitempty"`
-	Packages            []ActivationPackageResult `json:"packages"`
+	Error    string                    `json:"error,omitempty"`
+	Success  bool                      `json:"success"`
+	Status   string                    `json:"status"`
+	Packages []ActivationPackageResult `json:"packages"`
 }
 
 type ShellResult struct {

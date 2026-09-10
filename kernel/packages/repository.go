@@ -57,8 +57,6 @@ type RepositoryMutation struct {
 }
 
 func (s *Store) ListPackageRepositories(ctx context.Context) ([]Repository, error) {
-	s.repositoryMu.RLock()
-	defer s.repositoryMu.RUnlock()
 	namespaces, err := os.ReadDir(s.packagesRoot)
 	if err != nil {
 		return nil, fmt.Errorf("read packages root: %w", err)
@@ -88,8 +86,6 @@ func (s *Store) ListPackageRepositories(ctx context.Context) ([]Repository, erro
 }
 
 func (s *Store) InspectPackageRepository(ctx context.Context, packageID string) (Repository, error) {
-	s.repositoryMu.RLock()
-	defer s.repositoryMu.RUnlock()
 	return s.inspectPackageRepositoryUnlocked(ctx, packageID)
 }
 
@@ -159,8 +155,6 @@ func (s *Store) inspectPackageRepositoryAt(ctx context.Context, packageID, path 
 }
 
 func (s *Store) InitializePackageRepository(ctx context.Context, packageID, authorName, authorEmail, message string) (Repository, error) {
-	s.repositoryMu.Lock()
-	defer s.repositoryMu.Unlock()
 	unlock, err := s.lockPackage(ctx, packageID)
 	if err != nil {
 		return Repository{}, err
@@ -204,8 +198,6 @@ func (s *Store) InitializePackageRepository(ctx context.Context, packageID, auth
 }
 
 func (s *Store) ConfigurePackageRemote(ctx context.Context, packageID, name, remoteURL string) (Repository, error) {
-	s.repositoryMu.Lock()
-	defer s.repositoryMu.Unlock()
 	unlock, err := s.lockPackage(ctx, packageID)
 	if err != nil {
 		return Repository{}, err
@@ -271,8 +263,6 @@ func (s *Store) PullPackageRepository(ctx context.Context, packageID string) (Re
 }
 
 func (s *Store) PushPackageRepository(ctx context.Context, packageID string) (Repository, error) {
-	s.repositoryMu.Lock()
-	defer s.repositoryMu.Unlock()
 	unlock, err := s.lockPackage(ctx, packageID)
 	if err != nil {
 		return Repository{}, err
@@ -366,8 +356,6 @@ func (s *Store) CheckoutPackageRepository(ctx context.Context, packageID, branch
 }
 
 func (s *Store) mutatePackageRepository(ctx context.Context, packageID string, mutate func(string, Repository) error) (RepositoryMutation, error) {
-	s.repositoryMu.Lock()
-	defer s.repositoryMu.Unlock()
 	unlock, err := s.lockPackage(ctx, packageID)
 	if err != nil {
 		return RepositoryMutation{}, err
@@ -401,14 +389,18 @@ func (s *Store) mutatePackageRepository(ctx context.Context, packageID string, m
 	prepared := false
 	sourceSwitched := false
 	hook := s.schemaDeployment()
+	transactionID, err := activationID()
+	if err != nil {
+		return RepositoryMutation{}, err
+	}
 	if changed && hook != nil {
-		if err := hook.Prepare(ctx, []deployment.Candidate{{PackageID: packageID, Root: updated.Path, Commit: updated.Head}}); err != nil {
+		if err := hook.Prepare(ctx, transactionID, []deployment.Candidate{{PackageID: packageID, Root: updated.Path, Commit: updated.Head}}); err != nil {
 			return RepositoryMutation{}, fmt.Errorf("prepare package database schema: %w", err)
 		}
 		prepared = true
 		defer func() {
 			if prepared && !sourceSwitched {
-				_ = hook.Complete(context.Background(), false)
+				_ = hook.Complete(context.Background(), transactionID, false)
 			}
 		}()
 	}
@@ -418,7 +410,7 @@ func (s *Store) mutatePackageRepository(ctx context.Context, packageID string, m
 	}
 	updated.Path = repository.Path
 	if prepared && hook != nil {
-		if err := hook.Complete(ctx, true); err != nil {
+		if err := hook.Complete(ctx, transactionID, true); err != nil {
 			return RepositoryMutation{}, fmt.Errorf("complete package activation: %w", err)
 		}
 		prepared = false

@@ -29,7 +29,7 @@ func TestDeletePackagePublishesRemovalAndPreservesFailures(t *testing.T) {
 	if _, err := store.ReindexHandlers(ctx); err != nil {
 		t.Fatal(err)
 	}
-	follower, err := NewPackageRevisionFollower(ctx, store, map[string]string{"acme/example": commit})
+	follower, err := NewPackageRevisionFollower(ctx, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,10 +130,10 @@ func TestRemovalRollbackRestoresReadySourceBeforeSchemaReads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := coordinator.Prepare(ctx, []deployment.Candidate{{PackageID: "acme/example", Root: created.Repository}}); err != nil {
+	if err := coordinator.Prepare(ctx, "act-0123456789", []deployment.Candidate{{PackageID: "acme/example", Root: created.Repository}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := coordinator.Complete(ctx, false); err != nil {
+	if err := coordinator.Complete(ctx, "act-0123456789", false); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -183,7 +183,7 @@ func TestActivationRegistersNewPackageFromSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := coordinator.Prepare(ctx, []deployment.Candidate{{PackageID: "acme/new", Root: candidate, Commit: "new-commit"}}); err != nil {
+	if err := coordinator.Prepare(ctx, "act-0123456789", []deployment.Candidate{{PackageID: "acme/new", Root: candidate, Commit: "new-commit"}}); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(root, "packages", "acme", "new")
@@ -193,7 +193,7 @@ func TestActivationRegistersNewPackageFromSource(t *testing.T) {
 	if err := os.Rename(candidate, path); err != nil {
 		t.Fatal(err)
 	}
-	if err := coordinator.Complete(ctx, true); err != nil {
+	if err := coordinator.Complete(ctx, "act-0123456789", true); err != nil {
 		t.Fatal(err)
 	}
 	entry, err := store.InspectPackageIndex("acme/new")

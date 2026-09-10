@@ -216,12 +216,12 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 - Development sandboxes use the same selected rootful or rootless runsc mode as
   workload isolation but a distinct editable image and lifecycle. Their writable
   package view never grants direct publication into shared package repositories;
-  ordinary installation compiles the sparse workspace and process-preserving
-  activation from the existing prototype inputs. Its compiler overlay also
-  supplies the shared transaction and indexing contracts documented under
-  development analysis. Native durable system/home storage remains separate.
-  Follow development DOX for the build boundary and remaining qualification.
-  Sandbox lifecycle never polls package content.
+  ordinary installation compiles the production workspace, activation, shared
+  transaction, and indexing owners directly. The common native runsc extension
+  lives under `sandbox/runsc`; development owns its protected workspace and
+  publication transport. Native durable system/home storage remains separate.
+  Follow development DOX for native checks and remaining qualification. Sandbox
+  lifecycle never polls package content.
 
 # Work Guidance
 
@@ -274,7 +274,7 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   activation.
 - [development/AGENTS.md](development/AGENTS.md): the per-user development
   sandbox, private workspace durability, package Git activation, lifecycle, and
-  workflow analysis.
+  native verification.
 - [events/AGENTS.md](events/AGENTS.md): asynchronous local package events,
   cached listeners, bounded dispatch, and minute-aligned notification.
 - [execution/AGENTS.md](execution/AGENTS.md): generic sandboxes, warm capacity,

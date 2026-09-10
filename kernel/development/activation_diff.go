@@ -1,7 +1,6 @@
 package development
 
 import (
-	"context"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -17,15 +16,6 @@ func validatePreviewFile(options ActivationOptions) error {
 		return errors.New("file preview requires one package and a relative file path")
 	}
 	return nil
-}
-
-func (m *Manager) previewFileDiff(ctx context.Context, sandbox Sandbox, change packageChanges, name string) (*ActivationFileDiff, error) {
-	output := &boundedBuffer{limit: activationDiffLimit}
-	command := sandboxCachedIndexCommand(change.PackageID, change.Base, "--literal-pathspecs", "diff", "--cached", "--no-ext-diff", "--no-textconv", "--no-color", "--no-renames", change.Base, "--", name)
-	if err := m.driver.ExecCommand(ctx, sandbox.SandboxID, []string{"/bin/sh", "-c", command}, nil, output); err != nil {
-		return nil, err
-	}
-	return activationDiffOutput(output.RawString()), nil
 }
 
 func activationDiffOutput(output string) *ActivationFileDiff {

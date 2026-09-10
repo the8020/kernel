@@ -5,23 +5,33 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"database/sql/driver"
 	_ "embed"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"the8020/kernel/identity"
 )
 
 const catalogVersion = 2
 const postgresSchemaLock int64 = 802020260901
+const maximumPendingDeployments = 256
 
 type deploymentLockContextKey struct{}
+type activationLockContextKey struct {
+	manager *Manager
+	id      string
+}
 
 //go:embed catalog_sqlite.sql
 var sqliteCatalogSQL string
@@ -104,6 +114,7 @@ type DeploymentCandidate struct {
 }
 
 type PendingDeployment struct {
+	ID                      string
 	PreviousPackageSetHash  string
 	PreviousPackageCommits  map[string]string
 	CandidatePackageSetHash string
@@ -171,9 +182,19 @@ func (m *Manager) SynchronizeDefinitions(ctx context.Context, packages []string,
 }
 
 // BeginDeployment records the narrow crash-recovery boundary before schema changes.
-func (m *Manager) BeginDeployment(ctx context.Context, candidates []DeploymentCandidate) (PendingDeployment, error) {
-	if len(candidates) == 0 {
-		return PendingDeployment{}, errors.New("database deployment candidates are required")
+func (m *Manager) BeginDeployment(ctx context.Context, id string, candidates []DeploymentCandidate) (PendingDeployment, error) {
+	if !identity.Is(id, "act") {
+		return PendingDeployment{}, errors.New("invalid deployment identity")
+	}
+	if len(candidates) == 0 || len(candidates) > maximumPendingDeployments {
+		return PendingDeployment{}, errors.New("database deployment requires 1..256 candidate packages")
+	}
+	selected := make(map[string]bool, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.PackageID == "" || selected[candidate.PackageID] {
+			return PendingDeployment{}, errors.New("database deployment requires distinct package identities")
+		}
+		selected[candidate.PackageID] = true
 	}
 	m.schemaMu.Lock()
 	defer m.schemaMu.Unlock()
@@ -185,12 +206,8 @@ func (m *Manager) BeginDeployment(ctx context.Context, candidates []DeploymentCa
 	if err := m.lockSchema(ctx, tx); err != nil {
 		return PendingDeployment{}, err
 	}
-	var count int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM _8020_pending_deployment`).Scan(&count); err != nil {
+	if err := checkPendingPackages(ctx, tx, selected); err != nil {
 		return PendingDeployment{}, err
-	}
-	if count != 0 {
-		return PendingDeployment{}, errors.New("a database schema deployment is already pending recovery")
 	}
 	state, err := catalogState(ctx, tx)
 	if err != nil {
@@ -202,9 +219,6 @@ func (m *Manager) BeginDeployment(ctx context.Context, candidates []DeploymentCa
 	candidatePackages := clonePackageSet(state.PackageCommits)
 	for index := range candidates {
 		candidate := &candidates[index]
-		if candidate.PackageID == "" {
-			return PendingDeployment{}, errors.New("database deployment candidate package is required")
-		}
 		candidate.PreviousCommit = candidatePackages[candidate.PackageID]
 		if candidate.CandidateCommit == "" {
 			delete(candidatePackages, candidate.PackageID)
@@ -217,6 +231,7 @@ func (m *Manager) BeginDeployment(ctx context.Context, candidates []DeploymentCa
 	candidatesJSON, _ := json.Marshal(candidates)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	pending := PendingDeployment{
+		ID:                     id,
 		PreviousPackageSetHash: state.PackageSetHash, PreviousPackageCommits: state.PackageCommits,
 		CandidatePackageSetHash: PackageSetHash(candidatePackages), CandidatePackageCommits: candidatePackages,
 		Candidates: candidates, Stage: "preparing", StartedAt: now, UpdatedAt: now,
@@ -224,9 +239,9 @@ func (m *Manager) BeginDeployment(ctx context.Context, candidates []DeploymentCa
 	_, err = tx.ExecContext(ctx, `INSERT INTO _8020_pending_deployment
 		(deployment_id, previous_package_set_hash, previous_package_set_json, candidate_package_set_hash,
 		candidate_package_set_json, candidates_json, stage, error, started_at, updated_at)
-		VALUES ('current', $1, $2, $3, $4, $5, $6, '', $7, $7)`,
+		VALUES ($8, $1, $2, $3, $4, $5, $6, '', $7, $7)`,
 		pending.PreviousPackageSetHash, string(previousJSON), pending.CandidatePackageSetHash,
-		string(candidateJSON), string(candidatesJSON), pending.Stage, now)
+		string(candidateJSON), string(candidatesJSON), pending.Stage, now, id)
 	if err == nil {
 		err = tx.Commit()
 	}
@@ -238,8 +253,39 @@ func (m *Manager) BeginDeployment(ctx context.Context, candidates []DeploymentCa
 	return pending, err
 }
 
+func checkPendingPackages(ctx context.Context, tx *sql.Tx, selected map[string]bool) error {
+	// ponytail: scan at most 256 pending records; normalize package claims if
+	// concurrent deployment volume outgrows this bound.
+	rows, err := tx.QueryContext(ctx, `SELECT deployment_id, candidates_json FROM _8020_pending_deployment LIMIT $1`, maximumPendingDeployments+1)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		count++
+		if count >= maximumPendingDeployments {
+			return errors.New("database pending deployment capacity reached")
+		}
+		var id, encoded string
+		if err := rows.Scan(&id, &encoded); err != nil {
+			return err
+		}
+		var candidates []DeploymentCandidate
+		if err := json.Unmarshal([]byte(encoded), &candidates); err != nil {
+			return fmt.Errorf("decode pending package claims: %w", err)
+		}
+		for _, candidate := range candidates {
+			if selected[candidate.PackageID] {
+				return fmt.Errorf("package %s belongs to pending deployment %s", candidate.PackageID, id)
+			}
+		}
+	}
+	return rows.Err()
+}
+
 // CompleteDeployment closes the durable package/schema switch boundary.
-func (m *Manager) CompleteDeployment(ctx context.Context, activated bool) error {
+func (m *Manager) CompleteDeployment(ctx context.Context, id string, activated bool) error {
 	m.schemaMu.Lock()
 	defer m.schemaMu.Unlock()
 	tx, err := m.db.BeginTx(ctx, nil)
@@ -250,7 +296,7 @@ func (m *Manager) CompleteDeployment(ctx context.Context, activated bool) error 
 	if err := m.lockSchema(ctx, tx); err != nil {
 		return err
 	}
-	pending, exists, err := pendingDeployment(ctx, tx)
+	pending, exists, err := pendingDeployment(ctx, tx, id)
 	if err != nil {
 		return err
 	}
@@ -260,15 +306,30 @@ func (m *Manager) CompleteDeployment(ctx context.Context, activated bool) error 
 	var activatedState CatalogState
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if activated {
+		state, err := catalogState(ctx, tx)
+		if err != nil {
+			return err
+		}
+		for _, candidate := range pending.Candidates {
+			if state.PackageCommits[candidate.PackageID] != candidate.PreviousCommit {
+				return fmt.Errorf("active package %s changed during deployment %s", candidate.PackageID, id)
+			}
+			if candidate.CandidateCommit == "" {
+				delete(state.PackageCommits, candidate.PackageID)
+			} else {
+				state.PackageCommits[candidate.PackageID] = candidate.CandidateCommit
+			}
+		}
+		state.PackageSetHash = PackageSetHash(state.PackageCommits)
 		descriptorHash, err := descriptorSetHash(ctx, tx)
 		if err != nil {
 			return err
 		}
-		packagesJSON, _ := json.Marshal(pending.CandidatePackageCommits)
+		packagesJSON, _ := json.Marshal(state.PackageCommits)
 		if _, err := tx.ExecContext(ctx, `UPDATE _8020_catalog SET package_set_hash = $1, package_set_json = $2,
 			descriptor_set_hash = $3, updated_at = $4, last_error = '', last_deployment_at = $4,
 			last_deployment_error = '' WHERE catalog_id = 'system'`,
-			pending.CandidatePackageSetHash, string(packagesJSON), descriptorHash, now); err != nil {
+			state.PackageSetHash, string(packagesJSON), descriptorHash, now); err != nil {
 			return err
 		}
 		for _, candidate := range pending.Candidates {
@@ -278,7 +339,7 @@ func (m *Manager) CompleteDeployment(ctx context.Context, activated bool) error 
 			}
 		}
 		activatedState = CatalogState{
-			PackageSetHash: pending.CandidatePackageSetHash, PackageCommits: pending.CandidatePackageCommits,
+			PackageSetHash: state.PackageSetHash, PackageCommits: state.PackageCommits,
 			DescriptorSetHash: descriptorHash,
 		}
 	} else {
@@ -291,13 +352,17 @@ func (m *Manager) CompleteDeployment(ctx context.Context, activated bool) error 
 			return err
 		}
 	}
-	_, err = tx.ExecContext(ctx, `DELETE FROM _8020_pending_deployment WHERE deployment_id = 'current'`)
+	_, err = tx.ExecContext(ctx, `DELETE FROM _8020_pending_deployment WHERE deployment_id = $1`, id)
+	var remaining int
+	if err == nil {
+		err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM _8020_pending_deployment`).Scan(&remaining)
+	}
 	if err == nil {
 		err = tx.Commit()
 	}
 	if err == nil {
 		m.statusMu.Lock()
-		m.status.PendingDeployment = false
+		m.status.PendingDeployment = remaining > 0
 		if activated {
 			m.status.PackageSetHash = activatedState.PackageSetHash
 			m.status.DescriptorSetHash = activatedState.DescriptorSetHash
@@ -317,10 +382,18 @@ func (m *Manager) CompleteDeployment(ctx context.Context, activated bool) error 
 }
 
 func (m *Manager) PendingDeployment(ctx context.Context) (PendingDeployment, bool, error) {
-	return pendingDeployment(ctx, m.db)
+	return pendingDeployment(ctx, m.db, "")
 }
 
-func (m *Manager) UpdatePendingDeployment(ctx context.Context, stage string, failure error) error {
+// PendingDeploymentFor reads one exact attempt; unrelated work is untouched.
+func (m *Manager) PendingDeploymentFor(ctx context.Context, id string) (PendingDeployment, bool, error) {
+	if !identity.Is(id, "act") {
+		return PendingDeployment{}, false, errors.New("invalid deployment identity")
+	}
+	return pendingDeployment(ctx, m.db, id)
+}
+
+func (m *Manager) UpdatePendingDeployment(ctx context.Context, id, stage string, failure error) error {
 	if stage == "" {
 		return errors.New("database deployment stage is required")
 	}
@@ -338,8 +411,8 @@ func (m *Manager) UpdatePendingDeployment(ctx context.Context, stage string, fai
 	if err := m.lockSchema(ctx, tx); err != nil {
 		return err
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE _8020_pending_deployment SET stage = $1, error = $2, updated_at = $3 WHERE deployment_id = 'current'`,
-		stage, message, time.Now().UTC().Format(time.RFC3339Nano))
+	result, err := tx.ExecContext(ctx, `UPDATE _8020_pending_deployment SET stage = $1, error = $2, updated_at = $3 WHERE deployment_id = $4`,
+		stage, message, time.Now().UTC().Format(time.RFC3339Nano), id)
 	if err != nil {
 		return err
 	}
@@ -353,13 +426,17 @@ type rowQuerier interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
-func pendingDeployment(ctx context.Context, query rowQuerier) (PendingDeployment, bool, error) {
+func pendingDeployment(ctx context.Context, query rowQuerier, id string) (PendingDeployment, bool, error) {
 	var pending PendingDeployment
 	var previousJSON, candidateJSON, candidatesJSON string
-	err := query.QueryRowContext(ctx, `SELECT previous_package_set_hash, previous_package_set_json,
+	where, args := "ORDER BY started_at, deployment_id LIMIT 1", []any{}
+	if id != "" {
+		where, args = "WHERE deployment_id = $1", []any{id}
+	}
+	err := query.QueryRowContext(ctx, `SELECT deployment_id, previous_package_set_hash, previous_package_set_json,
 		candidate_package_set_hash, candidate_package_set_json, candidates_json, stage, error, started_at, updated_at
-		FROM _8020_pending_deployment WHERE deployment_id = 'current'`).Scan(
-		&pending.PreviousPackageSetHash, &previousJSON, &pending.CandidatePackageSetHash, &candidateJSON,
+		FROM _8020_pending_deployment `+where, args...).Scan(
+		&pending.ID, &pending.PreviousPackageSetHash, &previousJSON, &pending.CandidatePackageSetHash, &candidateJSON,
 		&candidatesJSON, &pending.Stage, &pending.Error, &pending.StartedAt, &pending.UpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -751,34 +828,96 @@ func catalogStatements(backend string) []string {
 }
 
 func (m *Manager) lockSchema(ctx context.Context, tx *sql.Tx) error {
-	if m.status.Backend != BackendPostgreSQL || ctx.Value(deploymentLockContextKey{}) == true {
+	if m.status.Backend != BackendPostgreSQL || ctx.Value(deploymentLockContextKey{}) == m {
 		return nil
 	}
 	_, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, postgresSchemaLock)
 	return err
 }
 
-// AcquireDeploymentLock serializes a complete PostgreSQL schema deployment.
-// SQLite is deliberately single-node and needs only its local schema mutex.
+// AcquireDeploymentLock serializes short deployment metadata changes. Initial
+// full schema synchronization also uses it before the service plane is ready.
 func (m *Manager) AcquireDeploymentLock(ctx context.Context) (context.Context, func(), error) {
-	if m.status.Backend != BackendPostgreSQL || ctx.Value(deploymentLockContextKey{}) == true {
+	if ctx.Value(deploymentLockContextKey{}) == m {
 		return ctx, func() {}, nil
+	}
+	m.deploymentMu.Lock()
+	if m.status.Backend != BackendPostgreSQL {
+		return context.WithValue(ctx, deploymentLockContextKey{}, m), sync.OnceFunc(m.deploymentMu.Unlock), nil
 	}
 	connection, err := m.db.Conn(ctx)
 	if err != nil {
+		m.deploymentMu.Unlock()
 		return ctx, nil, err
 	}
 	if _, err := connection.ExecContext(ctx, `SELECT pg_advisory_lock($1)`, postgresSchemaLock); err != nil {
+		_ = connection.Raw(func(any) error { return driver.ErrBadConn })
 		connection.Close()
+		m.deploymentMu.Unlock()
 		return ctx, nil, err
 	}
-	release := func() {
-		unlockContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_, _ = connection.ExecContext(unlockContext, `SELECT pg_advisory_unlock($1)`, postgresSchemaLock)
-		_ = connection.Close()
+	return context.WithValue(ctx, deploymentLockContextKey{}, m), sync.OnceFunc(func() {
+		releaseAdvisoryLock(connection, postgresSchemaLock)
+		m.deploymentMu.Unlock()
+	}), nil
+}
+
+// AcquireActivationLock admits one executing operation for an exact activation.
+// Durable package claims protect the idle interval between Prepare and Complete.
+// Nested coordinator/evaluator calls carry the same ownership in their context.
+func (m *Manager) AcquireActivationLock(ctx context.Context, id string) (context.Context, func(), error) {
+	if !identity.Is(id, "act") {
+		return ctx, nil, errors.New("invalid activation identity")
 	}
-	return context.WithValue(ctx, deploymentLockContextKey{}, true), release, nil
+	key := activationLockContextKey{manager: m, id: id}
+	if ctx.Value(key) == true {
+		return ctx, func() {}, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return ctx, nil, err
+	}
+	if _, busy := m.activationOperations.LoadOrStore(id, true); busy {
+		return ctx, nil, fmt.Errorf("activation %s is already executing", id)
+	}
+	release := func() { m.activationOperations.Delete(id) }
+	if m.status.Backend == BackendPostgreSQL {
+		connection, err := m.db.Conn(ctx)
+		if err != nil {
+			release()
+			return ctx, nil, err
+		}
+		hash := fnv.New64a()
+		_, _ = hash.Write([]byte("the8020:activation:" + id))
+		lockID := int64(hash.Sum64())
+		var acquired bool
+		err = connection.QueryRowContext(ctx, `SELECT pg_try_advisory_lock($1)`, lockID).Scan(&acquired)
+		if err != nil || !acquired {
+			if err != nil {
+				_ = connection.Raw(func(any) error { return driver.ErrBadConn })
+			}
+			_ = connection.Close()
+			release()
+			if err != nil {
+				return ctx, nil, err
+			}
+			return ctx, nil, fmt.Errorf("activation %s is already executing", id)
+		}
+		release = func() {
+			releaseAdvisoryLock(connection, lockID)
+			m.activationOperations.Delete(id)
+		}
+	}
+	return context.WithValue(ctx, key, true), sync.OnceFunc(release), nil
+}
+
+func releaseAdvisoryLock(connection *sql.Conn, id int64) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := connection.ExecContext(ctx, `SELECT pg_advisory_unlock($1)`, id); err != nil {
+		// An uncertain unlock must never return a session lock to the pool.
+		_ = connection.Raw(func(any) error { return driver.ErrBadConn })
+	}
+	_ = connection.Close()
 }
 
 func (m *Manager) setCatalogFailure(err error) {

@@ -100,21 +100,23 @@ type ExecuteResult struct {
 // Manager owns a database/sql pool. A failed initial connection remains
 // retryable through Check, Query, and Execute.
 type Manager struct {
-	file             string
-	fileModeMu       sync.Mutex
-	fileModeReady    bool
-	db               *sql.DB
-	openErr          error
-	statusMu         sync.RWMutex
-	status           Status
-	schemaMu         sync.Mutex
-	transactionsMu   sync.Mutex
-	transactions     map[string]*transaction
-	application      *applicationGate
-	evaluatorMu      sync.RWMutex
-	evaluator        DefinitionEvaluator
-	fullSynchronizer FullSynchronizer
-	sourceEvaluator  SourceEvaluator
+	file                 string
+	fileModeMu           sync.Mutex
+	fileModeReady        bool
+	db                   *sql.DB
+	openErr              error
+	statusMu             sync.RWMutex
+	status               Status
+	schemaMu             sync.Mutex
+	deploymentMu         sync.Mutex
+	activationOperations sync.Map
+	transactionsMu       sync.Mutex
+	transactions         map[string]*transaction
+	application          *applicationGate
+	evaluatorMu          sync.RWMutex
+	evaluator            DefinitionEvaluator
+	fullSynchronizer     FullSynchronizer
+	sourceEvaluator      SourceEvaluator
 }
 
 // New prepares the configured database without requiring it to be reachable.

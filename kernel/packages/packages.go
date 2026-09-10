@@ -33,8 +33,7 @@ const (
 
 var namePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
-// ErrPackageNotReady gates consumers while activation has switched source but
-// has not completed its post hook and atomic database publication.
+// ErrPackageNotReady gates packages without an available published version.
 var ErrPackageNotReady = errors.New("package is not active")
 
 // Identity is the filesystem-derived identity of one package or service.
@@ -107,7 +106,6 @@ type Config struct {
 	WorkspaceRoot string
 	PackagesRoot  string
 	GitPath       string
-	RepositoryMu  *sync.RWMutex
 	Secrets       SecretResolver
 	Database      database.Store
 	IndexStore    PackageIndexStore
@@ -120,8 +118,6 @@ type Store struct {
 	packagesRoot  string
 	index         PackageIndexStore
 	gitPath       string
-	repositoryMu  *sync.RWMutex
-	packageLocks  sync.Map
 	secrets       SecretResolver
 	logger        *slog.Logger
 	deploymentMu  sync.RWMutex
@@ -147,10 +143,6 @@ func New(config Config) (*Store, error) {
 			return nil, fmt.Errorf("package index database: %w", err)
 		}
 	}
-	repositoryMu := config.RepositoryMu
-	if repositoryMu == nil {
-		repositoryMu = &sync.RWMutex{}
-	}
 	gitPath := strings.TrimSpace(config.GitPath)
 	if gitPath == "" {
 		gitPath = "git"
@@ -163,7 +155,7 @@ func New(config Config) (*Store, error) {
 		catalog:       catalog,
 		workspaceRoot: workspace, packagesRoot: packagesRoot,
 		index:   indexStore,
-		gitPath: gitPath, repositoryMu: repositoryMu, secrets: config.Secrets,
+		gitPath: gitPath, secrets: config.Secrets,
 		logger: config.Logger, databaseIndex: databaseIndex,
 	}, nil
 }

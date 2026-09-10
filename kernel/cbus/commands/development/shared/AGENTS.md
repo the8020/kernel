@@ -18,8 +18,6 @@ Parent DOX: [kernel/kernel/cbus/commands/development DOX](../AGENTS.md).
   failed.
 - Preview maps the optional `file` argument to the domain's `PreviewFile`; path
   validation and diff generation belong to development.
-- Activation maps the helper's `defer_overlay_reset` option directly to the
-  development owner; request-local Go context values are not runtime arguments.
 
 # Work Guidance
 

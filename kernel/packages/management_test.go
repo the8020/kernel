@@ -26,7 +26,7 @@ type recordingSchemaHook struct {
 	inspect   func([]deployment.Candidate) error
 }
 
-func (h *recordingSchemaHook) Prepare(_ context.Context, candidates []deployment.Candidate) error {
+func (h *recordingSchemaHook) Prepare(_ context.Context, _ string, candidates []deployment.Candidate) error {
 	h.prepared = append([]deployment.Candidate(nil), candidates...)
 	if h.inspect != nil {
 		if err := h.inspect(candidates); err != nil {
@@ -36,7 +36,7 @@ func (h *recordingSchemaHook) Prepare(_ context.Context, candidates []deployment
 	return h.failure
 }
 
-func (h *recordingSchemaHook) Complete(_ context.Context, activated bool) error {
+func (h *recordingSchemaHook) Complete(_ context.Context, _ string, activated bool) error {
 	h.completed = append(h.completed, activated)
 	return nil
 }

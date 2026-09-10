@@ -57,13 +57,15 @@ Parent DOX: [kernel/defaults DOX](../../AGENTS.md).
 - Portable installation publishes the common source-built gVisor `runsc` and
   pinned release-provided `gvisor-bin/` companions under `node/kernel/bin/`.
   Services, jobs, development and native image construction use that same
-  engine. Its source input defaults to `.development/workflow-gofer-build/runsc`
-  and must report the pinned release with the `(the8020)` build marker. Image
-  freshness hashes the installed binary. Publication replaces it atomically.
-  Docker moves this complete binary directory into its image-owned runtime
-  payload and links the node path to it, so existing volumes cannot retain an
-  obsolete engine. Full host setup installs the same engine for containerd and
-  preserves an existing one only when bytes match.
+  engine. Link `gvisor-bin/gvisor_sentry` to `../runsc` so both entrypoints
+  execute the same patched engine. Its source input defaults to
+  `.development/bin/runsc` and must report the pinned release with the
+  `(the8020)` build marker. Image freshness hashes the installed binary.
+  Publication replaces it atomically. Docker moves this complete binary
+  directory into its image-owned runtime payload and links the node path to it,
+  so existing volumes cannot retain an obsolete engine. Full host setup installs
+  the same engine for containerd and preserves an existing one only when bytes
+  match.
 - The generated SDK is tied to the pinned upstream release. Development mounts
   alone enable the private package filesystem and its additional Gofer seccomp
   rules; ordinary service/job mounts keep their existing filesystem and filter.
@@ -124,13 +126,10 @@ Parent DOX: [kernel/defaults DOX](../../AGENTS.md).
 
 # Verification
 
-- [CACHE_BENCHMARK.md](CACHE_BENCHMARK.md) records the shared-file-cache
-  decision, concurrent-miss comparison, real startup measurements, and
-  regression command.
-- [STARTUP_BENCHMARK.md](STARTUP_BENCHMARK.md) records individual sandbox and
-  import timings, implemented single-invocation indexing and unchecked startup,
-  retained-supervisor reuse and short keepalive qualification, fresh/restart
-  measurements, and remaining startup costs.
+- `go test ./kernel/app` verifies persistent file-cache mounts and private
+  SQLite storage. The
+  [rootless backend checks](../../../kernel/sandbox/backend/rootless/AGENTS.md)
+  exercise concurrent service/job imports through the actual shared cache.
 - Deno formatting, linting, type checking, and tests cover supervisor/Worker
   lifecycle, service/job contracts, streaming, persistent binding/completion,
   exact registered Worker invocation, cancellation, permissions, and crashes.

@@ -37,12 +37,11 @@ Parent DOX: [kernel/kernel/database DOX](../AGENTS.md).
   evaluates the package tree actually present on disk.
 - Removal candidates have empty commits. Preparation retires their recorded
   tables without discovering, mounting, or executing the removed package.
-- The installed transaction overlay passes an explicit activation ID through
-  preparation, completion and recovery. The evaluator retains no single current
-  deployment between calls; independent package sets may progress separately.
-  Database schema/catalog mutation retains its owning lock. See the shared
-  contract and checks in
-  [development analysis](../../development/analysis/AGENTS.md).
+- The transaction owner passes an explicit activation ID through preparation,
+  completion and recovery. The evaluator retains no single current deployment
+  between calls; independent package sets may progress separately. Database
+  schema/catalog mutation retains its owning lock. Ordinary evaluator tests
+  cover that boundary.
 
 # Verification
 

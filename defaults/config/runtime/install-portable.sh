@@ -11,7 +11,7 @@ RUNTIME_LOCK=${RUNTIME_DEFINITION%.json}.lock
 BUILD_SCRIPT="$(dirname "$CONTAINERFILE")/build.sh"
 WORK_ROOT=${6:-"$SOURCE_ROOT/node/kernel/runtime"}
 RUNSC_DESTINATION=${7:-"$SOURCE_ROOT/node/kernel/bin/runsc"}
-RUNSC_SOURCE=${8:-"$SOURCE_ROOT/.development/workflow-gofer-build/runsc"}
+RUNSC_SOURCE=${8:-"$SOURCE_ROOT/.development/bin/runsc"}
 PROTOCOL_SOURCE="$RUNTIME_SOURCE/protocol/generated.ts"
 if [[ -z "$SOURCE_ROOT" || ! -f "$MANIFEST" || ! -f "$CONTAINERFILE" || ! -f "$BUILD_SCRIPT" || ! -f "$RUNTIME_DEFINITION" || ! -f "$RUNTIME_LOCK" || ! -f "$PROTOCOL_SOURCE" || -z "$WORK_ROOT" || -z "$RUNSC_DESTINATION" || ! -x "$RUNSC_SOURCE" ]]; then
   echo "usage: defaults/config/runtime/install-portable.sh <source-root> [image-root] [versions-file] [Containerfile] [deno-config] [work-root] [runsc-destination] [built-runsc]" >&2
@@ -115,6 +115,8 @@ if [[ "$RUNSC_DESTINATION" != "$GVISOR_ROOT/runsc" ]]; then
   if [[ -d "$GVISOR_ROOT/gvisor-bin" ]]; then
     install -d -m 0700 "$RUNSC_DESTINATION_ROOT/gvisor-bin"
     find "$GVISOR_ROOT/gvisor-bin" -maxdepth 1 -type f -exec install -m 0555 '{}' "$RUNSC_DESTINATION_ROOT/gvisor-bin/" \;
+    # The prewarmer needs a named sentry path; both names use our patched engine.
+    ln -sfn "../$(basename "$RUNSC_DESTINATION")" "$RUNSC_DESTINATION_ROOT/gvisor-bin/gvisor_sentry"
   fi
 fi
 

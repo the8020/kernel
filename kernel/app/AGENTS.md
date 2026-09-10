@@ -250,9 +250,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   lock, `Main` exec-replaces the current process from its invoked executable
   path with the original arguments and environment. This preserves the PID,
   loads a newly materialized binary, and does not depend on a parent wrapper.
-- Development manager shutdown checkpoints private package deltas before it
-  destroys owned sandbox processes, then completes before logging and
-  instance-lock release.
+- Development manager shutdown stops independent sandboxes concurrently. Private
+  workspace files are already persistent; shutdown performs no scan or
+  checkpoint extraction.
 - Service maintenance never polls the complete package catalog. Startup indexes
   through Deno; explicit service actions and cold requests reconcile directly,
   while the timer touches only live or capacity-pending services. The
@@ -268,12 +268,11 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   Scan/publication failures retain the update for retry without gating unrelated
   traffic. Composition injects Worker inspection and generic lifecycle methods;
   package code owns source-update orchestration. Followers never copy sources.
-- The installed transaction overlay claims selected package IDs under short
-  memory locks, performs indexing outside them, and retains later requests.
-  Synchronous callers wait only for selected busy owners after releasing other
-  claims. The monitor queues at most 16 bounded background batches; shutdown
-  cancels and joins them. Its implementation and focused checks are in
-  [development analysis](../development/analysis/AGENTS.md).
+- The transaction owner claims selected package IDs under short memory locks,
+  performs indexing outside them, and retains later requests. Synchronous
+  callers wait only for selected busy owners after releasing other claims. The
+  monitor queues at most 16 bounded background batches; shutdown cancels and
+  joins them. `reindex.go` and its ordinary tests own these contracts.
 - The runtime monitor uses cheap scalar package/index revisions on its normal
   cadence. Shared node topology refresh is independently bounded and never
   becomes a per-request or one-second full-table dependency; runtime callbacks

@@ -17,10 +17,10 @@ type packageHandlers struct {
 }
 
 type handlerIndex struct {
-	reindexMu sync.Mutex
-	mu        sync.RWMutex
-	packages  map[string]packageHandlers
-	events    map[string][]EventListener
+	revision uint64
+	mu       sync.RWMutex
+	packages map[string]packageHandlers
+	events   map[string][]EventListener
 }
 
 type HandlerReport struct {
@@ -53,22 +53,20 @@ func (s *Store) Hooks(hook string) []HookDefinition {
 	return handlers
 }
 
-func (s *Store) handlerSnapshot() map[string]packageHandlers {
+func (s *Store) handlerSnapshot() (map[string]packageHandlers, uint64) {
 	s.handlers.mu.RLock()
 	defer s.handlers.mu.RUnlock()
 	result := make(map[string]packageHandlers, len(s.handlers.packages))
 	for id, item := range s.handlers.packages {
 		result[id] = item
 	}
-	return result
+	return result, s.handlers.revision
 }
 
 // ReindexHandlers replaces both handler indexes together. An empty selection
 // reads all ready packages; a selection reads only those declaration folders.
 // References into selected packages are refreshed from cached declarations.
 func (s *Store) ReindexHandlers(ctx context.Context, packageIDs ...string) (HandlerReport, error) {
-	s.handlers.reindexMu.Lock()
-	defer s.handlers.reindexMu.Unlock()
 	selected := map[string]bool{}
 	for _, id := range packageIDs {
 		if _, err := ParsePackageID(id); err != nil {
@@ -76,80 +74,92 @@ func (s *Store) ReindexHandlers(ctx context.Context, packageIDs ...string) (Hand
 		}
 		selected[id] = true
 	}
-	var entries []PackageIndex
-	var err error
-	indexed := s.handlerSnapshot()
-	if len(packageIDs) == 0 {
-		indexed = map[string]packageHandlers{}
-		entries, err = s.index.List(ctx)
-	} else {
-		for _, id := range uniqueSorted(packageIDs) {
-			entry, exists, getErr := s.index.Get(ctx, id)
-			if getErr != nil {
-				return HandlerReport{}, getErr
-			}
-			delete(indexed, id)
-			if exists {
-				entries = append(entries, entry)
+	for {
+		if err := ctx.Err(); err != nil {
+			return HandlerReport{}, err
+		}
+		var entries []PackageIndex
+		var err error
+		indexed, revision := s.handlerSnapshot()
+		if len(packageIDs) == 0 {
+			indexed = map[string]packageHandlers{}
+			entries, err = s.index.List(ctx)
+		} else {
+			for _, id := range uniqueSorted(packageIDs) {
+				entry, exists, getErr := s.index.Get(ctx, id)
+				if getErr != nil {
+					return HandlerReport{}, getErr
+				}
+				delete(indexed, id)
+				if exists {
+					entries = append(entries, entry)
+				}
 			}
 		}
-	}
-	if err != nil {
-		return HandlerReport{}, err
-	}
-	for _, entry := range entries {
-		if entry.State != "ready" || entry.ActiveCommit == "" {
+		if err != nil {
+			return HandlerReport{}, err
+		}
+		for _, entry := range entries {
+			if entry.State != "ready" || entry.ActiveCommit == "" {
+				continue
+			}
+			root, exists, err := s.packageDestination(entry.PackageID)
+			if err != nil {
+				return HandlerReport{}, err
+			}
+			if !exists {
+				return HandlerReport{}, fmt.Errorf("package is not installed: %s", entry.PackageID)
+			}
+			item, err := readPackageHandlers(root, entry.PackageID)
+			if err != nil {
+				return HandlerReport{}, err
+			}
+			indexed[entry.PackageID] = item
+		}
+		resolved := map[string]ProgramDefinition{}
+		for id, item := range indexed {
+			changed := selected
+			if len(packageIDs) == 0 || selected[id] {
+				changed = nil
+			}
+			item, err = s.resolveHandlerPrograms(ctx, item, nil, changed, resolved)
+			if err != nil {
+				return HandlerReport{}, fmt.Errorf("%s handlers: %w", id, err)
+			}
+			indexed[id] = item
+		}
+		events := map[string][]EventListener{}
+		var report HandlerReport
+		for _, item := range indexed {
+			report.Events += len(item.events)
+			for _, handlers := range item.hooks {
+				report.Hooks += len(handlers)
+			}
+			for _, listener := range item.events {
+				events[listener.Event] = append(events[listener.Event], listener)
+			}
+		}
+		if report.Events > 2048 {
+			return HandlerReport{}, errors.New("event catalog exceeds 2048 listeners")
+		}
+		for _, listeners := range events {
+			sort.Slice(listeners, func(i, j int) bool { return listeners[i].ID < listeners[j].ID })
+		}
+		if err := ctx.Err(); err != nil {
+			return HandlerReport{}, err
+		}
+		s.handlers.mu.Lock()
+		if s.handlers.revision != revision {
+			s.handlers.mu.Unlock()
+			// ponytail: contention repeats selected inspection until ctx expires;
+			// use package revisions if measured retries become expensive.
 			continue
 		}
-		root, exists, err := s.packageDestination(entry.PackageID)
-		if err != nil {
-			return HandlerReport{}, err
-		}
-		if !exists {
-			return HandlerReport{}, fmt.Errorf("package is not installed: %s", entry.PackageID)
-		}
-		item, err := readPackageHandlers(root, entry.PackageID)
-		if err != nil {
-			return HandlerReport{}, err
-		}
-		indexed[entry.PackageID] = item
+		s.handlers.revision++
+		s.handlers.packages, s.handlers.events = indexed, events
+		s.handlers.mu.Unlock()
+		return report, nil
 	}
-	resolved := map[string]ProgramDefinition{}
-	for id, item := range indexed {
-		changed := selected
-		if len(packageIDs) == 0 || selected[id] {
-			changed = nil
-		}
-		item, err = s.resolveHandlerPrograms(ctx, item, nil, changed, resolved)
-		if err != nil {
-			return HandlerReport{}, fmt.Errorf("%s handlers: %w", id, err)
-		}
-		indexed[id] = item
-	}
-	events := map[string][]EventListener{}
-	var report HandlerReport
-	for _, item := range indexed {
-		report.Events += len(item.events)
-		for _, handlers := range item.hooks {
-			report.Hooks += len(handlers)
-		}
-		for _, listener := range item.events {
-			events[listener.Event] = append(events[listener.Event], listener)
-		}
-	}
-	if report.Events > 2048 {
-		return HandlerReport{}, errors.New("event catalog exceeds 2048 listeners")
-	}
-	for _, listeners := range events {
-		sort.Slice(listeners, func(i, j int) bool { return listeners[i].ID < listeners[j].ID })
-	}
-	if err := ctx.Err(); err != nil {
-		return HandlerReport{}, err
-	}
-	s.handlers.mu.Lock()
-	s.handlers.packages, s.handlers.events = indexed, events
-	s.handlers.mu.Unlock()
-	return report, nil
 }
 
 func readPackageHandlers(root, packageID string) (packageHandlers, error) {
@@ -238,7 +248,8 @@ func (s *Store) indexCandidateHandlers(ctx context.Context, candidates []deploym
 		}
 		result[candidate.PackageID] = item
 	}
-	for id, item := range s.handlerSnapshot() {
+	indexed, _ := s.handlerSnapshot()
+	for id, item := range indexed {
 		if changed[id] {
 			continue
 		}

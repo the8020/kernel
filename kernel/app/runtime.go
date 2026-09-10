@@ -71,6 +71,7 @@ type runtimeCleanup struct {
 	pool          *pool.Controller
 	webservices   *webservices.Manager
 	jobs          *jobs.Manager
+	indexer       *runtimeIndexer
 	events        *events.Manager
 	policy        manager.ShutdownPolicy
 	console       *platformconsole.Manager
@@ -130,6 +131,9 @@ func (c *runtimeCleanup) Close(ctx context.Context, report shutdownProgressFunc)
 			c.monitorWait.Wait()
 		}
 		var controllerTasks []func() error
+		if c.indexer != nil {
+			controllerTasks = append(controllerTasks, c.indexer.Close)
+		}
 		if c.events != nil {
 			controllerTasks = append(controllerTasks, c.events.Close)
 		}
@@ -464,11 +468,6 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	systemDatabase.SetDefinitionEvaluator(tableEvaluator.Evaluate)
 	systemDatabase.SetFullSynchronizer(tableEvaluator.SynchronizeAll)
 	systemDatabase.SetSourceEvaluator(tableEvaluator.InspectDefinition)
-	_, pendingDeployment, err := systemDatabase.PendingDeployment(ctx)
-	if err != nil {
-		runtimeServices.Failure = "inspect pending database schema deployment: " + err.Error()
-		return runtimeServices, closeRuntime
-	}
 	freshDatabase := !systemDatabase.Status().Initialized
 	if freshDatabase {
 		if _, err := tableEvaluator.SynchronizeInitialSchemas(ctx, true); err != nil {
@@ -503,7 +502,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		return runtimeServices, closeRuntime
 	}
 	packageStore, err := workspacepackages.New(workspacepackages.Config{
-		WorkspaceRoot: root, PackagesRoot: paths.Packages, RepositoryMu: repositoryMu,
+		WorkspaceRoot: root, PackagesRoot: paths.Packages,
 		Secrets: secretManager, Database: systemDatabase, Logger: logger,
 	})
 	if err != nil {
@@ -530,7 +529,10 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	runtimeServices.ListPrograms = packageStore.ListPrograms
 	serviceIndex := webservices.NewIndex()
 	indexer := &runtimeIndexer{handlers: packageStore, commands: commandIndexer, packages: packageStore, jobs: jobManager, services: serviceIndex}
+	indexer.background, indexer.cancel = context.WithCancel(ctx)
+	cleanup.indexer = indexer
 	var sharedState *runtimeSharedState
+	var packageFollower *workspacepackages.PackageRevisionFollower
 	startupIndexed := false
 	lifecycleReindex := func(ctx context.Context, ids []string) error {
 		if sharedState != nil {
@@ -539,6 +541,12 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		// The first boot/recovery pass fills the entire node-local index.
 		if !startupIndexed {
 			ids = nil
+			// Capture publication before building its initial local index.
+			follower, err := workspacepackages.NewPackageRevisionFollower(ctx, packageStore)
+			if err != nil {
+				return fmt.Errorf("initialize package-set convergence: %w", err)
+			}
+			packageFollower = follower
 		}
 		_, err := indexer.Reindex(ctx, ids)
 		var publication *indexPublicationError
@@ -554,11 +562,6 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		return err
 	}
 	runtimeServices.Reindex = indexer.Reindex
-	packageCommits, err := tableEvaluator.PackageSet(ctx)
-	if err != nil {
-		runtimeServices.Failure = "inspect installed package set: " + err.Error()
-		return runtimeServices, closeRuntime
-	}
 	activationCoordinator, err := workspacepackages.NewActivationCoordinator(workspacepackages.ActivationCoordinatorConfig{
 		Database: systemDatabase, Schema: tableEvaluator, Packages: packageStore, Jobs: jobManager,
 		ValidateCandidates: commandIndexer.ValidateCandidates,
@@ -570,6 +573,21 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	}
 	packageStore.SetSchemaDeployment(activationCoordinator)
 	serviceSet.PublishPackageManagement(packageStore)
+	if !freshDatabase {
+		// Activation finalization can outlive its pending schema record.
+		if err := activationCoordinator.Recover(ctx); err != nil {
+			runtimeServices.Failure = "recover package activation: " + err.Error()
+			return runtimeServices, closeRuntime
+		}
+		// Recovery may restore other package records after its first index pass.
+		// The initial node index must include the entire settled package set.
+		startupIndexed = false
+	}
+	packageCommits, err := tableEvaluator.PackageSet(ctx)
+	if err != nil {
+		runtimeServices.Failure = "inspect installed package set: " + err.Error()
+		return runtimeServices, closeRuntime
+	}
 	if freshDatabase {
 		pending, err := activationCoordinator.Pending(ctx)
 		if err != nil {
@@ -592,12 +610,6 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 			return runtimeServices, closeRuntime
 		}
 	} else {
-		if pendingDeployment {
-			if err := activationCoordinator.Recover(ctx); err != nil {
-				runtimeServices.Failure = "recover package activation: " + err.Error()
-				return runtimeServices, closeRuntime
-			}
-		}
 		if err := packageStore.ValidateInstalled(ctx, packageCommits); err != nil {
 			runtimeServices.Failure = "validate installed package set: " + err.Error()
 			return runtimeServices, closeRuntime
@@ -624,11 +636,6 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 			runtimeServices.Failure = "reindex packages: " + err.Error()
 			return runtimeServices, closeRuntime
 		}
-	}
-	packageFollower, err := workspacepackages.NewPackageRevisionFollower(ctx, packageStore, packageCommits)
-	if err != nil {
-		runtimeServices.Failure = "initialize package-set convergence: " + err.Error()
-		return runtimeServices, closeRuntime
 	}
 	authentication := &packageAuthentication{context: ctx, programs: programRunner, signing: serviceSet.Signing}
 	nodeManager, err := nodes.New(systemDatabase, instanceUUID, forwardingSecret.Value)
@@ -781,7 +788,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	cleanup.webservices, runtimeServices.Services = webServiceManager, webServiceManager
 	indexer.runtime = webServiceManager
 	webServiceManager.StartReconciler(ctx)
-	sharedState = &runtimeSharedState{packages: packageFollower, indexes: indexFollower, reindex: indexer.Reindex, retry: indexer.RetryPending, logger: logger, topology: nodeManager, nextTopology: time.Now().Add(30 * time.Second),
+	sharedState = &runtimeSharedState{packages: packageFollower, indexes: indexFollower, reindex: indexer.Reindex, retry: indexer.RetryPending, queue: indexer.Queue, queuePending: indexer.QueuePending, logger: logger, topology: nodeManager, nextTopology: time.Now().Add(30 * time.Second),
 		sourceUpdate: func(ctx context.Context, update workspacepackages.PackageSetUpdate) error {
 			return workspacepackages.ReactToSourceUpdate(ctx, update, webServiceManager.MatchingImports, func(ctx context.Context, id string, revision uint64) error {
 				return webServiceManager.RequestRestart(ctx, id, "soft", revision)
@@ -792,6 +799,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 			return err
 		},
 	}
+	indexer.reportFailure = sharedState.recordPublicationFailure
 	startRuntimeMonitor(cleanup, sandboxManager, serviceManager, jobManager, systemDatabase, settingManager, sharedState, publicNetwork, heartbeatInterval, heartbeatTimeout, logger)
 	return runtimeServices, closeRuntime
 }
@@ -990,15 +998,11 @@ type sharedSettings interface {
 	RefreshGlobal(context.Context) (bool, error)
 }
 
-type sharedPackageState interface {
-	Refresh(context.Context) error
-}
-
 type servicePlaneGate interface {
 	SetAvailable(bool, string)
 }
 
-func reconcileSharedState(ctx context.Context, db sharedStateDatabase, global sharedSettings, gate servicePlaneGate, packages ...sharedPackageState) error {
+func reconcileSharedState(ctx context.Context, db sharedStateDatabase, global sharedSettings, gate servicePlaneGate, refresh ...func(context.Context) error) error {
 	// Health probes stay short. Derived indexes run ordinary jobs and use the
 	// enclosing convergence deadline, independent of this database probe.
 	checkContext, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -1022,8 +1026,8 @@ func reconcileSharedState(ctx context.Context, db sharedStateDatabase, global sh
 		return err
 	}
 	cancel()
-	if len(packages) > 0 && packages[0] != nil {
-		if err = packages[0].Refresh(ctx); err != nil {
+	if len(refresh) > 0 && refresh[0] != nil {
+		if err = refresh[0](ctx); err != nil {
 			gate.SetAvailable(false, "package state unavailable")
 			return err
 		}
@@ -1043,36 +1047,57 @@ type targetedServiceReconciler interface {
 }
 
 type runtimeSharedState struct {
-	mu           sync.Mutex
-	packages     packageRevisionFollower
-	indexes      packageRevisionFollower
-	reindex      func(context.Context, []string) (core.Result, error)
-	retry        func(context.Context) error
-	logger       *slog.Logger
-	lastFailure  string
-	topology     interface{ Refresh(context.Context) error }
-	now          func() time.Time
-	nextTopology time.Time
-	sourceUpdate func(context.Context, workspacepackages.PackageSetUpdate) error
-	restart      func(context.Context, string) error
+	mu              sync.Mutex
+	packages        packageRevisionFollower
+	indexes         packageRevisionFollower
+	reindex         func(context.Context, []string) (core.Result, error)
+	retry           func(context.Context) error
+	queue           func(context.Context, []string) (core.Result, error)
+	queuePending    func(context.Context) error
+	logger          *slog.Logger
+	lastFailure     string
+	topology        interface{ Refresh(context.Context) error }
+	now             func() time.Time
+	nextTopology    time.Time
+	topologyRunning bool
+	sourceUpdate    func(context.Context, workspacepackages.PackageSetUpdate) error
+	restart         func(context.Context, string) error
 }
 
 func (s *runtimeSharedState) Refresh(ctx context.Context) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	return s.refresh(ctx, s.reindex, s.retry)
+}
+
+func (s *runtimeSharedState) Poll(ctx context.Context) error {
+	return s.refresh(ctx, s.queue, s.queuePending)
+}
+
+func (s *runtimeSharedState) refresh(ctx context.Context, reindex func(context.Context, []string) (core.Result, error), retry func(context.Context) error) error {
 	if s.topology != nil {
+		s.mu.Lock()
 		now := time.Now()
 		if s.now != nil {
 			now = s.now()
 		}
-		if s.nextTopology.IsZero() || !now.Before(s.nextTopology) {
-			if err := s.topology.Refresh(ctx); err != nil {
+		refresh := !s.topologyRunning && (s.nextTopology.IsZero() || !now.Before(s.nextTopology))
+		if refresh {
+			s.topologyRunning = true
+		}
+		s.mu.Unlock()
+		if refresh {
+			err := s.topology.Refresh(ctx)
+			s.mu.Lock()
+			s.topologyRunning = false
+			if err == nil {
+				s.nextTopology = now.Add(30 * time.Second)
+			}
+			s.mu.Unlock()
+			if err != nil {
 				return err
 			}
-			s.nextTopology = now.Add(30 * time.Second)
 		}
 	}
-	if err := s.refreshPackages(ctx); err != nil {
+	if err := s.refreshIndexSource(ctx, s.packages, reindex); err != nil {
 		return err
 	}
 	// A timed-out provider leaves unpublished owners pending. Its deadline is
@@ -1080,24 +1105,16 @@ func (s *runtimeSharedState) Refresh(ctx context.Context) error {
 	if ctx.Err() != nil {
 		return nil
 	}
-	if err := s.refreshIndexes(ctx); err != nil {
+	if err := s.refreshIndexSource(ctx, s.indexes, reindex); err != nil {
 		return err
 	}
-	if s.retry != nil {
-		s.recordPublicationFailure(s.retry(ctx))
+	if retry != nil {
+		s.recordPublicationFailure(retry(ctx))
 	}
 	return nil
 }
 
-func (s *runtimeSharedState) refreshPackages(ctx context.Context) error {
-	return s.refreshIndexSource(ctx, s.packages)
-}
-
-func (s *runtimeSharedState) refreshIndexes(ctx context.Context) error {
-	return s.refreshIndexSource(ctx, s.indexes)
-}
-
-func (s *runtimeSharedState) refreshIndexSource(ctx context.Context, follower packageRevisionFollower) error {
+func (s *runtimeSharedState) refreshIndexSource(ctx context.Context, follower packageRevisionFollower, reindex func(context.Context, []string) (core.Result, error)) error {
 	if follower == nil {
 		return nil
 	}
@@ -1111,8 +1128,8 @@ func (s *runtimeSharedState) refreshIndexSource(ctx context.Context, follower pa
 			return nil // Keep this update pending without gating unrelated traffic.
 		}
 	}
-	if s.reindex != nil && len(update.Packages) > 0 {
-		_, err = s.reindex(ctx, update.Packages)
+	if reindex != nil && len(update.Packages) > 0 {
+		_, err = reindex(ctx, update.Packages)
 		var publication *indexPublicationError
 		if err != nil && !errors.As(err, &publication) {
 			return err
@@ -1133,17 +1150,20 @@ func (s *runtimeSharedState) refreshIndexSource(ctx context.Context, follower pa
 }
 
 func (s *runtimeSharedState) recordPublicationFailure(err error) {
-	if err == nil {
-		s.lastFailure = ""
-		return
+	message := ""
+	if err != nil {
+		message = err.Error()
 	}
-	if s.logger != nil && err.Error() != s.lastFailure {
+	s.mu.Lock()
+	changed := message != s.lastFailure
+	s.lastFailure = message
+	s.mu.Unlock()
+	if s.logger != nil && err != nil && changed {
 		s.logger.Error("service index publication failed", "error", err)
 	}
-	s.lastFailure = err.Error()
 }
 
-func startRuntimeMonitor(cleanup *runtimeCleanup, sandboxes *manager.Manager, serviceManager *executionservices.Manager, jobManager *jobs.Manager, systemDatabase sharedStateDatabase, global sharedSettings, packages sharedPackageState, publicNetwork servicePlaneGate, interval, timeout time.Duration, logger *slog.Logger) {
+func startRuntimeMonitor(cleanup *runtimeCleanup, sandboxes *manager.Manager, serviceManager *executionservices.Manager, jobManager *jobs.Manager, systemDatabase sharedStateDatabase, global sharedSettings, packages *runtimeSharedState, publicNetwork servicePlaneGate, interval, timeout time.Duration, logger *slog.Logger) {
 	monitorContext, cancel := context.WithCancel(context.Background())
 	cleanup.monitorCancel = cancel
 	cleanup.monitorWait.Add(1)
@@ -1201,29 +1221,33 @@ func startRuntimeMonitor(cleanup *runtimeCleanup, sandboxes *manager.Manager, se
 		defer cleanup.monitorWait.Done()
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
-		available := true
-		for {
-			select {
-			case <-monitorContext.Done():
-				return
-			case <-ticker.C:
-				checkContext, cancel := context.WithTimeout(monitorContext, 5*time.Minute)
-				err := reconcileSharedState(checkContext, systemDatabase, global, publicNetwork, packages)
-				cancel()
-				if err != nil && available {
-					available = false
-					if logger != nil {
-						logger.Error("shared database unavailable; public service plane gated", "error", err)
-					}
-				} else if err == nil && !available {
-					available = true
-					if logger != nil {
-						logger.Info("shared database recovered; public service plane restored")
-					}
+		monitorSharedState(monitorContext, ticker.C, systemDatabase, global, packages, publicNetwork, logger)
+	}()
+}
+
+func monitorSharedState(ctx context.Context, ticks <-chan time.Time, systemDatabase sharedStateDatabase, global sharedSettings, packages *runtimeSharedState, publicNetwork servicePlaneGate, logger *slog.Logger) {
+	available := true
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticks:
+			checkContext, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			err := reconcileSharedState(checkContext, systemDatabase, global, publicNetwork, packages.Poll)
+			cancel()
+			if err != nil && available {
+				available = false
+				if logger != nil {
+					logger.Error("shared database unavailable; public service plane gated", "error", err)
+				}
+			} else if err == nil && !available {
+				available = true
+				if logger != nil {
+					logger.Info("shared database recovered; public service plane restored")
 				}
 			}
 		}
-	}()
+	}
 }
 
 func sharedDenoCacheMounts(root string) ([]model.Mount, error) {

@@ -3,7 +3,6 @@ package development
 import (
 	"context"
 	"errors"
-	"io"
 	"testing"
 	"time"
 
@@ -19,54 +18,51 @@ func setDevelopmentIdle(t *testing.T, m *Manager, duration time.Duration) {
 	p.Commit()
 }
 
-type failingCheckpointDriver struct {
+type failingStopDriver struct {
 	*fakeDriver
 	failed chan struct{}
 }
 
-func (d *failingCheckpointDriver) ExecCommand(context.Context, string, []string, io.Reader, io.Writer) error {
+func (d *failingStopDriver) Stop(context.Context, string) error {
 	select {
 	case d.failed <- struct{}{}:
 	default:
 	}
-	return errors.New("checkpoint storage unavailable")
+	return errors.New("runtime stop unavailable")
 }
 
-func TestDevelopmentIdleCheckpointFailurePreservesSandbox(t *testing.T) {
+func TestDevelopmentIdleStopFailurePreservesSandbox(t *testing.T) {
 	p := newTestPlatform(t)
 	id, err := p.manager.EnsureSandbox(context.Background(), "alice")
 	if err != nil {
 		t.Fatal(err)
 	}
 	<-p.manager.cleanupDone
-	driver := &failingCheckpointDriver{fakeDriver: p.driver, failed: make(chan struct{}, 1)}
+	driver := &failingStopDriver{fakeDriver: p.driver, failed: make(chan struct{}, 1)}
 	p.manager.driver = driver
 	setDevelopmentIdle(t, p.manager, 50*time.Millisecond)
 	select {
 	case <-driver.failed:
 	case <-time.After(time.Second):
-		t.Fatal("idle checkpoint did not run")
+		t.Fatal("idle stop did not run")
 	}
-	// Admission waits for the failed checkpoint and cancels its retry timer.
+	// Admission waits for the failed stop and cancels its retry timer.
 	release, err := p.manager.AcquireConsole(id)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer release()
 	if running, err := p.driver.Running(context.Background(), id); err != nil || !running {
-		t.Fatalf("failed checkpoint destroyed private workspace: %v", err)
+		t.Fatalf("failed stop destroyed private workspace: %v", err)
 	}
 	p.manager.driver = p.driver
 }
 
-func TestDevelopmentIdleWaitsForLastConsoleAndCheckpointsPrivateFiles(t *testing.T) {
+func TestDevelopmentIdleWaitsForLastConsole(t *testing.T) {
 	p := newTestPlatform(t)
 	ctx := context.Background()
 	id, err := p.manager.EnsureSandbox(ctx, "alice")
 	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.manager.Shell(ctx, "alice", "write packages/the8020/demo/private.txt saved"); err != nil {
 		t.Fatal(err)
 	}
 	acquire := func() func() {
@@ -106,10 +102,6 @@ func TestDevelopmentIdleWaitsForLastConsoleAndCheckpointsPrivateFiles(t *testing
 	}
 	release := acquire()
 	defer release()
-	result, err := p.manager.Shell(ctx, "alice", "read packages/the8020/demo/private.txt")
-	if err != nil || result.Output != "saved" {
-		t.Fatalf("checkpoint restoration: %q %v", result.Output, err)
-	}
 	ordinary()
 	retained()
 	reattached() // Old generation releases are idempotent.

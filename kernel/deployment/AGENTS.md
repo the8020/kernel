@@ -15,12 +15,11 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   forms use the same preparation, completion, and recovery handshake.
 - `Complete(true)` records the code switch; `Complete(false)` recovers catalog
   metadata to the still-active package set.
-- The installed prototype's compiler overlay binds both calls to the same
-  explicit `act-` ID. Package-scoped source locks cover preparation, source
-  switching and completion; independent package sets can progress separately. A
-  late completion may never consume another activation's preparation. The shared
-  implementation and checks are in
-  [development analysis](../development/analysis/AGENTS.md).
+- The shared handshake binds both calls to the same explicit `act-` ID.
+  Package-scoped source locks cover preparation, source switching and
+  completion; independent package sets can progress separately. A late
+  completion may never consume another activation's preparation. Package and
+  database tests cover the shared handshake.
 - The normal kernel installs a rejecting placeholder before command handlers are
   exposed, then replaces it with the evaluator once runtime composition reaches
   that point. Package mutations therefore fail closed during early runtime

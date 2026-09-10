@@ -44,3 +44,15 @@ func (*memoryPackageIndexStore) SetActivation(context.Context, string, string, s
 }
 
 func (*memoryPackageIndexStore) Revision(context.Context) (uint64, error) { return 0, nil }
+
+func (s *memoryPackageIndexStore) Published(context.Context) (uint64, map[string]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	commits := map[string]string{}
+	for id, entry := range s.entries {
+		if entry.State != "retired" && entry.ActiveCommit != "" {
+			commits[id] = entry.ActiveCommit
+		}
+	}
+	return 0, commits, nil
+}

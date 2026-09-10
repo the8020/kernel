@@ -7,9 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
-	"net/http"
-	"net/http/httptest"
+
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,12 +31,12 @@ type recordingActivationSchemaHook struct {
 	completed []bool
 }
 
-func (h *recordingActivationSchemaHook) Prepare(_ context.Context, candidates []deployment.Candidate) error {
+func (h *recordingActivationSchemaHook) Prepare(_ context.Context, _ string, candidates []deployment.Candidate) error {
 	h.prepared = append([]deployment.Candidate(nil), candidates...)
 	return nil
 }
 
-func (h *recordingActivationSchemaHook) Complete(_ context.Context, activated bool) error {
+func (h *recordingActivationSchemaHook) Complete(_ context.Context, _ string, activated bool) error {
 	h.completed = append(h.completed, activated)
 	return nil
 }
@@ -47,7 +45,6 @@ type fakeView struct {
 	start     SandboxStart
 	packages  string
 	temporary string
-	paused    bool
 	running   bool
 }
 
@@ -59,6 +56,8 @@ type fakeDriver struct {
 	startErr  error
 	deleteErr error
 	listWait  <-chan struct{}
+	stopWait  <-chan struct{}
+	stops     chan string
 }
 
 func newFakeDriver() *fakeDriver { return &fakeDriver{views: map[string]*fakeView{}} }
@@ -117,7 +116,7 @@ func (d *fakeDriver) Exec(_ context.Context, id, command string) ([]byte, error)
 	defer d.mu.Unlock()
 	d.execs++
 	view := d.views[id]
-	if view == nil || !view.running || view.paused {
+	if view == nil || !view.running {
 		return nil, errors.New("sandbox is not available")
 	}
 	fields := strings.SplitN(command, " ", 3)
@@ -175,13 +174,12 @@ func (d *fakeDriver) ExecCommand(ctx context.Context, id string, arguments []str
 	d.mu.Lock()
 	d.execs++
 	view := d.views[id]
-	if view == nil || !view.running || view.paused {
+	if view == nil || !view.running {
 		d.mu.Unlock()
 		return errors.New("sandbox is not available")
 	}
 	packages := view.packages
 	sharedPackages := view.start.Packages
-	temporary := view.temporary
 	d.mu.Unlock()
 	for _, packageID := range packageDirectories(sharedPackages) {
 		shared := filepath.Join(sharedPackages, filepath.FromSlash(packageID))
@@ -197,7 +195,6 @@ func (d *fakeDriver) ExecCommand(ctx context.Context, id string, arguments []str
 	arguments = append([]string(nil), arguments...)
 	for index := range arguments {
 		arguments[index] = strings.ReplaceAll(arguments[index], "/workspace/packages", packages)
-		arguments[index] = strings.ReplaceAll(arguments[index], sandboxActivationIndexRoot, filepath.Join(temporary, "activation-index"))
 	}
 	process := exec.CommandContext(ctx, arguments[0], arguments[1:]...)
 	diagnostics := &boundedBuffer{limit: commandOutputLimit}
@@ -208,27 +205,17 @@ func (d *fakeDriver) ExecCommand(ctx context.Context, id string, arguments []str
 	return nil
 }
 
-func (d *fakeDriver) Pause(_ context.Context, id string) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.views[id] == nil {
-		return os.ErrNotExist
+func (d *fakeDriver) Stop(ctx context.Context, id string) error {
+	if d.stops != nil {
+		d.stops <- id
 	}
-	d.views[id].paused = true
-	return nil
-}
-
-func (d *fakeDriver) Resume(_ context.Context, id string) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.views[id] == nil {
-		return os.ErrNotExist
+	if d.stopWait != nil {
+		select {
+		case <-d.stopWait:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
-	d.views[id].paused = false
-	return nil
-}
-
-func (d *fakeDriver) Stop(_ context.Context, id string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.views[id] != nil {
@@ -315,7 +302,6 @@ func registerTestActivationCommands(t *testing.T, registry *core.Registry, manag
 			return value
 		}
 		options := ActivationOptions{Description: option("message"), AuthorName: option("author_name"), AuthorEmail: option("author_email")}
-		options.DeferOverlayReset, _ = request.Arguments["defer_overlay_reset"].(bool)
 		if selected := option("packages"); selected != "" {
 			options.SelectedPackages = strings.Split(selected, ",")
 		}
@@ -368,7 +354,6 @@ func testActivationCommands() []core.Command {
 	}
 	runParameters := append([]core.Parameter(nil), parameters...)
 	runParameters[1].Required = true
-	runParameters = append(runParameters, core.Parameter{Name: "defer_overlay_reset", Type: "boolean", Option: "defer-overlay-reset"})
 	return []core.Command{
 		{Version: 1, ID: "test-preview", Name: "dev-core.activate.preview", Kind: core.CommandKindPackage, Summary: "preview", Description: "preview", Parameters: parameters},
 		{Version: 1, ID: "test-run", Name: "dev-core.activate.run", Kind: core.CommandKindPackage, Summary: "activate", Description: "activate", Parameters: runParameters},
@@ -455,6 +440,53 @@ func packageResult(result ActivationResult, id string) ActivationPackageResult {
 		}
 	}
 	return ActivationPackageResult{}
+}
+
+func TestShutdownOverlapsIndependentSandboxes(t *testing.T) {
+	platform := newTestPlatform(t)
+	m := platform.manager
+	sandboxes := map[string]Sandbox{}
+	for _, user := range []string{"alice", "bravo"} {
+		if _, err := m.EnsureSandbox(context.Background(), user); err != nil {
+			t.Fatal(err)
+		}
+		sandbox, err := m.Inspect(user)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sandboxes[sandbox.SandboxID] = sandbox
+		shell(t, m, user, "printf 'private-"+user+"\\n' >/workspace/packages/the8020/dev-core/notes.txt")
+	}
+	waiting := make(chan struct{})
+	release := sync.OnceFunc(func() { close(waiting) })
+	platform.driver.stops, platform.driver.stopWait = make(chan string, 2), waiting
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	closed := make(chan struct{})
+	var closeErr error
+	go func() { closeErr = m.Close(ctx); close(closed) }()
+	defer func() { release(); <-closed }()
+	for range sandboxes {
+		select {
+		case <-platform.driver.stops:
+		case <-time.After(time.Second):
+			t.Fatal("one sandbox's graceful stop blocked another sandbox's cleanup")
+		}
+	}
+	release()
+	<-closed
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	for _, sandbox := range sandboxes {
+		current, err := m.Inspect(sandbox.UserID)
+		if err != nil || current.State != StateStopped {
+			t.Fatalf("sandbox was not durably stopped: %+v: %v", current, err)
+		}
+		if _, owned := m.owned.Load(sandbox.SandboxID); owned {
+			t.Fatal("stopped sandbox retained live ownership")
+		}
+	}
 }
 
 func TestEnsureSandboxCreatesAndRestartsDirectly(t *testing.T) {
@@ -795,445 +827,9 @@ func TestSandboxPersistenceUsesOneDevSandboxDirectory(t *testing.T) {
 		t.Fatalf("user sandbox storage = %#v, want only dev-sandbox", entries)
 	}
 	root := filepath.Join(platform.users, "alice", "dev-sandbox")
-	for _, relative := range []string{"sandbox.toml", filepath.Join("runtime", "overlay", "state.toml"), "system"} {
+	for _, relative := range []string{"sandbox.toml", "system"} {
 		if _, err := os.Stat(filepath.Join(root, relative)); err != nil {
 			t.Errorf("missing persisted sandbox path %s: %v", relative, err)
-		}
-	}
-}
-
-func TestSandboxOverlayUsesSharedLowerAndPersistsCheckpoints(t *testing.T) {
-	platform := newTestPlatform(t)
-	a, err := platform.manager.Create(context.Background(), "developera")
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, err := platform.manager.Create(context.Background(), "developerb")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if a.SourcePath != b.SourcePath || a.SourcePath != filepath.Join(platform.root, "packages") {
-		t.Fatalf("sandbox overlay lowers are not the shared package root: %q %q", a.SourcePath, b.SourcePath)
-	}
-	if !strings.Contains(a.SystemPath, filepath.Join("users", "developera", "dev-sandbox", "system")) {
-		t.Fatalf("system path is not user-owned durable storage: %q", a.SystemPath)
-	}
-	shell(t, platform.manager, a.UserID, "write packages/the8020/dev-core/src/message.ts private-a")
-	shell(t, platform.manager, a.UserID, "write home/.config/editor/config.toml model=test")
-	shell(t, platform.manager, a.UserID, "write system/usr/local/bin/private-tool tool")
-	if got := shell(t, platform.manager, b.UserID, "read packages/the8020/dev-core/src/message.ts"); strings.Contains(got, "private-a") {
-		t.Fatal("sandbox B observed sandbox A's source")
-	}
-	shared, _ := os.ReadFile(filepath.Join(platform.root, "packages", "the8020", "dev-core", "src", "message.ts"))
-	if strings.Contains(string(shared), "private-a") {
-		t.Fatal("private edit changed shared packages")
-	}
-	execs := platform.driver.execs
-	time.Sleep(1200 * time.Millisecond)
-	if platform.driver.execs != execs {
-		t.Fatalf("idle sandbox performed background work: %d -> %d", execs, platform.driver.execs)
-	}
-	starts := platform.driver.starts
-	if _, err := platform.manager.Stop(context.Background(), a.UserID); err != nil {
-		t.Fatal(err)
-	}
-	a, err = platform.manager.Start(context.Background(), a.UserID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if platform.driver.starts != starts+1 {
-		t.Fatal("restart did not create exactly one sandbox process")
-	}
-	for _, proof := range []struct{ command, want string }{
-		{"read packages/the8020/dev-core/src/message.ts", "private-a"},
-		{"read home/.config/editor/config.toml", "model=test"},
-		{"read system/usr/local/bin/private-tool", "tool"},
-	} {
-		if got := shell(t, platform.manager, a.UserID, proof.command); got != proof.want {
-			t.Fatalf("%s = %q, want %q", proof.command, got, proof.want)
-		}
-	}
-}
-
-func TestActivationScansOnlyOnDemandCommitsAndResetsOverlay(t *testing.T) {
-	platform := newTestPlatform(t)
-	hook := &recordingActivationSchemaHook{}
-	platform.manager.SetSchemaDeployment(hook)
-	sandbox, err := platform.manager.Create(context.Background(), "developer")
-	if err != nil {
-		t.Fatal(err)
-	}
-	shell(t, platform.manager, sandbox.UserID, "write packages/the8020/dev-core/src/message.ts private-a")
-	shell(t, platform.manager, sandbox.UserID, "write packages/the8020/demo/notes.txt private-b")
-	execs := platform.driver.execs
-	preview, err := platform.manager.Preview(context.Background(), sandbox.UserID, ActivationOptions{SelectedPackages: []string{"the8020/dev-core"}})
-	if err != nil || len(preview.Packages) != 2 {
-		t.Fatalf("preview = %#v, %v", preview, err)
-	}
-	if platform.driver.execs != execs+1 {
-		t.Fatalf("preview used %d sandbox commands, want one batched scan", platform.driver.execs-execs)
-	}
-	starts := platform.driver.starts
-	oldSandbox := sandbox.SandboxID
-	result, err := platform.manager.Activate(context.Background(), sandbox.UserID, ActivationOptions{Description: "Common", SelectedPackages: []string{"the8020/dev-core"}, AuthorName: "Developer", AuthorEmail: "developer@example.test", Metadata: map[string]string{"client": "unit-test"}})
-	if err != nil || !result.Success || packageResult(result, "the8020/dev-core").Status != "committed" {
-		t.Fatalf("activation = %#v, %v", result, err)
-	}
-	if len(hook.prepared) != 1 || hook.prepared[0].PackageID != "the8020/dev-core" || !slices.Equal(hook.completed, []bool{true}) {
-		t.Fatalf("schema activation hook = prepared %#v completed %#v", hook.prepared, hook.completed)
-	}
-	if !beneath(hook.prepared[0].Root, platform.root) || beneath(hook.prepared[0].Root, filepath.Join(platform.root, "node", "kernel")) {
-		t.Fatalf("schema candidate uses protected mount source %q", hook.prepared[0].Root)
-	}
-	current, _ := platform.manager.Inspect(sandbox.UserID)
-	if platform.driver.starts != starts+1 || current.SandboxID != oldSandbox || !result.OverlayReset {
-		t.Fatal("activation did not recreate the deterministic sandbox with a clean overlay")
-	}
-	if got, _ := os.ReadFile(filepath.Join(platform.root, "packages", "the8020", "dev-core", "src", "message.ts")); string(got) != "private-a" {
-		t.Fatalf("activated shared source = %q", got)
-	}
-	commitMessage, err := gitOutput(filepath.Join(platform.root, "packages", "the8020", "dev-core"), "log", "-1", "--pretty=%B")
-	metadataAt := strings.Index(commitMessage, "[the8020.activation]")
-	if err != nil || metadataAt < 0 {
-		t.Fatalf("activation commit metadata = %q, %v", commitMessage, err)
-	}
-	metadataFile := filepath.Join(t.TempDir(), "activation.toml")
-	writeTestFile(t, metadataFile, commitMessage[metadataAt:])
-	var metadataDocument struct {
-		The8020 struct {
-			Activation map[string]string `toml:"activation"`
-		} `toml:"the8020"`
-	}
-	if err := readTOML(metadataFile, &metadataDocument); err != nil || metadataDocument.The8020.Activation["sandbox"] != sandbox.SandboxID || metadataDocument.The8020.Activation["metadata_client"] != "unit-test" {
-		t.Fatalf("activation metadata TOML = %#v, %v", metadataDocument, err)
-	}
-	remaining, err := platform.manager.Preview(context.Background(), sandbox.UserID, ActivationOptions{})
-	if err != nil || len(remaining.Packages) != 1 || remaining.Packages[0].PackageID != "the8020/demo" {
-		t.Fatalf("remaining changes = %#v, %v", remaining, err)
-	}
-	result, err = platform.manager.Activate(context.Background(), sandbox.UserID, ActivationOptions{Description: "Fallback", PackageMessages: map[string]string{"the8020/demo": "Override"}})
-	if err != nil || !result.Success {
-		t.Fatalf("second activation = %#v, %v", result, err)
-	}
-	message, _ := gitOutput(filepath.Join(platform.root, "packages", "the8020", "demo"), "log", "-1", "--pretty=%s")
-	if message != "Override" {
-		t.Fatalf("package message = %q", message)
-	}
-	author, _ := gitOutput(filepath.Join(platform.root, "packages", "the8020", "demo"), "log", "-1", "--pretty=%an <%ae>")
-	if author != "developer <developer@development.local>" {
-		t.Fatalf("default activation author = %q", author)
-	}
-}
-
-func TestSandboxHelperActivationDefersResetAcrossCommandBoundary(t *testing.T) {
-	platform := newTestPlatform(t)
-	sandbox, err := platform.manager.Create(context.Background(), "developer")
-	if err != nil {
-		t.Fatal(err)
-	}
-	shell(t, platform.manager, sandbox.UserID, "write packages/the8020/demo/notes.txt helper-change")
-	request := httptest.NewRequest(http.MethodPost, "/v1/development/sandboxes/developer/activate", strings.NewReader(`{"description":"Helper activation"}`))
-	request.Header.Set("Authorization", "Bearer "+sandbox.Token)
-	response := httptest.NewRecorder()
-	platform.manager.serveSandbox(response, request)
-	var result ActivationResult
-	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
-		t.Fatal(err)
-	}
-	if response.Code != http.StatusOK || !result.Success || !result.OverlayResetPending || result.OverlayReset {
-		t.Fatalf("helper must receive its result before reset: status=%d result=%+v", response.Code, result)
-	}
-	waitForOverlayReset(t, platform.manager, sandbox.UserID)
-	if !platform.manager.HasSandbox(sandbox.SandboxID) {
-		t.Fatal("activation left the sandbox unavailable")
-	}
-}
-
-func TestActivationCapturesRenamesDeletionsAndBinaryButExcludesIgnoredFiles(t *testing.T) {
-	platform := newTestPlatform(t)
-	shared := filepath.Join(platform.root, "packages", "the8020", "dev-core")
-	writeTestFile(t, filepath.Join(shared, ".gitignore"), "ignored.dat\n")
-	if output, err := gitCommand(context.Background(), shared, gitIdentity("Test Developer", "developer@example.test"), "add", ".gitignore"); err != nil {
-		t.Fatalf("stage ignore file: %v: %s", err, output)
-	}
-	if output, err := gitCommand(context.Background(), shared, gitIdentity("Test Developer", "developer@example.test"), "commit", "-q", "--no-gpg-sign", "-m", "Ignore generated data"); err != nil {
-		t.Fatalf("commit ignore file: %v: %s", err, output)
-	}
-	sandbox, err := platform.manager.Create(context.Background(), "developer")
-	if err != nil {
-		t.Fatal(err)
-	}
-	private := filepath.Join(platform.driver.views[sandbox.SandboxID].packages, "the8020", "dev-core")
-	if err := os.Rename(filepath.Join(private, "notes.txt"), filepath.Join(private, "renamed.txt")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(filepath.Join(private, "src", "message.ts")); err != nil {
-		t.Fatal(err)
-	}
-	binary := []byte{0, 1, 2, 3, 0xff}
-	if err := os.WriteFile(filepath.Join(private, "binary.dat"), binary, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(private, "ignored.dat"), []byte("generated\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	unusualPath := "line\nand\ttab.txt"
-	if err := os.WriteFile(filepath.Join(private, unusualPath), []byte("unusual\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	execs := platform.driver.execs
-	preview, err := platform.manager.Preview(context.Background(), sandbox.UserID, ActivationOptions{})
-	if err != nil || len(preview.Packages) != 1 {
-		t.Fatalf("preview = %#v, %v", preview, err)
-	}
-	if platform.driver.execs != execs+1 {
-		t.Fatalf("preview used %d sandbox commands, want one batched scan", platform.driver.execs-execs)
-	}
-	item := preview.Packages[0]
-	if item.PackageID != "the8020/dev-core" || item.ChangedFiles != 5 || item.AddedRows != 2 || item.RemovedRows != 2 {
-		t.Fatalf("package summary = %#v", item)
-	}
-	files := map[string]string{}
-	for _, file := range item.Files {
-		files[file.Path] = file.Change
-	}
-	wantFiles := map[string]string{
-		"binary.dat":     "added",
-		unusualPath:      "added",
-		"notes.txt":      "deleted",
-		"renamed.txt":    "added",
-		"src/message.ts": "deleted",
-	}
-	if !maps.Equal(files, wantFiles) {
-		t.Fatalf("files = %#v, want %#v", files, wantFiles)
-	}
-
-	index, _ := sandboxIndexPaths("the8020/dev-core")
-	index = strings.Replace(index, sandboxActivationIndexRoot, filepath.Join(platform.driver.views[sandbox.SandboxID].temporary, "activation-index"), 1)
-	if err := os.WriteFile(index, []byte("corrupt index"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := platform.manager.Preview(context.Background(), sandbox.UserID, ActivationOptions{}); err != nil {
-		t.Fatalf("preview did not rebuild a disposable corrupt index: %v", err)
-	}
-
-	result, err := platform.manager.Activate(context.Background(), sandbox.UserID, ActivationOptions{Description: "Capture every Git change type"})
-	if err != nil || !result.Success {
-		t.Fatalf("activation = %#v, %v", result, err)
-	}
-	if contents, err := os.ReadFile(filepath.Join(shared, "binary.dat")); err != nil || !bytes.Equal(contents, binary) {
-		t.Fatalf("activated binary = %v, %v", contents, err)
-	}
-	if _, err := os.Stat(filepath.Join(shared, "ignored.dat")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("activation published ignored artifact: %v", err)
-	}
-	if contents, err := os.ReadFile(filepath.Join(shared, "renamed.txt")); err != nil || string(contents) != "the8020/dev-core notes\n" {
-		t.Fatalf("activated rename = %q, %v", contents, err)
-	}
-	if contents, err := os.ReadFile(filepath.Join(shared, unusualPath)); err != nil || string(contents) != "unusual\n" {
-		t.Fatalf("activated unusual path = %q, %v", contents, err)
-	}
-	for _, path := range []string{"notes.txt", filepath.Join("src", "message.ts")} {
-		if _, err := os.Stat(filepath.Join(shared, path)); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("activated deletion retained %s: %v", path, err)
-		}
-	}
-}
-
-func TestActivationWarmIndexDropsNewlyIgnoredArtifact(t *testing.T) {
-	platform := newTestPlatform(t)
-	sandbox, err := platform.manager.Create(context.Background(), "developer")
-	if err != nil {
-		t.Fatal(err)
-	}
-	private := filepath.Join(platform.driver.views[sandbox.SandboxID].packages, "the8020", "dev-core")
-	writeTestFile(t, filepath.Join(private, "generated.dat"), "generated\n")
-	preview, err := platform.manager.Preview(context.Background(), sandbox.UserID, ActivationOptions{})
-	if err != nil || len(preview.Packages) != 1 || preview.Packages[0].ChangedFiles != 1 || preview.Packages[0].Files[0].Path != "generated.dat" {
-		t.Fatalf("preview before ignore = %#v, %v", preview, err)
-	}
-	writeTestFile(t, filepath.Join(private, ".gitignore"), "generated.dat\n")
-	preview, err = platform.manager.Preview(context.Background(), sandbox.UserID, ActivationOptions{})
-	if err != nil || len(preview.Packages) != 1 || preview.Packages[0].ChangedFiles != 1 || preview.Packages[0].Files[0].Path != ".gitignore" {
-		t.Fatalf("preview after ignore = %#v, %v", preview, err)
-	}
-	result, err := platform.manager.Activate(context.Background(), sandbox.UserID, ActivationOptions{Description: "Ignore generated artifacts"})
-	if err != nil || !result.Success {
-		t.Fatalf("activation = %#v, %v", result, err)
-	}
-	shared := filepath.Join(platform.root, "packages", "the8020", "dev-core")
-	if contents, err := os.ReadFile(filepath.Join(shared, ".gitignore")); err != nil || string(contents) != "generated.dat\n" {
-		t.Fatalf("activated ignore rules = %q, %v", contents, err)
-	}
-	if _, err := os.Stat(filepath.Join(shared, "generated.dat")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("activation published newly ignored artifact: %v", err)
-	}
-}
-
-func TestActivationStillCapturesTrackedFileMatchedByIgnoreRule(t *testing.T) {
-	platform := newTestPlatform(t)
-	shared := filepath.Join(platform.root, "packages", "the8020", "dev-core")
-	writeTestFile(t, filepath.Join(shared, ".gitignore"), "tracked.dat\n")
-	writeTestFile(t, filepath.Join(shared, "tracked.dat"), "shared\n")
-	if output, err := gitCommand(context.Background(), shared, nil, "add", ".gitignore"); err != nil {
-		t.Fatalf("stage ignore rule: %v: %s", err, output)
-	}
-	if output, err := gitCommand(context.Background(), shared, nil, "add", "-f", "tracked.dat"); err != nil {
-		t.Fatalf("stage tracked ignored file: %v: %s", err, output)
-	}
-	if output, err := gitCommand(context.Background(), shared, gitIdentity("Test Developer", "developer@example.test"), "commit", "-q", "--no-gpg-sign", "-m", "Track ignored file"); err != nil {
-		t.Fatalf("commit tracked ignored file: %v: %s", err, output)
-	}
-	sandbox, err := platform.manager.Create(context.Background(), "developer")
-	if err != nil {
-		t.Fatal(err)
-	}
-	private := filepath.Join(platform.driver.views[sandbox.SandboxID].packages, "the8020", "dev-core")
-	writeTestFile(t, filepath.Join(private, "tracked.dat"), "private\n")
-	preview, err := platform.manager.Preview(context.Background(), sandbox.UserID, ActivationOptions{})
-	if err != nil || len(preview.Packages) != 1 || preview.Packages[0].ChangedFiles != 1 || preview.Packages[0].Files[0].Path != "tracked.dat" {
-		t.Fatalf("tracked ignored preview = %#v, %v", preview, err)
-	}
-	result, err := platform.manager.Activate(context.Background(), sandbox.UserID, ActivationOptions{Description: "Update tracked ignored file"})
-	if err != nil || !result.Success {
-		t.Fatalf("activation = %#v, %v", result, err)
-	}
-	if contents, err := os.ReadFile(filepath.Join(shared, "tracked.dat")); err != nil || string(contents) != "private\n" {
-		t.Fatalf("activated tracked ignored file = %q, %v", contents, err)
-	}
-}
-
-func TestActivationCaptureScanWriterAcceptsOnlyChangedMarkers(t *testing.T) {
-	packages := []sandboxPackageScan{{PackageID: "the8020/a", Base: strings.Repeat("a", 40)}, {PackageID: "the8020/b", Base: strings.Repeat("b", 40)}}
-	writer := &activationScanWriter{packages: packages, changes: []packageChanges{}}
-	if _, err := writer.Write([]byte("changed\x00\x00\x00")); err != nil {
-		t.Fatal(err)
-	}
-	if err := writer.finish(); err != nil || len(writer.changes) != 1 || writer.changes[0].PackageID != "the8020/a" || len(writer.changes[0].Files) != 0 {
-		t.Fatalf("capture markers = %#v, %v", writer.changes, err)
-	}
-	malformed := &activationScanWriter{packages: packages[:1], changes: []packageChanges{}}
-	_, _ = malformed.Write([]byte("unexpected\x00\x00"))
-	if err := malformed.finish(); err == nil {
-		t.Fatal("malformed capture marker was accepted")
-	}
-}
-
-func TestParseRawNumstatRejectsMalformedRecords(t *testing.T) {
-	for _, value := range [][]byte{
-		[]byte("not terminated"),
-		[]byte(":100644 100644 abc def M\x00"),
-		[]byte(":100644 100644 abc def M\x00file.ts\x00bad numstat\x00"),
-	} {
-		if _, _, _, err := parseRawNumstat(value); err == nil {
-			t.Fatalf("malformed Git output was accepted: %q", value)
-		}
-	}
-}
-
-func TestActivationRebasesPrivateOverlayOnCurrentSharedSource(t *testing.T) {
-	platform := newTestPlatform(t)
-	a, _ := platform.manager.Create(context.Background(), "developera")
-	b, _ := platform.manager.Create(context.Background(), "developerb")
-	shell(t, platform.manager, b.UserID, "write packages/the8020/dev-core/src/message.ts private-b")
-	shell(t, platform.manager, a.UserID, "write packages/the8020/dev-core/src/message.ts private-a")
-	if _, err := platform.manager.Activate(context.Background(), a.UserID, ActivationOptions{Description: "Advance A"}); err != nil {
-		t.Fatal(err)
-	}
-	result, err := platform.manager.Activate(context.Background(), b.UserID, ActivationOptions{Description: "Conflict B"})
-	if err != nil || !result.Success {
-		t.Fatalf("rebased activation = %#v, %v", result, err)
-	}
-	contents, _ := os.ReadFile(filepath.Join(platform.root, "packages", "the8020", "dev-core", "src", "message.ts"))
-	if string(contents) != "private-b" {
-		t.Fatalf("second overlay activation = %q", contents)
-	}
-	preview, err := platform.manager.Preview(context.Background(), b.UserID, ActivationOptions{})
-	if err != nil || len(preview.Packages) != 0 {
-		t.Fatalf("second overlay was not reset: %#v, %v", preview, err)
-	}
-	encoded, err := json.Marshal(preview)
-	if err != nil || !strings.Contains(string(encoded), `"packages":[]`) {
-		t.Fatalf("empty activation preview JSON = %s, %v", encoded, err)
-	}
-}
-
-func TestActivationPreviewReportsChangesBlockedByDirtySharedRepository(t *testing.T) {
-	platform := newTestPlatform(t)
-	sandbox, err := platform.manager.Create(context.Background(), "developer")
-	if err != nil {
-		t.Fatal(err)
-	}
-	shell(t, platform.manager, sandbox.UserID, "write packages/the8020/dev-core/src/message.ts private")
-	writeTestFile(t, filepath.Join(platform.root, "packages", "the8020", "dev-core", "host-only.txt"), "dirty shared worktree\n")
-
-	preview, err := platform.manager.Preview(context.Background(), sandbox.UserID, ActivationOptions{})
-	if err != nil || len(preview.Packages) != 1 {
-		t.Fatalf("blocked preview = %#v, %v", preview, err)
-	}
-	if item := preview.Packages[0]; item.PackageID != "the8020/dev-core" || item.ActivationReady || item.ChangedFiles != 1 {
-		t.Fatalf("blocked package preview = %#v", item)
-	}
-	result, err := platform.manager.Activate(context.Background(), sandbox.UserID, ActivationOptions{Description: "Must remain private"})
-	if err == nil || result.Success || packageResult(result, "the8020/dev-core").Status != "failed" {
-		t.Fatalf("blocked activation = %#v, %v", result, err)
-	}
-}
-
-func TestActivationPreviewFileDiff(t *testing.T) {
-	platform := newTestPlatform(t)
-	ctx := context.Background()
-	shared := filepath.Join(platform.root, "packages", "the8020", "dev-core")
-	writeTestFile(t, filepath.Join(shared, "removed.txt"), "removed content\n")
-	if _, err := gitCommand(ctx, shared, nil, "add", "removed.txt"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := gitCommand(ctx, shared, gitIdentity("Test", "test@example.test"), "commit", "-qm", "Diff fixture"); err != nil {
-		t.Fatal(err)
-	}
-	sandbox, err := platform.manager.Create(ctx, "developer")
-	if err != nil {
-		t.Fatal(err)
-	}
-	private := filepath.Join(platform.driver.views[sandbox.SandboxID].packages, "the8020", "dev-core")
-	writeTestFile(t, filepath.Join(private, "src/message.ts"), "private label\n")
-	writeTestFile(t, filepath.Join(private, "added [1].ts"), "added content\n")
-	if err := os.Remove(filepath.Join(private, "removed.txt")); err != nil {
-		t.Fatal(err)
-	}
-	for name, want := range map[string]string{
-		"src/message.ts": "+private label\n",
-		"added [1].ts":   "+added content\n",
-		"removed.txt":    "-removed content\n",
-		"":               "",
-	} {
-		preview, err := platform.manager.Preview(ctx, sandbox.UserID, ActivationOptions{SelectedPackages: []string{"the8020/dev-core"}, PreviewFile: name})
-		if err != nil || len(preview.Packages) != 1 {
-			t.Fatalf("preview: %+v, %v", preview, err)
-		}
-		found := name == ""
-		for _, file := range preview.Packages[0].Files {
-			if file.Path == name {
-				found = true
-				if file.Diff == nil || !strings.Contains(file.Diff.Text, want) {
-					t.Fatalf("diff %s = %+v", name, file.Diff)
-				}
-			} else if file.Diff != nil {
-				t.Fatalf("unrequested file diff loaded: %s", file.Path)
-			}
-		}
-		if !found {
-			t.Fatalf("file missing: %s", name)
-		}
-	}
-	for _, options := range []ActivationOptions{
-		{PreviewFile: "src/message.ts"},
-		{SelectedPackages: []string{"the8020/dev-core"}, PreviewFile: "../outside"},
-		{SelectedPackages: []string{"the8020/dev-core"}, PreviewFile: "/etc/passwd"},
-	} {
-		if _, err := platform.manager.Preview(ctx, sandbox.UserID, options); err == nil {
-			t.Fatalf("invalid file selection accepted: %+v", options)
 		}
 	}
 }
@@ -1393,7 +989,7 @@ func TestInheritedCleanupNeverGatesStartup(t *testing.T) {
 	}
 }
 
-func TestDevelopmentSpecOverlaysOnlySandboxPackages(t *testing.T) {
+func TestDevelopmentSpecUsesNativeWorkspace(t *testing.T) {
 	root := t.TempDir()
 	for _, path := range []string{"rootfs", "packages", "bundle"} {
 		if err := os.MkdirAll(filepath.Join(root, path), 0o700); err != nil {
@@ -1408,9 +1004,8 @@ func TestDevelopmentSpecOverlaysOnlySandboxPackages(t *testing.T) {
 	if spec.Root.Path != start.RootFS || spec.Root.Readonly {
 		t.Fatalf("development root = %#v", spec.Root)
 	}
-	prefix := "dev.gvisor.spec.mount.packages."
-	if spec.Annotations[prefix+"source"] != start.Packages || spec.Annotations[prefix+"type"] != "bind" || spec.Annotations[prefix+"share"] != "container" {
-		t.Fatalf("development package overlay annotations = %#v", spec.Annotations)
+	if spec.Annotations["the8020.workspace.lower"] != start.Packages || spec.Annotations["the8020.workspace.control"] != "true" || spec.Annotations["the8020.workspace.git"] != "true" {
+		t.Fatalf("development workspace annotations = %#v", spec.Annotations)
 	}
 	if len(spec.Process.Args) != 2 || spec.Process.Args[1] != "/workspace/scripts/development-init.sh" {
 		t.Fatalf("development init = %#v", spec.Process.Args)
@@ -1431,7 +1026,7 @@ func TestDevelopmentSpecOverlaysOnlySandboxPackages(t *testing.T) {
 	}
 	driver := &RunscDriver{config: RunscConfig{RuntimeRoot: filepath.Join(root, "runtime"), SandboxRoot: filepath.Join(root, "sandboxes")}}
 	flags := strings.Join(driver.flags("sbx-0123456789", "run"), " ")
-	if !strings.Contains(flags, "--directfs=true") || !strings.Contains(flags, "--overlay2=none") || strings.Contains(flags, "overlay2=all") || strings.Contains(flags, "overlay2=root") || strings.Contains(flags, "rootfs-tar") {
+	if !strings.Contains(flags, "--directfs=false") || !strings.Contains(flags, "--overlay2=none") || strings.Contains(flags, "overlay2=all") || strings.Contains(flags, "overlay2=root") || strings.Contains(flags, "rootfs-tar") {
 		t.Fatalf("development driver filesystem flags = %s", flags)
 	}
 }

@@ -14,8 +14,11 @@ type Candidate struct {
 }
 
 type SchemaHook interface {
-	Prepare(context.Context, []Candidate) error
-	Complete(context.Context, bool) error
+	// Callers persist a fresh activation ID before preparation and retain it
+	// through completion. An abandoned ID must never be reused.
+	Prepare(context.Context, string, []Candidate) error
+	// False aborts the exact preparation, including one that never started.
+	Complete(context.Context, string, bool) error
 }
 
 type unavailableHook struct{ err error }
@@ -29,5 +32,5 @@ func Unavailable(message string) SchemaHook {
 	return unavailableHook{err: errors.New(message)}
 }
 
-func (hook unavailableHook) Prepare(context.Context, []Candidate) error { return hook.err }
-func (hook unavailableHook) Complete(context.Context, bool) error       { return hook.err }
+func (hook unavailableHook) Prepare(context.Context, string, []Candidate) error { return hook.err }
+func (hook unavailableHook) Complete(context.Context, string, bool) error       { return hook.err }

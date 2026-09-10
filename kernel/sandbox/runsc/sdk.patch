@@ -1,0 +1,34 @@
+--- a/pkg/sentry/fsimpl/gofer/gofer.go
++++ b/pkg/sentry/fsimpl/gofer/gofer.go
+@@ -1405,7 +1405,7 @@
+ 			// it'll be overwritten by revalidation before the next time it's
+ 			// used anyway. (InteropModeShared inhibits client caching of
+ 			// regular file data, so there's no cache to truncate either.)
+-			return nil
++			return failureErr
+ 		}
+ 	}
+ 	if stat.Mask&linux.STATX_MODE != 0 && failureMask&linux.STATX_MODE == 0 {
+--- a/pkg/lisafs/handlers.go
++++ b/pkg/lisafs/handlers.go
+@@ -1011,10 +1011,7 @@
+ 		n       uint16
+ 	)
+ 	respMetaSize := uint32(linkLen.SizeBytes())
+-	if fd.safelyRead(func() error {
+-		if fd.node.isDeleted() {
+-			return unix.EINVAL
+-		}
++	if err := fd.safelyRead(func() error {
+ 		n, err = fd.impl.Readlink(func(dataLen uint32) []byte {
+ 			return comm.PayloadBuf(dataLen + respMetaSize)[respMetaSize:]
+ 		})
+@@ -1434,7 +1431,7 @@
+ 	payloadBuf := comm.PayloadBuf(payloadBufPos + 10*unixDirentMaxSize)
+ 	if err := fd.controlFD.safelyRead(func() error {
+ 		if fd.controlFD.node.isDeleted() {
+-			return unix.EINVAL
++			return unix.ENOENT
+ 		}
+ 		return fd.impl.Getdent64(uint32(req.Count), seek0, func(dirent Dirent64) {
+ 			// Paste the dirent into the payload buffer without having the dirent

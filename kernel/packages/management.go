@@ -121,8 +121,6 @@ func (s *Store) SetPackageIndex(ctx context.Context, entry PackageIndex) (Packag
 	if err := validatePackageIndex(&entry); err != nil {
 		return PackageIndex{}, err
 	}
-	s.repositoryMu.Lock()
-	defer s.repositoryMu.Unlock()
 	unlock, err := s.lockPackage(ctx, entry.PackageID)
 	if err != nil {
 		return PackageIndex{}, err
@@ -199,8 +197,6 @@ func (s *Store) ListPackageVersions(ctx context.Context, packageID string, limit
 	if limit > maximumVersions {
 		limit = maximumVersions
 	}
-	s.repositoryMu.Lock()
-	defer s.repositoryMu.Unlock()
 	unlock, err := s.lockPackage(ctx, packageID)
 	if err != nil {
 		return PackageVersions{}, err
@@ -313,8 +309,6 @@ func (s *Store) synchronizePackages(ctx context.Context, packageIDs []string, to
 }
 
 func (s *Store) synchronizePackage(ctx context.Context, packageID, transientToken string) (PackageSynchronization, error) {
-	s.repositoryMu.Lock()
-	defer s.repositoryMu.Unlock()
 	unlock, err := s.lockPackage(ctx, packageID)
 	if err != nil {
 		return PackageSynchronization{}, err
@@ -390,16 +384,20 @@ func (s *Store) synchronizePackage(ctx context.Context, packageID, transientToke
 		return result, nil
 	}
 	hook := s.schemaDeployment()
+	transactionID, err := activationID()
+	if err != nil {
+		return result, err
+	}
 	preparedSchema := false
 	sourceSwitched := false
 	if hook != nil {
-		if err := hook.Prepare(ctx, []deployment.Candidate{{PackageID: packageID, Root: stage, Commit: commit}}); err != nil {
+		if err := hook.Prepare(ctx, transactionID, []deployment.Candidate{{PackageID: packageID, Root: stage, Commit: commit}}); err != nil {
 			return result, fmt.Errorf("prepare package database schema: %w", err)
 		}
 		preparedSchema = true
 		defer func() {
 			if preparedSchema && !sourceSwitched {
-				_ = hook.Complete(context.Background(), false)
+				_ = hook.Complete(context.Background(), transactionID, false)
 			}
 		}()
 	}
@@ -408,7 +406,7 @@ func (s *Store) synchronizePackage(ctx context.Context, packageID, transientToke
 		return result, fmt.Errorf("activate synchronized package: %w", err)
 	}
 	if hook != nil {
-		if err := hook.Complete(ctx, true); err != nil {
+		if err := hook.Complete(ctx, transactionID, true); err != nil {
 			return result, fmt.Errorf("complete package activation: %w", err)
 		}
 		preparedSchema = false
@@ -478,7 +476,12 @@ func finalizePackageDirectory(destination string) error {
 	if err := os.RemoveAll(destination + ".previous"); err != nil {
 		return fmt.Errorf("remove previous package: %w", err)
 	}
-	return syncPackageDirectory(filepath.Dir(destination))
+	err := syncPackageDirectory(filepath.Dir(destination))
+	// Removing an uninstalled package may have no namespace directory to sync.
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 func rollbackPackageDirectory(destination string) error {
@@ -501,8 +504,6 @@ func (s *Store) CreateLocalPackage(ctx context.Context, author, repository, desc
 	if err := validatePackageIndex(&entry); err != nil {
 		return LocalPackage{}, err
 	}
-	s.repositoryMu.Lock()
-	defer s.repositoryMu.Unlock()
 	unlock, err := s.lockPackage(ctx, entry.PackageID)
 	if err != nil {
 		return LocalPackage{}, err
@@ -778,18 +779,106 @@ func validateStagedPackage(root string) error {
 }
 
 func (s *Store) lockPackage(ctx context.Context, packageID string) (func(), error) {
-	if _, err := ParsePackageID(packageID); err != nil {
-		return nil, err
+	return LockSources(ctx, s.packagesRoot, []string{packageID})
+}
+
+// LockSources protects selected shared package roots throughout preparation,
+// switching and completion. Stable lock files stay outside replaceable package
+// directories; never unlink them during package removal or normal cleanup.
+// Readers and private development writes do not acquire these locks.
+func LockSources(ctx context.Context, packagesRoot string, packageIDs []string) (func(), error) {
+	_, release, err := lockSources(ctx, packagesRoot, packageIDs, true)
+	return release, err
+}
+
+// ObserveSources never creates lock files. Existing files protect reads with a
+// shared lock. Call validate after reading and before exposing derived state:
+// a first publisher creating a previously absent lock invalidates that read.
+func ObserveSources(ctx context.Context, packagesRoot string, packageIDs []string) (validate func() error, release func(), err error) {
+	return lockSources(ctx, packagesRoot, packageIDs, false)
+}
+
+func lockSources(ctx context.Context, packagesRoot string, packageIDs []string, create bool) (func() error, func(), error) {
+	if len(packageIDs) > 256 {
+		return nil, nil, errors.New("source publication supports at most 256 packages")
 	}
-	value, _ := s.packageLocks.LoadOrStore(packageID, make(chan struct{}, 1))
-	semaphore := value.(chan struct{})
-	select {
-	case semaphore <- struct{}{}:
-		var once sync.Once
-		return func() { once.Do(func() { <-semaphore }) }, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	for _, id := range packageIDs {
+		if _, err := ParsePackageID(id); err != nil {
+			return nil, nil, err
+		}
 	}
+	if len(packageIDs) == 0 {
+		return func() error { return nil }, func() {}, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	root, err := os.OpenRoot(packagesRoot)
+	if err != nil {
+		return nil, nil, err
+	}
+	var files []*os.File
+	release := sync.OnceFunc(func() {
+		for _, file := range files {
+			// A concurrent fork may retain the descriptor until its exec.
+			_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
+			_ = file.Close()
+		}
+		_ = root.Close()
+	})
+	const directory = ".meta/activation-locks"
+	if create {
+		if err := root.MkdirAll(directory, 0700); err != nil {
+			release()
+			return nil, nil, err
+		}
+		if info, err := root.Lstat(directory); err != nil || !info.IsDir() {
+			release()
+			return nil, nil, errors.Join(errors.New("package lock directory must be a real directory"), err)
+		}
+	}
+	var absent []string
+	for _, id := range uniqueSorted(packageIDs) {
+		if err := ctx.Err(); err != nil {
+			release()
+			return nil, nil, err
+		}
+		name := directory + "/" + url.PathEscape(id)
+		flags, operation := os.O_RDONLY, unix.LOCK_SH
+		if create {
+			flags, operation = os.O_CREATE|os.O_RDWR, unix.LOCK_EX
+		}
+		file, err := root.OpenFile(name, flags|unix.O_NOFOLLOW, 0600)
+		if !create && errors.Is(err, os.ErrNotExist) {
+			absent = append(absent, name)
+			continue
+		}
+		if err != nil {
+			release()
+			return nil, nil, err
+		}
+		files = append(files, file)
+		if info, err := file.Stat(); err != nil || !info.Mode().IsRegular() {
+			release()
+			return nil, nil, errors.Join(fmt.Errorf("package %s lock must be a regular file", id), err)
+		}
+		if err := unix.Flock(int(file.Fd()), operation|unix.LOCK_NB); err != nil {
+			release()
+			if errors.Is(err, unix.EWOULDBLOCK) {
+				return nil, nil, fmt.Errorf("package %s publication is busy: %w", id, err)
+			}
+			return nil, nil, fmt.Errorf("lock package %s publication: %w", id, err)
+		}
+	}
+	validate := func() error {
+		for _, name := range absent {
+			if _, err := root.Lstat(name); !errors.Is(err, os.ErrNotExist) {
+				return errors.Join(errors.New("package publication started during source read; retry the operation"), err)
+			}
+		}
+		return ctx.Err()
+	}
+	return validate, release, nil
 }
 
 func (s *Store) gitValue(ctx context.Context, path string, arguments ...string) (string, error) {

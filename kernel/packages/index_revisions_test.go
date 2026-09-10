@@ -34,11 +34,32 @@ func TestIndexRevisionFollowerCatchesUpWithoutApplicationTables(t *testing.T) {
 	if err != nil || update.Revision != 4 || !slices.Equal(update.Packages, []string{"acme/changed", "acme/removed"}) {
 		t.Fatalf("catch-up: %#v error=%v", update, err)
 	}
-	if err := follower.Acknowledge(3); err == nil {
-		t.Fatal("acknowledged an unobserved revision")
+	if err := follower.Acknowledge(3); err != nil || follower.revision != 0 || follower.pending != 4 {
+		t.Fatalf("older acknowledgement consumed the pending revision: %v", err)
+	}
+	if err := follower.Acknowledge(5); err == nil {
+		t.Fatal("acknowledged a future revision")
 	}
 	if retry, err := follower.Poll(ctx); err != nil || !slices.Equal(retry.Packages, update.Packages) {
 		t.Fatalf("retry: %#v %v", retry, err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE "the8020__system__revisions" SET "revision" = 5 WHERE "domain" IN ('indexes', 'index:acme/changed')`); err != nil {
+		t.Fatal(err)
+	}
+	if newer, err := follower.Poll(ctx); err != nil || newer.Revision != 5 {
+		t.Fatalf("newer publication: %+v: %v", newer, err)
+	}
+	if err := follower.Acknowledge(4); err != nil || follower.revision != 0 || follower.pending != 5 {
+		t.Fatalf("older completion consumed the newer revision: %v", err)
+	}
+	if err := follower.Acknowledge(5); err != nil {
+		t.Fatal(err)
+	}
+	if err := follower.Acknowledge(5); err != nil {
+		t.Fatalf("duplicate completion failed: %v", err)
+	}
+	if err := follower.Acknowledge(0); err == nil {
+		t.Fatal("acknowledged revision zero")
 	}
 	if err := follower.Acknowledge(4); err != nil {
 		t.Fatal(err)

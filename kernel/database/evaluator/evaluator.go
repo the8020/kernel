@@ -51,13 +51,10 @@ type Config struct {
 }
 
 type Evaluator struct {
-	packages          PackageCatalog
-	jobs              JobRunner
-	database          *database.Manager
-	mu                sync.Mutex
-	pending           []string
-	deploymentContext context.Context
-	releaseDeployment func()
+	packages PackageCatalog
+	jobs     JobRunner
+	database *database.Manager
+	mu       sync.Mutex
 }
 
 func New(config Config) (*Evaluator, error) {
@@ -83,8 +80,6 @@ func (e *Evaluator) UseActivatedPackages(packages PackageCatalog) error {
 // table module. Bootstrap uses it to publish the initial package set only after
 // schemas and hooks have succeeded.
 func (e *Evaluator) PackageSet(ctx context.Context) (map[string]string, error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
 	_, commits, err := e.resolvePackages(ctx, nil)
 	return commits, err
 }
@@ -127,12 +122,13 @@ func (e *Evaluator) Evaluate(ctx context.Context, selected []string) (database.D
 // InspectDefinition evaluates exactly one deployed source module for table detail.
 func (e *Evaluator) InspectDefinition(ctx context.Context, source database.TableSource) (*database.EvaluatedTable, error) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	item, err := e.packages.ResolvePackage(source.SourcePackage)
+	catalog := e.packages
+	e.mu.Unlock()
+	item, err := catalog.ResolvePackage(source.SourcePackage)
 	if err != nil {
 		return nil, err
 	}
-	commit, err := e.packageCommit(ctx, item)
+	commit, err := packageCommit(ctx, catalog, item)
 	if err != nil {
 		return nil, err
 	}
@@ -176,19 +172,20 @@ func (e *Evaluator) RecoverAll(ctx context.Context) ([]database.SynchronizationR
 }
 
 func (e *Evaluator) synchronizeAll(ctx context.Context, resume, recovery, complete bool) ([]database.SynchronizationResult, error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
 	lockedContext, release, err := e.database.AcquireDeploymentLock(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer release()
 	ctx = lockedContext
+	var transactionID string
 	if recovery {
-		if _, exists, err := e.database.PendingDeployment(ctx); err != nil {
+		if pending, exists, err := e.database.PendingDeployment(ctx); err != nil {
 			return nil, err
 		} else if !exists {
 			return nil, errors.New("database schema deployment is not pending")
+		} else {
+			transactionID = pending.ID
 		}
 	}
 	packages, commits, err := e.resolvePackages(ctx, nil)
@@ -255,7 +252,7 @@ func (e *Evaluator) synchronizeAll(ctx context.Context, resume, recovery, comple
 		}
 	}
 	if recovery {
-		if err := e.database.CompleteDeployment(ctx, false); err != nil {
+		if err := e.database.CompleteDeployment(ctx, transactionID, false); err != nil {
 			return results, err
 		}
 	}
@@ -345,12 +342,12 @@ func packageDependencies(paths []string, module string) []string {
 
 // Prepare evaluates every table in only the candidate packages. Package
 // activation is intentionally independent of static import analysis.
-func (e *Evaluator) Prepare(ctx context.Context, candidates []deployment.Candidate) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if len(e.pending) != 0 {
-		return errors.New("schema activation is already prepared")
+func (e *Evaluator) Prepare(ctx context.Context, transactionID string, candidates []deployment.Candidate) error {
+	ctx, release, err := e.database.AcquireActivationLock(ctx, transactionID)
+	if err != nil {
+		return err
 	}
+	defer release()
 	if len(candidates) == 0 {
 		return nil
 	}
@@ -359,17 +356,6 @@ func (e *Evaluator) Prepare(ctx context.Context, candidates []deployment.Candida
 	if !e.database.Status().Initialized {
 		return nil
 	}
-	lockedContext, release, err := e.database.AcquireDeploymentLock(ctx)
-	if err != nil {
-		return err
-	}
-	keepLock := false
-	defer func() {
-		if !keepLock {
-			release()
-		}
-	}()
-	ctx = lockedContext
 	databaseCandidates := make([]database.DeploymentCandidate, len(candidates))
 	for index, candidate := range candidates {
 		if _, err := workspacepackages.ParsePackageID(candidate.PackageID); err != nil || !filepath.IsAbs(candidate.Root) {
@@ -377,13 +363,13 @@ func (e *Evaluator) Prepare(ctx context.Context, candidates []deployment.Candida
 		}
 		databaseCandidates[index] = database.DeploymentCandidate{PackageID: candidate.PackageID, CandidateCommit: candidate.Commit}
 	}
-	pending, err := e.database.BeginDeployment(ctx, databaseCandidates)
+	pending, err := e.database.BeginDeployment(ctx, transactionID, databaseCandidates)
 	if err != nil {
 		return err
 	}
-	items, retired, rollbackPackages, mounts, err := e.incrementalItems(ctx, candidates, pending)
+	items, retired, mounts, err := e.incrementalItems(ctx, candidates)
 	if err == nil {
-		err = e.database.UpdatePendingDeployment(ctx, "evaluating", nil)
+		err = e.database.UpdatePendingDeployment(ctx, transactionID, "evaluating", nil)
 	}
 	for offset := 0; err == nil && offset < len(items); offset += maximumBatch {
 		end := min(offset+maximumBatch, len(items))
@@ -400,119 +386,64 @@ func (e *Evaluator) Prepare(ctx context.Context, candidates []deployment.Candida
 		err = e.database.ValidateCatalogReferences(ctx)
 	}
 	if err != nil {
-		_ = e.database.UpdatePendingDeployment(context.WithoutCancel(ctx), "failed", err)
-		rollbackErr := e.rollback(ctx, rollbackPackages)
+		_ = e.database.UpdatePendingDeployment(context.WithoutCancel(ctx), transactionID, "failed", err)
+		rollbackErr := e.Complete(context.WithoutCancel(ctx), transactionID, false)
 		return errors.Join(err, rollbackErr)
 	}
-	if err := e.database.UpdatePendingDeployment(ctx, "schema_applied", nil); err != nil {
-		rollbackErr := e.rollback(ctx, rollbackPackages)
+	if err := e.database.UpdatePendingDeployment(ctx, transactionID, "schema_applied", nil); err != nil {
+		rollbackErr := e.Complete(context.WithoutCancel(ctx), transactionID, false)
 		return errors.Join(err, rollbackErr)
 	}
-	e.pending = rollbackPackages
-	e.deploymentContext = lockedContext
-	e.releaseDeployment = release
-	keepLock = true
 	return nil
 }
 
 // Complete finalizes the source switch or restores catalog metadata from the
 // still-active package tree. Additive physical structures remain harmless.
-func (e *Evaluator) Complete(ctx context.Context, activated bool) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if len(e.pending) == 0 {
-		pending, exists, err := e.database.PendingDeployment(ctx)
-		if err != nil {
-			return err
-		}
-		if !exists {
-			return nil
-		}
-		for _, candidate := range pending.Candidates {
-			e.pending = append(e.pending, candidate.PackageID)
-		}
-		sort.Strings(e.pending)
-		lockedContext, release, err := e.database.AcquireDeploymentLock(ctx)
-		if err != nil {
-			e.pending = nil
-			return err
-		}
-		e.deploymentContext, e.releaseDeployment = lockedContext, release
-	}
-	if e.releaseDeployment != nil {
-		release := e.releaseDeployment
-		defer func() {
-			release()
-			e.releaseDeployment = nil
-			e.deploymentContext = nil
-		}()
-		completionContext, cancel := context.WithTimeout(context.WithoutCancel(e.deploymentContext), 2*time.Minute)
-		defer cancel()
-		ctx = completionContext
-	}
-	if !activated {
-		if err := e.restore(ctx, e.pending); err != nil {
-			_ = e.database.UpdatePendingDeployment(context.WithoutCancel(ctx), "rollback_failed", err)
-			return err
-		}
-	}
-	if err := e.database.CompleteDeployment(ctx, activated); err != nil {
-		return err
-	}
-	e.pending = nil
-	return nil
-}
-
-func (e *Evaluator) rollback(ctx context.Context, packages []string) error {
-	if len(packages) > 0 {
-		if err := e.restore(ctx, packages); err != nil {
-			_ = e.database.UpdatePendingDeployment(context.WithoutCancel(ctx), "rollback_failed", err)
-			e.pending = packages
-			return err
-		}
-	}
-	return e.database.CompleteDeployment(ctx, false)
-}
-
-func (e *Evaluator) restore(ctx context.Context, packages []string) error {
-	lockedContext, release, err := e.database.AcquireDeploymentLock(ctx)
+func (e *Evaluator) Complete(ctx context.Context, transactionID string, activated bool) error {
+	ctx, release, err := e.database.AcquireActivationLock(ctx, transactionID)
 	if err != nil {
 		return err
 	}
 	defer release()
-	pending, exists, err := e.database.PendingDeployment(lockedContext)
-	if err != nil {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+	defer cancel()
+	pending, exists, err := e.database.PendingDeploymentFor(ctx, transactionID)
+	if err != nil || !exists {
 		return err
 	}
-	if !exists {
-		return errors.New("database schema deployment is not pending")
-	}
-	newPackages := map[string]bool{}
-	for _, candidate := range pending.Candidates {
-		if candidate.PreviousCommit == "" {
-			newPackages[candidate.PackageID] = true
+	if !activated {
+		if err := e.restore(ctx, pending); err != nil {
+			_ = e.database.UpdatePendingDeployment(context.WithoutCancel(ctx), transactionID, "rollback_failed", err)
+			return err
 		}
 	}
-	activePackages := make([]string, 0, len(packages))
-	for _, packageID := range packages {
-		if !newPackages[packageID] {
-			activePackages = append(activePackages, packageID)
+	return e.database.CompleteDeployment(ctx, transactionID, activated)
+}
+
+func (e *Evaluator) restore(ctx context.Context, pending database.PendingDeployment) error {
+	packages := make([]string, 0, len(pending.Candidates))
+	activePackages := make([]string, 0, len(pending.Candidates))
+	for _, candidate := range pending.Candidates {
+		packages = append(packages, candidate.PackageID)
+		if candidate.PreviousCommit != "" {
+			activePackages = append(activePackages, candidate.PackageID)
 		}
 	}
 	definitions := database.DefinitionSet{}
+	var err error
 	if len(activePackages) > 0 {
-		definitions, err = e.database.EvaluateDefinitions(lockedContext, activePackages)
+		definitions, err = e.database.EvaluateDefinitions(ctx, activePackages)
 		if err != nil {
 			return err
 		}
 	}
-	_, err = e.database.Synchronize(lockedContext, definitions.Tables, database.SynchronizationOptions{
+	_, err = e.database.Synchronize(ctx, definitions.Tables, database.SynchronizationOptions{
 		Recovery: true, RetireMissingPackages: packages,
 	})
 	return err
 }
 
-func (e *Evaluator) incrementalItems(ctx context.Context, candidates []deployment.Candidate, pending database.PendingDeployment) ([]evaluationItem, []string, []string, []model.Mount, error) {
+func (e *Evaluator) incrementalItems(ctx context.Context, candidates []deployment.Candidate) ([]evaluationItem, []string, []model.Mount, error) {
 	identities := map[string]string{}
 	items := []evaluationItem{}
 	candidateTableIDs := map[string]bool{}
@@ -527,7 +458,7 @@ func (e *Evaluator) incrementalItems(ctx context.Context, candidates []deploymen
 		item := workspacepackages.Package{ID: candidate.PackageID, Path: candidate.Root, Valid: true}
 		discovered, err := discoverPackage(item, candidate.Commit, identities)
 		if err != nil {
-			return nil, nil, nil, nil, err
+			return nil, nil, nil, err
 		}
 		for _, table := range discovered {
 			items = append(items, table)
@@ -541,7 +472,7 @@ func (e *Evaluator) incrementalItems(ctx context.Context, candidates []deploymen
 	}
 	stored, err := e.database.TableSourcesForPackages(ctx, packageIDs)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, err
 	}
 	for _, source := range stored {
 		if !candidateTableIDs[source.TableID] {
@@ -554,17 +485,18 @@ func (e *Evaluator) incrementalItems(ctx context.Context, candidates []deploymen
 		retiredIDs = append(retiredIDs, tableID)
 	}
 	sort.Strings(retiredIDs)
-	rollbackPackages := append([]string(nil), packageIDs...)
-	sort.Strings(rollbackPackages)
 	sort.Slice(mounts, func(i, j int) bool { return mounts[i].Target < mounts[j].Target })
-	return items, retiredIDs, rollbackPackages, mounts, nil
+	return items, retiredIDs, mounts, nil
 }
 
 func (e *Evaluator) resolvePackages(ctx context.Context, selected []string) ([]workspacepackages.Package, map[string]string, error) {
+	e.mu.Lock()
+	catalog := e.packages
+	e.mu.Unlock()
 	var packages []workspacepackages.Package
 	var err error
 	if len(selected) == 0 {
-		packages, err = e.packages.ListPackages()
+		packages, err = catalog.ListPackages()
 		if err != nil {
 			return nil, nil, err
 		}
@@ -576,7 +508,7 @@ func (e *Evaluator) resolvePackages(ctx context.Context, selected []string) ([]w
 				continue
 			}
 			seen[packageID] = true
-			item, resolveErr := e.packages.ResolvePackage(packageID)
+			item, resolveErr := catalog.ResolvePackage(packageID)
 			if resolveErr != nil {
 				return nil, nil, resolveErr
 			}
@@ -589,7 +521,7 @@ func (e *Evaluator) resolvePackages(ctx context.Context, selected []string) ([]w
 		if !item.Valid {
 			return nil, nil, fmt.Errorf("package %s is invalid: %s", item.ID, strings.Join(item.ValidationErrors, "; "))
 		}
-		commit, err := e.packageCommit(ctx, item)
+		commit, err := packageCommit(ctx, catalog, item)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -620,8 +552,8 @@ func discoverPackages(packages []workspacepackages.Package, commits map[string]s
 	return items, nil
 }
 
-func (e *Evaluator) packageCommit(ctx context.Context, item workspacepackages.Package) (string, error) {
-	if activated, ok := e.packages.(activatedPackageCatalog); ok {
+func packageCommit(ctx context.Context, catalog PackageCatalog, item workspacepackages.Package) (string, error) {
+	if activated, ok := catalog.(activatedPackageCatalog); ok {
 		return activated.ActivatedPackageCommit(ctx, item.ID)
 	}
 	if info, err := os.Stat(filepath.Join(item.Path, ".git")); err == nil && info.IsDir() {

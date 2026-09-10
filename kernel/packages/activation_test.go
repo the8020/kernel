@@ -23,12 +23,12 @@ type activationSchemaRecorder struct {
 	onRollback func(context.Context) error
 }
 
-func (r *activationSchemaRecorder) Prepare(_ context.Context, candidates []deployment.Candidate) error {
+func (r *activationSchemaRecorder) Prepare(_ context.Context, _ string, candidates []deployment.Candidate) error {
 	*r.events = append(*r.events, fmt.Sprintf("schema:%d", len(candidates)))
 	return nil
 }
 
-func (r *activationSchemaRecorder) Complete(ctx context.Context, activated bool) error {
+func (r *activationSchemaRecorder) Complete(ctx context.Context, _ string, activated bool) error {
 	*r.events = append(*r.events, fmt.Sprintf("schema-complete:%t", activated))
 	if !activated && r.onRollback != nil {
 		return r.onRollback(ctx)
@@ -38,9 +38,24 @@ func (r *activationSchemaRecorder) Complete(ctx context.Context, activated bool)
 
 type orderedActivationDatabase struct {
 	*database.Manager
-	locked          bool
-	released        bool
-	beginBeforeLock bool
+	locked            bool
+	released          bool
+	beginBeforeLock   bool
+	operationLocked   bool
+	operationReleased bool
+}
+
+func (d *orderedActivationDatabase) AcquireActivationLock(ctx context.Context, id string) (context.Context, func(), error) {
+	ctx, release, err := d.Manager.AcquireActivationLock(ctx, id)
+	if err != nil {
+		return ctx, nil, err
+	}
+	d.operationLocked = true
+	return ctx, func() {
+		d.operationLocked = false
+		d.operationReleased = true
+		release()
+	}, nil
 }
 
 func (d *orderedActivationDatabase) AcquireDeploymentLock(ctx context.Context) (context.Context, func(), error) {
@@ -141,7 +156,7 @@ func TestHookUsesReferencedCandidateProgramAndWaitsForCompletion(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		done <- coordinator.Prepare(ctx, []deployment.Candidate{{PackageID: "acme/orders", Root: owner, Commit: "orders-new"}, {PackageID: "other/shared", Root: target, Commit: "shared-new"}})
+		done <- coordinator.Prepare(ctx, "act-0123456789", []deployment.Candidate{{PackageID: "acme/orders", Root: owner, Commit: "orders-new"}, {PackageID: "other/shared", Root: target, Commit: "shared-new"}})
 	}()
 	select {
 	case <-started:
@@ -157,7 +172,7 @@ func TestHookUsesReferencedCandidateProgramAndWaitsForCompletion(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	if err := coordinator.Complete(ctx, false); err != nil {
+	if err := coordinator.Complete(ctx, "act-0123456789", false); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -172,7 +187,7 @@ func TestInvalidHookReferenceRejectsBeforeSchemaOrHooks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := coordinator.Prepare(context.Background(), []deployment.Candidate{{PackageID: "acme/orders", Root: root, Commit: "new"}}); err == nil {
+	if err := coordinator.Prepare(context.Background(), "act-0123456789", []deployment.Candidate{{PackageID: "acme/orders", Root: root, Commit: "new"}}); err == nil {
 		t.Fatal("accepted missing hook program")
 	}
 	if len(trace) != 0 {
@@ -225,20 +240,20 @@ func TestActivationPublishesOnlyAfterBothHooks(t *testing.T) {
 		t.Fatal(err)
 	}
 	change := deployment.Candidate{PackageID: "acme/orders", Root: candidate, Commit: "commit-new"}
-	if err := coordinator.Prepare(context.Background(), []deployment.Candidate{change}); err != nil {
+	if err := coordinator.Prepare(context.Background(), "act-0123456789", []deployment.Candidate{change}); err != nil {
 		t.Fatal(err)
 	}
 	entry, _, err := store.index.Get(context.Background(), "acme/orders")
-	if err != nil || entry.State != "activating" || entry.ActiveCommit != "commit-old" {
-		t.Fatalf("candidate package was not gated before source switch: %#v err=%v", entry, err)
+	if err != nil || entry.State != "ready" || entry.ActiveCommit != "commit-old" {
+		t.Fatalf("preparation changed published availability: %#v err=%v", entry, err)
 	}
-	if _, err := store.ResolvePackage("acme/orders"); err == nil || !strings.Contains(err.Error(), "not active") {
-		t.Fatalf("activating package remained available to new consumers: %v", err)
+	if _, err := store.ResolvePackage("acme/orders"); err != nil {
+		t.Fatalf("published package became unavailable during preparation: %v", err)
 	}
 	if _, err := replacePackageDirectory(active, candidate); err != nil {
 		t.Fatal(err)
 	}
-	if err := coordinator.Complete(context.Background(), true); err != nil {
+	if err := coordinator.Complete(context.Background(), "act-0123456789", true); err != nil {
 		t.Fatal(err)
 	}
 	wantEvents := []string{"schema:1", "acme/orders/pre-activate:acme/orders", "acme/orders/post-activate:acme/orders", "schema-complete:true", "reindex"}
@@ -257,7 +272,7 @@ func TestActivationPublishesOnlyAfterBothHooks(t *testing.T) {
 	}
 }
 
-func TestActivationLockCoversDurableRecordThroughCompletion(t *testing.T) {
+func TestActivationLockCoversOnlyMetadataAdmission(t *testing.T) {
 	_, store, manager := activationStore(t)
 	candidate := writeActivationPackage(t, t.TempDir(), "acme/orders", false)
 	database := &orderedActivationDatabase{Manager: manager}
@@ -269,13 +284,13 @@ func TestActivationLockCoversDurableRecordThroughCompletion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := coordinator.Prepare(context.Background(), []deployment.Candidate{{PackageID: "acme/orders", Root: candidate, Commit: "commit-new"}}); err != nil {
+	if err := coordinator.Prepare(context.Background(), "act-0123456789", []deployment.Candidate{{PackageID: "acme/orders", Root: candidate, Commit: "commit-new"}}); err != nil {
 		t.Fatal(err)
 	}
-	if database.beginBeforeLock || !database.locked || database.released {
-		t.Fatalf("deployment lock was not retained across prepare: %#v", database)
+	if database.beginBeforeLock || database.locked || !database.released || database.operationLocked || !database.operationReleased {
+		t.Fatalf("prepare retained a lock after recording its durable package claim: %#v", database)
 	}
-	if err := coordinator.Complete(context.Background(), false); err != nil {
+	if err := coordinator.Complete(context.Background(), "act-0123456789", false); err != nil {
 		t.Fatal(err)
 	}
 	if database.beginBeforeLock || database.locked || !database.released {
@@ -302,7 +317,7 @@ func TestInvalidCommandCandidateLeavesPreviousPackageActive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = coordinator.Prepare(context.Background(), []deployment.Candidate{{PackageID: "acme/orders", Root: candidate, Commit: "commit-new"}})
+	err = coordinator.Prepare(context.Background(), "act-0123456789", []deployment.Candidate{{PackageID: "acme/orders", Root: candidate, Commit: "commit-new"}})
 	if err == nil || !strings.Contains(err.Error(), "invalid command manifest") || !validated {
 		t.Fatalf("candidate validation error=%v validated=%t", err, validated)
 	}
@@ -328,7 +343,7 @@ func TestFailedPreActivationKeepsPreviousPackageReady(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = coordinator.Prepare(context.Background(), []deployment.Candidate{{PackageID: "acme/orders", Root: candidate, Commit: "commit-new"}})
+	err = coordinator.Prepare(context.Background(), "act-0123456789", []deployment.Candidate{{PackageID: "acme/orders", Root: candidate, Commit: "commit-new"}})
 	if err == nil || !strings.Contains(err.Error(), "injected hook failure") {
 		t.Fatalf("pre-activation unexpectedly succeeded: %v", err)
 	}
@@ -362,7 +377,7 @@ func TestRecoveryRetriesOnlyUnfinishedPostHook(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := coordinator.Prepare(context.Background(), candidates); err != nil {
+	if err := coordinator.Prepare(context.Background(), "act-0123456789", candidates); err != nil {
 		t.Fatal(err)
 	}
 	for _, candidate := range candidates {
@@ -370,12 +385,12 @@ func TestRecoveryRetriesOnlyUnfinishedPostHook(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := coordinator.Complete(context.Background(), true); err == nil {
+	if err := coordinator.Complete(context.Background(), "act-0123456789", true); err == nil {
 		t.Fatal("injected post-activation failure was ignored")
 	}
 	for _, packageID := range []string{"acme/a", "acme/b"} {
 		entry, _, err := store.index.Get(context.Background(), packageID)
-		if err != nil || entry.State != "activating" || entry.ActiveCommit != "commit-old" {
+		if err != nil || entry.State != "ready" || entry.ActiveCommit != "commit-old" {
 			t.Fatalf("incomplete package %s=%#v err=%v", packageID, entry, err)
 		}
 	}
@@ -383,7 +398,7 @@ func TestRecoveryRetriesOnlyUnfinishedPostHook(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := recovered.Prepare(context.Background(), candidates[:1]); err == nil || !strings.Contains(err.Error(), "must be recovered first") {
+	if err := recovered.Prepare(context.Background(), "act-0123456789", candidates[:1]); err == nil || !strings.Contains(err.Error(), "unfinished activation act-0123456789") {
 		t.Fatalf("new activation bypassed pending deployment: %v", err)
 	}
 	if err := recovered.Recover(context.Background()); err != nil {
@@ -416,13 +431,13 @@ func TestRecoveryKeepsFailedPostHookRetryable(t *testing.T) {
 		t.Fatal(err)
 	}
 	change := deployment.Candidate{PackageID: "acme/orders", Root: candidate, Commit: "commit-new"}
-	if err := coordinator.Prepare(context.Background(), []deployment.Candidate{change}); err != nil {
+	if err := coordinator.Prepare(context.Background(), "act-0123456789", []deployment.Candidate{change}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := replacePackageDirectory(active, candidate); err != nil {
 		t.Fatal(err)
 	}
-	if err := coordinator.Complete(context.Background(), true); err == nil {
+	if err := coordinator.Complete(context.Background(), "act-0123456789", true); err == nil {
 		t.Fatal("first post-hook failure was ignored")
 	}
 	firstRetry, err := NewActivationCoordinator(ActivationCoordinatorConfig{Database: db, Schema: schema, Packages: store, Jobs: runner})
@@ -459,7 +474,7 @@ func TestRecoveryResumesMissingPreHookWhenCandidateSourceIsPresent(t *testing.T)
 		t.Fatal(err)
 	}
 	change := deployment.Candidate{PackageID: "acme/orders", Root: candidate, Commit: "commit-new"}
-	if err := coordinator.Prepare(context.Background(), []deployment.Candidate{change}); err != nil {
+	if err := coordinator.Prepare(context.Background(), "act-0123456789", []deployment.Candidate{change}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := replacePackageDirectory(active, candidate); err != nil {
@@ -498,20 +513,20 @@ func TestPackagePublicationAndRevisionAreAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	change := deployment.Candidate{PackageID: "acme/orders", Root: candidate, Commit: "commit-new"}
-	if err := coordinator.Prepare(context.Background(), []deployment.Candidate{change}); err != nil {
+	if err := coordinator.Prepare(context.Background(), "act-0123456789", []deployment.Candidate{change}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := replacePackageDirectory(active, candidate); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(context.Background(), `CREATE TRIGGER reject_activation_completion BEFORE UPDATE ON `+activationsTable+` WHEN NEW."stage" = 'complete' BEGIN SELECT RAISE(ABORT, 'injected publication failure'); END`); err != nil {
+	if _, err := db.ExecContext(context.Background(), `CREATE TRIGGER reject_activation_completion BEFORE UPDATE ON `+activationsTable+` WHEN NEW."stage" = 'published' BEGIN SELECT RAISE(ABORT, 'injected publication failure'); END`); err != nil {
 		t.Fatal(err)
 	}
-	if err := coordinator.Complete(context.Background(), true); err == nil {
+	if err := coordinator.Complete(context.Background(), "act-0123456789", true); err == nil {
 		t.Fatal("publication failure was ignored")
 	}
 	entry, _, err := store.index.Get(context.Background(), "acme/orders")
-	if err != nil || entry.State != "activating" || entry.ActiveCommit != "commit-old" {
+	if err != nil || entry.State != "ready" || entry.ActiveCommit != "commit-old" {
 		t.Fatalf("partially published package=%#v err=%v", entry, err)
 	}
 	if revision, err := store.index.Revision(context.Background()); err != nil || revision != 0 {
@@ -565,7 +580,7 @@ func TestRecoveryRollsBackPartialMultiPackageSourceSwitch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := coordinator.Prepare(context.Background(), candidates); err != nil {
+	if err := coordinator.Prepare(context.Background(), "act-0123456789", candidates); err != nil {
 		t.Fatal(err)
 	}
 	firstPath := store.packagePath(candidates[0].PackageID)
@@ -631,7 +646,7 @@ func TestRepositoryMutationLeavesPostFailureForDurableRecovery(t *testing.T) {
 		t.Fatalf("previous source was not retained: %v", err)
 	}
 	entry, _, err := store.index.Get(context.Background(), "acme/orders")
-	if err != nil || entry.State != "activating" || entry.ActiveCommit != oldCommit {
+	if err != nil || entry.State != "ready" || entry.ActiveCommit != oldCommit {
 		t.Fatalf("pending package=%#v err=%v", entry, err)
 	}
 

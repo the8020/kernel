@@ -1,9 +1,0 @@
-{
-  "observed_at": "2026-09-08T18:57:27.828906+00:00",
-  "observed_failure": "workflow runtime profile: current\nchecking existing transaction owners\nok  \tthe8020/kernel/packages\t1.928s\nok  \tthe8020/kernel/database\t0.681s\nok  \tthe8020/kernel/database/evaluator\t0.860s\nok  \tthe8020/kernel/development\t4.554s\n?   \tthe8020/kernel/deployment\t[no test files]\n=== RUN   TestWorkflowAnalysisTransaction\n    workflow_transaction_test.go:138: unrelated package cannot prepare while orders is pending: a database schema deployment is already pending recovery\n--- FAIL: TestWorkflowAnalysisTransaction (0.04s)\nFAIL\nFAIL\tthe8020/kernel/packages\t0.050s\nFAIL\n",
-  "source_sha256": {
-    "activation-transaction.patch": "12ad4879d4533cd191cd2115e4e9f62dc5dedb9dce87998885ad8cab4029b951",
-    "transaction_test.go": "2fc2cf943d88dd32877d6c27a35cb533f0163e17fe7ad9f8256631abd29c6389",
-    "run.py": "66cbc166ca7b63e8767f347328b54d5b256286d8cdab3205d93fa54be195a926"
-  }
-}

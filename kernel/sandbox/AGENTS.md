@@ -53,6 +53,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 # Child DOX Index
 
+- [runsc/AGENTS.md](runsc/AGENTS.md): common native runsc build, pinned gVisor
+  dependency, and development workspace Gofer extension.
 - [backend/AGENTS.md](backend/AGENTS.md): sandbox backend contract and concrete
   full/rootless gVisor implementations.
 - [history/AGENTS.md](history/AGENTS.md): terminal metadata and log references,

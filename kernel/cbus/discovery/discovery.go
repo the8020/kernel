@@ -48,6 +48,7 @@ type Indexer struct {
 	programs    ProgramRunner
 	registry    Registry
 	mu          sync.Mutex
+	revision    uint64
 	fragments   map[string]fragment
 	diagnostics map[string]core.Diagnostic
 }
@@ -98,8 +99,6 @@ func New(packages PackageSource, programs ProgramRunner, registry Registry) (*In
 // Only selected declaration folders are read; cached references into changed
 // target packages refresh before full-catalog collision validation.
 func (i *Indexer) Reindex(ctx context.Context, packageIDs ...string) (Report, error) {
-	i.mu.Lock()
-	defer i.mu.Unlock()
 	selected := map[string]bool{}
 	for _, id := range packageIDs {
 		if _, err := workspacepackages.ParsePackageID(id); err != nil {
@@ -107,99 +106,114 @@ func (i *Indexer) Reindex(ctx context.Context, packageIDs ...string) (Report, er
 		}
 		selected[id] = true
 	}
-	cached := map[string]fragment{}
-	invalid := map[string]core.Diagnostic{}
-	var entries []workspacepackages.PackageIndex
-	if len(packageIDs) == 0 {
-		var err error
-		entries, err = i.packages.ListPackageIndexes()
-		if err != nil {
-			return Report{}, fmt.Errorf("list active packages: %w", err)
+	for {
+		cached := map[string]fragment{}
+		invalid := map[string]core.Diagnostic{}
+		i.mu.Lock()
+		revision := i.revision
+		if len(packageIDs) > 0 {
+			for id, item := range i.fragments {
+				cached[id] = item
+			}
+			for id, item := range i.diagnostics {
+				invalid[id] = item
+			}
 		}
-	} else {
-		for id, item := range i.fragments {
-			cached[id] = item
+		i.mu.Unlock()
+		var entries []workspacepackages.PackageIndex
+		if len(packageIDs) == 0 {
+			var err error
+			entries, err = i.packages.ListPackageIndexes()
+			if err != nil {
+				return Report{}, fmt.Errorf("list active packages: %w", err)
+			}
+		} else {
+			for _, id := range uniqueStrings(packageIDs) {
+				entry, err := i.packages.InspectPackageIndex(id)
+				if err != nil && !errors.Is(err, os.ErrNotExist) {
+					return Report{}, err
+				}
+				delete(cached, id)
+				delete(invalid, id)
+				if err == nil {
+					entries = append(entries, entry)
+				}
+			}
 		}
-		for id, item := range i.diagnostics {
-			invalid[id] = item
-		}
-		for _, id := range uniqueStrings(packageIDs) {
-			entry, err := i.packages.InspectPackageIndex(id)
-			if err != nil && !errors.Is(err, os.ErrNotExist) {
+		for _, entry := range entries {
+			if err := ctx.Err(); err != nil {
 				return Report{}, err
 			}
-			delete(cached, id)
-			delete(invalid, id)
-			if err == nil {
-				entries = append(entries, entry)
+			if entry.State != "ready" || entry.ActiveCommit == "" {
+				continue
+			}
+			commit, err := i.packages.ActivatedPackageCommit(ctx, entry.PackageID)
+			if err != nil {
+				invalid[entry.PackageID] = core.Diagnostic{PackageID: entry.PackageID, Message: err.Error()}
+				continue
+			}
+			identity, err := workspacepackages.ParsePackageID(entry.PackageID)
+			if err != nil {
+				invalid[entry.PackageID] = core.Diagnostic{PackageID: entry.PackageID, Message: err.Error()}
+				continue
+			}
+			item, err := i.discoverPackage(filepath.Join(i.packages.PackagesRoot(), identity.Namespace, identity.Repository), entry.PackageID, commit)
+			if err != nil {
+				invalid[entry.PackageID] = core.Diagnostic{PackageID: entry.PackageID, Message: err.Error()}
+				continue
+			}
+			cached[entry.PackageID] = item
+		}
+		fragments := make([]fragment, 0, len(cached))
+		for id, item := range cached {
+			refresh := len(packageIDs) == 0 || selected[id]
+			for _, declaration := range item.declarations {
+				identity, _, _ := workspacepackages.ParseProgramID(declaration.programID)
+				refresh = refresh || selected[identity.PackageID()]
+			}
+			if refresh {
+				resolved, err := i.resolvePrograms(ctx, item, nil)
+				if err != nil {
+					invalid[id] = core.Diagnostic{PackageID: id, Message: err.Error()}
+				} else {
+					item = resolved
+					cached[id] = item
+					delete(invalid, id)
+				}
+			}
+			if _, failed := invalid[id]; !failed {
+				fragments = append(fragments, item)
 			}
 		}
-	}
-	for _, entry := range entries {
+		sort.Slice(fragments, func(a, b int) bool { return fragments[a].packageID < fragments[b].packageID })
+		registrations, validPackages, diagnostics := i.withoutCollisions(fragments)
+		for _, diagnostic := range invalid {
+			diagnostics = append(diagnostics, diagnostic)
+		}
+		sort.Slice(diagnostics, func(a, b int) bool {
+			if diagnostics[a].PackageID != diagnostics[b].PackageID {
+				return diagnostics[a].PackageID < diagnostics[b].PackageID
+			}
+			return diagnostics[a].Message < diagnostics[b].Message
+		})
 		if err := ctx.Err(); err != nil {
 			return Report{}, err
 		}
-		if entry.State != "ready" || entry.ActiveCommit == "" {
+		i.mu.Lock()
+		if i.revision != revision {
+			i.mu.Unlock()
+			// ponytail: retry selected discovery until the caller deadline.
 			continue
 		}
-		commit, err := i.packages.ActivatedPackageCommit(ctx, entry.PackageID)
-		if err != nil {
-			invalid[entry.PackageID] = core.Diagnostic{PackageID: entry.PackageID, Message: err.Error()}
-			continue
+		defer i.mu.Unlock()
+		if err := i.registry.ReplacePackages(registrations, diagnostics); err != nil {
+			return Report{}, err
 		}
-		identity, err := workspacepackages.ParsePackageID(entry.PackageID)
-		if err != nil {
-			invalid[entry.PackageID] = core.Diagnostic{PackageID: entry.PackageID, Message: err.Error()}
-			continue
-		}
-		item, err := i.discoverPackage(filepath.Join(i.packages.PackagesRoot(), identity.Namespace, identity.Repository), entry.PackageID, commit)
-		if err != nil {
-			invalid[entry.PackageID] = core.Diagnostic{PackageID: entry.PackageID, Message: err.Error()}
-			continue
-		}
-		cached[entry.PackageID] = item
+		i.revision++
+		i.fragments, i.diagnostics = cached, invalid
+		catalog := i.registry.Catalog()
+		return Report{Revision: catalog.Revision, Packages: validPackages, Commands: len(registrations), Diagnostics: diagnostics}, nil
 	}
-	fragments := make([]fragment, 0, len(cached))
-	for id, item := range cached {
-		refresh := len(packageIDs) == 0 || selected[id]
-		for _, declaration := range item.declarations {
-			identity, _, _ := workspacepackages.ParseProgramID(declaration.programID)
-			refresh = refresh || selected[identity.PackageID()]
-		}
-		if refresh {
-			resolved, err := i.resolvePrograms(ctx, item, nil)
-			if err != nil {
-				invalid[id] = core.Diagnostic{PackageID: id, Message: err.Error()}
-			} else {
-				item = resolved
-				cached[id] = item
-				delete(invalid, id)
-			}
-		}
-		if _, failed := invalid[id]; !failed {
-			fragments = append(fragments, item)
-		}
-	}
-	sort.Slice(fragments, func(a, b int) bool { return fragments[a].packageID < fragments[b].packageID })
-	registrations, validPackages, diagnostics := i.withoutCollisions(fragments)
-	for _, diagnostic := range invalid {
-		diagnostics = append(diagnostics, diagnostic)
-	}
-	sort.Slice(diagnostics, func(a, b int) bool {
-		if diagnostics[a].PackageID != diagnostics[b].PackageID {
-			return diagnostics[a].PackageID < diagnostics[b].PackageID
-		}
-		return diagnostics[a].Message < diagnostics[b].Message
-	})
-	if err := ctx.Err(); err != nil {
-		return Report{}, err
-	}
-	if err := i.registry.ReplacePackages(registrations, diagnostics); err != nil {
-		return Report{}, err
-	}
-	i.fragments, i.diagnostics = cached, invalid
-	catalog := i.registry.Catalog()
-	return Report{Revision: catalog.Revision, Packages: validPackages, Commands: len(registrations), Diagnostics: diagnostics}, nil
 }
 
 // ValidateCandidates validates command/program artifacts and visible-name

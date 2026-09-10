@@ -6,7 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"the8020/kernel/deployment"
 )
@@ -18,6 +21,89 @@ func writeIndexedHandlers(t *testing.T, root, id string) {
 	writeFile(t, filepath.Join(root, "hooks", "unrelated name.toml"), fmt.Sprintf("hook = %q\ndescription = %q\nprogram = %q\n", "post-activate", "Setup", id+"/run"))
 	for _, kind := range []string{"events", "hooks"} {
 		writeFile(t, filepath.Join(root, kind, "AGENTS.md"), "# Declaration ownership\n")
+	}
+}
+
+type pausedHandlerLookup struct {
+	PackageIndexStore
+	paused           atomic.Bool
+	started, release chan struct{}
+}
+
+func (s *pausedHandlerLookup) Get(ctx context.Context, id string) (PackageIndex, bool, error) {
+	entry, exists, err := s.PackageIndexStore.Get(ctx, id)
+	if id == "acme/target" && s.paused.CompareAndSwap(false, true) {
+		close(s.started)
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return PackageIndex{}, false, ctx.Err()
+		}
+	}
+	return entry, exists, err
+}
+
+func TestHandlerReindexAllowsConcurrentInspectionAndKeepsNewReferences(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	root, store, _ := activationStore(t)
+	for _, id := range []string{"acme/owner", "acme/target"} {
+		writeIndexedHandlers(t, filepath.Join(root, "packages", id), id)
+		putActivePackage(t, store, id, "first")
+	}
+	for _, kind := range []string{"events", "hooks"} {
+		trigger, name := "event = \"minute\"", "arbitrary name.toml"
+		if kind == "hooks" {
+			trigger, name = "hook = \"post-activate\"", "unrelated name.toml"
+		}
+		writeFile(t, filepath.Join(root, "packages/acme/owner", kind, name), trigger+"\ndescription = \"Shared program\"\nprogram = \"acme/target/run\"\n")
+	}
+	if _, err := store.ReindexHandlers(ctx); err != nil {
+		t.Fatal(err)
+	}
+	paused := &pausedHandlerLookup{PackageIndexStore: store.index, started: make(chan struct{}), release: make(chan struct{})}
+	store.index = paused
+	release := sync.OnceFunc(func() { close(paused.release) })
+	var work sync.WaitGroup
+	defer func() { release(); cancel(); work.Wait() }()
+	one, two := make(chan error, 1), make(chan error, 1)
+	work.Go(func() { _, err := store.ReindexHandlers(ctx, "acme/owner"); one <- err })
+	select {
+	case <-paused.started:
+	case <-ctx.Done():
+		t.Fatal("older program lookup did not pause")
+	}
+	putActivePackage(t, store, "acme/target", "second")
+	work.Go(func() { _, err := store.ReindexHandlers(ctx, "acme/target"); two <- err })
+	blocked := false
+	select {
+	case err := <-two:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		blocked = true
+	}
+	release()
+	if err := <-one; err != nil {
+		t.Fatal(err)
+	}
+	if blocked {
+		<-two
+		t.Fatal("handler refresh waited behind another package's inspection")
+	}
+	if len(store.EventListeners("minute")) != 2 || len(store.Hooks("post-activate")) != 2 {
+		t.Fatal("concurrent refresh lost handler fragments")
+	}
+	for _, event := range store.EventListeners("minute") {
+		if event.ProgramCommit != "second" {
+			t.Fatalf("older inspection overwrote the new event reference: %#v", event)
+		}
+	}
+	for _, hook := range store.Hooks("post-activate") {
+		if hook.Program.Commit != "second" {
+			t.Fatalf("older inspection overwrote the new hook reference: %#v", hook)
+		}
 	}
 }
 

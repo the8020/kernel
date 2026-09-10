@@ -40,6 +40,46 @@ func testDescriptor() TableDescriptor {
 	}
 }
 
+func TestActivationOperationOwnership(t *testing.T) {
+	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
+	t.Cleanup(func() { _ = manager.Close() })
+	ctx := context.Background()
+	const first, second = "act-aaaaaaaaaa", "act-bbbbbbbbbb"
+	owned, release, err := manager.AcquireActivationLock(ctx, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if _, nestedRelease, err := manager.AcquireActivationLock(owned, first); err != nil {
+		t.Fatal(err)
+	} else {
+		nestedRelease()
+	}
+	if _, duplicateRelease, err := manager.AcquireActivationLock(ctx, first); err == nil {
+		duplicateRelease()
+		t.Fatal("admitted a duplicate operation or nested release dropped its parent's lock")
+	}
+	if _, independentRelease, err := manager.AcquireActivationLock(ctx, second); err != nil {
+		t.Fatal(err)
+	} else {
+		independentRelease()
+	}
+	release()
+	_, replacementRelease, err := manager.AcquireActivationLock(ctx, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replacementRelease()
+	release() // Old duplicate release cannot erase a replacement's ownership.
+	if _, duplicateRelease, err := manager.AcquireActivationLock(ctx, first); err == nil {
+		duplicateRelease()
+		t.Fatal("stale release removed new operation ownership")
+	}
+	if _, _, err := manager.AcquireActivationLock(ctx, "invalid"); err == nil {
+		t.Fatal("accepted invalid activation identity")
+	}
+}
+
 func TestCatalogBootstrapAndAdditiveSynchronization(t *testing.T) {
 	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
 	t.Cleanup(func() { _ = manager.Close() })
@@ -99,14 +139,14 @@ func TestDeploymentOutcomeRemainsVisibleAfterRollback(t *testing.T) {
 	if err := manager.CompleteInitialization(ctx, map[string]string{"acme/orders": "one"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.BeginDeployment(ctx, []DeploymentCandidate{{PackageID: "acme/orders", CandidateCommit: "two"}}); err != nil {
+	if _, err := manager.BeginDeployment(ctx, "act-0123456789", []DeploymentCandidate{{PackageID: "acme/orders", CandidateCommit: "two"}}); err != nil {
 		t.Fatal(err)
 	}
 	failure := "candidate table definition is invalid"
-	if err := manager.UpdatePendingDeployment(ctx, "failed", errors.New(failure)); err != nil {
+	if err := manager.UpdatePendingDeployment(ctx, "act-0123456789", "failed", errors.New(failure)); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.CompleteDeployment(ctx, false); err != nil {
+	if err := manager.CompleteDeployment(ctx, "act-0123456789", false); err != nil {
 		t.Fatal(err)
 	}
 	status := manager.Status()
@@ -119,10 +159,10 @@ func TestDeploymentOutcomeRemainsVisibleAfterRollback(t *testing.T) {
 	if manager.Status().LastDeploymentError != failure {
 		t.Fatalf("deployment failure was not durable: %#v", manager.Status())
 	}
-	if _, err := manager.BeginDeployment(ctx, []DeploymentCandidate{{PackageID: "acme/orders", CandidateCommit: "two"}}); err != nil {
+	if _, err := manager.BeginDeployment(ctx, "act-0123456789", []DeploymentCandidate{{PackageID: "acme/orders", CandidateCommit: "two"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.CompleteDeployment(ctx, true); err != nil {
+	if err := manager.CompleteDeployment(ctx, "act-0123456789", true); err != nil {
 		t.Fatal(err)
 	}
 	status = manager.Status()
