@@ -257,11 +257,11 @@ while IFS= read -r -d '' directory; do
   relative=${directory#"$RUNTIME_SOURCE"/}
   [[ "$directory" == "$RUNTIME_SOURCE" ]] && relative=""
   install -d -m 0755 "$RUNTIME_DEFINITIONS_STAGE/$relative"
-done < <(find "$RUNTIME_SOURCE" -type d -print0)
+done < <(find "$RUNTIME_SOURCE" -name node_modules -prune -o -type d -print0)
 while IFS= read -r -d '' source; do
   relative=${source#"$RUNTIME_SOURCE"/}
   install -m 0644 "$source" "$RUNTIME_DEFINITIONS_STAGE/$relative"
-done < <(find "$RUNTIME_SOURCE" -type f -print0)
+done < <(find "$RUNTIME_SOURCE" -name node_modules -prune -o -type f -print0)
 if [[ -e "$RUNTIME_DEFINITIONS" ]]; then
   RUNTIME_DEFINITIONS_PREVIOUS="$NODE_RUNTIME/.definitions-previous.$$"
   if [[ -e "$RUNTIME_DEFINITIONS_PREVIOUS" ]]; then

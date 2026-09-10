@@ -80,7 +80,7 @@ func nativeRuntime(t *testing.T) (*Manager, *RunscDriver, string) {
 	writeTestFile(t, filepath.Join(repository, "untouched.txt"), "before\n")
 	runtimeRoot := filepath.Join(root, "node/kernel/runtime/development")
 	driver := NewRootlessDriver(RootlessConfig{
-		RunscPath:   filepath.Join(source, ".development/bin/runsc"),
+		RunscPath:   filepath.Join(source, ".development/runtime-bin/runsc"),
 		RuntimeRoot: filepath.Join(runtimeRoot, "runsc"),
 		SandboxRoot: filepath.Join(runtimeRoot, "sandboxes"), LogRoot: filepath.Join(runtimeRoot, "logs"),
 	})

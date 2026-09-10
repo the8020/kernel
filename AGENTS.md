@@ -588,8 +588,12 @@ below.
 - `build.sh` generates protocol/command glue and compiles ordinary production
   sources plus the common native runsc module. Never extract implementations
   from test files, apply project-source compiler overlays, or retain replaced
-  backends. Keep `kernel`, `admin`, and `logd` together when copying
-  executables. Install runsc once under `node/kernel/bin/` for services, jobs,
+  backends. Build `kernel`, `admin`, and `logd` in `.development/bin/` and the
+  native engine in `.development/runtime-bin/`; keep those artifact directories
+  separate. Docker builds (`THE8020_OUTER_CONTAINER_BUILD=true`) use the Go
+  linker's `-s` flag to omit native symbol tables and DWARF debug information
+  while retaining Go stack traces. Ordinary development builds keep debugger
+  information. Install runsc once under `node/kernel/bin/` for services, jobs,
   and development. Ordinary Go tests compile the same project sources as the
   installed binaries; native fixtures additionally verify filesystem and process
   behavior.

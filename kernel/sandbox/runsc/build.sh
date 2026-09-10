@@ -7,6 +7,8 @@ GO_CMD=${THE8020_BUILD_GO:-"$SOURCE_ROOT/.development/toolchains/go/bin/go"}
 export GOWORK=off CGO_ENABLED=0
 export GOCACHE=${GOCACHE:-"$SOURCE_ROOT/.development/cache/go-build"}
 export GOMODCACHE=${GOMODCACHE:-"$SOURCE_ROOT/.development/cache/go-mod"}
+LINK_FLAGS=
+if [[ ${THE8020_OUTER_CONTAINER_BUILD:-false} == true ]]; then LINK_FLAGS=-s; fi
 cd "$OWNER"
 "$GO_CMD" mod download
 "$GO_CMD" mod verify
@@ -26,10 +28,10 @@ cp go.mod "$STAGE/go.mod"
 cp go.sum "$STAGE/go.sum"
 "$GO_CMD" mod edit -modfile="$STAGE/go.mod" -replace="gvisor.dev/gvisor=$STAGE/gvisor"
 "$GO_CMD" test -mod=mod -modfile="$STAGE/go.mod" -trimpath ./...
-mkdir -p "$SOURCE_ROOT/.development/bin"
+mkdir -p "$SOURCE_ROOT/.development/runtime-bin"
 "$GO_CMD" build -mod=mod -modfile="$STAGE/go.mod" -trimpath \
-  -ldflags="-X 'gvisor.dev/gvisor/runsc/version.version=release-$RELEASE (the8020)'" \
-  -o "$SOURCE_ROOT/.development/bin/runsc" .
+  -ldflags="$LINK_FLAGS -X 'gvisor.dev/gvisor/runsc/version.version=release-$RELEASE (the8020)'" \
+  -o "$SOURCE_ROOT/.development/runtime-bin/runsc" .
 # Both entrypoints execute the same engine, including its SDK fixes.
-mkdir -p "$SOURCE_ROOT/.development/bin/gvisor-bin"
-ln -sfn ../runsc "$SOURCE_ROOT/.development/bin/gvisor-bin/gvisor_sentry"
+mkdir -p "$SOURCE_ROOT/.development/runtime-bin/gvisor-bin"
+ln -sfn ../runsc "$SOURCE_ROOT/.development/runtime-bin/gvisor-bin/gvisor_sentry"

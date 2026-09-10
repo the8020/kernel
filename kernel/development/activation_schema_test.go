@@ -108,7 +108,7 @@ func nativeSchemaJobs(t *testing.T, m *Manager) *jobs.Manager {
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(func() { _ = server.Close(); _ = listener.Close() })
 	native, err := rootless.New(rootless.Config{
-		RunscPath: filepath.Join(source, ".development/bin/runsc"),
+		RunscPath: filepath.Join(source, ".development/runtime-bin/runsc"),
 		RootFS:    filepath.Join(imageRoot, "rootfs"),
 		StateRoot: filepath.Join(root, "sandboxes"), RuntimeRoot: filepath.Join(root, "runsc"),
 		InstanceUUID: "nod-0123456789", KernelSocketPath: "/run/the8020/kernel.sock",

@@ -11,7 +11,7 @@ RUNTIME_LOCK=${RUNTIME_DEFINITION%.json}.lock
 BUILD_SCRIPT="$(dirname "$CONTAINERFILE")/build.sh"
 WORK_ROOT=${6:-"$SOURCE_ROOT/node/kernel/runtime"}
 RUNSC_DESTINATION=${7:-"$SOURCE_ROOT/node/kernel/bin/runsc"}
-RUNSC_SOURCE=${8:-"$SOURCE_ROOT/.development/bin/runsc"}
+RUNSC_SOURCE=${8:-"$SOURCE_ROOT/.development/runtime-bin/runsc"}
 PROTOCOL_SOURCE="$RUNTIME_SOURCE/protocol/generated.ts"
 if [[ -z "$SOURCE_ROOT" || ! -f "$MANIFEST" || ! -f "$CONTAINERFILE" || ! -f "$BUILD_SCRIPT" || ! -f "$RUNTIME_DEFINITION" || ! -f "$RUNTIME_LOCK" || ! -f "$PROTOCOL_SOURCE" || -z "$WORK_ROOT" || -z "$RUNSC_DESTINATION" || ! -x "$RUNSC_SOURCE" ]]; then
   echo "usage: defaults/config/runtime/install-portable.sh <source-root> [image-root] [versions-file] [Containerfile] [deno-config] [work-root] [runsc-destination] [built-runsc]" >&2
@@ -112,12 +112,10 @@ if [[ "$RUNSC_DESTINATION" != "$GVISOR_ROOT/runsc" ]]; then
   install -m 0555 "$RUNSC_SOURCE" "$RUNSC_DESTINATION.new"
   mv -f -- "$RUNSC_DESTINATION.new" "$RUNSC_DESTINATION"
   rm -rf -- "$RUNSC_DESTINATION_ROOT/gvisor-bin"
-  if [[ -d "$GVISOR_ROOT/gvisor-bin" ]]; then
-    install -d -m 0700 "$RUNSC_DESTINATION_ROOT/gvisor-bin"
-    find "$GVISOR_ROOT/gvisor-bin" -maxdepth 1 -type f -exec install -m 0555 '{}' "$RUNSC_DESTINATION_ROOT/gvisor-bin/" \;
-    # The prewarmer needs a named sentry path; both names use our patched engine.
-    ln -sfn "../$(basename "$RUNSC_DESTINATION")" "$RUNSC_DESTINATION_ROOT/gvisor-bin/gvisor_sentry"
-  fi
+  install -d -m 0700 "$RUNSC_DESTINATION_ROOT/gvisor-bin"
+  install -m 0555 "$GVISOR_ROOT/gvisor-bin/gvisor-sentry-prewarmer" "$RUNSC_DESTINATION_ROOT/gvisor-bin/"
+  # The prewarmer needs a named sentry path; both names use our patched engine.
+  ln -sfn "../$(basename "$RUNSC_DESTINATION")" "$RUNSC_DESTINATION_ROOT/gvisor-bin/gvisor_sentry"
 fi
 
 SOURCE_INPUT=$(
@@ -156,10 +154,9 @@ if [[ "$SMOKE_RUNTIME" == outer-container-build ]]; then
   "$RUNTIME_SOURCE/run-rootfs-build.sh" "$SOURCE_ROOT" "$RUNTIME_ROOT" "$ROOTFS_STAGE" /bin/bash /the8020-image-build.sh
   # BuildKit supplies /proc, but its unprivileged chroot cannot mount it.
   # Run the image's pinned compiler in the enclosing build container instead.
-  DENO_DIR="$ROOTFS_STAGE/tmp/deno-cache" DENO_NO_UPDATE_CHECK=1 DENO_NO_PROMPT=1 \
+  TMPDIR="$ROOTFS_STAGE/tmp" DENO_NO_UPDATE_CHECK=1 DENO_NO_PROMPT=1 \
     bash "$RUNTIME_SOURCE/bundle-runtime.sh" "$ROOTFS_STAGE/opt/runtime/http-source" \
       "$ROOTFS_STAGE/opt/runtime/http" "$ROOTFS_STAGE/usr/bin/deno"
-  chown -R 1993:1993 "$ROOTFS_STAGE/tmp/deno-cache"
 else
   "$RUNTIME_SOURCE/run-rootfs-build.sh" "$SOURCE_ROOT" "$RUNTIME_ROOT" "$ROOTFS_STAGE" /bin/sh -c \
     '/bin/bash /the8020-image-build.sh && /bin/bash /opt/runtime/bundle-runtime.sh /opt/runtime/http-source /opt/runtime/http'
@@ -227,6 +224,7 @@ EOF
   cleanup_smoke
 fi
 
+rm -rf -- "$ROOTFS_STAGE/tmp/deno-cache"
 BUILT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 echo "runtime image [4/4]: publishing verified image records" >&2
 PREVIOUS_ROOTFS="$ROOTLESS_ROOT/rootfs.previous.$$"

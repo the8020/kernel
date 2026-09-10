@@ -36,9 +36,10 @@ Parent DOX: [kernel/defaults DOX](../../AGENTS.md).
   writes `protocol/generated.ts`, build-only Go output, and the tracked Go
   mirror under `kernel/runtime/protocol/`; generated files are not hand-edited.
 - `install.sh` refreshes this tracked tree into each instance's
-  `node/kernel/runtime/definitions/`, hashes the complete generic image input
-  set before build, and publishes only verified artifacts under
-  `node/kernel/runtime/images/`. Unchanged verified digests are reused.
+  `node/kernel/runtime/definitions/` without generated `node_modules`, hashes
+  the complete generic image input set before build, and publishes only verified
+  artifacts under `node/kernel/runtime/images/`. Unchanged verified digests are
+  reused.
 - Deno dependency preparation and generic HTTP bundling use the pinned image's
   Deno inside isolated image-build execution after a digest miss. Normal startup
   has no host-side Deno or image-build process, and the Go kernel never invokes
@@ -50,22 +51,25 @@ Parent DOX: [kernel/defaults DOX](../../AGENTS.md).
   inside that existing isolated build sandbox, avoiding a forbidden nested user
   namespace. Deno compilation and type verification run outside that chroot in
   the enclosing build container, where `/proc/self/maps` is available, using the
-  staged image's Deno binary and keeping output/cache in the staged image. The
-  subsequent non-root chroot smoke verifies installed runtime imports. Full
-  construction uses the same staged generic runtime and pinned image definition
-  through BuildKit when host authority exists.
+  staged image's Deno binary and keeping output/cache in the staged image. Build
+  caches are temporary and removed before publication. The subsequent non-root
+  chroot smoke verifies installed runtime imports. Full construction uses the
+  same staged generic runtime and pinned image definition through BuildKit when
+  host authority exists.
 - Portable installation publishes the common source-built gVisor `runsc` and
-  pinned release-provided `gvisor-bin/` companions under `node/kernel/bin/`.
-  Services, jobs, development and native image construction use that same
-  engine. Link `gvisor-bin/gvisor_sentry` to `../runsc` so both entrypoints
-  execute the same patched engine. Its source input defaults to
-  `.development/bin/runsc` and must report the pinned release with the
-  `(the8020)` build marker. Image freshness hashes the installed binary.
-  Publication replaces it atomically. Docker moves this complete binary
-  directory into its image-owned runtime payload and links the node path to it,
-  so existing volumes cannot retain an obsolete engine. Full host setup installs
-  the same engine for containerd and preserves an existing one only when bytes
-  match.
+  pinned release-provided sentry prewarmer under `node/kernel/bin/`. The
+  platform does not use the standalone metrics server or GCS checkpoint
+  sidecars; omit them from installed binaries. The SDK's embedded checkpoint
+  fallback remains upstream-owned. Services, jobs, development and native image
+  construction use that same engine. Link `gvisor-bin/gvisor_sentry` to
+  `../runsc` so both entrypoints execute the same patched engine. Its source
+  input defaults to `.development/runtime-bin/runsc` and must report the pinned
+  release with the `(the8020)` build marker. Image freshness hashes the
+  installed binary. Publication replaces it atomically. Docker moves this
+  complete binary directory into its image-owned runtime payload and links the
+  node path to it, so existing volumes cannot retain an obsolete engine. Full
+  host setup installs the same engine and companion directory for containerd and
+  preserves an existing engine only when bytes match.
 - The generated SDK is tied to the pinned upstream release. Development mounts
   alone enable the private package filesystem and its additional Gofer seccomp
   rules; ordinary service/job mounts keep their existing filesystem and filter.
@@ -81,10 +85,11 @@ Parent DOX: [kernel/defaults DOX](../../AGENTS.md).
   imports grow the shared cache; no application dependency list, source
   snapshot, or loader replacement is needed.
 - `stage-service-runtime.sh --sources` lists production TypeScript recursively,
-  excluding `examples/`, `test/`, and `*_test.ts`. Staging and both image hashes
-  consume that same list, so added modules and nested sources participate
-  automatically. HTTP sources stage under `http-source/` for bundling. Full
-  image construction copies the complete staged `runtime/` directory.
+  excluding `examples/`, `test/`, `testdata/`, `node_modules/`, and `*_test.ts`.
+  Staging and both image hashes consume that same list, so added modules and
+  nested sources participate automatically. HTTP sources stage under
+  `http-source/` for bundling. Full image construction copies the complete
+  staged `runtime/` directory.
 - The image import map exposes the activated read-only package tree through the
   single `/p/` prefix. Package imports include their namespace, package, file,
   and extension, for example `/p/the8020/db/mod.ts`. Never add package-specific
@@ -137,7 +142,8 @@ Parent DOX: [kernel/defaults DOX](../../AGENTS.md).
   against the image's pinned dependency using only cached dependencies before
   either runtime image can be published. Dependency installation consumes the
   image's import map and frozen lockfile, without a second dependency/version
-  list in the build script.
+  list in the build script. Its disposable Deno cache is removed on exit;
+  published `node_modules` remain available for imports with an empty cache.
 - `bash defaults/config/runtime/stage-service-runtime_test.sh` verifies that a
   newly added nested module is staged and hashed while tests, examples, and DOX
   stay out of the image.

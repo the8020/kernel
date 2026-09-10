@@ -200,7 +200,8 @@ if [[ "$INSTALL_GVISOR" == true ]]; then
   install -m 0755 "$GVISOR_EXTRACT/containerd-shim-runsc-v1" /usr/local/bin/containerd-shim-runsc-v1
   rm -rf -- /usr/local/bin/gvisor-bin
   install -d -m 0755 /usr/local/bin/gvisor-bin
-  find "$GVISOR_EXTRACT/gvisor-bin" -maxdepth 1 -type f -exec install -m 0755 '{}' /usr/local/bin/gvisor-bin/ \;
+  cp -a "$RUNTIME_ROOT/../bin/gvisor-bin/." /usr/local/bin/gvisor-bin/
+  chmod 0755 /usr/local/bin/gvisor-bin
 fi
 
 CNI_ARCHIVE="$DOWNLOADS/cni-plugins-linux-$ARCHIVE_ARCH-v$CNI_VERSION.tgz"

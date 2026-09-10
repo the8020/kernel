@@ -15,6 +15,9 @@ if [[ ! -f "$RUNTIME_ROOT/deno.json" || ! -f "$RUNTIME_ROOT/deno.lock" ]]; then
   echo "runtime dependency configuration is incomplete: $RUNTIME_ROOT" >&2
   exit 1
 fi
+DENO_DIR=$(mktemp -d)
+export DENO_DIR
+trap 'rm -rf -- "$DENO_DIR"' EXIT
 "$DENO" install --config "$RUNTIME_ROOT/deno.json" \
   --lock "$RUNTIME_ROOT/deno.lock" --frozen
 "$DENO" eval --config "$RUNTIME_ROOT/deno.json" --cached-only --check \

@@ -52,7 +52,10 @@ Parent DOX: [sandbox DOX](../AGENTS.md).
 # Verification
 
 - `build.sh` verifies dependencies, applies the isolated SDK corrections, tests
-  this module, and builds `.development/bin/runsc`. The root build invokes it.
+  this module, and builds `.development/runtime-bin/runsc`. Docker builds
+  (`THE8020_OUTER_CONTAINER_BUILD=true`) use `-s` to omit native symbol tables
+  and DWARF, preserving the pinned version marker and Go stack traces. Ordinary
+  development builds keep debugger information. The root build invokes it.
 - `main_test.go` checks ordinary mount and security-filter isolation. The
   development owner's `TestNativeSyscalls` runs identical syscall clients on
   host Linux and the workspace mount. `TestNativeWorkspace` verifies that

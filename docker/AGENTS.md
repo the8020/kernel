@@ -20,8 +20,7 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 - The deploy Dockerfile selects the newest kernel patch for its requested
   major.minor line before using the same installer and runtime payload folders.
 - Copy semantic directories rather than enumerating executables or helper files.
-- Builder images include Python 3 for the ordinary installer's workspace build.
-  The initialized instance includes one common `node/kernel/bin/runsc` for
+- The initialized instance includes one common `node/kernel/bin/runsc` for
   services, jobs and development. `.development/bin/` contains
   kernel/admin/logd; do not add another runsc to the Docker executable payload.
 - Invoke the portable smoke helper from the instance's installed runtime

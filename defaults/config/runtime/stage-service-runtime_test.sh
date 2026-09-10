@@ -6,12 +6,13 @@ TEST_ROOT=$(mktemp -d)
 trap 'rm -rf -- "$TEST_ROOT"' EXIT
 SOURCE="$TEST_ROOT/source"
 DENO="$SOURCE/defaults/config/runtime/deno"
-mkdir -p "$DENO/http" "$DENO/examples" "$DENO/test"
+mkdir -p "$DENO/http" "$DENO/examples" "$DENO/test" "$DENO/worker/testdata" "$DENO/node_modules/unused"
 printf '{}\n' > "$DENO/deno.json"
 printf '{}\n' > "$DENO/deno.lock"
 printf 'export {};\n' > "$DENO/http/mod.ts"
 printf 'export {};\n' > "$DENO/http/the8020_http.d.ts"
 touch "$DENO/AGENTS.md" "$DENO/http/http_test.ts" "$DENO/examples/demo.ts" "$DENO/test/helper.ts"
+touch "$DENO/worker/testdata/fixture.ts" "$DENO/node_modules/unused/mod.ts"
 
 before=$(bash "$STAGER" "$SOURCE" --sources | xargs -0 sha256sum | sha256sum)
 mkdir -p "$DENO/new-module/nested"

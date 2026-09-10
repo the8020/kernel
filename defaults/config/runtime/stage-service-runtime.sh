@@ -11,7 +11,7 @@ fi
 
 if [[ "$DESTINATION" == --sources ]]; then
   find "$RUNTIME_SOURCE/deno" \
-    \( -path "$RUNTIME_SOURCE/deno/examples" -o -path "$RUNTIME_SOURCE/deno/test" \) -prune -o \
+    -type d \( -name examples -o -name test -o -name testdata -o -name node_modules \) -prune -o \
     -type f -name '*.ts' ! -name '*_test.ts' -print0 | sort -z
   exit 0
 fi

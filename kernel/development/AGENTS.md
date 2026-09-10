@@ -198,13 +198,14 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Build with `./build.sh`.
   `THE8020_DEVELOPMENT_E2E=1 go test
   ./kernel/development -run '^TestNative' -count=1 -timeout=15m -v`
-  exercises the common `.development/bin/runsc` and prepared development/service
-  images. Prepare `.development/runtime/development/{rootfs,image.json}` and the
-  service image used by `activation_schema_test.go`. Native fixtures use short
-  disposable `/tmp` paths for Unix sockets. Shared/private storage must support
-  hardlinks. These checks qualify rootless gVisor; full containerd, live
-  PostgreSQL concurrency, arbitrary filesystem compatibility, and
-  host-power-loss safety require their separate checks.
+  exercises the common `.development/runtime-bin/runsc` and prepared
+  development/service images. Prepare
+  `.development/runtime/development/{rootfs,image.json}` and the service image
+  used by `activation_schema_test.go`. Native fixtures use short disposable
+  `/tmp` paths for Unix sockets. Shared/private storage must support hardlinks.
+  These checks qualify rootless gVisor; full containerd, live PostgreSQL
+  concurrency, arbitrary filesystem compatibility, and host-power-loss safety
+  require their separate checks.
 - Native tests cover private originals, live shared reads, ignored files,
   rename/link/delete semantics, retained Git objects after shared removal/GC,
   sparse conflicts, concurrent/later edits, interrupted publication, schema and
