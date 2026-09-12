@@ -24,3 +24,8 @@ first-user defaults; existing users are preserved.
 
 For remote version selection with `VERSION=<major.minor>`, use the
 [deploy repository](https://github.com/the8020/deploy).
+
+The newly created initial user receives role `**` with `"*" = "*"` through
+ordinary auth commands. Interrupted first-user grants resume on restart.
+Existing completed volumes retain their role assignments. Releases containing
+this integration must also publish a compatible `the8020/auth` package tag.

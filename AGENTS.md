@@ -101,6 +101,14 @@ Default section order:
 
 ## User Preferences
 
+- Fresh Docker bootstrap grants the initial user role `**` with permission
+  `"*" = "*"` using `auth.roles.create --if-missing`, `auth.roles.grant`, and
+  `auth.users.assign`. No authorization policy enters Go or the supervisor. The
+  private `node/docker/initial-user.pending` marker retains the target username
+  through interrupted account/grant steps; completion removes it and writes
+  `initial-user.done`. Retries preserve an already-created account and repeat
+  idempotent role grants. Existing completed volumes are not regranted.
+
 When the user requests a durable behavior change, record it here or in the
 relevant child AGENTS.md
 
@@ -643,13 +651,13 @@ below.
   remains alive; runtime recovery never gates the console.
   `THE8020_SKIP_RUNTIME_HOST=true` forwards the rootless-only install mode.
 - The source workspace `/workspace/8020/` contains sibling package repositories
-  `admin-core`, `admin-db`, `db`, `demo`, `dev-core`, `dev-skills`, `jobs`,
-  `packages`, `secrets`, `services`, `system`, `users`, and `uui`, alongside
-  `kernel`; the kernel repository contains no source package copies. Each
-  package owns its formatting, linting, type checking, tests, browser bundles,
-  release, and activation readiness. Initialized instances clone indexed
-  repositories into their mapped `packages/<namespace>/<repository>/` tree,
-  which service sandboxes mount read-only.
+  `admin-core`, `admin-db`, `auth`, `db`, `demo`, `dev-core`, `dev-skills`,
+  `jobs`, `packages`, `secrets`, `services`, `system`, `users`, and `uui`,
+  alongside `kernel`; the kernel repository contains no source package copies.
+  Each package owns its formatting, linting, type checking, tests, browser
+  bundles, release, and activation readiness. Initialized instances clone
+  indexed repositories into their mapped `packages/<namespace>/<repository>/`
+  tree, which service sandboxes mount read-only.
 - The sibling `the8020/branding` repository owns the shared brand assets and
   editable logo sources; branding assets live outside the kernel repository.
 - The sibling `admin-core` repository's `programs/packages` program lists

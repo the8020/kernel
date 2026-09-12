@@ -9,6 +9,10 @@ id = "the8020/admin-db"
 source = "https://github.com/the8020/admin-db.git"
 
 [[packages]]
+id = "the8020/auth"
+source = "https://github.com/the8020/auth.git"
+
+[[packages]]
 id = "the8020/db"
 source = "https://github.com/the8020/db.git"
 

@@ -32,6 +32,13 @@ elif [[ "$*" == *users.add* ]]; then
     exit 1
   fi
   touch "$CASE_ROOT/user-created"
+  printf '%s\n' '{"success":true,"result":{"users":[{"username":"admin","enabled":true,"has_password":true}]}}' > "$CASE_ROOT/users.json"
+elif [[ "$*" == *auth.* ]]; then
+  printf '%s\n' "$*" >> "$CASE_ROOT/auth-calls"
+  if [[ "$*" == *auth.users.assign* && -f "$CASE_ROOT/fail-assign" ]]; then
+    echo 'initial role assignment failed' >&2
+    exit 1
+  fi
 else
   echo 'runtime_ready: false'
 fi
@@ -136,6 +143,10 @@ entrypoint_pid=$!
 wait_for '80|20 is ready' "$CASE_ROOT/output"
 [[ -f "$CASE_ROOT/user-created" ]]
 [[ -f "$CASE_ROOT/instance/node/docker/initial-user.done" ]]
+grep -Fq 'auth.roles.create ** --if-missing' "$CASE_ROOT/auth-calls"
+grep -Fq 'auth.roles.grant ** * *' "$CASE_ROOT/auth-calls"
+grep -Fq 'auth.users.assign admin **' "$CASE_ROOT/auth-calls"
+[[ ! -f "$CASE_ROOT/instance/node/docker/initial-user.pending" ]]
 kill -TERM "$entrypoint_pid"
 wait "$entrypoint_pid" 2>/dev/null || true
 entrypoint_pid=""
@@ -171,6 +182,29 @@ bash "$CASE_ROOT/entrypoint.sh" > "$CASE_ROOT/output" 2>&1 &
 entrypoint_pid=$!
 wait_for '80|20 is ready' "$CASE_ROOT/output"
 [[ -f "$CASE_ROOT/user-created" && -f "$CASE_ROOT/instance/node/docker/initial-user.done" ]]
+kill -TERM "$entrypoint_pid"
+wait "$entrypoint_pid" 2>/dev/null || true
+entrypoint_pid=""
+
+prepare failed-assignment
+printf '%s\n' '{"success":true,"result":{"users":[]}}' > "$CASE_ROOT/users.json"
+touch "$CASE_ROOT/fail-assign"
+if bash "$CASE_ROOT/entrypoint.sh" > "$CASE_ROOT/output" 2>&1; then
+  echo 'entrypoint accepted failed role assignment' >&2
+  exit 1
+fi
+[[ -f "$CASE_ROOT/user-created" && -f "$CASE_ROOT/instance/node/docker/initial-user.pending" ]]
+[[ ! -f "$CASE_ROOT/instance/node/docker/initial-user.done" ]]
+rm "$CASE_ROOT/fail-assign"
+printf '%s\n' 200 > "$CASE_ROOT/http-status"
+: > "$CASE_ROOT/output"
+bash "$CASE_ROOT/entrypoint.sh" > "$CASE_ROOT/output" 2>&1 &
+entrypoint_pid=$!
+wait_for '80|20 is ready' "$CASE_ROOT/output"
+[[ $(grep -Fc users.add "$CASE_ROOT/users-calls") == 1 ]]
+[[ $(grep -Fc auth.users.assign "$CASE_ROOT/auth-calls") == 2 ]]
+[[ -f "$CASE_ROOT/instance/node/docker/initial-user.done" ]]
+[[ ! -f "$CASE_ROOT/instance/node/docker/initial-user.pending" ]]
 kill -TERM "$entrypoint_pid"
 wait "$entrypoint_pid" 2>/dev/null || true
 entrypoint_pid=""

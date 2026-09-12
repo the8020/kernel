@@ -14,6 +14,14 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 
 # Local Contracts
 
+- Fresh Docker bootstrap grants the initial user role `**` with permission
+  `"*" = "*"` using `auth.roles.create --if-missing`, `auth.roles.grant`, and
+  `auth.users.assign`. No authorization policy enters Go or the supervisor. The
+  private `node/docker/initial-user.pending` marker retains the target username
+  through interrupted account/grant steps; completion removes it and writes
+  `initial-user.done`. Retries preserve an already-created account and repeat
+  idempotent role grants. Existing completed volumes are not regranted.
+
 - The kernel Dockerfile builds its local tagged checkout without build
   arguments. The tag supplies the compatible package release line through the
   ordinary installer. It never selects or checks out another kernel version.
@@ -30,11 +38,13 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   property order. Malformed responses stop bootstrap without creating an
   account.
 - Initial-account bootstrap runs once per persistent instance volume. After
-  successful creation or confirming an existing login user, write the private
+  successful creation and administrator grants, or confirming an existing login
+  user without pending bootstrap, write the private
   `node/docker/initial-user.done` marker. Later starts skip all user commands
   and their Deno JSON parser, including after users are deleted or disabled.
-  Failed bootstrap leaves no marker and retries on the next start. The marker
-  belongs to the container entrypoint; image building and Go never create it.
+  Failed bootstrap leaves no completion marker and retries on the next start.
+  The marker belongs to the container entrypoint; image building and Go never
+  create it.
 - Login readiness probes immediately and waits 100 milliseconds between failed
   attempts, keeping the five-minute deadline and bounded serial requests.
 - Runtime containers need the documented unconfined outer seccomp profile for

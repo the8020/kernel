@@ -23,6 +23,10 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 
 # Local Contracts
 
+- Bootstrap includes `the8020/auth` with the ordinary package set so its tables,
+  commands, and screens exist before first-user administrator grants. Release
+  builds require a compatible auth package tag through normal resolution.
+
 - `install.sh`, not kernel startup, refreshes runtime definitions into
   `node/kernel/runtime/definitions/`. Its `install-development-assets.sh` step
   replaces the complete instance `scripts/` tree, removing retired helpers and

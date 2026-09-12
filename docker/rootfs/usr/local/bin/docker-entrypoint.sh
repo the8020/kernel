@@ -8,6 +8,7 @@ readonly RUNTIME_BIN=/usr/local/share/the8020/runtime-bin
 readonly DENO="$INSTANCE_ROOT/node/kernel/runtime/images/rootless/rootfs/usr/bin/deno"
 readonly PORTABLE_SMOKE="$INSTANCE_ROOT/node/kernel/runtime/definitions/smoke-portable.sh"
 readonly BOOTSTRAP_DONE="$INSTANCE_ROOT/node/docker/initial-user.done"
+readonly BOOTSTRAP_PENDING="$INSTANCE_ROOT/node/docker/initial-user.pending"
 
 if (( $# > 0 )); then
   if (( $# != 1 )) || [[ "$1" != "serve" ]]; then
@@ -116,16 +117,41 @@ if [[ ! -f "$BOOTSTRAP_DONE" ]]; then
     }
     console.log(response.result.users.some(user => user.enabled === true && user.has_password === true));
   ')
-  if [[ "$login_user_exists" != true ]]; then
-    echo "startup: creating initial 80|20 user: $initial_username" >&2
-    printf '%s\n' "$initial_password" |
-      "$ADMIN" --root "$INSTANCE_ROOT" users.add "$initial_username" --password-stdin >/dev/null
-    echo "created initial 80|20 user: $initial_username" >&2
+  if [[ "$login_user_exists" != true || -f "$BOOTSTRAP_PENDING" ]]; then
+    resuming=false
+    if [[ -f "$BOOTSTRAP_PENDING" ]]; then
+      IFS= read -r initial_username < "$BOOTSTRAP_PENDING"
+      resuming=true
+    fi
+    if [[ ! "$initial_username" =~ ^[a-z0-9]{3,32}$ ]]; then
+      echo "initial username must contain 3-32 lowercase letters or digits" >&2
+      exit 1
+    fi
+    initial_user_exists=$(printf '%s' "$users_json" | "$DENO" eval --quiet --no-config '
+      const response = JSON.parse(await new Response(Deno.stdin.readable).text());
+      console.log(response.result.users.some(user => user.username === Deno.args[0]));
+    ' "$initial_username")
+    if [[ "$resuming" != true && "$initial_user_exists" == true ]]; then
+      echo "initial username already exists without an enabled login; choose another initial username" >&2
+      exit 1
+    fi
+    (umask 077; mkdir -p "${BOOTSTRAP_PENDING%/*}"; printf '%s\n' "$initial_username" > "$BOOTSTRAP_PENDING")
+    if [[ "$initial_user_exists" != true ]]; then
+      echo "startup: creating initial 80|20 user: $initial_username" >&2
+      printf '%s\n' "$initial_password" |
+        "$ADMIN" --root "$INSTANCE_ROOT" users.add "$initial_username" --password-stdin >/dev/null
+      echo "created initial 80|20 user: $initial_username" >&2
+    fi
+    echo "startup: assigning administrator permissions to $initial_username" >&2
+    "$ADMIN" --root "$INSTANCE_ROOT" auth.roles.create '**' --if-missing >/dev/null
+    "$ADMIN" --root "$INSTANCE_ROOT" auth.roles.grant '**' '*' '*' >/dev/null
+    "$ADMIN" --root "$INSTANCE_ROOT" auth.users.assign "$initial_username" '**' >/dev/null
   else
     echo "initial user bootstrap skipped because an enabled login user already exists" >&2
   fi
   # Record only completed bootstrap; failed or interrupted creation retries.
   (umask 077; mkdir -p "${BOOTSTRAP_DONE%/*}"; touch "$BOOTSTRAP_DONE")
+  rm -f -- "$BOOTSTRAP_PENDING"
 fi
 unset initial_username initial_password
 
