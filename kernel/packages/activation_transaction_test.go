@@ -18,6 +18,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"the8020/kernel/database"
+	"the8020/kernel/database/schematest"
 	"the8020/kernel/deployment"
 	"the8020/kernel/execution/jobs"
 )
@@ -98,6 +99,7 @@ func TestActivationTransaction(t *testing.T) {
 	if err := restored.Prepare(ctx, first, []deployment.Candidate{{PackageID: "acme/orders", Root: active, Commit: "third"}}); err == nil {
 		t.Fatal("reused an activation identity")
 	}
+	schematest.Attach(t, db)
 	if _, err := db.InitializeCatalog(ctx); err != nil {
 		t.Fatal(err)
 	}

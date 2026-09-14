@@ -29,21 +29,21 @@ func Management(serviceSet *services.Services) (services.PackageManagementServic
 // by changed packages. Offline deployment dispatch has no runtime service and
 // therefore performs only the package transaction.
 func Synchronize(ctx context.Context, serviceSet *services.Services, packageIDs []string) ([]SynchronizationResult, error) {
-	return SynchronizeWithCredential(ctx, serviceSet, packageIDs, "")
+	return SynchronizeWithCredential(ctx, serviceSet, packageIDs, "", "")
 }
 
 // SynchronizeWithCredential performs the same package transaction with one
-// invocation-scoped Git token supplied by the administrative client.
-func SynchronizeWithCredential(ctx context.Context, serviceSet *services.Services, packageIDs []string, token string) ([]SynchronizationResult, error) {
+// invocation-scoped Git token or Basic password supplied by the administrative client.
+func SynchronizeWithCredential(ctx context.Context, serviceSet *services.Services, packageIDs []string, token, username string) ([]SynchronizationResult, error) {
 	management, err := Management(serviceSet)
 	if err != nil {
 		return nil, err
 	}
 	var results []workspacepackages.PackageSynchronization
-	if token == "" {
+	if token == "" && username == "" {
 		results, err = management.SynchronizePackages(ctx, packageIDs)
 	} else if credentialManagement, ok := management.(services.PackageCredentialManagementService); ok {
-		results, err = credentialManagement.SynchronizePackagesWithCredential(ctx, packageIDs, token)
+		results, err = credentialManagement.SynchronizePackagesWithCredential(ctx, packageIDs, token, username)
 	} else {
 		return nil, core.NewError(core.CodeRuntimeUnavailable, "transient Git credentials are unavailable")
 	}

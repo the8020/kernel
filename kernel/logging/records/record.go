@@ -102,7 +102,7 @@ func (r Record) validate() error {
 	}
 	if r.Object != "" {
 		kind, name, ok := strings.Cut(r.Object, ":")
-		if !ok || (kind != "service" && kind != "job" && kind != "program") || !validToken(name, 512) {
+		if !ok || (kind != "service" && kind != "module" && kind != "program") || !validToken(name, 512) {
 			return errors.New("invalid declared log object")
 		}
 	}

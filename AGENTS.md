@@ -101,6 +101,31 @@ Default section order:
 
 ## User Preferences
 
+- Database credentials, drivers, pools, bounded SQL, physical transport and
+  execution-scoped transactions stay native. `the8020/db` owns logical codecs,
+  schema SQL/validation/comparison, conservative synchronization and catalog
+  metadata. Generic runtime and native SQL repair become available before
+  application schema initialization; application failures do not revoke them.
+
+- Cluster nodes use one environment-provisioned `THE8020_SIGNING_KEY` (standard
+  base64 of a 32-byte master seed), used only to derive purpose-specific keys.
+  Application byte signing requires an explicit `app-` purpose; package
+  permissions remain deferred. Native forwarding uses mutual TLS with a derived
+  key unavailable through package signing, without a secrets-table credential.
+  [Native authentication DOX](kernel/auth/AGENTS.md) owns provisioning and
+  replacement; [node DOX](kernel/nodes/AGENTS.md) owns the recipient transport.
+
+- Native program handling consumes only `entrypoint` from program TOML and owns
+  executable identity, readiness, containment, and dispatch. The packages
+  application owns all other program metadata and command argument helpers;
+  invalid application metadata cannot gate native execution or inspection.
+  Generic hook/event dispatch remains part of the kernel runtime.
+
+- HTTP builders and OpenAPI belong to `the8020/services`; Zod and Kysely belong
+  to `the8020/db`. The generic runtime consumes only executable service handlers
+  and owns no application library aliases, bundles, type checking, or document
+  generation during startup or validation.
+
 - Fresh Docker bootstrap grants the initial user role `**` with permission
   `"*" = "*"` using `auth.roles.create --if-missing`, `auth.roles.grant`, and
   `auth.users.assign`. No authorization policy enters Go or the supervisor. The
@@ -261,12 +286,13 @@ relevant child AGENTS.md
   Development sandboxes remain separate. Keep SQLite caches private across
   gVisor boundaries, and qualify changes against concurrent cache misses and
   actual system startup time.
-- Public services completely ignore platform tokens and execute as their
-  configured user. They preserve raw cookies/headers for explicit package
-  login/logout. Authenticated services verify the platform JWT in Go before
-  request-triggered capacity or dispatch, then run users-package account/session
-  policy inside the existing target Worker before HTTP handling or WebSocket
-  acceptance.
+- Public services preserve raw credentials and execute as their configured user.
+  All authenticated services accept platform tokens or standard HTTP Basic
+  username/password authentication. Tokens use native signature checks followed
+  by users-package account/session policy in the target Worker. Basic uses the
+  existing users authentication program with secure password input before
+  dispatch; handlers receive the verified principal without the password. No new
+  authentication service or execution mechanism is needed.
 - The kernel owns cryptographic integrity and private deployment key storage;
   the users Deno package owns passwords, sessions, revocation, login/logout, and
   application cookies. Context getters are synchronous and never authenticate.
@@ -577,14 +603,21 @@ below.
 
 ## Zen application
 
+- Build only what the request and established contracts require. Before adding a
+  mechanism, identify that need and why existing owners or standard tools cannot
+  meet it. Do not invent stronger guarantees for hypothetical cases. Remove
+  unsupported additions at closeout; agent-written tests and DOX do not
+  authorize them. Preserve required correctness, security, and data integrity.
+
 - The kernel is holy. Change it only when absolutely necessary and with great
   care, after establishing why an existing package or runtime contract cannot
   provide the capability. No application logic belongs in Go or the generic Deno
   runtime; both provide foundations for independently evolving packages.
 - Respect boundaries: package unrelated functionality as a standalone capability
   with explicit dependencies. Reuse the shared service/job runtime and typed
-  bridge before adding a mechanism; new foundations must cooperate with existing
-  contracts and serve more than their first caller.
+  bridge before adding a mechanism. New foundations must address a demonstrated
+  gap in node authority or generic execution, fit existing contracts, and avoid
+  speculative callers or extension points.
 
 ## Development Workflow
 
@@ -622,18 +655,17 @@ below.
   `node/kernel/runtime/definitions/`, read-only development helper scripts, and
   materializes verified service and development images under
   `node/kernel/runtime/images/`. Complete generic image-input digests make
-  unchanged installs fast; required packages and Deno bundling execute inside
-  the isolated image build as defined by the runtime DOX. The default
-  verification gate runs Go and generic runtime checks only.
-  `--skip-runtime-host` prevents full-mode host mutation while retaining
-  rootless gVisor, and `--skip-verification` skips only test gates. Installation
-  checks Git and stages the source-owned bootstrap package set as clean Git
-  repositories only for a fresh fixed-layout instance; first kernel boot
-  publishes it transactionally in the database. It never builds, formats, lints,
-  type-checks, or tests application packages and never runs a UUI build or
-  browser E2E. `THE8020_RELEASE_VERSION=<major.minor>` is an installer-only
-  release input: it disables sibling-source snapshots and stages every bootstrap
-  package from its compatible resolved Git tag.
+  unchanged installs fast; required OS packages install inside the isolated
+  image build as defined by the runtime DOX. The default verification gate runs
+  Go and generic runtime checks only. `--skip-runtime-host` prevents full-mode
+  host mutation while retaining rootless gVisor, and `--skip-verification` skips
+  only test gates. Installation checks Git and stages the source-owned bootstrap
+  package set as clean Git repositories only for a fresh fixed-layout instance;
+  first kernel boot publishes it transactionally in the database. It never
+  builds, formats, lints, type-checks, or tests application packages and never
+  runs a UUI build or browser E2E. `THE8020_RELEASE_VERSION=<major.minor>` is an
+  installer-only release input: it disables sibling-source snapshots and stages
+  every bootstrap package from its compatible resolved Git tag.
 - `run.sh` may be invoked from any directory. It treats that current directory
   as the instance root and runs `install.sh --skip-verification`, which
   refreshes all three binaries, initializes the default layout when absent, and

@@ -18,10 +18,16 @@ description = "Comma-separated package IDs; omit for all indexed packages."
 name = "git_token"
 type = "string"
 required = false
-description = "Transient Git credential read securely from standard input."
+description = "Transient Git token or Basic password read securely from standard input."
 secret = true
-secret_prompt = "Git token: "
+secret_prompt = "Git token or password: "
 secret_stdin_option = "git-token-stdin"
+[[parameters]]
+name = "git_username"
+type = "string"
+option = "git-username"
+required = false
+description = "HTTP Basic username; defaults to x-access-token when omitted."
 [[result]]
 name = "packages"
 type = "array"

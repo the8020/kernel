@@ -20,6 +20,7 @@ import (
 
 	"the8020/kernel/database"
 	"the8020/kernel/database/evaluator"
+	"the8020/kernel/database/schematest"
 	"the8020/kernel/deployment"
 	"the8020/kernel/execution/coordinator"
 	"the8020/kernel/execution/jobs"
@@ -264,6 +265,7 @@ export default table("the8020__dev_core__labels", {id: t.text().primaryKey(), la
 	runner := nativeSchemaJobs(t, m)
 	db := database.New(database.Config{Backend: database.BackendSQLite, Location: filepath.Join(m.config.Root, "database/system.db"), InstanceRoot: m.config.Root, MaximumOpenConnections: 8, MaximumIdleConnections: 2})
 	t.Cleanup(func() { _ = db.Close() })
+	schematest.Attach(t, db)
 	if _, err := db.InitializeCatalog(ctx); err != nil {
 		t.Fatal(err)
 	}

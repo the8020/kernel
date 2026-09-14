@@ -27,10 +27,14 @@ func TestKeyCommandsWorkWithoutDatabaseOrRuntime(t *testing.T) {
 	if err := registry.Register(core.Command{Version: 1, ID: "kernel.signing.replace", Path: []string{"kernel.signing.replace"}, Parameters: []core.Parameter{{Name: "key", Type: "string", Required: true, Secret: true}}}, Replace(serviceSet)); err != nil {
 		t.Fatal(err)
 	}
-	oldSignature := signer.Sign([]byte("payload"))
+	oldSignature, err := signer.Sign("app-example", []byte("payload"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	seed := base64.StdEncoding.EncodeToString(make([]byte, 32))
 	response := registry.Execute(context.Background(), core.Request{ProtocolVersion: core.ProtocolVersion, CommandID: "kernel.signing.replace", Secrets: map[string]string{"key": seed}})
-	if !response.Success || signer.Verify([]byte("payload"), oldSignature) {
+	valid, err := signer.Verify("app-example", []byte("payload"), oldSignature)
+	if !response.Success || err != nil || valid {
 		t.Fatal("replacement did not invalidate previous signatures")
 	}
 	encoded, err := json.Marshal(response)

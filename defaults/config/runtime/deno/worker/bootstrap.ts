@@ -8,6 +8,7 @@ import type {
   RuntimeLogEvent,
   ServiceContext,
   ServiceEntrypoint,
+  ServiceHandler,
   ServiceRequestMetadata,
   WorkerControlFunctions,
   WorkerExecutionFailure,
@@ -33,7 +34,6 @@ interface ControlMessage {
     | "job_run"
     | "worker_invoke"
     | "service_request"
-    | "service_openapi"
     | "service_websocket_open"
     | "service_websocket_message"
     | "service_websocket_close"
@@ -43,33 +43,6 @@ interface ControlMessage {
   payload?: unknown;
   headers?: [string, string][];
   body?: ReadableStream<Uint8Array> | null;
-}
-
-interface PlatformService {
-  readonly __the8020Service: true;
-  fetch(
-    request: Request,
-    context: {
-      signal: AbortSignal;
-      meta: ServiceRequestMetadata;
-      log(event: RuntimeLogEvent): void;
-    },
-  ): Promise<Response>;
-  openapi(metadata: {
-    title?: string;
-    version?: string;
-    description?: string;
-    canonicalBasePath: string;
-  }): Record<string, unknown>;
-  connectWebSocket(
-    request: Request,
-    context: {
-      signal: AbortSignal;
-      meta: ServiceRequestMetadata;
-      log(event: RuntimeLogEvent): void;
-    },
-    socket: WorkerWebSocketSession,
-  ): Promise<Response>;
 }
 
 class AsyncQueue<T> {
@@ -284,24 +257,24 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
         signal: controller.signal,
       }, loadModule);
     const workerFunctions = registeredWorkerFunctions(module.workerFunctions);
-    const platformService = isPlatformService(module.default)
+    const serviceHandler = isServiceHandler(module.default)
       ? module.default
       : undefined;
-    const serviceEntrypoint = platformService === undefined
+    const serviceEntrypoint = serviceHandler === undefined
       ? module.fetch as ServiceEntrypoint | undefined
       : undefined;
     const jobEntrypoint = module.default as JobEntrypoint | undefined;
 
     if (
       metadata.workloadType === "service" &&
-      typeof serviceEntrypoint !== "function" && platformService === undefined
+      typeof serviceEntrypoint !== "function" && serviceHandler === undefined
     ) {
       throw new TypeError(
-        "service entrypoint must default-export defineService() or export fetch(request, context)",
+        "service entrypoint must default-export an object with fetch(request, context) or export fetch(request, context)",
       );
     }
     if (
-      metadata.workloadType === "service" && platformService !== undefined
+      metadata.workloadType === "service" && serviceHandler !== undefined
     ) {
       if (
         metadata.service === undefined ||
@@ -310,15 +283,9 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
         !metadata.service.canonicalBasePath.startsWith("/")
       ) {
         throw new TypeError(
-          "framework service identity, generation, and canonical base path are required",
+          "service identity, generation, and canonical base path are required",
         );
       }
-      // Building the document proves route initialization and schema/OpenAPI
-      // validity before this Worker reports readiness.
-      platformService.openapi({
-        ...metadata.service.openapi,
-        canonicalBasePath: metadata.service.canonicalBasePath,
-      });
     }
     if (
       metadata.workloadType === "job" && typeof jobEntrypoint !== "function"
@@ -500,9 +467,9 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
               response = setup.response ?? await kernelBridge.withRequest(
                 context.meta,
                 () =>
-                  platformService === undefined
+                  serviceHandler === undefined
                     ? serviceEntrypoint!(request, context)
-                    : platformService.fetch(request, {
+                    : serviceHandler.fetch(request, {
                       signal: context.signal,
                       meta: context.meta,
                       log,
@@ -543,28 +510,10 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
             );
             break;
           }
-          case "service_openapi": {
-            if (
-              platformService === undefined || metadata.service === undefined
-            ) {
-              throw new TypeError(
-                "OpenAPI is available only for a defineService() entrypoint",
-              );
-            }
-            port.postMessage({
-              type: "service_openapi",
-              correlationId: message.correlationId,
-              payload: platformService.openapi({
-                ...metadata.service.openapi,
-                canonicalBasePath: metadata.service.canonicalBasePath,
-              }),
-            });
-            break;
-          }
           case "service_websocket_open": {
-            if (platformService === undefined) {
+            if (serviceHandler?.connectWebSocket === undefined) {
               throw new TypeError(
-                "WebSocket routes require a defineService() entrypoint",
+                "service entrypoint must provide connectWebSocket(request, context, socket)",
               );
             }
             const input = message.payload as {
@@ -607,7 +556,7 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
               response = setup.response ?? await kernelBridge.withRequest(
                 input.meta,
                 () =>
-                  platformService.connectWebSocket(request, {
+                  serviceHandler.connectWebSocket!(request, {
                     signal: socket.signal,
                     meta: input.meta!,
                     log,
@@ -732,12 +681,12 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
   }
 };
 
-function isPlatformService(value: unknown): value is PlatformService {
+function isServiceHandler(value: unknown): value is ServiceHandler {
   return value !== null && typeof value === "object" &&
-    (value as Partial<PlatformService>).__the8020Service === true &&
-    typeof (value as Partial<PlatformService>).fetch === "function" &&
-    typeof (value as Partial<PlatformService>).openapi === "function" &&
-    typeof (value as Partial<PlatformService>).connectWebSocket === "function";
+    typeof (value as Partial<ServiceHandler>).fetch === "function" &&
+    ((value as Partial<ServiceHandler>).connectWebSocket === undefined ||
+      typeof (value as Partial<ServiceHandler>).connectWebSocket ===
+        "function");
 }
 
 function registeredWorkerFunctions(value: unknown): WorkerControlFunctions {

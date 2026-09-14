@@ -717,7 +717,7 @@ func commandPackages(t *testing.T) commandPackageSource {
 	for path, content := range map[string]string{
 		"acme/commands/package.toml":                 "schema = 1\ndescription = \"Command fixture\"\n",
 		"acme/commands/cbus/commands/arbitrary.toml": "version = 1\ncommand = \"acme.commands.check\"\nprogram = \"acme/runner/check\"\nsummary = \"Check job execution\"\nrestart_behavior = \"none\"\n",
-		"acme/runner/programs/check/program.toml":    "schema = 1\ndescription = \"Check job execution\"\n",
+		"acme/runner/programs/check/program.toml":    "entrypoint = \"program.ts\"\nschema = \"application-version\"\ndescription = 42\nuui = \"application-invalid\"\ndiscoverable = []\ndefault_layout = \"../ignored.json\"\n",
 		"acme/runner/programs/check/program.ts": `
 import { context } from "@the8020/context";
 import { answer } from "/p/acme/dependency/mod.ts";
@@ -983,7 +983,7 @@ func verifyHookJob(t *testing.T, spec model.SandboxSpec, source commandPackageSo
 	}
 	for _, id := range []string{"acme/commands", "acme/dependency"} {
 		write(id+"/package.toml", "schema = 1\ndescription = \"Hooks\"\n")
-		write(id+"/programs/hook/program.toml", "schema = 1\ndescription = \"Hook\"\n")
+		write(id+"/programs/hook/program.toml", "entrypoint = \"program.ts\"\n")
 	}
 	write("acme/commands/hooks/first.toml", "hook = \"index-services\"\ndescription = \"Build\"\nprogram = \"acme/commands/hook\"\norder = 10\n")
 	write("acme/dependency/hooks/second.toml", "hook = \"index-services\"\ndescription = \"Enhance\"\nprogram = \"acme/dependency/hook\"\norder = 20\n")
@@ -1025,7 +1025,7 @@ export default (state) => {
 	if err != nil {
 		t.Fatal(err)
 	}
-	jobManager, err := jobs.New(runtime, workerManager, jobs.Policy{NodeID: "nod-0123456789", LogPosition: logs.ReadPosition, Profile: spec.RuntimeProfile, ExecutionTimeout: 10 * time.Second})
+	jobManager, err := jobs.New(runtime, workerManager, jobs.Policy{NodeID: "nod-0123456789", LogPosition: logs.ReadPosition, Logger: logs.Logger(), Profile: spec.RuntimeProfile, ExecutionTimeout: 10 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}

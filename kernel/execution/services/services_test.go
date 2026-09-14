@@ -63,18 +63,6 @@ type fakeWorkers struct {
 	stopErrors     map[string]error
 }
 
-type blockingOpenAPIWorkers struct {
-	*fakeWorkers
-	started chan struct{}
-	release chan struct{}
-}
-
-func (f *blockingOpenAPIWorkers) ServiceOpenAPI(context.Context, string, string) (map[string]any, error) {
-	close(f.started)
-	<-f.release
-	return nil, workers.ErrRuntimeUnavailable
-}
-
 func testOptions(minimum, maximum, concurrency int) Options {
 	return Options{
 		User:           execution.SystemUser(),
@@ -499,47 +487,6 @@ func (f *fakeWorkers) ConfigureService(_ context.Context, _ string, serviceID st
 	return nil
 }
 
-func (f *fakeWorkers) ServiceOpenAPI(context.Context, string, string) (map[string]any, error) {
-	return map[string]any{"openapi": "3.1.0"}, nil
-}
-
-func TestOpenAPIFailureDoesNotOverwriteAReplacementPool(t *testing.T) {
-	store, _ := records.New(t.TempDir())
-	original := testRecord("api-pool")
-	original.State, original.SandboxID, original.ReleaseID, original.Generation = "READY", "old-group", "old-release", 1
-	original.WorkerIDs = []string{"old-worker"}
-	if err := store.Save(original.ServiceID, original); err != nil {
-		t.Fatal(err)
-	}
-	workersFake := &blockingOpenAPIWorkers{fakeWorkers: &fakeWorkers{}, started: make(chan struct{}), release: make(chan struct{})}
-	manager, err := New(&fakeCoordinator{}, workersFake, store, Policy{Strategy: model.GroupingOwner})
-	if err != nil {
-		t.Fatal(err)
-	}
-	result := make(chan error, 1)
-	go func() {
-		_, err := manager.OpenAPI(context.Background(), original.ServiceID)
-		result <- err
-	}()
-	<-workersFake.started
-	unlock := manager.lock(original.ServiceID)
-	replacement := original
-	replacement.SandboxID, replacement.ReleaseID, replacement.Generation = "new-group", "new-release", 2
-	replacement.WorkerIDs = []string{"new-worker"}
-	if err := manager.save(replacement); err != nil {
-		unlock()
-		t.Fatal(err)
-	}
-	unlock()
-	close(workersFake.release)
-	if err := <-result; !errors.Is(err, workers.ErrRuntimeUnavailable) {
-		t.Fatalf("OpenAPI error=%v", err)
-	}
-	current, err := manager.Inspect(original.ServiceID)
-	if err != nil || current.State != "READY" || current.SandboxID != "new-group" || current.Failure != "" {
-		t.Fatalf("replacement=%#v err=%v", current, err)
-	}
-}
 func (f *fakeWorkers) DispatchService(_ context.Context, _, _ string, request *http.Request) (*http.Response, error) {
 	body, _ := io.ReadAll(request.Body)
 	workerID := ""

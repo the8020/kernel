@@ -16,7 +16,7 @@ const authenticationModule = "/p/the8020/users/mod.ts"
 const authenticationProgram = "the8020/users/authenticate"
 
 // Native transports delegate application eligibility to an ordinary package
-// program. HTTP service hooks instead run inside their existing target Worker.
+// program, including HTTP Basic. HTTP token hooks run in the target Worker.
 type packageAuthentication struct {
 	context  context.Context
 	programs *programs.Runner

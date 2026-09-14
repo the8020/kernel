@@ -1,19 +1,22 @@
 {
-  "nodeModulesDir": "auto",
+  "nodeModulesDir": "none",
   "compilerOptions": {
     "strict": true,
     "noImplicitOverride": true,
     "noUncheckedIndexedAccess": true,
     "useUnknownInCatchVariables": true,
-    "lib": ["deno.ns", "dom", "dom.iterable", "esnext"]
+    "lib": [
+      "deno.ns",
+      "dom",
+      "dom.iterable",
+      "esnext"
+    ]
   },
   "imports": {
     "@the8020/context": "./context/mod.ts",
-    "@the8020/http": "./http/the8020_http.js",
     "@the8020/kernel": "./kernel/mod.ts",
     "@the8020/protocol": "./protocol.ts",
-    "/p/": "file:///workspace/packages/",
-    "kysely": "npm:kysely@0.29.4",
-    "zod": "npm:zod@4.1.5"
-  }
+    "/p/": "file:///workspace/packages/"
+  },
+  "lock": false
 }

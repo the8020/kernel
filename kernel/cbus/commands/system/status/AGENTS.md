@@ -23,9 +23,11 @@ Parent DOX: [kernel/kernel/cbus/commands/system DOX](../AGENTS.md).
   files or the logging process synchronously.
 - `instance_root` is the initialized node directory; source-installation paths
   are not part of process status.
-- Status reads one synchronized runtime snapshot; while asynchronous runtime
-  composition is incomplete it reports `runtime_ready=false` and the
-  initialization-progress message without delaying the command.
+- Status reads one synchronized runtime snapshot. Before infrastructure is
+  ready, `runtime_ready=false` and `runtime_failure` carries initialization
+  progress. Application initialization and failures use
+  `runtime_application_failure` independently, preserving native execution for
+  repair.
 - Database status is the cached result of the kernel startup or explicit
   connectivity check. Its pool limits and open/in-use/idle/wait counters come
   from local `database/sql` state; reading kernel status performs no database

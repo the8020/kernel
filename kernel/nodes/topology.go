@@ -4,7 +4,6 @@ package nodes
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -121,7 +120,7 @@ type Status struct {
 type Manager struct {
 	mu        sync.RWMutex
 	database  database.Store
-	secret    string
+	signing   *auth.Signer
 	localID   string
 	nodes     map[string]Node
 	server    *http.Server
@@ -133,14 +132,16 @@ type Manager struct {
 	terminals TerminalCloser
 }
 
-func New(store database.Store, localID, sharedSecret string) (*Manager, error) {
-	if store == nil || !identity.Is(localID, "nod") || sharedSecret == "" {
-		return nil, errors.New("database, valid local node ID, and shared forwarding secret are required")
+func New(store database.Store, localID string, signing *auth.Signer) (*Manager, error) {
+	if store == nil || !identity.Is(localID, "nod") || signing == nil {
+		return nil, errors.New("database, valid local node ID, and native signer are required")
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	// Forward the client's negotiation without adding gzip or decoding responses.
 	transport.DisableCompression = true
-	manager := &Manager{database: store, secret: sharedSecret, localID: localID, nodes: map[string]Node{}, http: &http.Client{Transport: transport, Timeout: 2 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	transport.TLSClientConfig = signing.ForwardingTLSConfig()
+	transport.ForceAttemptHTTP2 = false
+	manager := &Manager{database: store, signing: signing, localID: localID, nodes: map[string]Node{}, http: &http.Client{Transport: transport, Timeout: 2 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	if err := manager.Refresh(context.Background()); err != nil {
 		return nil, err
 	}
@@ -237,12 +238,11 @@ func (m *Manager) InvokeWorker(ctx context.Context, input WorkerInvocationReques
 	if err != nil || !node.Enabled {
 		return workerInvocationFailure("target_not_found", fmt.Sprintf("target node %q is unavailable", input.NodeID))
 	}
-	target := "http://" + net.JoinHostPort(node.RecipientAddress, strconv.Itoa(node.RecipientPort)) + workerInvokePath
+	target := "https://" + net.JoinHostPort(node.RecipientAddress, strconv.Itoa(node.RecipientPort)) + workerInvokePath
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(string(body)))
 	if err != nil {
 		return workerInvocationFailure("unavailable", err.Error())
 	}
-	request.Header.Set("Authorization", "Bearer "+m.secret)
 	request.Header.Set("Content-Type", "application/json")
 	response, err := m.http.Do(request)
 	if err != nil {
@@ -360,11 +360,13 @@ func (m *Manager) Start(handler http.Handler) error {
 	if err != nil {
 		return fmt.Errorf("listen for node forwarding: %w", err)
 	}
-	server := &http.Server{Handler: m.authorize(m.recipientHandler(handler)), ReadHeaderTimeout: 5 * time.Second}
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	server := &http.Server{Handler: m.authorize(m.recipientHandler(handler)), ReadHeaderTimeout: 5 * time.Second, TLSConfig: m.signing.ForwardingTLSConfig(), Protocols: protocols}
 	m.mu.Lock()
 	m.listener, m.server = listener, server
 	m.mu.Unlock()
-	go func() { _ = server.Serve(listener) }()
+	go func() { _ = server.ServeTLS(listener, "", "") }()
 	return nil
 }
 
@@ -380,13 +382,13 @@ func (m *Manager) Proxy(nodeID string, writer http.ResponseWriter, request *http
 	if !node.Enabled {
 		return fmt.Errorf("node %q is disabled", nodeID)
 	}
-	target := &url.URL{Scheme: "http", Host: net.JoinHostPort(node.RecipientAddress, strconv.Itoa(node.RecipientPort))}
+	target := &url.URL{Scheme: "https", Host: net.JoinHostPort(node.RecipientAddress, strconv.Itoa(node.RecipientPort))}
 	proxy := &httputil.ReverseProxy{
 		Director: func(forwarded *http.Request) {
 			forwarded.URL.Scheme = target.Scheme
 			forwarded.URL.Host = target.Host
 			forwarded.Host = target.Host
-			forwarded.Header.Set("Authorization", "Bearer "+m.secret)
+			forwarded.Header.Del("Authorization")
 			forwarded.Header.Del("the8020-internal-local-authentication")
 			if auth.LocalTransport(request.Context()) {
 				forwarded.Header.Set("the8020-internal-local-authentication", "true")
@@ -590,12 +592,11 @@ func (m *Manager) localCapacity(ctx context.Context) (Capacity, error) {
 }
 
 func (m *Manager) fetchCapacity(ctx context.Context, node Node) (Capacity, error) {
-	target := "http://" + net.JoinHostPort(node.RecipientAddress, strconv.Itoa(node.RecipientPort)) + capacityPath
+	target := "https://" + net.JoinHostPort(node.RecipientAddress, strconv.Itoa(node.RecipientPort)) + capacityPath
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return Capacity{}, err
 	}
-	request.Header.Set("Authorization", "Bearer "+m.secret)
 	response, err := m.http.Do(request)
 	if err != nil {
 		return Capacity{}, err
@@ -630,12 +631,14 @@ func (m *Manager) Close() error {
 
 func (m *Manager) authorize(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		provided := strings.TrimPrefix(request.Header.Get("Authorization"), "Bearer ")
-		if subtle.ConstantTimeCompare([]byte(provided), []byte(m.secret)) != 1 {
+		if request.TLS == nil || m.signing.VerifyForwardingPeer(*request.TLS) != nil {
+			writer.Header().Set("Connection", "close")
 			http.Error(writer, "node authentication required", http.StatusUnauthorized)
 			return
 		}
 		request.Header.Del("Authorization")
+		// Recipient encryption does not change the public request's HTTPS status.
+		request.TLS = nil
 		if request.Header.Get("the8020-internal-local-authentication") == "true" {
 			request = request.WithContext(auth.WithLocalTransport(request.Context()))
 		}

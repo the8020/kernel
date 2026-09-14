@@ -42,6 +42,9 @@ type = "string"
 name = "runtime_failure"
 type = "string"
 [[result]]
+name = "runtime_application_failure"
+type = "string"
+[[result]]
 name = "database_backend"
 type = "string"
 [[result]]

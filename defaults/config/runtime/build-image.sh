@@ -8,7 +8,7 @@ IMAGE_ROOT=${3:-"$SOURCE_ROOT/node/kernel/runtime/images/full"}
 MANIFEST=${4:-"$RUNTIME_SOURCE/versions.toml"}
 RUNTIME_ROOT=${5:-"$SOURCE_ROOT/node/kernel/runtime"}
 INSTANCE_UUID=${6:-}
-if [[ -z "$SOURCE_ROOT" || ! -f "$MANIFEST" || ! -f "$IMAGE_DEFINITION/Containerfile" || ! -f "$IMAGE_DEFINITION/build.sh" || ! -f "$IMAGE_DEFINITION/deno.json" || ! -f "$IMAGE_DEFINITION/deno.lock" || -z "$INSTANCE_UUID" ]]; then
+if [[ -z "$SOURCE_ROOT" || ! -f "$MANIFEST" || ! -f "$IMAGE_DEFINITION/Containerfile" || ! -f "$IMAGE_DEFINITION/build.sh" || ! -f "$IMAGE_DEFINITION/deno.json" || -z "$INSTANCE_UUID" ]]; then
   echo "usage: defaults/config/runtime/build-image.sh <source-root> [image-definition] [image-root] [versions-file] [work-root] <instance-uuid>" >&2
   exit 2
 fi
@@ -58,7 +58,7 @@ NAMESPACE="the8020-$INSTANCE_UUID"
 
 SOURCE_HASH=$(
   "$RUNTIME_SOURCE/stage-service-runtime.sh" "$SOURCE_ROOT" --sources | xargs -0 sha256sum
-  sha256sum "$RUNTIME_SOURCE/deno/deno.json" "$RUNTIME_SOURCE/deno/deno.lock" "$MANIFEST" "$IMAGE_DEFINITION/Containerfile" "$IMAGE_DEFINITION/build.sh" "$IMAGE_DEFINITION/deno.json" "$IMAGE_DEFINITION/deno.lock" "$RUNTIME_SOURCE/build-image.sh" "$RUNTIME_SOURCE/stage-service-runtime.sh" "$RUNTIME_SOURCE/bundle-runtime.sh" "$RUNTIME_SOURCE/protocol/generated.ts"
+  sha256sum "$MANIFEST" "$IMAGE_DEFINITION/Containerfile" "$IMAGE_DEFINITION/build.sh" "$IMAGE_DEFINITION/deno.json" "$RUNTIME_SOURCE/build-image.sh" "$RUNTIME_SOURCE/stage-service-runtime.sh" "$RUNTIME_SOURCE/protocol/generated.ts"
   printf '%s\n' "$BASE_MANIFEST"
 )
 SOURCE_HASH="sha256:$(printf '%s' "$SOURCE_HASH" | sha256sum | awk '{print $1}')"
@@ -90,10 +90,8 @@ rm -rf -- "$CONTEXT_ROOT"
 install -d -m 0700 "$CONTEXT_ROOT"
 "$RUNTIME_SOURCE/stage-service-runtime.sh" "$SOURCE_ROOT" "$CONTEXT_ROOT/runtime"
 install -m 0444 "$IMAGE_DEFINITION/deno.json" "$CONTEXT_ROOT/runtime/deno.json"
-install -m 0444 "$IMAGE_DEFINITION/deno.lock" "$CONTEXT_ROOT/runtime/deno.lock"
 install -d -m 0755 "$CONTEXT_ROOT/build"
 install -m 0444 "$IMAGE_DEFINITION/build.sh" "$CONTEXT_ROOT/build/build.sh"
-install -m 0555 "$RUNTIME_SOURCE/bundle-runtime.sh" "$CONTEXT_ROOT/runtime/bundle-runtime.sh"
 install -m 0444 "$RUNTIME_SOURCE/protocol/generated.ts" "$CONTEXT_ROOT/runtime/protocol.ts"
 
 OCI_ARCHIVE="$IMAGE_ROOT/deno-runtime.oci.tar"

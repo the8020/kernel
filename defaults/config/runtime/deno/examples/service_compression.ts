@@ -1,18 +1,7 @@
-import { defineService } from "@the8020/http";
-
-const service = defineService();
 const text = "compressible service response ".repeat(1_024);
 let pending: ReadableStreamDefaultController<Uint8Array> | undefined;
 
-service.use(async ({ request }, next) => {
-  const response = await next();
-  if (new URL(request.url).pathname === "/no-transform") {
-    response.headers.append("cache-control", "no-transform");
-  }
-  return response;
-});
-
-service.get("/*", {}, ({ request }) => {
+export function fetch(request: Request): Response {
   const path = new URL(request.url).pathname;
   if (path === "/finish") {
     pending?.close();
@@ -25,6 +14,7 @@ service.get("/*", {}, ({ request }) => {
     "vary": "Origin",
     "cache-control": "private",
   });
+  if (path === "/no-transform") headers.append("cache-control", "no-transform");
   let body = new Response(text).body!;
   if (path === "/encoded") {
     body = body.pipeThrough(new CompressionStream("gzip"));
@@ -46,6 +36,4 @@ service.get("/*", {}, ({ request }) => {
     }
   }
   return new Response(body, { status: path === "/range" ? 206 : 200, headers });
-});
-
-export default service;
+}

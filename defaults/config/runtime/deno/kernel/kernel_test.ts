@@ -9,8 +9,6 @@ import {
   AdminCommandError,
   kernel,
   kernelDatabaseBackend,
-  parseCommandArguments,
-  requiredCommandArgument,
   TerminalClosedError,
   TerminalControlBusyError,
 } from "./mod.ts";
@@ -48,23 +46,6 @@ const workerMetadata: ExecutionMetadata = {
   user: { userId: "user:system", username: "system" },
   origin: { type: "service", id: "example/auth/login" },
 };
-
-Deno.test("package command argument helpers return structured failures", () => {
-  for (
-    const action of [
-      () => requiredCommandArgument([], 0, "service ID"),
-      () => parseCommandArguments(["--unknown"], { values: ["known"] }),
-    ]
-  ) {
-    try {
-      action();
-      throw new Error("invalid arguments unexpectedly succeeded");
-    } catch (error) {
-      assertEquals(error instanceof AdminCommandError, true);
-      assertEquals((error as AdminCommandError).code, "invalid_arguments");
-    }
-  }
-});
 
 Deno.test("the bridge rejects missing execution users instead of defaulting", async () => {
   const channel = new MessageChannel();
@@ -132,7 +113,7 @@ Deno.test("cryptographic operations use the existing request bridge", async () =
   try {
     const pending = bridge.withRequest(
       metadata,
-      () => kernel.crypto.sign(new Uint8Array([1, 2, 3])),
+      () => kernel.crypto.sign("app-example", new Uint8Array([1, 2, 3])),
     );
     const call = await calls.next();
     assertEquals(
@@ -141,7 +122,7 @@ Deno.test("cryptographic operations use the existing request bridge", async () =
     );
     assertEquals((call.payload as { arguments: unknown }).arguments, {
       operation: "crypto.sign",
-      input: { data: "AQID" },
+      input: { purpose: "app-example", data: "AQID" },
     });
     bridge.handle({
       type: "kernel_result",
@@ -149,6 +130,26 @@ Deno.test("cryptographic operations use the existing request bridge", async () =
       payload: { success: true, result: { signature: "signed" } },
     });
     assertEquals(await pending, "signed");
+    const verification = bridge.withRequest(
+      metadata,
+      () =>
+        kernel.crypto.verify(
+          "app-example",
+          new Uint8Array([1, 2, 3]),
+          "signed",
+        ),
+    );
+    const verify = await calls.next();
+    assertEquals((verify.payload as { arguments: unknown }).arguments, {
+      operation: "crypto.verify",
+      input: { purpose: "app-example", data: "AQID", signature: "signed" },
+    });
+    bridge.handle({
+      type: "kernel_result",
+      correlationId: verify.correlationId as string,
+      payload: { success: true, result: { valid: true } },
+    });
+    assertEquals(await verification, true);
   } finally {
     bridge.close();
     channel.port1.close();
@@ -1136,9 +1137,15 @@ Deno.test("typed secret and package APIs use private runtime operations", async 
     );
     assertEquals(
       await respond(
-        inContext(() => kernel.packages.synchronize(["the8020/uui"])),
+        inContext(() =>
+          kernel.packages.synchronize(["the8020/uui"], "password", "alice")
+        ),
         "package.synchronize",
-        { packages: "the8020/uui" },
+        {
+          packages: "the8020/uui",
+          git_token: "password",
+          git_username: "alice",
+        },
         { packages: [{ package_id: "the8020/uui", success: true }] },
       ),
       [{ package_id: "the8020/uui", success: true }],

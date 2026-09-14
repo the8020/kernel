@@ -35,6 +35,26 @@ func TestRecordRoundTripAndSinglePhysicalBoundary(t *testing.T) {
 	}
 }
 
+func TestExecutionOriginKindsRoundTrip(t *testing.T) {
+	for _, kind := range []string{"service", "module", "program"} {
+		r := fixture("execution diagnostic")
+		r.Object = kind + ":acme/tools/run"
+		line, err := Encode(r)
+		if err != nil {
+			t.Fatalf("%s: %v", kind, err)
+		}
+		decoded, err := Decode(line)
+		if err != nil || decoded.Object != r.Object {
+			t.Fatalf("%s: %#v, %v", kind, decoded, err)
+		}
+	}
+	r := fixture("obsolete execution origin")
+	r.Object = "job:acme/tools/run"
+	if _, err := Encode(r); err == nil {
+		t.Fatal("job is a workload, not an execution origin")
+	}
+}
+
 func TestOversizedTextPreservesBothEndsAndMetadata(t *testing.T) {
 	for _, filler := range []string{"a", "\n", "💡", "\xff", "<"} {
 		r := fixture("BEGIN STACK " + strings.Repeat(filler, 1024*1024) + " END CAUSE")

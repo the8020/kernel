@@ -288,7 +288,7 @@ func (m *Manager) rollbackTransactions() {
 	}
 }
 
-// RunStatement executes one Kysely statement with explicit result intent.
+// RunStatement executes one SQL statement with explicit result intent.
 func (m *Manager) RunStatement(ctx context.Context, scope string, request StatementRequest) (StatementResult, error) {
 	parameters, err := m.decodeRuntimeParameters(request.Parameters)
 	if err != nil {
@@ -451,16 +451,6 @@ func (m *Manager) decodeRuntimeParameter(value any) (any, error) {
 		switch typeName {
 		case "bigint":
 			return strconv.ParseInt(stringValue(object["value"]), 10, 64)
-		case "decimal":
-			precision, err := integerJSON(object["precision"])
-			if err != nil || precision < 1 || precision > 18 {
-				return nil, errors.New("invalid decimal precision")
-			}
-			scale, err := integerJSON(object["scale"])
-			if err != nil || scale < 0 || scale > precision {
-				return nil, errors.New("invalid decimal scale")
-			}
-			return scaledDecimal(stringValue(object["value"]), precision, scale)
 		case "datetime":
 			parsed, err := time.Parse(time.RFC3339Nano, stringValue(object["value"]))
 			if err != nil || parsed.Nanosecond()%int(time.Millisecond) != 0 {
@@ -496,54 +486,6 @@ func formatDateTime(value time.Time) string {
 func stringValue(value any) string {
 	text, _ := value.(string)
 	return text
-}
-
-func integerJSON(value any) (int, error) {
-	number, ok := value.(json.Number)
-	if !ok {
-		return 0, errors.New("value is not an integer")
-	}
-	parsed, err := strconv.Atoi(string(number))
-	return parsed, err
-}
-
-func scaledDecimal(value string, precision, scale int) (int64, error) {
-	if value == "" || strings.HasPrefix(value, "+") {
-		return 0, errors.New("decimal is not canonical")
-	}
-	negative := strings.HasPrefix(value, "-")
-	unsigned := strings.TrimPrefix(value, "-")
-	parts := strings.Split(unsigned, ".")
-	if len(parts) > 2 || parts[0] == "" || (len(parts[0]) > 1 && parts[0][0] == '0') {
-		return 0, errors.New("decimal is not canonical")
-	}
-	fraction := ""
-	if len(parts) == 2 {
-		fraction = parts[1]
-	}
-	digits := strings.TrimLeft(parts[0]+fraction, "0")
-	if digits == "" {
-		digits = "0"
-	}
-	if len(fraction) != scale || len(digits) > precision {
-		return 0, errors.New("decimal precision or scale does not match")
-	}
-	for _, character := range parts[0] + fraction {
-		if character < '0' || character > '9' {
-			return 0, errors.New("decimal is not canonical")
-		}
-	}
-	if negative && digits == "0" {
-		return 0, errors.New("decimal is not canonical")
-	}
-	parsed, err := strconv.ParseInt(digits, 10, 64)
-	if err != nil {
-		return 0, errors.New("decimal exceeds signed 64-bit storage")
-	}
-	if negative {
-		parsed = -parsed
-	}
-	return parsed, nil
 }
 
 func validateFiniteNumber(value json.Number) (any, error) {

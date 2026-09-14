@@ -223,38 +223,18 @@ func TestCancelledRuntimeQueryReleasesApplicationAdmission(t *testing.T) {
 	}
 }
 
-func TestScaledDecimalAcceptsFractionsAndEnforcesSigned64Storage(t *testing.T) {
-	tests := []struct {
-		value     string
-		precision int
-		scale     int
-		expected  int64
-	}{
-		{value: "0.50", precision: 2, scale: 2, expected: 50},
-		{value: "-0.50", precision: 2, scale: 2, expected: -50},
-		{value: "999999999999999999", precision: 18, expected: 999999999999999999},
-	}
-	for _, test := range tests {
-		actual, err := scaledDecimal(test.value, test.precision, test.scale)
-		if err != nil || actual != test.expected {
-			t.Fatalf("scaledDecimal(%q) = %d, %v; want %d", test.value, actual, err, test.expected)
+func TestRuntimeBindsPhysicalIntegersWithoutLogicalDecimalPolicy(t *testing.T) {
+	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
+	defer manager.Close()
+	for _, value := range []string{"50", "-50", "999999999999999999", "9223372036854775807", "-9223372036854775808"} {
+		_, err := manager.RunStatement(context.Background(), "physical-values", StatementRequest{Statement: "SELECT $1", Parameters: json.RawMessage(`[{"type":"bigint","value":"` + value + `"}]`), ReturnRows: true})
+		if err != nil {
+			t.Fatal(err)
 		}
 	}
-	for _, test := range []struct {
-		value     string
-		precision int
-		scale     int
-	}{
-		{value: "-0.00", scale: 2},
-		{value: "1000000000000000000"},
-		{value: "9223372036854775808", precision: 19},
-	} {
-		precision := test.precision
-		if precision == 0 {
-			precision = 18
-		}
-		if _, err := scaledDecimal(test.value, precision, test.scale); err == nil {
-			t.Fatalf("scaledDecimal(%q) succeeded", test.value)
+	for _, input := range []string{`[{"type":"bigint","value":"9223372036854775808"}]`, `[{"type":"decimal","value":"0.50","precision":2,"scale":2}]`} {
+		if _, err := manager.RunStatement(context.Background(), "physical-values", StatementRequest{Statement: "SELECT $1", Parameters: json.RawMessage(input), ReturnRows: true}); err == nil {
+			t.Fatalf("accepted %s", input)
 		}
 	}
 }

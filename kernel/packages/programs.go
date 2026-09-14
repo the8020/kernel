@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/pelletier/go-toml/v2"
 
 	"the8020/kernel/deployment"
 )
@@ -71,9 +74,6 @@ type ProgramDefinition struct {
 	Commit        string `json:"commit"`
 	Entrypoint    string `json:"entrypoint"`
 	EntrypointURL string `json:"entrypoint_url"`
-	Description   string `json:"description,omitempty"`
-	Discoverable  bool   `json:"discoverable"`
-	UUI           bool   `json:"uui"`
 }
 
 // ParseProgramID accepts only <namespace>/<repository>/<program> identities.
@@ -155,17 +155,10 @@ func ValidateProgram(packageRoot, packageID, name, commit string) (ProgramDefini
 	if err := requireRealPath(absRoot, manifestPath, false); err != nil {
 		return ProgramDefinition{}, fmt.Errorf("program manifest: %w", err)
 	}
-	var manifest programManifest
-	if err := decodeTOMLFile(manifestPath, &manifest); err != nil {
+	entrypoint, err := readProgramEntrypoint(manifestPath)
+	if err != nil {
 		return ProgramDefinition{}, fmt.Errorf("program manifest: %w", err)
 	}
-	if manifest.Schema != packageManifestSchema {
-		return ProgramDefinition{}, fmt.Errorf("program manifest schema must equal %d", packageManifestSchema)
-	}
-	if strings.TrimSpace(manifest.Description) == "" {
-		return ProgramDefinition{}, errors.New("program manifest description is required")
-	}
-	entrypoint := manifest.Entrypoint
 	if entrypoint == "" {
 		entrypoint = "program.ts"
 	}
@@ -176,17 +169,36 @@ func ValidateProgram(packageRoot, packageID, name, commit string) (ProgramDefini
 	if err := requireRealPath(programRoot, entrypointPath, false); err != nil {
 		return ProgramDefinition{}, fmt.Errorf("program entrypoint: %w", err)
 	}
-	discoverable := true
-	if manifest.Discoverable != nil {
-		discoverable = *manifest.Discoverable
-	}
 	sandboxPath := filepath.ToSlash(filepath.Join(packageSandboxRoot, identity.Namespace, identity.Repository, "programs", name, filepath.FromSlash(entrypoint)))
 	return ProgramDefinition{
 		ID: packageID + "/" + name, PackageID: packageID, Name: name,
 		Commit: commit, Entrypoint: entrypoint,
 		EntrypointURL: (&url.URL{Scheme: "file", Path: sandboxPath}).String(),
-		Description:   manifest.Description, Discoverable: discoverable, UUI: manifest.UUI,
 	}, nil
+}
+
+// Only the entrypoint is part of the native program contract. Application
+// metadata and its schema are neither decoded nor validated here.
+func readProgramEntrypoint(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, manifestLimit+1))
+	if err != nil {
+		return "", err
+	}
+	if len(data) > manifestLimit {
+		return "", errors.New("program manifest exceeds 1 MiB")
+	}
+	var executable struct {
+		Entrypoint string `toml:"entrypoint"`
+	}
+	if err := toml.Unmarshal(data, &executable); err != nil {
+		return "", err
+	}
+	return executable.Entrypoint, nil
 }
 
 // requireRealPath rejects every symlink component and verifies the target

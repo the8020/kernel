@@ -50,7 +50,6 @@ type RuntimePools interface {
 	Scale(context.Context, string, int) (executionservices.Record, error)
 	EnsureCapacity(context.Context, string, int, int) (executionservices.Record, error)
 	ReconcileCapacity(context.Context, string, int) (executionservices.Record, error)
-	OpenAPI(context.Context, string) (map[string]any, error)
 	Dispatch(context.Context, string, *http.Request) (*http.Response, error)
 	ProxyWebSocket(context.Context, string, http.ResponseWriter, *http.Request, func(*http.Response) error) error
 	Stop(context.Context, string) (bool, error)
@@ -84,20 +83,21 @@ type NodeRouter interface {
 }
 
 type Config struct {
-	Index             *Index
-	Pools             RuntimePools
-	Router            BoundaryRouter
-	ObservedRoot      string
-	ReconcileInterval time.Duration
-	StartupTimeout    time.Duration
-	Logger            *slog.Logger
-	Authentication    Authentication
-	Authenticator     string
-	NodeID            string
-	Signing           *auth.Signer
-	Nodes             NodeRouter
-	MatchImports      func(context.Context, string, []string, []string) ([]string, error)
-	Database          database.Store
+	Index                *Index
+	Pools                RuntimePools
+	Router               BoundaryRouter
+	ObservedRoot         string
+	ReconcileInterval    time.Duration
+	StartupTimeout       time.Duration
+	Logger               *slog.Logger
+	Authentication       Authentication
+	Authenticator        string
+	AuthenticatePassword func(context.Context, string, string) (execution.User, error)
+	NodeID               string
+	Signing              *auth.Signer
+	Nodes                NodeRouter
+	MatchImports         func(context.Context, string, []string, []string) ([]string, error)
+	Database             database.Store
 }
 
 type State string
@@ -168,10 +168,9 @@ type Status struct {
 }
 
 type ValidationResult struct {
-	ServiceID string         `json:"service_id"`
-	Valid     bool           `json:"valid"`
-	OpenAPI   map[string]any `json:"openapi,omitempty"`
-	Error     string         `json:"error,omitempty"`
+	ServiceID string `json:"service_id"`
+	Valid     bool   `json:"valid"`
+	Error     string `json:"error,omitempty"`
 }
 
 type RequestOptions struct {
@@ -217,21 +216,22 @@ type persistentDispatch struct {
 }
 
 type Manager struct {
-	index          *Index
-	pools          RuntimePools
-	observed       string
-	interval       time.Duration
-	startup        time.Duration
-	logger         *slog.Logger
-	authentication Authentication
-	authenticator  string
-	signing        *auth.Signer
-	nodeID         string
-	nodes          NodeRouter
-	matchImports   func(context.Context, string, []string, []string) ([]string, error)
-	database       database.Store
-	hardRestarted  sync.Map
-	restartDemand  sync.Map
+	index                *Index
+	pools                RuntimePools
+	observed             string
+	interval             time.Duration
+	startup              time.Duration
+	logger               *slog.Logger
+	authentication       Authentication
+	authenticator        string
+	authenticatePassword func(context.Context, string, string) (execution.User, error)
+	signing              *auth.Signer
+	nodeID               string
+	nodes                NodeRouter
+	matchImports         func(context.Context, string, []string, []string) ([]string, error)
+	database             database.Store
+	hardRestarted        sync.Map
+	restartDemand        sync.Map
 
 	mu               sync.Mutex
 	services         map[string]*runtimeService
@@ -267,6 +267,7 @@ func New(config Config) (*Manager, error) {
 	}
 	background, stopBackground := context.WithCancel(context.Background())
 	manager := &Manager{index: config.Index, pools: config.Pools, observed: config.ObservedRoot, interval: config.ReconcileInterval, startup: config.StartupTimeout, logger: config.Logger, authentication: config.Authentication, authenticator: config.Authenticator, nodes: config.Nodes, services: map[string]*runtimeService{}, signing: config.Signing, nodeID: config.NodeID, background: background, stopBackground: stopBackground, maintenanceSet: map[string]bool{}}
+	manager.authenticatePassword = config.AuthenticatePassword
 	manager.matchImports = config.MatchImports
 	manager.database = config.Database
 	if config.Database != nil {
@@ -1147,7 +1148,6 @@ func (m *Manager) prepareSandbox(ctx context.Context, definition Specification, 
 			Generation:           definition.Version,
 			RestartRevision:      definition.RestartRevision,
 			CanonicalBasePath:    definition.Identity.CanonicalBasePath(),
-			OpenAPI:              definition.OpenAPI,
 			SandboxIndex:         index,
 			ExecutionMode:        serviceExecutionMode(definition),
 			TargetUtilization:    definition.Effective.Scaling.TargetUtilization,
@@ -1157,9 +1157,6 @@ func (m *Manager) prepareSandbox(ctx context.Context, definition Specification, 
 	}
 	if err == nil && len(record.WorkerIDs) != initialWorkers {
 		record, err = m.pools.Scale(ctx, poolID, initialWorkers)
-	}
-	if err == nil && len(record.WorkerIDs) > 0 {
-		_, err = m.pools.OpenAPI(ctx, poolID)
 	}
 	if err != nil {
 		if acquired {
@@ -1349,7 +1346,6 @@ func (m *Manager) Validate(ctx context.Context, serviceID string) ValidationResu
 		WorkerKeepAlive: definition.Effective.Scaling.WorkerKeepAlive,
 		ReleaseID:       "service-validation", LogicalServiceID: serviceID,
 		Generation: definition.Version, CanonicalBasePath: definition.Identity.CanonicalBasePath(),
-		OpenAPI:           definition.OpenAPI,
 		ExecutionMode:     serviceExecutionMode(definition),
 		TargetUtilization: definition.Effective.Scaling.TargetUtilization,
 		PlacementWorkers:  1,
@@ -1358,14 +1354,7 @@ func (m *Manager) Validate(ctx context.Context, serviceID string) ValidationResu
 		return ValidationResult{ServiceID: serviceID, Error: err.Error()}
 	}
 	defer m.retireValidationPool(record.ServiceID)
-	document, err := m.pools.OpenAPI(ctx, record.ServiceID)
-	if err != nil {
-		if m.logger != nil {
-			m.logger.Error("service OpenAPI generation failed", "service_id", serviceID, "error", err)
-		}
-		return ValidationResult{ServiceID: serviceID, Error: err.Error()}
-	}
-	return ValidationResult{ServiceID: serviceID, Valid: true, OpenAPI: document}
+	return ValidationResult{ServiceID: serviceID, Valid: true}
 }
 
 func (m *Manager) retireValidationPool(poolID string) {
@@ -1382,22 +1371,6 @@ func (m *Manager) retireValidationPool(poolID string) {
 	if err := m.pools.RemoveStopped(poolID); err != nil && !errors.Is(err, os.ErrNotExist) && m.logger != nil {
 		m.logger.Error("remove service validation pool", "service_pool_id", poolID, "error", err)
 	}
-}
-
-func (m *Manager) OpenAPI(ctx context.Context, serviceID string) (map[string]any, error) {
-	m.mu.Lock()
-	existing := m.services[serviceID]
-	if existing != nil && len(existing.sandboxes) > 0 {
-		poolID := existing.sandboxes[0].status.PoolID
-		m.mu.Unlock()
-		return m.pools.OpenAPI(ctx, poolID)
-	}
-	m.mu.Unlock()
-	result := m.Validate(ctx, serviceID)
-	if !result.Valid {
-		return nil, errors.New(result.Error)
-	}
-	return result.OpenAPI, nil
 }
 
 func (m *Manager) Request(ctx context.Context, serviceID, method, relativePath string, options RequestOptions) (RequestResult, error) {
@@ -1480,8 +1453,22 @@ func (m *Manager) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	var authentication *authenticationSetup
 	user := assigned
 	nativeUser, nativeApproved := request.Context().Value(authenticatedUserKey{}).(execution.User)
+	_, explicitToken := request.Header[http.CanonicalHeaderKey(auth.TokenHeader)]
+	scheme, _, _ := strings.Cut(request.Header.Get("Authorization"), " ")
 	if admission.Access.Mode == "authenticated" && nativeApproved {
 		user = nativeUser
+		authentication = &authenticationSetup{Approved: true, Claims: auth.TokenClaims{"sub": user.ID}}
+	} else if admission.Access.Mode == "authenticated" && !explicitToken && strings.EqualFold(scheme, "Basic") {
+		username, password, ok := request.BasicAuth()
+		if !ok || !utf8.ValidString(username) || !utf8.ValidString(password) || len(request.Header.Values("Authorization")) != 1 || len(request.Header.Get("Authorization")) > 8192 || m.authenticatePassword == nil {
+			m.respondUnauthenticated(writer, UnauthenticatedPolicy{Status: http.StatusUnauthorized, Message: "Authentication required."})
+			return
+		}
+		user, err = m.authenticatePassword(request.Context(), username, password)
+		if err != nil || !user.Valid() || user.Username != username {
+			m.respondUnauthenticated(writer, UnauthenticatedPolicy{Status: http.StatusUnauthorized, Message: "Authentication failed."})
+			return
+		}
 		authentication = &authenticationSetup{Approved: true, Claims: auth.TokenClaims{"sub": user.ID}}
 	} else if admission.Access.Mode == "authenticated" {
 		token, fromCookie := auth.RequestToken(request)
@@ -1785,6 +1772,11 @@ func clientNetworkScope(address netip.Addr) string {
 
 func setAuthenticationMetadata(header http.Header, authentication *authenticationSetup, user execution.User) {
 	if authentication != nil {
+		// Passwords are consumed at admission, never passed to application handlers.
+		scheme, _, _ := strings.Cut(header.Get("Authorization"), " ")
+		if strings.EqualFold(scheme, "Basic") {
+			header.Del("Authorization")
+		}
 		encoded, _ := json.Marshal(authentication)
 		header.Set(internalHeaderPrefix+"authentication", base64.StdEncoding.EncodeToString(encoded))
 	}
@@ -1831,6 +1823,9 @@ func (m *Manager) respondUnauthenticated(writer http.ResponseWriter, policy Unau
 		writer.Header().Set("Location", policy.RedirectURL)
 		writer.WriteHeader(policy.Status)
 		return
+	}
+	if policy.Status == http.StatusUnauthorized && m.authenticatePassword != nil {
+		writer.Header().Set("WWW-Authenticate", `Basic realm="80|20", charset="UTF-8"`)
 	}
 	http.Error(writer, policy.Message, policy.Status)
 }

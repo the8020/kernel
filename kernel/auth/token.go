@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"errors"
-	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -62,8 +61,8 @@ func (s *Signer) SignToken(claims TokenClaims) (string, error) {
 	defer s.mu.RUnlock()
 	token := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims)
 	token.Header["typ"] = TokenType
-	token.Header["kid"] = keyFingerprint(s.key)
-	encoded, err := token.SignedString(s.key)
+	token.Header["kid"] = keyFingerprint(s.session)
+	encoded, err := token.SignedString(s.session)
 	if err != nil || len(encoded) > MaximumTokenBytes {
 		return "", errors.New("cannot encode platform token claims")
 	}
@@ -81,10 +80,10 @@ func (s *Signer) verifyTokenAt(encoded string, now time.Time) (TokenClaims, erro
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	token, err := jwt.Parse(encoded, func(token *jwt.Token) (any, error) {
-		if token.Header["typ"] != TokenType || token.Header["kid"] != keyFingerprint(s.key) {
+		if token.Header["typ"] != TokenType || token.Header["kid"] != keyFingerprint(s.session) {
 			return nil, ErrInvalidToken
 		}
-		return s.key.Public().(ed25519.PublicKey), nil
+		return s.session.Public().(ed25519.PublicKey), nil
 	}, jwt.WithValidMethods([]string{jwt.SigningMethodEdDSA.Alg()}),
 		jwt.WithIssuer(TokenIssuer), jwt.WithAudience(TokenAudience),
 		jwt.WithExpirationRequired(), jwt.WithIssuedAt(), jwt.WithTimeFunc(func() time.Time { return now }),
@@ -99,11 +98,6 @@ func (s *Signer) verifyTokenAt(encoded string, now time.Time) (TokenClaims, erro
 	issued, err := claims.GetIssuedAt()
 	expires, expiryErr := claims.GetExpirationTime()
 	if err != nil || expiryErr != nil || issued == nil || expires == nil || !expires.After(issued.Time) {
-		return nil, ErrInvalidToken
-	}
-	session, sessionOK := claims["sid"].(string)
-	version, versionOK := claims["ver"].(float64)
-	if !sessionOK || session == "" || len(session) > 128 || !versionOK || version < 1 || version > 9007199254740991 || math.Trunc(version) != version {
 		return nil, ErrInvalidToken
 	}
 	if _, err := TokenUser(claims); err != nil {

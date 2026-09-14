@@ -113,11 +113,10 @@ func (m ExecutionMetadata) Valid() bool {
 }
 
 type ServiceExecutionMetadata struct {
-	ServiceID         string          `json:"serviceId"`
-	Generation        uint64          `json:"generation"`
-	CanonicalBasePath string          `json:"canonicalBasePath"`
-	OpenAPI           OpenAPIMetadata `json:"openapi,omitempty"`
-	ExecutionMode     string          `json:"executionMode,omitempty"`
+	ServiceID         string `json:"serviceId"`
+	Generation        uint64 `json:"generation"`
+	CanonicalBasePath string `json:"canonicalBasePath"`
+	ExecutionMode     string `json:"executionMode,omitempty"`
 }
 
 type WorkerInvocationError struct {
@@ -129,12 +128,6 @@ type WorkerInvocationResult struct {
 	OK     bool                   `json:"ok"`
 	Output any                    `json:"output,omitempty"`
 	Error  *WorkerInvocationError `json:"error,omitempty"`
-}
-
-type OpenAPIMetadata struct {
-	Title       string `json:"title,omitempty"`
-	Version     string `json:"version,omitempty"`
-	Description string `json:"description,omitempty"`
 }
 
 type WorkerPermissions struct {
@@ -332,19 +325,6 @@ func (c *Client) ConfigureService(ctx context.Context, spec model.SandboxSpec, s
 		ConcurrencyPerWorker int      `json:"concurrency_per_worker"`
 	}{WorkerIDs: append([]string{}, workerIDs...), ConcurrencyPerWorker: concurrencyPerWorker}
 	return c.control(ctx, spec, "/v1/services/"+url.PathEscape(serviceID)+"/configure", protocol.MessageServicePoolConfiguration, body, protocol.MessageServicePoolConfiguration, nil)
-}
-
-func (c *Client) ServiceOpenAPI(ctx context.Context, spec model.SandboxSpec, serviceID string) (map[string]any, error) {
-	var response struct {
-		Document map[string]any `json:"document"`
-	}
-	if err := c.control(ctx, spec, "/v1/services/"+url.PathEscape(serviceID)+"/openapi", protocol.MessageServiceOpenapi, struct{}{}, protocol.MessageServiceOpenapi, &response); err != nil {
-		return nil, err
-	}
-	if response.Document == nil {
-		return nil, errors.New("supervisor returned an empty OpenAPI document")
-	}
-	return response.Document, nil
 }
 
 func (c *Client) Drain(ctx context.Context, spec model.SandboxSpec) error {

@@ -4,8 +4,8 @@ Parent DOX: [kernel/kernel/database DOX](../AGENTS.md).
 
 - Discover activated package table modules and evaluate them through the normal
   sandboxed job runtime.
-- Keep TypeScript execution out of the Go process and database credentials out
-  of evaluator Workers.
+- Submit package-owned schema operations through ordinary authorized jobs; keep
+  TypeScript execution out of Go and credentials out of all Workers.
 
 # Local Contracts
 
@@ -26,8 +26,15 @@ Parent DOX: [kernel/kernel/database DOX](../AGENTS.md).
   index. Candidate activation evaluates its isolated staged root instead.
 - Depend only on the read-only package catalog. Database-backed desired package
   and service state is composed after initial table synchronization.
-- Evaluator Workers have no database access, no writes, imports, external
-  network, administration, or direct credentials.
+- Definition-evaluator Workers have no database access, writes, imports,
+  external network, administration, or credentials. Schema-application jobs use
+  ordinary SQL permissions and a separate Worker/reuse identity; they never
+  share the restricted evaluator's execution.
+- `RunSchema` forwards opaque operation input/results to db. Its reuse version
+  comes from cached publication state without source/Git scans. Candidate
+  application receives staged mounts and the candidate version; rollback uses
+  active sources. Go owns confinement, observed dependencies, bounded evaluation
+  scheduling, and the native activation handshake; schema policy stays in db.
 - Initial and explicit full synchronization discovers all package tables.
   Ordinary deployment reevaluates only new/changed/deleted definitions and
   tables whose recorded Deno module dependency closure intersects Git's changed

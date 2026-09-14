@@ -26,6 +26,7 @@ import (
 	"the8020/kernel/debugging"
 	"the8020/kernel/development"
 	"the8020/kernel/events"
+	"the8020/kernel/execution"
 	"the8020/kernel/execution/adminrun"
 	"the8020/kernel/execution/coordinator"
 	"the8020/kernel/execution/jobs"
@@ -190,9 +191,6 @@ func (c *runtimeCleanup) Close(ctx context.Context, report shutdownProgressFunc)
 func initializeRuntime(ctx context.Context, root, instanceUUID string, paths instance.Paths, settingManager *settings.Manager, systemDatabase *database.Manager, commandRegistry *core.Registry, serviceSet *services.Services, repositoryMu *sync.RWMutex, logger *slog.Logger) (*services.RuntimeServices, runtimeCleanupFunc) {
 	cleanup := &runtimeCleanup{policy: manager.ShutdownDestroy}
 	closeRuntime := cleanup.Close
-	if _, err := systemDatabase.InitializeCatalog(ctx); err != nil {
-		return &services.RuntimeServices{Failure: "database catalog initialization failed: " + err.Error()}, closeRuntime
-	}
 	packageCatalog, err := workspacepackages.NewCatalog(paths.Packages, logger)
 	if err != nil {
 		return &services.RuntimeServices{Failure: "initialize package catalog: " + err.Error()}, closeRuntime
@@ -460,6 +458,29 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
 	}
+	adminManager, err := adminrun.New(adminrun.Config{InstanceRoot: root, ArtifactsRoot: paths.RuntimeAttachments, Jobs: jobManager})
+	if err != nil {
+		runtimeServices.Failure = err.Error()
+		return runtimeServices, closeRuntime
+	}
+	operationDispatcher, err := runtimeoperations.New(serviceSet)
+	if err != nil {
+		runtimeServices.Failure = "initialize runtime operations: " + err.Error()
+		return runtimeServices, closeRuntime
+	}
+	callbackServer.SetRuntimeOperations(operationDispatcher)
+	callbackServer.SetWorkerResourceReleaser(operationDispatcher.ReleaseWorker)
+	runtimeServices.Jobs, runtimeServices.AdminRun = jobManager, adminManager
+	// Publish a complete infrastructure snapshot before application initialization.
+	// A failed db package must remain repairable through native eval/run and SQL.
+	infrastructure := *runtimeServices
+	infrastructure.ApplicationFailure = "application initialization is in progress"
+	serviceSet.PublishRuntime(&infrastructure)
+	defer func() {
+		if runtimeServices.Failure != "" {
+			runtimeServices.ApplicationFailure, runtimeServices.Failure = runtimeServices.Failure, ""
+		}
+	}()
 	tableEvaluator, err := databaseevaluator.New(databaseevaluator.Config{Packages: packageCatalog, Jobs: jobManager, Database: systemDatabase})
 	if err != nil {
 		runtimeServices.Failure = err.Error()
@@ -468,6 +489,11 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	systemDatabase.SetDefinitionEvaluator(tableEvaluator.Evaluate)
 	systemDatabase.SetFullSynchronizer(tableEvaluator.SynchronizeAll)
 	systemDatabase.SetSourceEvaluator(tableEvaluator.InspectDefinition)
+	systemDatabase.SetSchemaExecutor(tableEvaluator.RunSchema)
+	if _, err := systemDatabase.InitializeCatalog(ctx); err != nil {
+		runtimeServices.Failure = "database catalog initialization failed: " + err.Error()
+		return runtimeServices, closeRuntime
+	}
 	freshDatabase := !systemDatabase.Status().Initialized
 	if freshDatabase {
 		if _, err := tableEvaluator.SynchronizeInitialSchemas(ctx, true); err != nil {
@@ -494,11 +520,6 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	secretManager, err := secretstore.New(secretstore.Config{Database: systemDatabase})
 	if err != nil {
 		runtimeServices.Failure = "initialize shared secrets: " + err.Error()
-		return runtimeServices, closeRuntime
-	}
-	forwardingSecret, err := secretManager.EnsureRandom(ctx, "system.node.forwarding", 32)
-	if err != nil {
-		runtimeServices.Failure = "initialize node forwarding secret: " + err.Error()
 		return runtimeServices, closeRuntime
 	}
 	packageStore, err := workspacepackages.New(workspacepackages.Config{
@@ -619,13 +640,6 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
 	}
-	operationDispatcher, err := runtimeoperations.New(serviceSet)
-	if err != nil {
-		runtimeServices.Failure = "initialize runtime operations: " + err.Error()
-		return runtimeServices, closeRuntime
-	}
-	callbackServer.SetRuntimeOperations(operationDispatcher)
-	callbackServer.SetWorkerResourceReleaser(operationDispatcher.ReleaseWorker)
 	indexFollower, err := workspacepackages.NewIndexRevisionFollower(ctx, systemDatabase)
 	if err != nil {
 		runtimeServices.Failure = "initialize index convergence: " + err.Error()
@@ -638,7 +652,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		}
 	}
 	authentication := &packageAuthentication{context: ctx, programs: programRunner, signing: serviceSet.Signing}
-	nodeManager, err := nodes.New(systemDatabase, instanceUUID, forwardingSecret.Value)
+	nodeManager, err := nodes.New(systemDatabase, instanceUUID, serviceSet.Signing)
 	if err != nil {
 		runtimeServices.Failure = "initialize node topology: " + err.Error()
 		return runtimeServices, closeRuntime
@@ -720,11 +734,6 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		runtimeServices.Failure = "register sandbox console route: " + err.Error()
 		return runtimeServices, closeRuntime
 	}
-	adminManager, err := adminrun.New(adminrun.Config{InstanceRoot: root, ArtifactsRoot: paths.RuntimeAttachments, Jobs: jobManager})
-	if err != nil {
-		runtimeServices.Failure = err.Error()
-		return runtimeServices, closeRuntime
-	}
 	debugManager, err := debugging.New(debugging.Config{
 		Ports: portManager, Enabled: activeBoolDefault(settingManager, "sandbox.debug.enabled", false),
 		BindAddress:     activeString(settingManager, "sandbox.debug.bind_address", "127.0.0.1"),
@@ -734,8 +743,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
 	}
-	runtimeServices.Jobs = jobManager
-	runtimeServices.AdminRun, runtimeServices.Debugging = adminManager, debugManager
+	runtimeServices.Debugging = debugManager
 	webServiceManager, err := webservices.New(webservices.Config{
 		Index:             serviceIndex,
 		Pools:             serviceManager,
@@ -746,11 +754,14 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		Logger:            logger,
 		Authentication:    serviceSet.Signing,
 		Authenticator:     authenticationModule,
-		NodeID:            instanceUUID,
-		Signing:           serviceSet.Signing,
-		Nodes:             nodeManager,
-		MatchImports:      workerManager.MatchingImports,
-		Database:          systemDatabase,
+		AuthenticatePassword: func(ctx context.Context, username, password string) (execution.User, error) {
+			return authentication.run(ctx, "password", username, map[string]string{"password": password})
+		},
+		NodeID:       instanceUUID,
+		Signing:      serviceSet.Signing,
+		Nodes:        nodeManager,
+		MatchImports: workerManager.MatchingImports,
+		Database:     systemDatabase,
 	})
 	if err != nil {
 		runtimeServices.Failure = err.Error()

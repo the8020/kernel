@@ -34,7 +34,6 @@ type WorkerManager interface {
 	List(context.Context, string) ([]workers.Record, error)
 	StopInSandbox(context.Context, string, string, bool) error
 	ConfigureService(context.Context, string, string, []string, int) error
-	ServiceOpenAPI(context.Context, string, string) (map[string]any, error)
 	DispatchService(context.Context, string, string, *http.Request) (*http.Response, error)
 	ProxyServiceWebSocket(context.Context, string, string, http.ResponseWriter, *http.Request, func(*http.Response) error) error
 }
@@ -62,17 +61,15 @@ type Options struct {
 	Generation           uint64
 	RestartRevision      uint64
 	CanonicalBasePath    string
-	OpenAPI              supervisor.OpenAPIMetadata
 	SandboxIndex         int
 	ExecutionMode        string
 	TargetUtilization    float64
 	PlacementWorkers     int
 }
 type Record struct {
-	User       execution.User `json:"user"`
-	ServiceID  string         `json:"service_id"`
-	Entrypoint string         `json:"entrypoint"`
-
+	User                 execution.User               `json:"user"`
+	ServiceID            string                       `json:"service_id"`
+	Entrypoint           string                       `json:"entrypoint"`
 	SandboxID            string                       `json:"sandbox_id,omitempty"`
 	SandboxIP            string                       `json:"sandbox_ip,omitempty"`
 	WorkerIDs            []string                     `json:"worker_ids"`
@@ -90,7 +87,6 @@ type Record struct {
 	Generation           uint64                       `json:"generation,omitempty"`
 	RestartRevision      uint64                       `json:"restart_revision,omitempty"`
 	CanonicalBasePath    string                       `json:"canonical_base_path,omitempty"`
-	OpenAPI              supervisor.OpenAPIMetadata   `json:"openapi,omitempty"`
 	SandboxIndex         int                          `json:"sandbox_index"`
 	ExecutionMode        string                       `json:"execution_mode,omitempty"`
 	TargetUtilization    float64                      `json:"target_utilization,omitempty"`
@@ -215,7 +211,7 @@ func (m *Manager) Start(ctx context.Context, serviceID, entrypoint string, optio
 	if options.ReleaseID == "" {
 		options.ReleaseID = "development"
 	}
-	record := Record{ServiceID: serviceID, LogicalServiceID: options.LogicalServiceID, Generation: options.Generation, CanonicalBasePath: options.CanonicalBasePath, OpenAPI: options.OpenAPI, SandboxIndex: options.SandboxIndex, Entrypoint: entrypoint, ReleaseID: options.ReleaseID, State: "STARTING", MinimumWorkers: minimum, MaximumWorkers: maximum, ConcurrencyPerWorker: concurrency, WorkerKeepAlive: options.WorkerKeepAlive, StartedAt: m.now(), ExecutionMode: options.ExecutionMode, TargetUtilization: options.TargetUtilization}
+	record := Record{ServiceID: serviceID, LogicalServiceID: options.LogicalServiceID, Generation: options.Generation, CanonicalBasePath: options.CanonicalBasePath, SandboxIndex: options.SandboxIndex, Entrypoint: entrypoint, ReleaseID: options.ReleaseID, State: "STARTING", MinimumWorkers: minimum, MaximumWorkers: maximum, ConcurrencyPerWorker: concurrency, WorkerKeepAlive: options.WorkerKeepAlive, StartedAt: m.now(), ExecutionMode: options.ExecutionMode, TargetUtilization: options.TargetUtilization}
 	record.RestartRevision = options.RestartRevision
 	if record.LogicalServiceID == "" {
 		record.LogicalServiceID = serviceID
@@ -696,28 +692,6 @@ func (m *Manager) removeIndex(serviceID string) {
 	m.indexMu.Unlock()
 }
 
-func (m *Manager) OpenAPI(ctx context.Context, serviceID string) (map[string]any, error) {
-	unlock := m.lock(serviceID)
-	record, err := m.inspect(serviceID)
-	unlock()
-	if err != nil {
-		return nil, err
-	}
-	if record.State != "READY" || len(record.WorkerIDs) == 0 {
-		return nil, fmt.Errorf("service %s has no ready Worker", serviceID)
-	}
-	document, err := m.workers.ServiceOpenAPI(ctx, record.SandboxID, record.ServiceID)
-	if errors.Is(err, workers.ErrRuntimeUnavailable) {
-		unlock = m.lock(serviceID)
-		current, inspectErr := m.inspect(serviceID)
-		if inspectErr == nil && current.SandboxID == record.SandboxID && current.Generation == record.Generation && current.ReleaseID == record.ReleaseID && current.State != "STOPPED" {
-			_, err = m.failUnavailableLocked(current, err)
-		}
-		unlock()
-	}
-	return document, err
-}
-
 // FailSandbox marks every live service pool in a failed sandbox without
 // attempting Worker operations against the terminated sandbox.
 func (m *Manager) FailSandbox(sandboxID, reason string) error {
@@ -881,7 +855,7 @@ func (m *Manager) startWorker(ctx context.Context, record Record, permissions su
 	if err != nil {
 		return "", err
 	}
-	started, err := m.workers.Start(ctx, record.SandboxID, supervisor.StartWorkerRequest{Metadata: supervisor.ExecutionMetadata{WorkerID: workerID, WorkloadType: model.WorkloadService, OwnerID: record.LogicalServiceID, WorkloadID: record.ServiceID, ReleaseID: record.ReleaseID, Entrypoint: record.Entrypoint, DebuggerName: "service:" + record.LogicalServiceID + ":" + workerID, User: record.User, Origin: execution.Origin{Type: execution.OriginService, ID: record.LogicalServiceID}, Service: &supervisor.ServiceExecutionMetadata{ServiceID: record.LogicalServiceID, Generation: record.Generation, CanonicalBasePath: record.CanonicalBasePath, OpenAPI: record.OpenAPI, ExecutionMode: record.ExecutionMode}}, Permissions: permissions})
+	started, err := m.workers.Start(ctx, record.SandboxID, supervisor.StartWorkerRequest{Metadata: supervisor.ExecutionMetadata{WorkerID: workerID, WorkloadType: model.WorkloadService, OwnerID: record.LogicalServiceID, WorkloadID: record.ServiceID, ReleaseID: record.ReleaseID, Entrypoint: record.Entrypoint, DebuggerName: "service:" + record.LogicalServiceID + ":" + workerID, User: record.User, Origin: execution.Origin{Type: execution.OriginService, ID: record.LogicalServiceID}, Service: &supervisor.ServiceExecutionMetadata{ServiceID: record.LogicalServiceID, Generation: record.Generation, CanonicalBasePath: record.CanonicalBasePath, ExecutionMode: record.ExecutionMode}}, Permissions: permissions})
 	if err != nil {
 		if supervisor.IsRequestRejected(err) {
 			return "", &invalidServiceDefinitionError{cause: err}

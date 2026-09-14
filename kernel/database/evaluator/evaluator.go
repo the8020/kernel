@@ -84,6 +84,35 @@ func (e *Evaluator) PackageSet(ctx context.Context) (map[string]string, error) {
 	return commits, err
 }
 
+type schemaSourceContextKey struct{}
+type schemaSource struct {
+	release string
+	mounts  []model.Mount
+}
+
+// RunSchema invokes package-owned database policy with ordinary SQL access.
+// Definition evaluation remains a separate restricted Worker with no database.
+func (e *Evaluator) RunSchema(ctx context.Context, request database.SchemaRequest) (json.RawMessage, error) {
+	release := e.database.Status().PackageSetHash
+	var mounts []model.Mount
+	if staged, ok := ctx.Value(schemaSourceContextKey{}).(schemaSource); ok {
+		release, mounts = staged.release, staged.mounts
+	}
+	reuse := true
+	record, err := e.jobs.Run(ctx, "database-schema", "file:///workspace/packages/the8020/db/internal/schema.ts", jobs.Options{
+		User: execution.DefaultUser(ctx), OwnerID: "the8020/db", Namespace: "the8020",
+		Arguments: []any{request},
+		Timeout:   5 * time.Minute, Parallelism: 1, Reuse: &reuse, ReleaseID: release, Mounts: mounts,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("database schema operation: %w", err)
+	}
+	if record.Failure != "" {
+		return nil, errors.New(record.Failure)
+	}
+	return json.Marshal(record.Result)
+}
+
 type evaluationRequest struct {
 	PackageRoot string           `json:"package_root"`
 	Tables      []evaluationItem `json:"tables"`
@@ -202,7 +231,9 @@ func (e *Evaluator) synchronizeAll(ctx context.Context, resume, recovery, comple
 	}
 	initializing := !e.database.Status().Initialized
 	if initializing {
-		e.database.BeginInitialization()
+		if err := e.database.BeginInitialization(ctx); err != nil {
+			return nil, err
+		}
 	}
 	if resume && initializing {
 		completed, completedErr := e.database.CompletedTableIDs(ctx, commits)
@@ -368,6 +399,7 @@ func (e *Evaluator) Prepare(ctx context.Context, transactionID string, candidate
 		return err
 	}
 	items, retired, mounts, err := e.incrementalItems(ctx, candidates)
+	schemaContext := context.WithValue(ctx, schemaSourceContextKey{}, schemaSource{release: pending.CandidatePackageSetHash, mounts: mounts})
 	if err == nil {
 		err = e.database.UpdatePendingDeployment(ctx, transactionID, "evaluating", nil)
 	}
@@ -376,14 +408,14 @@ func (e *Evaluator) Prepare(ctx context.Context, transactionID string, candidate
 		var tables []database.EvaluatedTable
 		tables, err = e.evaluateBatch(ctx, items[offset:end], pending.CandidatePackageSetHash, mounts)
 		if err == nil {
-			_, err = e.database.Synchronize(ctx, tables, database.SynchronizationOptions{SkipReferenceValidation: true})
+			_, err = e.database.Synchronize(schemaContext, tables, database.SynchronizationOptions{SkipReferenceValidation: true})
 		}
 	}
 	if err == nil && len(retired) > 0 {
-		_, err = e.database.Synchronize(ctx, nil, database.SynchronizationOptions{RetireTables: retired})
+		_, err = e.database.Synchronize(schemaContext, nil, database.SynchronizationOptions{RetireTables: retired})
 	}
 	if err == nil {
-		err = e.database.ValidateCatalogReferences(ctx)
+		err = e.database.ValidateCatalogReferences(schemaContext)
 	}
 	if err != nil {
 		_ = e.database.UpdatePendingDeployment(context.WithoutCancel(ctx), transactionID, "failed", err)

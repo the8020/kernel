@@ -12,7 +12,7 @@ import (
 
 func New(serviceSet *services.Services) core.Handler {
 	return func(ctx context.Context, request core.Request) (core.Result, error) {
-		packages, err := packagecommands.SynchronizeWithCredential(ctx, serviceSet, commandutil.CSV(request, "packages"), commandutil.String(request, "git_token"))
+		packages, err := packagecommands.SynchronizeWithCredential(ctx, serviceSet, commandutil.CSV(request, "packages"), commandutil.String(request, "git_token"), commandutil.String(request, "git_username"))
 		return core.Result{"packages": packages}, err
 	}
 }

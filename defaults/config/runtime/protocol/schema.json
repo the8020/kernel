@@ -1,5 +1,5 @@
 {
-  "protocol_version": 4,
+  "protocol_version": 5,
   "messages": [
     "supervisor_registration",
     "heartbeat",
@@ -14,7 +14,6 @@
     "job_result",
     "service_pool_configuration",
     "service_worker_scale_request",
-    "service_openapi",
     "runtime_drain",
     "runtime_shutdown",
     "admin_command",

@@ -195,7 +195,7 @@ type PackageManagementService interface {
 // PackageCredentialManagementService is the narrow recovery path for an
 // invocation-scoped Git credential. The credential is never stored.
 type PackageCredentialManagementService interface {
-	SynchronizePackagesWithCredential(context.Context, []string, string) ([]workspacepackages.PackageSynchronization, error)
+	SynchronizePackagesWithCredential(context.Context, []string, string, string) ([]workspacepackages.PackageSynchronization, error)
 }
 
 // DevelopmentService is the handler-facing durable development sandbox,
@@ -227,7 +227,6 @@ type WebServiceService interface {
 	Inspect(string) (webservices.Status, error)
 	Validate(context.Context, string) webservices.ValidationResult
 	Request(context.Context, string, string, string, webservices.RequestOptions) (webservices.RequestResult, error)
-	OpenAPI(context.Context, string) (map[string]any, error)
 }
 
 // JobService is the handler-facing job execution contract.
@@ -268,23 +267,24 @@ type AdminRunService interface {
 // RuntimeServices is the typed Phase 1B dependency set. Doctor remains
 // available when host runtime initialization fails; lifecycle services are nil.
 type RuntimeServices struct {
-	Versions       runtimehost.Versions
-	Doctor         *runtimehost.Doctor
-	RootlessDoctor *runtimehost.RootlessDoctor
-	Isolation      runtimehost.IsolationReport
-	Failure        string
-	Sandboxes      SandboxService
-	Workers        WorkerService
-	Services       WebServiceService
-	Jobs           JobService
-	Programs       *programrunner.Runner
-	Events         *events.Manager
-	ListPrograms   func(context.Context) ([]workspacepackages.ProgramDefinition, error)
-	Reindex        func(context.Context, []string) (core.Result, error)
-	Ports          PortService
-	Debugging      DebugService
-	Pool           PoolService
-	AdminRun       AdminRunService
+	Versions           runtimehost.Versions
+	Doctor             *runtimehost.Doctor
+	RootlessDoctor     *runtimehost.RootlessDoctor
+	Isolation          runtimehost.IsolationReport
+	Failure            string
+	ApplicationFailure string
+	Sandboxes          SandboxService
+	Workers            WorkerService
+	Services           WebServiceService
+	Jobs               JobService
+	Programs           *programrunner.Runner
+	Events             *events.Manager
+	ListPrograms       func(context.Context) ([]workspacepackages.ProgramDefinition, error)
+	Reindex            func(context.Context, []string) (core.Result, error)
+	Ports              PortService
+	Debugging          DebugService
+	Pool               PoolService
+	AdminRun           AdminRunService
 }
 
 // New constructs the dependency container without adding lookup behavior.

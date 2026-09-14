@@ -16,13 +16,14 @@ func New(serviceSet *services.Services) core.Handler {
 		}
 		result := core.Result{
 			"ready": runtimeServices.Failure == "", "failure": runtimeServices.Failure,
-			"configured_mode":  runtimeServices.Isolation.ConfiguredMode,
-			"selected_mode":    runtimeServices.Isolation.SelectedMode,
-			"selection_reason": runtimeServices.Isolation.SelectionReason,
-			"full_ready":       runtimeServices.Isolation.FullReady,
-			"rootless_ready":   runtimeServices.Isolation.RootlessReady,
-			"capabilities":     runtimeServices.Isolation.Capabilities,
-			"limitations":      runtimeServices.Isolation.Limitations,
+			"application_failure": runtimeServices.ApplicationFailure,
+			"configured_mode":     runtimeServices.Isolation.ConfiguredMode,
+			"selected_mode":       runtimeServices.Isolation.SelectedMode,
+			"selection_reason":    runtimeServices.Isolation.SelectionReason,
+			"full_ready":          runtimeServices.Isolation.FullReady,
+			"rootless_ready":      runtimeServices.Isolation.RootlessReady,
+			"capabilities":        runtimeServices.Isolation.Capabilities,
+			"limitations":         runtimeServices.Isolation.Limitations,
 		}
 		if runtimeServices.Sandboxes != nil {
 			sandboxes, err := runtimeServices.Sandboxes.List()

@@ -20,7 +20,10 @@ Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
 - Runtime status reports isolation/readiness plus aggregate sandbox, Worker,
   port, and warm-pool counts; it never embeds per-resource records already
   available through list and inspect commands.
-- Eval/run always submit sandboxed runtime work and never invoke host Deno.
+- Eval/run always submit sandboxed runtime work and never invoke host Deno. They
+  remain available when application schema initialization fails after the
+  ordinary job runtime is ready. Runtime status exposes `application_failure`
+  separately from infrastructure `failure`.
 - Eval/run may forward one explicit instance-root-bounded development workspace
   to the ordinary job path; host writes remain opt-in.
 - Eval/run show state, program result, emitted logs, and human-readable duration

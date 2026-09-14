@@ -2,7 +2,7 @@ version = 1
 id = "kernel.signing.status"
 path = ["kernel.signing.status"]
 summary = "Show the active signing key fingerprint"
-description = "Returns only the public key fingerprint, independently of packages and database availability."
+description = "Returns the derived authentication public key fingerprint, independently of packages and database availability."
 mutates_state = false
 restart_behavior = "none"
 [handler]

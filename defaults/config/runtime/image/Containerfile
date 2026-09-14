@@ -12,9 +12,6 @@ RUN /bin/bash /tmp/the8020-image-build/build.sh && \
 
 COPY --chown=deno:deno runtime/ /opt/runtime/
 
-RUN /bin/bash /opt/runtime/bundle-runtime.sh /opt/runtime/http-source /opt/runtime/http && \
-    rm -rf /opt/runtime/http-source /opt/runtime/bundle-runtime.sh
-
 USER deno
 WORKDIR /opt/runtime
 EXPOSE 8000 9229

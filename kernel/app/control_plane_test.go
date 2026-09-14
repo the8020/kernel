@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"the8020/kernel/auth"
 	"the8020/kernel/cbus/client"
 	databasecheck "the8020/kernel/cbus/commands/database/check"
 	shutdowncommand "the8020/kernel/cbus/commands/system/shutdown"
@@ -63,6 +65,8 @@ func registerControlPlaneCommands(registry *core.Registry, serviceSet *services.
 }
 
 func TestDatabaseFailureDoesNotBlockControlPlane(t *testing.T) {
+	seed := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	t.Setenv(auth.SigningKeyEnvironment, seed)
 	root := testInstanceRoot(t)
 	if err := os.MkdirAll(filepath.Join(root, "scripts"), 0o755); err != nil {
 		t.Fatal(err)
@@ -105,6 +109,14 @@ func TestDatabaseFailureDoesNotBlockControlPlane(t *testing.T) {
 	statusResult := resultObject(status)
 	if err != nil || !status.Success || statusResult["database_status"] != "UNAVAILABLE" || statusResult["database_error"] == "" {
 		t.Fatalf("degraded database status=%#v error=%v", status, err)
+	}
+	provisioned, err := auth.OpenSigner(filepath.Join(preparedPaths.Kernel, "keys", "signing.key"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer, err := auth.OpenSigner(filepath.Join(t.TempDir(), "signing.key"), seed)
+	if err != nil || provisioned.Fingerprint() != peer.Fingerprint() {
+		t.Fatal("kernel did not persist its environment signing key before database startup")
 	}
 	check, err := commandClient.Execute(context.Background(), core.Request{CommandID: "database.check"})
 	if err != nil || check.Success || check.Error == nil || check.Error.Code != core.CodeDatabaseUnavailable {

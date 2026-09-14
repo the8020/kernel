@@ -18,10 +18,6 @@ fi
 
 while IFS= read -r -d '' source; do
   relative=${source#"$RUNTIME_SOURCE/deno/"}
-  # HTTP source is bundled before publication; the other modules stay native.
-  if [[ "$relative" == http/* ]]; then relative="http-source/${relative#http/}"; fi
   install -d -m 0755 "$(dirname "$DESTINATION/$relative")"
   install -m 0444 "$source" "$DESTINATION/$relative"
 done < <("$BASH" "${BASH_SOURCE[0]}" "$SOURCE_ROOT" --sources)
-install -m 0444 "$RUNTIME_SOURCE/deno/deno.json" "$DESTINATION/http-source/deno.json"
-install -m 0444 "$RUNTIME_SOURCE/deno/deno.lock" "$DESTINATION/http-source/deno.lock"

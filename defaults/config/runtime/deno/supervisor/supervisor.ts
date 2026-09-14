@@ -1393,22 +1393,6 @@ export class Supervisor {
         return controlError(error);
       }
     }
-    const serviceOpenAPI = url.pathname.match(
-      /^\/v1\/services\/([^/]+)\/openapi$/,
-    );
-    if (request.method === "POST" && serviceOpenAPI !== null) {
-      return await this.#handleControl(
-        request,
-        "service_openapi",
-        "service_openapi",
-        async () => {
-          const worker = this.selectServiceWorker(
-            decodeURIComponent(serviceOpenAPI[1]!),
-          );
-          return { document: await worker.serviceOpenAPI() };
-        },
-      );
-    }
     if (request.method === "POST" && url.pathname === "/v1/drain") {
       return await this.#handleControl(
         request,

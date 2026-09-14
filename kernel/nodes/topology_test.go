@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net"
@@ -21,7 +23,28 @@ import (
 	"the8020/kernel/execution"
 )
 
-const testSharedSecret = "shared-node-test-secret"
+func testNodeSigner(t *testing.T) *auth.Signer {
+	t.Helper()
+	signer, err := auth.OpenSigner(filepath.Join(t.TempDir(), "signing.key"), base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signer
+}
+
+func testPeerServer(t *testing.T, signer *auth.Signer, handler http.Handler) *httptest.Server {
+	t.Helper()
+	server := httptest.NewUnstartedServer(handler)
+	server.TLS = signer.ForwardingTLSConfig()
+	certificate, err := server.TLS.GetCertificate(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.TLS.Certificates = []tls.Certificate{*certificate}
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	return server
+}
 
 func newTestNodeDatabase(t *testing.T, root string) *database.Manager {
 	t.Helper()
@@ -53,12 +76,12 @@ func (i *recordingWorkerInvoker) InvokeLocalWorker(_ context.Context, input Work
 
 func TestTopologyPersistsAndReloadsSharedNodes(t *testing.T) {
 	root := t.TempDir()
-	manager, err := New(newTestNodeDatabase(t, root), "nod-aaaaaaaaaa", testSharedSecret)
+	manager, err := New(newTestNodeDatabase(t, root), "nod-aaaaaaaaaa", testNodeSigner(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer manager.Close()
-	observer, err := New(newTestNodeDatabase(t, root), "nod-cccccccccc", testSharedSecret)
+	observer, err := New(newTestNodeDatabase(t, root), "nod-cccccccccc", testNodeSigner(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +96,7 @@ func TestTopologyPersistsAndReloadsSharedNodes(t *testing.T) {
 	if got, err := observer.Inspect("nod-bbbbbbbbbb"); err != nil || got != node {
 		t.Fatalf("running peer node=%#v err=%v", got, err)
 	}
-	reloaded, err := New(newTestNodeDatabase(t, root), "nod-aaaaaaaaaa", testSharedSecret)
+	reloaded, err := New(newTestNodeDatabase(t, root), "nod-aaaaaaaaaa", testNodeSigner(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +108,7 @@ func TestTopologyPersistsAndReloadsSharedNodes(t *testing.T) {
 
 func TestTopologyReadsUseTheRefreshedSnapshot(t *testing.T) {
 	db := newTestNodeDatabase(t, t.TempDir())
-	manager, err := New(db, "nod-aaaaaaaaaa", testSharedSecret)
+	manager, err := New(db, "nod-aaaaaaaaaa", testNodeSigner(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +131,7 @@ func TestTopologyReadsUseTheRefreshedSnapshot(t *testing.T) {
 }
 
 func TestIndexesArePartitionedAcrossEnabledNodes(t *testing.T) {
-	manager, err := New(newTestNodeDatabase(t, t.TempDir()), "nod-bbbbbbbbbb", testSharedSecret)
+	manager, err := New(newTestNodeDatabase(t, t.TempDir()), "nod-bbbbbbbbbb", testNodeSigner(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +158,7 @@ func TestIndexesArePartitionedAcrossEnabledNodes(t *testing.T) {
 func TestForwardingRecipientRequiresSharedAuthentication(t *testing.T) {
 	root := t.TempDir()
 	db := newTestNodeDatabase(t, root)
-	manager, err := New(db, "nod-aaaaaaaaaa", testSharedSecret)
+	manager, err := New(db, "nod-aaaaaaaaaa", testNodeSigner(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,11 +188,11 @@ func TestForwardingRecipientRequiresSharedAuthentication(t *testing.T) {
 		t.Fatal(err)
 	}
 	unauthorized.Body.Close()
-	if unauthorized.StatusCode != http.StatusUnauthorized {
+	if unauthorized.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status=%d", unauthorized.StatusCode)
 	}
 
-	peer, err := New(db, "nod-bbbbbbbbbb", testSharedSecret)
+	peer, err := New(db, "nod-bbbbbbbbbb", testNodeSigner(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +248,7 @@ func TestForwardingRecipientRequiresSharedAuthentication(t *testing.T) {
 }
 
 func TestForwardingPreservesEncodingNegotiationAndBytes(t *testing.T) {
-	manager, err := New(newTestNodeDatabase(t, t.TempDir()), "nod-aaaaaaaaaa", testSharedSecret)
+	manager, err := New(newTestNodeDatabase(t, t.TempDir()), "nod-aaaaaaaaaa", testNodeSigner(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +268,7 @@ func TestForwardingPreservesEncodingNegotiationAndBytes(t *testing.T) {
 			if strings.Contains(accept, "gzip") {
 				body, encoding = compressed.Bytes(), "gzip"
 			}
-			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			server := testPeerServer(t, manager.signing, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 				if got := request.Header.Get("Accept-Encoding"); got != accept {
 					t.Errorf("forwarded Accept-Encoding = %q, want %q", got, accept)
 				}
@@ -280,7 +303,7 @@ func TestForwardingPreservesEncodingNegotiationAndBytes(t *testing.T) {
 func TestAvailableForwardingUsesAdvertisedCapacity(t *testing.T) {
 	root := t.TempDir()
 	db := newTestNodeDatabase(t, root)
-	owner, err := New(db, "nod-aaaaaaaaaa", testSharedSecret)
+	owner, err := New(db, "nod-aaaaaaaaaa", testNodeSigner(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +324,7 @@ func TestAvailableForwardingUsesAdvertisedCapacity(t *testing.T) {
 	})); err != nil {
 		t.Fatal(err)
 	}
-	peer, err := New(db, "nod-bbbbbbbbbb", testSharedSecret)
+	peer, err := New(db, "nod-bbbbbbbbbb", testNodeSigner(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +350,7 @@ func TestAvailableForwardingUsesAdvertisedCapacity(t *testing.T) {
 
 func TestExactWorkerInvocationForwardsAcrossNodes(t *testing.T) {
 	db := newTestNodeDatabase(t, t.TempDir())
-	owner, err := New(db, "nod-aaaaaaaaaa", testSharedSecret)
+	owner, err := New(db, "nod-aaaaaaaaaa", testNodeSigner(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,7 +365,7 @@ func TestExactWorkerInvocationForwardsAcrossNodes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	peer, err := New(db, "nod-bbbbbbbbbb", testSharedSecret)
+	peer, err := New(db, "nod-bbbbbbbbbb", testNodeSigner(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -361,7 +384,7 @@ func TestExactWorkerInvocationForwardsAcrossNodes(t *testing.T) {
 }
 
 func TestWorkerInvocationRejectsMalformedIdentityAtBothNodeBoundaries(t *testing.T) {
-	m, err := New(newTestNodeDatabase(t, t.TempDir()), "nod-aaaaaaaaaa", testSharedSecret)
+	m, err := New(newTestNodeDatabase(t, t.TempDir()), "nod-aaaaaaaaaa", testNodeSigner(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,7 +411,6 @@ func TestWorkerInvocationRejectsMalformedIdentityAtBothNodeBoundaries(t *testing
 				t.Fatal(err)
 			}
 			request := httptest.NewRequest(http.MethodPost, workerInvokePath, strings.NewReader(string(body)))
-			request.Header.Set("Authorization", "Bearer "+testSharedSecret)
 			response := httptest.NewRecorder()
 			m.recipientHandler(http.NotFoundHandler()).ServeHTTP(response, request)
 			if response.Code != http.StatusBadRequest || len(invoker.calls) != 0 {
@@ -400,10 +422,10 @@ func TestWorkerInvocationRejectsMalformedIdentityAtBothNodeBoundaries(t *testing
 
 func TestTopologyRequiresCanonicalNodeIdentity(t *testing.T) {
 	db := newTestNodeDatabase(t, t.TempDir())
-	if _, err := New(db, "node-a", testSharedSecret); err == nil {
+	if _, err := New(db, "node-a", testNodeSigner(t)); err == nil {
 		t.Fatal("accepted an arbitrary local node ID")
 	}
-	m, err := New(db, "nod-aaaaaaaaaa", testSharedSecret)
+	m, err := New(db, "nod-aaaaaaaaaa", testNodeSigner(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -418,8 +440,56 @@ func TestTopologyRequiresCanonicalNodeIdentity(t *testing.T) {
 	}
 }
 
+func TestForwardingKeyReplacementRejectsPooledRequests(t *testing.T) {
+	db := newTestNodeDatabase(t, t.TempDir())
+	owner, err := New(db, "nod-aaaaaaaaaa", testNodeSigner(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = owner.Close() })
+	port := freePort(t)
+	if _, err := owner.Set(context.Background(), Node{ID: owner.localID, URL: "http://node.example", RecipientAddress: "127.0.0.1", RecipientPort: port, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.Start(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if auth.SecureTransport(r) {
+			t.Error("native TLS changed public request scheme")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})); err != nil {
+		t.Fatal(err)
+	}
+	peer, err := New(db, "nod-bbbbbbbbbb", testNodeSigner(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = peer.Close() })
+	endpoint := "https://127.0.0.1:" + portString(port)
+	check := func(expected int) {
+		t.Helper()
+		response, err := peer.http.Get(endpoint)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		if response.StatusCode != expected {
+			t.Fatalf("peer status=%d, want %d", response.StatusCode, expected)
+		}
+	}
+	check(http.StatusNoContent)
+	seed := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32))
+	if err := owner.signing.Replace(seed); err != nil {
+		t.Fatal(err)
+	}
+	check(http.StatusUnauthorized) // The original connection is still pooled.
+	if err := peer.signing.Replace(seed); err != nil {
+		t.Fatal(err)
+	}
+	check(http.StatusNoContent) // Native callbacks select the newly provisioned key.
+}
+
 func TestWorkerInvocationRejectsInvalidAndOversizedInputBeforeDispatch(t *testing.T) {
-	manager, err := New(newTestNodeDatabase(t, t.TempDir()), "nod-aaaaaaaaaa", testSharedSecret)
+	manager, err := New(newTestNodeDatabase(t, t.TempDir()), "nod-aaaaaaaaaa", testNodeSigner(t))
 	if err != nil {
 		t.Fatal(err)
 	}

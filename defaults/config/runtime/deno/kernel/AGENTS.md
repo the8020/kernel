@@ -21,6 +21,13 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 
 # Local Contracts
 
+- `kernel.packages.synchronize(ids, gitToken?, gitUsername?)` accepts a
+  transient token or Basic password; omitted username retains `x-access-token`.
+  Neither credential is persisted in desired package state or Git configuration.
+
+- Package version rows include exact Git parent commit IDs; ancestry-based
+  interpretation belongs to application packages.
+
 - `kernel.services.restart(serviceId, mode = "soft")` publishes a generic
   restart across existing node placements. `hard` also terminates draining
   generations. Both return observed local status and preserve disabled policy;
@@ -86,10 +93,9 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 - `kernel.events.emit(name, data)` returns an event ID and accepted listener
   count without waiting for their execution. Events are local to the emitting
   node and listeners inherit its user; kernel minute events use system identity.
-- `kernel.programs.list()` returns ready runnable programs, including programs
-  excluded from Home, with `uui` and `discoverable` booleans, package/commit,
-  description, and entrypoint metadata. These flags do not change generic
-  program execution.
+- `kernel.programs.list()` returns ready executable identities, package/commit,
+  and entrypoint data only. Application metadata belongs to
+  `/p/the8020/packages/programs.ts` and never crosses this native contract.
   `kernel.programs.run({programId, arguments, username?,
   sandboxGroup?, timeoutMs?})`
   executes asynchronously and returns terminal state, result, failure, package
@@ -114,10 +120,12 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   while retaining physical database data.
 - `kernel.database` sends compiled SQL and explicitly tagged values to the Go
   kernel and returns ordered rows, affected counts, and optional insert IDs.
-  Transactions use opaque kernel-held tokens. Optional `timeoutMs` bounds
-  acquisition and total lifetime; `lockTimeoutMs` bounds engine lock waits.
-  Table administration uses the private runtime-operation bridge. The SDK never
-  opens a database connection or receives credentials inside the sandbox.
+  Logical decimal parameters are already scaled bigint values; native transport
+  carries no precision/scale or logical schema interpretation. Transactions use
+  opaque kernel-held tokens. Optional `timeoutMs` bounds acquisition and total
+  lifetime; `lockTimeoutMs` bounds engine lock waits. Table administration uses
+  the private runtime-operation bridge. The SDK never opens a database
+  connection or receives credentials inside the sandbox.
 - The kernel injects the non-secret SQLite/PostgreSQL backend into Worker
   metadata before module import so database query compilation needs no bootstrap
   callback. Every kernel operation requires an active service request, retained
@@ -138,14 +146,19 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 - `completePersistent` identifies the active logical persistent execution from
   trusted context and carries no application reason or semantics. The existing
   Worker MessagePort resolves it in the owning supervisor; it sends no Go RPC.
-- `kernel.crypto.sign/verify` transport arbitrary bytes as base64;
-  `kernel.crypto.token.sign/verify` use the fixed platform JWT profile. Claims
-  belong to Deno callers. Private keys never cross the bridge. All trusted
-  services and jobs may sign; no signing permissions or allowlists exist.
-- Shared package-command argument helpers raise structured `invalid_arguments`
-  failures; package command code uses the same error type for intentional
-  not-found/conflict outcomes instead of flattening them into application
-  exceptions.
+- `kernel.crypto.sign(purpose, data)` and `verify(purpose, data, signature)`
+  require an explicit `app-` purpose and transport bytes as base64. Go enforces
+  5–128 lowercase ASCII letters, digits, or hyphens including that prefix and a
+  nonempty suffix. Verification requires the consumer's expected purpose.
+  `kernel.crypto.token.sign/verify` use the fixed platform JWT profile with the
+  derived `app-session-cookie` key. Session fields belong to Deno callers;
+  native verification checks signatures, timing, principal, and transport.
+  Private keys never cross the bridge. All trusted services and jobs may use
+  application purposes and the token API; package permissions remain deferred.
+- `AdminCommandError` is the shared structured command-failure contract.
+  Argument parsing and required-argument helpers belong to
+  `/p/the8020/packages/commands.ts`, which raises `invalid_arguments` through
+  that type. The SDK owns no package command grammar.
 - `AdminCommandError.execution` retains an allocated command's log reference,
   including its job/node/context IDs, saved position and time range. Local
   validation failures have no execution reference. This metadata contains no

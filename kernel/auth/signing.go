@@ -2,8 +2,10 @@ package auth
 
 import (
 	"crypto/ed25519"
+	"crypto/hkdf"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -16,12 +18,44 @@ import (
 
 const SigningKeyEnvironment = "THE8020_SIGNING_KEY"
 
-// Signer holds the deployment's private key. Its file is never sandbox-mounted.
-// Provisioned values are standard base64-encoded 32-byte Ed25519 seeds.
+// Signer holds one master seed and purpose-separated signing keys. The master
+// is used only for derivation; its file is never sandbox-mounted.
 type Signer struct {
 	mu   sync.RWMutex
 	path string
-	key  ed25519.PrivateKey
+	signingKeys
+}
+
+type signingKeys struct {
+	master     []byte
+	session    ed25519.PrivateKey
+	routing    ed25519.PrivateKey
+	forwarding *tls.Certificate
+}
+
+func deriveSigningKey(master []byte, purpose string) (ed25519.PrivateKey, error) {
+	seed, err := hkdf.Key(sha256.New, master, nil, "the8020/"+purpose+"/ed25519/v1", ed25519.SeedSize)
+	if err != nil {
+		return nil, err
+	}
+	return ed25519.NewKeyFromSeed(seed), nil
+}
+
+func deriveSigningKeys(master []byte) (signingKeys, error) {
+	keys := signingKeys{master: master}
+	var err error
+	if keys.session, err = deriveSigningKey(master, "app-session-cookie"); err != nil {
+		return keys, err
+	}
+	if keys.routing, err = deriveSigningKey(master, "service-routing"); err != nil {
+		return keys, err
+	}
+	peer, err := deriveSigningKey(master, "node-forwarding")
+	if err != nil {
+		return keys, err
+	}
+	keys.forwarding, err = forwardingCertificate(peer)
+	return keys, err
 }
 
 // OpenSigner applies a startup environment override, otherwise loads the file,
@@ -61,22 +95,29 @@ func OpenSigner(path, override string) (*Signer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read signing key: %w", err)
 	}
-	signer.key, err = decodeSigningKey(string(value))
+	master, err := decodeMasterSeed(string(value))
+	if err == nil {
+		signer.signingKeys, err = deriveSigningKeys(master)
+	}
 	return signer, err
 }
 
-func decodeSigningKey(value string) (ed25519.PrivateKey, error) {
+func decodeMasterSeed(value string) ([]byte, error) {
 	seed, err := base64.StdEncoding.Strict().DecodeString(strings.TrimSpace(value))
 	if err != nil || len(seed) != ed25519.SeedSize {
-		return nil, errors.New("signing key must be a base64-encoded 32-byte Ed25519 seed")
+		return nil, errors.New("signing key must be a base64-encoded 32-byte master seed")
 	}
-	return ed25519.NewKeyFromSeed(seed), nil
+	return seed, nil
 }
 
 // Replace publishes a key only after its atomic file replacement succeeds.
 // Replacing the key invalidates signatures made by the previous key.
 func (s *Signer) Replace(value string) error {
-	key, err := decodeSigningKey(value)
+	master, err := decodeMasterSeed(value)
+	if err != nil {
+		return err
+	}
+	keys, err := deriveSigningKeys(master)
 	if err != nil {
 		return err
 	}
@@ -88,7 +129,7 @@ func (s *Signer) Replace(value string) error {
 	}
 	defer os.Remove(file.Name())
 	defer file.Close()
-	if _, err := file.WriteString(base64.StdEncoding.EncodeToString(key.Seed()) + "\n"); err != nil {
+	if _, err := file.WriteString(base64.StdEncoding.EncodeToString(master) + "\n"); err != nil {
 		return err
 	}
 	if err := file.Sync(); err != nil {
@@ -100,14 +141,15 @@ func (s *Signer) Replace(value string) error {
 	if err := os.Rename(file.Name(), s.path); err != nil {
 		return err
 	}
-	s.key = key
+	s.signingKeys = keys
 	return nil
 }
 
+// Fingerprint identifies the master through its derived authentication public key.
 func (s *Signer) Fingerprint() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return keyFingerprint(s.key)
+	return keyFingerprint(s.session)
 }
 
 func keyFingerprint(key ed25519.PrivateKey) string {
@@ -117,19 +159,42 @@ func keyFingerprint(key ed25519.PrivateKey) string {
 
 func (s *Signer) String() string { return "Signer(" + s.Fingerprint() + ")" }
 
-// Sign and Verify operate on arbitrary bytes, independently of the JWT profile.
-func (s *Signer) Sign(data []byte) string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return base64.RawURLEncoding.EncodeToString(ed25519.Sign(s.key, data))
+// appSigningKey requires a bounded application purpose, never a native one.
+// The caller holds s.mu. Application keys are derived on demand, without a cache.
+func (s *Signer) appSigningKey(purpose string) (ed25519.PrivateKey, error) {
+	if !strings.HasPrefix(purpose, "app-") || len(purpose) <= 4 || len(purpose) > 128 {
+		return nil, errors.New("signing purpose must start with app- and contain 5 to 128 lowercase ASCII letters, digits, or hyphens")
+	}
+	for _, ch := range purpose {
+		if (ch < 'a' || ch > 'z') && (ch < '0' || ch > '9') && ch != '-' {
+			return nil, errors.New("signing purpose must contain only lowercase ASCII letters, digits, or hyphens")
+		}
+	}
+	return deriveSigningKey(s.master, purpose)
 }
 
-func (s *Signer) Verify(data []byte, signature string) bool {
-	decoded, err := base64.RawURLEncoding.Strict().DecodeString(signature)
-	if err != nil || len(decoded) != ed25519.SignatureSize {
-		return false
-	}
+// Sign and Verify use the caller's expected application purpose, independently
+// of the JWT profile. A signature never chooses its own verification purpose.
+func (s *Signer) Sign(purpose string, data []byte) (string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return ed25519.Verify(s.key.Public().(ed25519.PublicKey), data, decoded)
+	key, err := s.appSigningKey(purpose)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(ed25519.Sign(key, data)), nil
+}
+
+func (s *Signer) Verify(purpose string, data []byte, signature string) (bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	key, err := s.appSigningKey(purpose)
+	if err != nil {
+		return false, err
+	}
+	decoded, err := base64.RawURLEncoding.Strict().DecodeString(signature)
+	if err != nil || len(decoded) != ed25519.SignatureSize {
+		return false, nil
+	}
+	return ed25519.Verify(key.Public().(ed25519.PublicKey), data, decoded), nil
 }

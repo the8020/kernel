@@ -39,7 +39,7 @@ import (
 	sandboxstop "the8020/kernel/cbus/commands/sandbox/stop"
 	serviceinspect "the8020/kernel/cbus/commands/service/inspect"
 	servicelist "the8020/kernel/cbus/commands/service/list"
-	serviceopenapi "the8020/kernel/cbus/commands/service/openapi"
+
 	servicerequest "the8020/kernel/cbus/commands/service/request"
 	servicevalidate "the8020/kernel/cbus/commands/service/validate"
 	workerinspect "the8020/kernel/cbus/commands/worker/inspect"
@@ -183,18 +183,13 @@ func (f fakeWebServices) Inspect(string) (webservices.Status, error) {
 
 func (f fakeWebServices) Validate(context.Context, string) webservices.ValidationResult {
 	f.record("service.validate")
-	return webservices.ValidationResult{ServiceID: "the8020/demo/http", Valid: true, OpenAPI: map[string]any{"openapi": "3.1.0"}}
+	return webservices.ValidationResult{ServiceID: "the8020/demo/http", Valid: true}
 }
 
 func (f fakeWebServices) Request(_ context.Context, _, _, _ string, options webservices.RequestOptions) (webservices.RequestResult, error) {
 	f.record("service.request")
 	f.requestOptions = options
 	return webservices.RequestResult{StatusCode: http.StatusOK, Headers: http.Header{"Content-Type": {"application/json"}}, Body: `{"ok":true}`}, nil
-}
-
-func (f fakeWebServices) OpenAPI(context.Context, string) (map[string]any, error) {
-	f.record("service.openapi")
-	return map[string]any{"openapi": "3.1.0"}, nil
 }
 
 type invalidWebServices struct{ fakeWebServices }
@@ -313,11 +308,11 @@ func TestEveryPhase1BHandlerSurvivesDegradedRuntime(t *testing.T) {
 		"runtime.eval": runtimeeval.New(serviceSet), "runtime.run": runtimerun.New(serviceSet),
 		"sandbox.delete": sandboxdelete.New(serviceSet), "sandbox.inspect": sandboxinspect.New(serviceSet), "sandbox.refresh": sandboxrefresh.New(serviceSet), "sandbox.kill": sandboxkill.New(serviceSet), "sandbox.list": sandboxlist.New(serviceSet), "sandbox.metrics": sandboxmetrics.New(serviceSet), "sandbox.stop": sandboxstop.New(serviceSet),
 		"sandbox.history.list": sandboxhistorylist.New(serviceSet), "sandbox.history.inspect": sandboxhistoryinspect.New(serviceSet),
-		"service.inspect": serviceinspect.New(serviceSet), "service.list": servicelist.New(serviceSet), "service.openapi": serviceopenapi.New(serviceSet), "service.request": servicerequest.New(serviceSet), "service.validate": servicevalidate.New(serviceSet),
+		"service.inspect": serviceinspect.New(serviceSet), "service.list": servicelist.New(serviceSet), "service.request": servicerequest.New(serviceSet), "service.validate": servicevalidate.New(serviceSet),
 		"worker.inspect": workerinspect.New(serviceSet), "worker.kill": workerkill.New(serviceSet), "worker.list": workerlist.New(serviceSet), "worker.stop": workerstop.New(serviceSet),
 	}
-	if len(handlers) != 32 {
-		t.Fatalf("degraded handler count = %d, want 32", len(handlers))
+	if len(handlers) != 31 {
+		t.Fatalf("degraded handler count = %d, want 31", len(handlers))
 	}
 	for id, handler := range handlers {
 		t.Run(id, func(t *testing.T) {
@@ -390,7 +385,7 @@ func TestEveryPhase1BHandlerSuccessfulPath(t *testing.T) {
 		"service.list":            {handler: servicelist.New(serviceSet), wantCall: "service.list"},
 		"service.inspect":         {handler: serviceinspect.New(serviceSet), wantCall: "service.inspect", arguments: map[string]any{"service_id": "the8020/demo/http"}},
 		"service.validate":        {handler: servicevalidate.New(serviceSet), wantCall: "service.validate", arguments: map[string]any{"service_id": "the8020/demo/http"}},
-		"service.openapi":         {handler: serviceopenapi.New(serviceSet), wantCall: "service.openapi", arguments: map[string]any{"service_id": "the8020/demo/http"}},
+
 		"service.request": {handler: servicerequest.New(serviceSet), wantCall: "service.request", arguments: map[string]any{
 			"service_id": "the8020/demo/http", "method": "POST", "relative_path": "/echo", "headers": `{"X-Test":"yes"}`, "json": `{"value":42}`, "timeout": int64(1000),
 		}},
@@ -412,8 +407,8 @@ func TestEveryPhase1BHandlerSuccessfulPath(t *testing.T) {
 		"pool.status":   {handler: poolstatus.New(serviceSet), wantCall: "pool.status"},
 		"pool.resize":   {handler: poolresize.New(serviceSet), wantCall: "pool.resize", arguments: map[string]any{"profile": "sha256:test", "count": int64(2)}},
 	}
-	if len(cases) != 37 {
-		t.Fatalf("successful Phase 1D handler count = %d, want 37", len(cases))
+	if len(cases) != 36 {
+		t.Fatalf("successful Phase 1D handler count = %d, want 36", len(cases))
 	}
 	for id, testCase := range cases {
 		t.Run(id, func(t *testing.T) {

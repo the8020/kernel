@@ -36,20 +36,16 @@ func TestTerminalCloseUsesExactAuthenticatedNodeWithoutWorker(t *testing.T) {
 		t.Fatalf("close calls=%d", calls.Load())
 	}
 	for _, item := range []struct {
-		body, auth string
-		status     int
+		body   string
+		status int
 	}{
-		{`{"node_id":"nod-aaaaaaaaaa","terminal_id":"tty-aaaaaaaaaa"}`, "", http.StatusUnauthorized},
-		{`{"node_id":"nod-bbbbbbbbbb","terminal_id":"tty-aaaaaaaaaa"}`, testSharedSecret, http.StatusBadRequest},
-		{`{"node_id":"nod-aaaaaaaaaa","terminal_id":"invalid"}`, testSharedSecret, http.StatusBadRequest},
-		{`{"node_id":"nod-aaaaaaaaaa","terminal_id":"tty-aaaaaaaaaa","extra":true}`, testSharedSecret, http.StatusBadRequest},
-		{strings.Repeat(" ", terminalControlBytes+1), testSharedSecret, http.StatusBadRequest},
+		{`{"node_id":"nod-bbbbbbbbbb","terminal_id":"tty-aaaaaaaaaa"}`, http.StatusBadRequest},
+		{`{"node_id":"nod-aaaaaaaaaa","terminal_id":"invalid"}`, http.StatusBadRequest},
+		{`{"node_id":"nod-aaaaaaaaaa","terminal_id":"tty-aaaaaaaaaa","extra":true}`, http.StatusBadRequest},
+		{strings.Repeat(" ", terminalControlBytes+1), http.StatusBadRequest},
 	} {
 		request, _ := http.NewRequest(http.MethodPost, server.URL+terminalClosePath, strings.NewReader(item.body))
-		if item.auth != "" {
-			request.Header.Set("Authorization", "Bearer "+item.auth)
-		}
-		response, err := http.DefaultClient.Do(request)
+		response, err := peer.http.Do(request)
 		if err != nil {
 			t.Fatal(err)
 		}

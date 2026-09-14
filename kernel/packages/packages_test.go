@@ -104,10 +104,11 @@ mode = "authenticated"
 	writeFile(t, filepath.Join(packageRoot, "services", "valid", "service.ts"), "export default {};\n")
 	writeFile(t, filepath.Join(packageRoot, "services", "broken", "service.toml"), "schema = 99\n")
 	writeFile(t, filepath.Join(packageRoot, "programs", "dashboard", "program.toml"), `schema = 1
-description = "Dashboard"
-uui = true
-default_layout = "layouts/main.json"
-discoverable = false
+description = 42
+uui = "invalid"
+default_layout = "../ignored.json"
+discoverable = []
+application_field = true
 `)
 	writeFile(t, filepath.Join(packageRoot, "programs", "dashboard", "program.ts"), "export default () => {};\n")
 	writeFile(t, filepath.Join(packageRoot, "programs", "dashboard", "layouts", "main.json"), "{}\n")
@@ -133,10 +134,10 @@ discoverable = false
 	if !item.Valid || item.Description != "Example package" || item.DocumentationURL != "https://example.test/docs" || item.License != "Apache-2.0" {
 		t.Fatalf("package metadata = %#v", item)
 	}
-	if len(item.Programs) != 2 || item.Programs[0].ID != "the8020/demo/broken" || item.Programs[0].Valid || item.Programs[1].ID != "the8020/demo/dashboard" || !item.Programs[1].Valid || item.Programs[1].Discoverable {
+	if len(item.Programs) != 2 || item.Programs[0].ID != "the8020/demo/broken" || item.Programs[0].Valid || item.Programs[1].ID != "the8020/demo/dashboard" || !item.Programs[1].Valid {
 		t.Fatalf("package programs = %#v", item.Programs)
 	}
-	if item.Programs[1].Entrypoint != "program.ts" || item.Programs[1].DefaultLayout != "layouts/main.json" || !item.Programs[1].UUI {
+	if item.Programs[1].Entrypoint != "program.ts" {
 		t.Fatalf("valid program metadata = %#v", item.Programs[1])
 	}
 	filePaths := make([]string, 0, len(item.Files))
@@ -214,7 +215,7 @@ func TestPackageInspectionRejectsManifestSymlinkEscapes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(escapedChildren.Programs) != 1 || escapedChildren.Programs[0].Valid || !strings.Contains(strings.Join(escapedChildren.Programs[0].ValidationErrors, " "), "outside") {
+	if len(escapedChildren.Programs) != 1 || escapedChildren.Programs[0].Valid || !strings.Contains(strings.Join(escapedChildren.Programs[0].ValidationErrors, " "), "symlink") {
 		t.Fatalf("escaped program manifest = %#v", escapedChildren.Programs)
 	}
 }

@@ -7,13 +7,12 @@ IMAGE_ROOT=${2:-"$SOURCE_ROOT/node/kernel/runtime/images/rootless"}
 MANIFEST=${3:-"$RUNTIME_SOURCE/versions.toml"}
 CONTAINERFILE=${4:-"$RUNTIME_SOURCE/image/Containerfile"}
 RUNTIME_DEFINITION=${5:-"$RUNTIME_SOURCE/image/deno.json"}
-RUNTIME_LOCK=${RUNTIME_DEFINITION%.json}.lock
 BUILD_SCRIPT="$(dirname "$CONTAINERFILE")/build.sh"
 WORK_ROOT=${6:-"$SOURCE_ROOT/node/kernel/runtime"}
 RUNSC_DESTINATION=${7:-"$SOURCE_ROOT/node/kernel/bin/runsc"}
 RUNSC_SOURCE=${8:-"$SOURCE_ROOT/.development/runtime-bin/runsc"}
 PROTOCOL_SOURCE="$RUNTIME_SOURCE/protocol/generated.ts"
-if [[ -z "$SOURCE_ROOT" || ! -f "$MANIFEST" || ! -f "$CONTAINERFILE" || ! -f "$BUILD_SCRIPT" || ! -f "$RUNTIME_DEFINITION" || ! -f "$RUNTIME_LOCK" || ! -f "$PROTOCOL_SOURCE" || -z "$WORK_ROOT" || -z "$RUNSC_DESTINATION" || ! -x "$RUNSC_SOURCE" ]]; then
+if [[ -z "$SOURCE_ROOT" || ! -f "$MANIFEST" || ! -f "$CONTAINERFILE" || ! -f "$BUILD_SCRIPT" || ! -f "$RUNTIME_DEFINITION" || ! -f "$PROTOCOL_SOURCE" || -z "$WORK_ROOT" || -z "$RUNSC_DESTINATION" || ! -x "$RUNSC_SOURCE" ]]; then
   echo "usage: defaults/config/runtime/install-portable.sh <source-root> [image-root] [versions-file] [Containerfile] [deno-config] [work-root] [runsc-destination] [built-runsc]" >&2
   exit 2
 fi
@@ -120,7 +119,7 @@ fi
 
 SOURCE_INPUT=$(
   "$RUNTIME_SOURCE/stage-service-runtime.sh" "$SOURCE_ROOT" --sources | xargs -0 sha256sum
-  sha256sum "$RUNTIME_SOURCE/deno/deno.json" "$RUNTIME_SOURCE/deno/deno.lock" "$CONTAINERFILE" "$BUILD_SCRIPT" "$RUNTIME_DEFINITION" "$RUNTIME_LOCK" "$MANIFEST" "$RUNTIME_SOURCE/install-portable.sh" "$RUNTIME_SOURCE/materialize-oci-rootfs.sh" "$RUNTIME_SOURCE/run-rootfs-build.sh" "$RUNTIME_SOURCE/stage-service-runtime.sh" "$RUNTIME_SOURCE/bundle-runtime.sh" "$PROTOCOL_SOURCE" "$RUNSC_DESTINATION"
+  sha256sum "$CONTAINERFILE" "$BUILD_SCRIPT" "$RUNTIME_DEFINITION" "$MANIFEST" "$RUNTIME_SOURCE/install-portable.sh" "$RUNTIME_SOURCE/materialize-oci-rootfs.sh" "$RUNTIME_SOURCE/run-rootfs-build.sh" "$RUNTIME_SOURCE/stage-service-runtime.sh" "$PROTOCOL_SOURCE" "$RUNSC_DESTINATION"
   printf '%s\n' "$BASE_MANIFEST" "$ARCHITECTURE"
 )
 SOURCE_HASH="sha256:$(printf '%s' "$SOURCE_INPUT" | sha256sum | awk '{print $1}')"
@@ -145,27 +144,15 @@ echo "runtime image [1/4]: materializing pinned OCI base" >&2
 install -m 0555 "$BUILD_SCRIPT" "$ROOTFS_STAGE/the8020-image-build.sh"
 install -d -m 0755 "$ROOTFS_STAGE/artifacts" "$ROOTFS_STAGE/runtime-cache" "$ROOTFS_STAGE/tmp/runtime"
 "$RUNTIME_SOURCE/stage-service-runtime.sh" "$SOURCE_ROOT" "$ROOTFS_STAGE/opt/runtime"
-install -m 0555 "$RUNTIME_SOURCE/bundle-runtime.sh" "$ROOTFS_STAGE/opt/runtime/bundle-runtime.sh"
 install -m 0444 "$RUNTIME_DEFINITION" "$ROOTFS_STAGE/opt/runtime/deno.json"
-install -m 0444 "$RUNTIME_LOCK" "$ROOTFS_STAGE/opt/runtime/deno.lock"
 install -m 0444 "$PROTOCOL_SOURCE" "$ROOTFS_STAGE/opt/runtime/protocol.ts"
-echo "runtime image [2/4]: installing declared packages and bundling generic modules" >&2
-if [[ "$SMOKE_RUNTIME" == outer-container-build ]]; then
-  "$RUNTIME_SOURCE/run-rootfs-build.sh" "$SOURCE_ROOT" "$RUNTIME_ROOT" "$ROOTFS_STAGE" /bin/bash /the8020-image-build.sh
-  # BuildKit supplies /proc, but its unprivileged chroot cannot mount it.
-  # Run the image's pinned compiler in the enclosing build container instead.
-  TMPDIR="$ROOTFS_STAGE/tmp" DENO_NO_UPDATE_CHECK=1 DENO_NO_PROMPT=1 \
-    bash "$RUNTIME_SOURCE/bundle-runtime.sh" "$ROOTFS_STAGE/opt/runtime/http-source" \
-      "$ROOTFS_STAGE/opt/runtime/http" "$ROOTFS_STAGE/usr/bin/deno"
-else
-  "$RUNTIME_SOURCE/run-rootfs-build.sh" "$SOURCE_ROOT" "$RUNTIME_ROOT" "$ROOTFS_STAGE" /bin/sh -c \
-    '/bin/bash /the8020-image-build.sh && /bin/bash /opt/runtime/bundle-runtime.sh /opt/runtime/http-source /opt/runtime/http'
-fi
-rm -rf -- "$ROOTFS_STAGE/the8020-image-build.sh" "$ROOTFS_STAGE/opt/runtime/bundle-runtime.sh" "$ROOTFS_STAGE/opt/runtime/http-source"
+echo "runtime image [2/4]: installing declared packages" >&2
+"$RUNTIME_SOURCE/run-rootfs-build.sh" "$SOURCE_ROOT" "$RUNTIME_ROOT" "$ROOTFS_STAGE" /bin/bash /the8020-image-build.sh
+rm -- "$ROOTFS_STAGE/the8020-image-build.sh"
 
 SMOKE_STAGE=""
 if [[ "$SMOKE_RUNTIME" == outer-container-build ]]; then
-  echo "runtime image [3/4]: smoke-testing bundled modules inside the outer container build sandbox" >&2
+  echo "runtime image [3/4]: smoke-testing generic modules inside the outer container build sandbox" >&2
   chroot --userspec=1993:1993 "$ROOTFS_STAGE" /usr/bin/env \
     PATH=/usr/bin \
     HOME=/tmp \
@@ -173,7 +160,7 @@ if [[ "$SMOKE_RUNTIME" == outer-container-build ]]; then
     DENO_NO_UPDATE_CHECK=1 \
     DENO_NO_PROMPT=1 \
     /usr/bin/deno eval --config=/opt/runtime/deno.json --cached-only \
-    'await import("@the8020/context"); await import("@the8020/http"); await import("@the8020/kernel"); await import("kysely"); console.log("the8020-outer-build-smoke")'
+    'await import("@the8020/context"); await import("@the8020/kernel"); console.log("the8020-outer-build-smoke")'
 else
   SMOKE_STAGE=$(mktemp -d "$TEMP_ROOT/rootless-smoke.XXXXXX")
   echo "runtime image [3/4]: smoke-testing portable gVisor launch" >&2
@@ -188,7 +175,7 @@ else
   "process": {
     "terminal": false,
     "user": {"uid": 1993, "gid": 1993},
-    "args": ["/usr/bin/deno", "eval", "--config=/opt/runtime/deno.json", "--cached-only", "await import(\"@the8020/context\"); await import(\"@the8020/http\"); await import(\"@the8020/kernel\"); await import(\"kysely\"); console.log(\"the8020-rootless-smoke\")"],
+    "args": ["/usr/bin/deno", "eval", "--config=/opt/runtime/deno.json", "--cached-only", "await import(\"@the8020/context\"); await import(\"@the8020/kernel\"); console.log(\"the8020-rootless-smoke\")"],
     "env": ["PATH=/usr/bin", "HOME=/tmp", "DENO_DIR=/tmp/deno-cache", "DENO_NO_UPDATE_CHECK=1", "DENO_NO_PROMPT=1"],
     "cwd": "/tmp",
     "capabilities": {"bounding": [], "effective": [], "inheritable": [], "permitted": [], "ambient": []},

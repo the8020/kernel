@@ -559,17 +559,6 @@ export class RuntimeWorker {
     }
   }
 
-  async serviceOpenAPI(): Promise<Record<string, unknown>> {
-    const message = await this.#request({ type: "service_openapi" });
-    const payload = (message as WorkerMessage).payload;
-    if (
-      payload === null || typeof payload !== "object" || Array.isArray(payload)
-    ) {
-      throw new TypeError("service OpenAPI response must be an object");
-    }
-    return payload as Record<string, unknown>;
-  }
-
   async openServiceWebSocket(
     request: Request,
     metadata: ServiceRequestMetadata,

@@ -3,9 +3,6 @@ export interface ProgramSummary {
   package_id: string;
   name: string;
   commit: string;
-  description?: string;
-  discoverable: boolean;
-  uui: boolean;
   entrypoint: string;
   entrypoint_url: string;
 }

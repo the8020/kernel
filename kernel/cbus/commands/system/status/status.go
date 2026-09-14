@@ -36,6 +36,7 @@ func New(serviceSet *services.Services) core.Handler {
 			result["runtime_ready"] = runtimeServices.Failure == ""
 			result["runtime_mode"] = runtimeServices.Isolation.SelectedMode
 			result["runtime_failure"] = runtimeServices.Failure
+			result["runtime_application_failure"] = runtimeServices.ApplicationFailure
 		}
 		if serviceSet.Database != nil {
 			database := serviceSet.Database.Status()

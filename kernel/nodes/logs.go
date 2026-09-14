@@ -60,12 +60,11 @@ func (m *Manager) QueryLogs(ctx context.Context, query records.Query) (records.P
 	if err != nil || len(body) > maximumLogQueryBytes {
 		return records.Page{}, errors.New("log query exceeds its request limit")
 	}
-	target := "http://" + net.JoinHostPort(node.RecipientAddress, strconv.Itoa(node.RecipientPort)) + logQueryPath
+	target := "https://" + net.JoinHostPort(node.RecipientAddress, strconv.Itoa(node.RecipientPort)) + logQueryPath
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
 	if err != nil {
 		return records.Page{}, err
 	}
-	request.Header.Set("Authorization", "Bearer "+m.secret)
 	request.Header.Set("Content-Type", "application/json")
 	response, err := m.http.Do(request)
 	if err != nil {

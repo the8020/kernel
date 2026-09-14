@@ -11,6 +11,9 @@ Parent DOX: [kernel/kernel/cbus/commands/system DOX](../AGENTS.md).
   private key material. Replacement input uses the normal secure-input path.
 - Replacement takes effect immediately and persists. A non-empty startup
   `THE8020_SIGNING_KEY` overrides the file on the next boot.
+- Input is one random 32-byte master seed in standard base64. Replacing it
+  replaces every derived signing key; status identifies the derived
+  authentication public key by its SHA-256 fingerprint. The master never signs.
 
 # Verification
 

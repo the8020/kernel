@@ -58,7 +58,7 @@ import (
 	secretset "the8020/kernel/cbus/commands/secret/set"
 	serviceinspect "the8020/kernel/cbus/commands/service/inspect"
 	servicelist "the8020/kernel/cbus/commands/service/list"
-	serviceopenapi "the8020/kernel/cbus/commands/service/openapi"
+
 	servicerefresh "the8020/kernel/cbus/commands/service/refresh"
 	servicerequest "the8020/kernel/cbus/commands/service/request"
 	servicevalidate "the8020/kernel/cbus/commands/service/validate"
@@ -100,7 +100,7 @@ func New(serviceSet *services.Services) (*Dispatcher, error) {
 		"package.repository.remote": packagerepositoryremote.New(serviceSet), "package.repository.status": packagerepositorystatus.New(serviceSet),
 		"package.source.inspect": packagesourceinspect.New(serviceSet), "package.synchronize": packagesynchronize.New(serviceSet), "package.version.list": packageversionlist.New(serviceSet),
 		"secret.get": secretget.New(serviceSet), "secret.list": secretlist.New(serviceSet), "secret.set": secretset.New(serviceSet),
-		"service.inspect": serviceinspect.New(serviceSet), "service.list": servicelist.New(serviceSet), "service.openapi": serviceopenapi.New(serviceSet), "service.refresh": servicerefresh.New(serviceSet),
+		"service.inspect": serviceinspect.New(serviceSet), "service.list": servicelist.New(serviceSet), "service.refresh": servicerefresh.New(serviceSet),
 		"service.request":  servicerequest.New(serviceSet),
 		"service.validate": servicevalidate.New(serviceSet),
 	}}, nil

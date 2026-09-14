@@ -36,7 +36,6 @@ export interface ServiceSpecification {
   entrypoint: string;
   enabled: boolean;
   description: string;
-  openapi: { title: string; version: string; description: string };
   access: {
     mode: "public" | "authenticated";
     unauthenticated: {

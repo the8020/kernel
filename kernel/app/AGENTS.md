@@ -18,6 +18,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 # Local Contracts
 
+- HTTP Basic uses the same users authentication program as native password
+  transports, with request cancellation and secure inputs. Composition supplies
+  this verifier to the shared service boundary; no password policy lives here.
+
 - `sandbox_access.go` connects authenticated native sandbox ingress to the
   ordinary users authenticate program and service router. Allowance issuance
   executes as the verified sandbox owner; service requests require a signed
@@ -33,37 +37,32 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   fixed package/user/node/database layout, validates Unix permissions, and
   records node identity and node-local settings in `kernel.toml`; it never
   installs packages, tools, or images. `--init-only` exits after node creation.
-- Startup order is load the fixed layout → lock → private signing key → node
-  settings → asynchronous logd/producer and node logging applier → built-in
-  command registry/socket → asynchronous database connection and internal
-  catalog initialization → database-backed global settings, secrets, topology,
-  packages and services → development manager → network → authenticated console
-  route → SSH listener → appliers → runtime-image record validation and runtime
-  diagnostics/composition → initial terminal sandbox-history cleanup →
-  configured fast inherited-sandbox destruction or explicit reconciliation →
-  service-record cleanup → initialize/validate the database catalog → compose
-  the non-durable job runtime, shared-package program runner, and table
-  evaluator → recover a pending schema deployment or fully synchronize an
-  uninitialized database → index package commands, events, and hooks → run one
-  ordinary service-index hook job and publish package fragments plus
-  active-runtime-only maintenance → heartbeat/OOM and hourly history-retention
-  monitoring.
-- The command socket publishes `runtime initialization is in progress` until one
-  complete runtime dependency snapshot is ready; runtime commands fail safely
-  during that interval while `kernel.*` recovery and lifecycle administration
-  remains available.
-- Database connection, catalog, or first full-table synchronization failure is
-  logged and cached in status. It never prevents the administrative socket or
-  built-in `kernel.config.*` and package recovery commands from running, but it
-  prevents package commands, ordinary services, and UUI from starting.
+- Startup brings up the command socket, database pool, runtime diagnostics,
+  sandbox/Worker owners, inherited-workload cleanup, ordinary jobs and native
+  eval/run before running application initialization. Publish an immutable
+  infrastructure snapshot, then invoke db catalog bootstrap and restricted table
+  evaluation, compose package stores/programs/hooks, recover pending
+  publication, and start application services, listeners, and monitoring.
+- Infrastructure `Failure` gates generic runtime operations.
+  `ApplicationFailure` records pending or failed application initialization
+  while native eval/run, SQL, signing, and recovery remain available.
+  Unavailable application providers retain their normal explicit unavailable
+  errors. Final publication replaces the infrastructure snapshot; it never
+  mutates an already-published struct.
+- Attach the schema executor only after the job runtime and database callback
+  exist. Schema jobs have ordinary SQL access; table evaluation remains a
+  separate restricted Worker. Catalog failures gate the service plane and remain
+  visible in database and runtime status without shutting down native execution.
 - Before database startup, load or generate the signing key under
   `node/kernel/keys/signing.key`. Publish its primitive directly to the existing
   command bus; status and replacement remain available during database failure.
-  Composition selects `/p/the8020/users/mod.ts` for protected target-Worker
-  hooks. Native SSH/browser-console adapters run `the8020/users/authenticate`
-  through the ordinary system-user program/job path, with normal mounts and
-  secure inputs. No auth-specific service, runtime, registry, or maintenance
-  timer exists.
+  `THE8020_SIGNING_KEY` provisions and persists the shared cluster seed. Supply
+  the same live signer to node forwarding; its native derived peer key requires
+  no secret-table initialization or random-secret row. Composition selects
+  `/p/the8020/users/mod.ts` for protected target-Worker hooks. Native
+  SSH/browser-console adapters run `the8020/users/authenticate` through the
+  ordinary system-user program/job path, with normal mounts and secure inputs.
+  No auth-specific service, runtime, registry, or maintenance timer exists.
 - A fresh database synchronizes every installed package table in bounded
   evaluator batches and becomes `READY` only after all schemas and package
   activation hooks succeed. A normal boot trusts the initialized marker and does
@@ -317,6 +316,11 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   instructions, and cleanup; `runtime_test.go` covers startup failure
   propagation, healthy-sandbox selection, ordered cleanup stages, and concurrent
   controller cleanup.
+- `TestDatabaseFailureDoesNotBlockControlPlane` also verifies that actual kernel
+  startup persists the environment-provisioned signing key before database
+  availability. Run it with
+  `go test ./kernel/app -run
+  '^TestDatabaseFailureDoesNotBlockControlPlane$'`.
 - `runtime_test.go` also verifies shared-cache retention across service/job
   profiles and recreation while preserving private bounded SQLite storage.
 

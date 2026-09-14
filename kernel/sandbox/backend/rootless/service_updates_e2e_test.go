@@ -56,20 +56,27 @@ func verifyServiceSourceUpdate(t *testing.T, client *supervisor.Client, job, ser
 	write("job.ts", `import { value } from "./direct.ts"; import { gate, release } from "./gate.ts";
 let calls = 0; export default async () => { calls++; await gate; return value + ":" + calls; };
 export const workerFunctions = { "fixture.release": () => { release(); return true; } };`)
-	write("service.ts", `import { defineService } from "@the8020/http";
-import { value } from "./direct.ts"; import { gate, release } from "./gate.ts";
+	write("service.ts", `import { value } from "./direct.ts"; import { gate, release } from "./gate.ts";
 export const workerFunctions = { "fixture.release": () => { release(); return true; } };
-export default defineService()
- .get("/", {}, () => new Response(value))
- .get("/late", {}, async () => new Response((await import("./late.ts")).value))
- .get("/hold", {}, () => new Response(new ReadableStream({ start(controller) {
+export default {
+ async fetch(request) {
+  const path = new URL(request.url).pathname;
+  if (path === "/late") return new Response((await import("./late.ts")).value);
+  if (path === "/hold") return new Response(new ReadableStream({ start(controller) {
    controller.enqueue(new TextEncoder().encode(value));
    void gate.then(() => { controller.enqueue(new TextEncoder().encode(value)); controller.close(); });
- } })))
- .websocket("/socket", async ({ socket }) => { socket.send(value); while (true) {
+  } }));
+  return new Response(value);
+ },
+ connectWebSocket(request, context, socket) {
+  void (async () => { socket.send(value); while (true) {
    const event = await socket.receive(); if (event.type === "close") return;
    socket.send(value + ":" + event.data);
- } });`)
+  } })().catch(() => socket.close(1011, "handler failed"));
+  return new Response(null, { status: 204, headers: { "the8020-internal-websocket-accepted": "true" } });
+ }
+};`)
+
 	const sourceRoot = "/workspace/packages/acme/updates/"
 	start := func(spec model.SandboxSpec, pool string, generation uint64) string {
 		t.Helper()

@@ -465,16 +465,16 @@ func copyRepository(source, destination string) error {
 }
 
 func (s *Store) repositoryAuthentication(packageID, remoteURL string) ([]string, error) {
-	return s.repositoryAuthenticationWithCredential(packageID, remoteURL, "")
+	return s.repositoryAuthenticationWithCredential(packageID, remoteURL, "", "")
 }
 
-func (s *Store) repositoryAuthenticationWithCredential(packageID, remoteURL, transientToken string) ([]string, error) {
+func (s *Store) repositoryAuthenticationWithCredential(packageID, remoteURL, transientToken, username string) ([]string, error) {
 	parsed, err := url.Parse(remoteURL)
 	if err != nil || parsed.User != nil {
 		return nil, errors.New("Git remote URL must not contain credentials")
 	}
-	if transientToken != "" {
-		return gitAuthorizationEnvironment(parsed, transientToken)
+	if transientToken != "" || username != "" {
+		return gitAuthorizationEnvironment(parsed, transientToken, username)
 	}
 	entry, exists, err := s.index.Get(context.Background(), packageID)
 	if err == nil && !exists {
@@ -493,14 +493,20 @@ func (s *Store) repositoryAuthenticationWithCredential(packageID, remoteURL, tra
 	if err != nil {
 		return nil, fmt.Errorf("resolve package Git secret %q: %w", entry.Secret, err)
 	}
-	return gitAuthorizationEnvironment(parsed, value)
+	return gitAuthorizationEnvironment(parsed, value, "")
 }
 
-func gitAuthorizationEnvironment(parsed *url.URL, token string) ([]string, error) {
+func gitAuthorizationEnvironment(parsed *url.URL, token, username string) ([]string, error) {
 	if parsed.Scheme != "https" || parsed.Host == "" {
 		return nil, errors.New("a Git credential requires an HTTPS remote without embedded credentials")
 	}
-	header := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
+	if username == "" {
+		username = "x-access-token"
+	}
+	if token == "" || strings.ContainsAny(username, ":\r\n\x00") {
+		return nil, errors.New("Git authentication requires a password/token and a username without colons or control characters")
+	}
+	header := base64.StdEncoding.EncodeToString([]byte(username + ":" + token))
 	scope := parsed.Scheme + "://" + parsed.Host + "/"
 	return []string{
 		"GIT_CONFIG_COUNT=1",
@@ -509,11 +515,14 @@ func gitAuthorizationEnvironment(parsed *url.URL, token string) ([]string, error
 	}, nil
 }
 
-func redactGitCredential(message, token string) string {
+func redactGitCredential(message, token, username string) string {
 	if token == "" {
 		return message
 	}
-	encoded := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
+	if username == "" {
+		username = "x-access-token"
+	}
+	encoded := base64.StdEncoding.EncodeToString([]byte(username + ":" + token))
 	message = strings.ReplaceAll(message, token, "[secure input]")
 	return strings.ReplaceAll(message, encoded, "[secure input]")
 }

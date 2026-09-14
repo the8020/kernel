@@ -13,6 +13,14 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 
 # Local Contracts
 
+- Services export `fetch(request, context)` or default-export an object with
+  `fetch` and optional `connectWebSocket(request, context, socket)`. The latter
+  receives only signal, trusted metadata, logging, and an abstract connection.
+  It accepts with status 204 and `the8020-internal-websocket-accepted: true`;
+  other responses reject the upgrade. The runtime strips the private marker. No
+  framework marker, schema, document method, or type checker is required.
+  Startup never reads application documentation, including during validation.
+
 - Entrypoints load only here; Worker names include declared origin and Worker
   identity. RuntimeWorker validates canonical node, sandbox and Worker IDs
   before allocating the Worker or MessagePort.

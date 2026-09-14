@@ -28,6 +28,7 @@ import (
 	statuscommand "the8020/kernel/cbus/commands/system/status"
 	"the8020/kernel/cbus/core"
 	"the8020/kernel/database"
+	"the8020/kernel/database/schematest"
 	"the8020/kernel/instance"
 	mainnetwork "the8020/kernel/network"
 	"the8020/kernel/services"
@@ -118,7 +119,10 @@ func startKernel(t *testing.T, root string, startupPort int) <-chan error {
 		defer close(errorsChannel)
 		errorsChannel <- Run(ctx, Config{
 			Root: root, Startup: map[string]string{"network.main_port": stringInt(startupPort), "network.ssh_port": stringInt(sshPort)},
-			Definitions: definitions(), Register: register, BuildID: "integration-test", initialize: initializeIntegrationRuntime, logdExecutable: appTestLogd,
+			Definitions: definitions(), Register: register, BuildID: "integration-test", initialize: func(ctx context.Context, settings *settings.Manager, db *database.Manager, services *services.Services) (*services.RuntimeServices, runtimeCleanupFunc) {
+				schematest.Attach(t, db)
+				return initializeIntegrationRuntime(ctx, settings, db, services)
+			}, logdExecutable: appTestLogd,
 		})
 	}()
 	paths := instance.NewPaths(root)

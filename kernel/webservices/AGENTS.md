@@ -60,20 +60,27 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Public dispatch never reads or verifies platform credentials, evaluates an
   account/session, or supplies an authentication hook. It uses the configured
   execution principal and preserves credentials as ordinary unverified request
-  data. Authenticated dispatch uses `kernel/auth` JWT verification before cold
-  reconciliation, capacity, persistent binding, or Worker dispatch. An explicit
-  `the8020-authorization` header wins over `the8020_auth`, including when
-  invalid. Rejection uses the service's existing unauthenticated response and
-  clears a rejected selected browser cookie. Client-forged internal headers are
-  stripped.
+  data. Authenticated dispatch accepts platform tokens or HTTP Basic before cold
+  reconciliation, capacity, persistent binding, or Worker dispatch. Explicit
+  `the8020-authorization` takes precedence over Basic, then `the8020_auth`,
+  including when invalid. Basic uses the composition-supplied users password
+  verifier; malformed/duplicate credentials fail closed. Basic failures return
+  401 with `WWW-Authenticate: Basic`; missing credentials retain declared
+  reject/redirect behavior, with a Basic challenge on 401. Rejected selected
+  cookies are cleared. Client-forged internal headers are stripped.
+- Accepted Basic credentials carry the same completed package approval as native
+  transports. Strip the password header before application dispatch; preserve it
+  only until authenticated node forwarding reaches its destination. No session
+  or token is created for Basic requests.
 - HTTP and WebSocket request contexts are fresh `ctx-` IDs. Public internal
   context and parent-context headers are stripped even with mixed casing; only
   explicit trusted kernel-call forwarding carries a parent execution context.
-- Successful verification carries claims, the composition-selected package hook,
-  and the existing unauthenticated response policy as trusted request metadata.
-  It never marks application authentication complete. The target Worker approves
-  user/session policy before handler/upgrade; kernel routing and callbacks
-  retain the signed principal. Go never queries the users package tables.
+- Successful token verification carries claims, the composition-selected package
+  hook, and the existing unauthenticated response policy as trusted request
+  metadata. It never marks application authentication complete. The target
+  Worker approves user/session policy before handler/upgrade; kernel routing and
+  callbacks retain the signed principal. Go never queries the users package
+  tables.
 - In-process `RequestOptions.AuthenticatedUser` carries a principal already
   approved by a native transport's package authentication. A private Go context
   marks this request; the target Worker checks principal consistency and skips
@@ -180,9 +187,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   one short publication lock and reports removed IDs for retirement. Hook or
   specification failure leaves the old fragment untouched. The owning reindex
   path handles boot, activation, removal, edits, and revision convergence.
-- Entrypoint/OpenAPI validation uses an isolated temporary pool and removes its
-  terminal record after validation; reconciliation garbage-collects stopped
-  validation records left by earlier kernels.
+- Entrypoint startup validation uses an isolated temporary pool and removes its
+  terminal record after validation. Documentation export belongs to Deno
+  services; reconciliation garbage-collects stopped validation records left by
+  earlier kernels.
 - Service status is one logical row per service. It reports all live current or
   draining-version sandboxes and Workers by unique identity, counts distinct
   versions, and includes each sandbox's version. Request metrics belong to the
@@ -211,8 +219,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 # Verification
 
-- The authenticated-boundary test covers declared redirects before HTTP GET,
-  POST, and WebSocket dispatch with missing or invalid credentials.
+- The authenticated-boundary test covers token precedence, Basic challenges,
+  malformed/wrong passwords, verified principals, password stripping, unchanged
+  public behavior, and declared HTTP/WebSocket redirects before dispatch.
 - `webservices_test.go` and `persistent_routes_test.go` cover canonical and
   authenticated routing, streaming, generic HTTP/WebSocket persistence, exact
   Worker reuse, signed exact-target routes, supervisor expiry, node forwarding,

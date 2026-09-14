@@ -1,6 +1,8 @@
 package webservices
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -27,7 +29,8 @@ func TestJWTGateRejectsBeforeColdExecutionAndUsesHeaderPrecedence(t *testing.T) 
 				t.Fatal(err)
 			}
 			manager.authentication = signer
-			claims := auth.TokenClaims{"iss": auth.TokenIssuer, "aud": auth.TokenAudience, "sub": "user:alice", "sid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "ver": 1, "iat": time.Now().Add(-time.Minute).Unix(), "exp": time.Now().Add(time.Minute).Unix()}
+			// Session representation is opaque here and reaches the package hook.
+			claims := auth.TokenClaims{"iss": auth.TokenIssuer, "aud": auth.TokenAudience, "sub": "user:alice", "session": map[string]any{"handle": "next-format"}, "iat": time.Now().Add(-time.Minute).Unix(), "exp": time.Now().Add(time.Minute).Unix()}
 			valid, err := signer.SignToken(claims)
 			if err != nil {
 				t.Fatal(err)
@@ -93,6 +96,14 @@ func TestJWTGateRejectsBeforeColdExecutionAndUsesHeaderPrecedence(t *testing.T) 
 			}
 			if forwarded.header.Get("the8020-internal-username") != "alice" || forwarded.header.Get("the8020-internal-authentication") == "" {
 				t.Fatal("verified identity lost before Worker")
+			}
+			encodedMetadata, err := base64.StdEncoding.DecodeString(forwarded.header.Get("the8020-internal-authentication"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var metadata authenticationSetup
+			if err := json.Unmarshal(encodedMetadata, &metadata); err != nil || metadata.Claims["session"].(map[string]any)["handle"] != "next-format" {
+				t.Fatalf("opaque session claims lost before package authentication: %v", err)
 			}
 			if !websocket {
 				result, err := manager.Request(t.Context(), serviceID, http.MethodGet, "/", RequestOptions{LocalAuthentication: true, Headers: http.Header{http.CanonicalHeaderKey(auth.TokenHeader): {"Bearer " + local}}})

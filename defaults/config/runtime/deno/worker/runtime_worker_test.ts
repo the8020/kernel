@@ -572,6 +572,31 @@ Deno.test("jobs and services both have unrestricted outbound network access", as
   }
 });
 
+Deno.test("plain service objects start and serve without inspecting documentation", async () => {
+  const workerMetadata = metadata(
+    "service",
+    new URL("./testdata/service_object.ts", import.meta.url).href,
+  );
+  workerMetadata.service = {
+    serviceId: "acme/example/plain",
+    generation: 1,
+    canonicalBasePath: "/acme/example/plain",
+  };
+  const worker = new RuntimeWorker({
+    metadata: workerMetadata,
+    permissions: { read: [new URL("./testdata/", import.meta.url).pathname] },
+  });
+  try {
+    await worker.ready;
+    const response = await worker.dispatchService(
+      new Request("http://service/plain"),
+    );
+    assertEquals(await response.json(), { path: "/plain" });
+  } finally {
+    worker.kill();
+  }
+});
+
 Deno.test("stateless service Worker bridges WebSocket routes without buffering messages", async () => {
   const workerMetadata = metadata(
     "service",

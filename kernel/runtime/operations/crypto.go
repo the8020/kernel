@@ -27,6 +27,7 @@ func (d *Dispatcher) crypto(operation string, input map[string]any) (any, error)
 		}
 		return claims, nil
 	case "crypto.sign", "crypto.verify":
+		purpose, _ := input["purpose"].(string)
 		encoded, ok := input["data"].(string)
 		if !ok {
 			return nil, errors.New("data must be base64")
@@ -36,10 +37,12 @@ func (d *Dispatcher) crypto(operation string, input map[string]any) (any, error)
 			return nil, errors.New("data must be base64")
 		}
 		if operation == "crypto.sign" {
-			return map[string]any{"signature": signer.Sign(data)}, nil
+			signature, err := signer.Sign(purpose, data)
+			return map[string]any{"signature": signature}, err
 		}
 		signature, _ := input["signature"].(string)
-		return map[string]any{"valid": signer.Verify(data, signature)}, nil
+		valid, err := signer.Verify(purpose, data, signature)
+		return map[string]any{"valid": valid}, err
 	default:
 		return nil, errors.New("unknown crypto operation")
 	}

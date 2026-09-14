@@ -38,18 +38,19 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   behavior, browser assets, and authored TypeScript table definitions; future
   phases add schema versions, broader identities/roles, workflow, connections,
   certificates, and other application behavior.
-- Application query behavior, broader remote administration, TLS termination,
-  checkpoint/restore, and the final virtual filesystem remain outside the
-  current kernel scope; the kernel owns physical database synchronization while
-  packages remain the authored schema source. Initial application-server
-  topology, capacity advertisement, allocation-index partitioning, and service
-  forwarding are kernel-owned.
+- Application query behavior, broader remote administration, public TLS
+  termination, checkpoint/restore, and the final virtual filesystem remain
+  outside the current kernel scope; db owns schema interpretation and
+  synchronization while the kernel supplies bounded SQL and transaction
+  authority. Initial application-server topology, capacity advertisement,
+  allocation-index partitioning, and service forwarding are kernel-owned.
 
 # Local Contracts
 
 - Every Go package has one responsibility and a small public API for a necessary
-  shared foundation. New concepts must cooperate with existing contracts and
-  serve more than their first application.
+  shared foundation. New concepts must address a demonstrated gap in node
+  authority or generic execution and fit existing contracts; do not invent
+  additional callers or extension points to justify them.
 - Kernel hot and periodic paths must be proportional to current work, never to
   total retained history or filesystem size. Use direct durable state, explicit
   events, bounded diagnostics, and narrow locks; reject polling scans,
@@ -70,12 +71,14 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   and ordinary TypeScript programs referenced by full
   `namespace/package/program` IDs in `program`, including other packages; the
   in-memory CBus catalog is rebuilt atomically from active package commits.
-- Native package identity and program/hook/event/command discovery remain in the
-  kernel. Deno services owns service declarations, defaults, overrides,
-  versions, storage, and administration. Go validates resolved runtime specs and
-  atomically publishes one fragment per owning package in memory; request paths
-  never read service TOML or application tables. `kernel.reindex` is the common
-  boot, activation, edit, and cross-node publication path.
+- Native package identity and executable program/hook/event/command discovery
+  remain in the kernel. Program TOML supplies only `entrypoint`; application
+  metadata and command argument helpers belong to the packages application. Deno
+  services owns service declarations, defaults, overrides, versions, storage,
+  and administration. Go validates resolved runtime specs and atomically
+  publishes one fragment per owning package in memory; request paths never read
+  service TOML or application tables. `kernel.reindex` is the common boot,
+  activation, edit, and cross-node publication path.
 - Setting TOML is authoritative for keys, types, node/global storage, defaults,
   environment inputs, validation, and runtime/restart metadata.
 - One sandbox is one gVisor sandbox with exactly one workload type—service or
@@ -130,12 +133,13 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 - The main HTTP listener binds all IPv4 interfaces so container and host port
   publication can reach application traffic. Administrative command transport,
   runtime callbacks, and other explicitly internal listeners remain private.
-- Public services completely ignore platform tokens and execute as their
-  configured user. They preserve raw cookies/headers for explicit package
-  login/logout. Authenticated services verify the platform JWT in Go before
-  request-triggered capacity or dispatch, then run users-package account/session
-  policy inside the existing target Worker before HTTP handling or WebSocket
-  acceptance.
+- Public services preserve raw credentials and execute as their configured user.
+  All authenticated services accept platform tokens or standard HTTP Basic
+  username/password authentication. Tokens use native signature checks followed
+  by users-package account/session policy in the target Worker. Basic uses the
+  existing users authentication program with secure password input before
+  dispatch; handlers receive the verified principal without the password. No new
+  authentication service or execution mechanism is needed.
 - The kernel owns cryptographic integrity and private deployment key storage;
   the users Deno package owns passwords, sessions, revocation, login/logout, and
   application cookies. Context getters are synchronous and never authenticate.
@@ -159,13 +163,15 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   open and retained-idle connections are runtime-mutable node policy, defaulting
   to 32 and 8. SQLite uses WAL in its private local database directory;
   PostgreSQL remains the shared multi-node backend.
-- The built-in `_8020_*` catalog, readiness state, physical introspection,
-  additive synchronization, deployment locking/recovery, bounded query bridge,
-  and execution-scoped transactions are kernel-owned. A fresh database loads
-  every installed package table before services start; normal boots do not
-  rescan definitions. Package changes synchronize only affected definitions
-  before source activation. Ordinary removals retire data until an explicit
-  confirmed trim.
+- `the8020/db` owns logical types/codecs, schema SQL, physical comparison,
+  conservative synchronization, and `_8020_*` schema/catalog metadata. The
+  kernel keeps credentials, pools, bounded SQL, opaque execution-scoped
+  transactions, confined source evaluation, and native activation/publication
+  locks. Go passes descriptors opaquely and caches package-published readiness.
+  Generic runtime execution is available before application schema
+  initialization; schema failure does not prevent native SQL or eval/run repair.
+  A fresh database loads package tables before services; ordinary boots validate
+  only the catalog.
 - The Go kernel owns backend selection, containerd access when available, direct
   runsc lifecycle otherwise, host ports, network state, cgroups, mounts, and
   runtime reconciliation. Neither Deno nor program Workers receive the
@@ -265,8 +271,8 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 - [console/AGENTS.md](console/AGENTS.md): transport-neutral sandbox process
   leases, retained physical PTYs and attachment ownership, and the authenticated
   local WebSocket relay.
-- [database/AGENTS.md](database/AGENTS.md): connection pool, catalog, schema
-  synchronization, runtime SQL, values, and transaction scopes.
+- [database/AGENTS.md](database/AGENTS.md): native connection pool, bounded SQL,
+  physical value transport, transactions, and package-owned schema delegation.
 - [debugging/AGENTS.md](debugging/AGENTS.md): inspector-target mapping and
   temporary loopback-only debug leases.
 - [deployment/AGENTS.md](deployment/AGENTS.md): Define the small

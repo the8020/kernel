@@ -68,7 +68,7 @@ func TestStatusWorkersAndControlRoutes(t *testing.T) {
 		}
 		switch request.URL.Path {
 		case "/v1/status":
-			_, _ = io.WriteString(writer, `{"protocol_version":4,"supervisor_version":"test","deno_version":"2.9.4","sandbox_id":"sandbox","workload_type":"job","worker_count":2,"ready_worker_count":1,"failed_worker_count":1,"active_requests":1,"active_execution_count":1,"recent_failures":[{"worker_id":"failed-worker","reason":"boom"}]}`)
+			_, _ = io.WriteString(writer, `{"protocol_version":5,"supervisor_version":"test","deno_version":"2.9.4","sandbox_id":"sandbox","workload_type":"job","worker_count":2,"ready_worker_count":1,"failed_worker_count":1,"active_requests":1,"active_execution_count":1,"recent_failures":[{"worker_id":"failed-worker","reason":"boom"}]}`)
 		case "/v1/workers":
 			_, _ = io.WriteString(writer, `{"workers":[{"worker_id":"wrk-aaaaaaaaaa","workload_id":"job","owner_id":"owner","debugger_name":"job:execution","in_flight":0,"idle_since_ms":1700000000000,"state":"failed","failure":"boom"}]}`)
 		case "/v1/workers/start":
@@ -191,7 +191,7 @@ func writeControlResponse(writer http.ResponseWriter, request protocol.Envelope,
 func TestStatusRejectsProtocolAndIdentityMismatch(t *testing.T) {
 	tests := []string{
 		`{"protocol_version":99,"sandbox_id":"sandbox","workload_type":"job"}`,
-		`{"protocol_version":4,"sandbox_id":"other","workload_type":"job"}`,
+		`{"protocol_version":5,"sandbox_id":"other","workload_type":"job"}`,
 	}
 	for _, response := range tests {
 		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(writer, response) }))

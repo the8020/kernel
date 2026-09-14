@@ -366,16 +366,6 @@ func (p *fakePools) ReconcileCapacity(ctx context.Context, serviceID string, min
 	return record, err
 }
 
-func (p *fakePools) OpenAPI(_ context.Context, serviceID string) (map[string]any, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if _, exists := p.records[serviceID]; !exists {
-		return nil, os.ErrNotExist
-	}
-	p.events = append(p.events, "openapi:"+serviceID)
-	return map[string]any{"openapi": "3.1.0", "service": serviceID}, nil
-}
-
 func (p *fakePools) Dispatch(ctx context.Context, serviceID string, request *http.Request) (*http.Response, error) {
 	p.mu.Lock()
 	record, exists := p.records[serviceID]
@@ -509,6 +499,21 @@ func (p *fakePools) RemoveStopped(serviceID string) error {
 	p.events = append(p.events, "remove:"+serviceID)
 	delete(p.records, serviceID)
 	return nil
+}
+
+func TestValidateStartsAndRetiresTemporaryCapacity(t *testing.T) {
+	root := t.TempDir()
+	const serviceID = "the8020/demo/variables"
+	index := newTestServiceIndex(t, root, serviceID, nil)
+	pools := newFakePools()
+	manager := newTestManager(t, index, pools, &fakeRouter{}, filepath.Join(root, "services"))
+	result := manager.Validate(context.Background(), serviceID)
+	if !result.Valid || result.ServiceID != serviceID || result.Error != "" {
+		t.Fatalf("validation: %#v", result)
+	}
+	if len(pools.records) != 0 {
+		t.Fatalf("validation retained pools: %#v", pools.records)
+	}
 }
 
 func TestReconcileRetriesPersistedStaleVersionPoolCleanup(t *testing.T) {
@@ -1225,6 +1230,14 @@ func TestAuthenticatedBoundaryRejectsOrRedirectsBeforeDispatchAndAttachesTrusted
 	authentication := &fakeAuthentication{}
 	manager.authentication = authentication
 	manager.authenticator = "/p/the8020/users/mod.ts"
+	passwordCalls := 0
+	manager.authenticatePassword = func(_ context.Context, username, password string) (execution.User, error) {
+		passwordCalls++
+		if username != "alice" || password != "páss:word" {
+			return execution.User{}, errors.New("denied")
+		}
+		return execution.UserForUsername(username)
+	}
 	if _, err := manager.Reconcile(context.Background(), "the8020/demo/protected"); err != nil {
 		t.Fatal(err)
 	}
@@ -1234,7 +1247,7 @@ func TestAuthenticatedBoundaryRejectsOrRedirectsBeforeDispatchAndAttachesTrusted
 	spoofed.Header.Set("the8020-internal-auth-username", "attacker")
 	spoofed.Header.Set("the8020-internal-username", "attacker")
 	manager.ServeHTTP(unauthenticated, spoofed)
-	if unauthenticated.Code != 401 || unauthenticated.Body.String() != "Sign in first.\n" || authentication.calls != 0 {
+	if unauthenticated.Code != 401 || unauthenticated.Body.String() != "Sign in first.\n" || authentication.calls != 0 || unauthenticated.Header().Get("WWW-Authenticate") != `Basic realm="80|20", charset="UTF-8"` {
 		t.Fatalf("missing-cookie response=%d %q calls=%d", unauthenticated.Code, unauthenticated.Body.String(), authentication.calls)
 	}
 	select {
@@ -1320,6 +1333,42 @@ func TestAuthenticatedBoundaryRejectsOrRedirectsBeforeDispatchAndAttachesTrusted
 		t.Fatal(err)
 	}
 
+	for _, headers := range [][]string{
+		{"Basic !!!"}, {"Basic " + base64.StdEncoding.EncodeToString([]byte("alice:wrong"))},
+		{"Basic " + base64.StdEncoding.EncodeToString([]byte("alice:\xff"))},
+		{"Basic " + strings.Repeat("a", 8192)}, {"Basic YWxpY2U6cGFzcw==", "Basic YWxpY2U6cGFzcw=="},
+	} {
+		request := httptest.NewRequest(http.MethodGet, "/the8020/demo/protected/value", nil)
+		request.Header["Authorization"] = headers
+		response := httptest.NewRecorder()
+		manager.ServeHTTP(response, request)
+		if response.Code != http.StatusUnauthorized || response.Header().Get("WWW-Authenticate") == "" || response.Header().Get("Location") != "" {
+			t.Fatal("invalid Basic credentials were not challenged before dispatch")
+		}
+	}
+	if passwordCalls != 1 {
+		t.Fatal("malformed Basic credentials reached password verification")
+	}
+	basicRequest := httptest.NewRequest(http.MethodPost, "/the8020/demo/protected/value", nil)
+	basicRequest.SetBasicAuth("alice", "páss:word")
+	basicRequest.AddCookie(&http.Cookie{Name: "the8020_auth", Value: "invalid-cookie"})
+	basicResponse := httptest.NewRecorder()
+	manager.ServeHTTP(basicResponse, basicRequest)
+	if basicResponse.Code != http.StatusOK || passwordCalls != 2 {
+		t.Fatal("Basic authentication did not override the cookie")
+	}
+	forwarded = <-pools.dispatched
+	decodeSetup(forwarded.header)
+	if !approved.Approved || approved.Claims["sub"] != "user:alice" || forwarded.header.Get("Authorization") != "" || forwarded.header.Get("the8020-internal-user-id") != "user:alice" {
+		t.Fatal("Basic principal or credential confinement failed")
+	}
+	basicRequest.Header.Set(platformauth.TokenHeader, "Bearer invalid-jwt")
+	basicResponse = httptest.NewRecorder()
+	manager.ServeHTTP(basicResponse, basicRequest)
+	if basicResponse.Code != 307 || passwordCalls != 2 {
+		t.Fatal("explicit token did not take precedence over Basic")
+	}
+
 	for _, transport := range []string{"get", "post", "websocket"} {
 		for _, cookie := range []string{"", "invalid-jwt"} {
 			t.Run(transport+"/"+cookie, func(t *testing.T) {
@@ -1369,13 +1418,14 @@ func TestPublicServiceIgnoresTokensAndPreservesRawCredentials(t *testing.T) {
 			request.Header.Set(platformauth.TokenHeader, "Bearer "+token)
 		}
 		request.Header.Set("the8020-internal-authentication", "forged")
+		request.SetBasicAuth("alice", "unverified")
 		response := httptest.NewRecorder()
 		manager.ServeHTTP(response, request)
 		if response.Code != http.StatusOK || authentication.calls != 0 {
 			t.Fatalf("public verification occurred: %d, %d", response.Code, authentication.calls)
 		}
 		forwarded := <-pools.dispatched
-		if forwarded.header.Get("the8020-internal-authentication") != "" || forwarded.header.Get("the8020-internal-username") != "system" || forwarded.header.Get("Cookie") != request.Header.Get("Cookie") || forwarded.header.Get(platformauth.TokenHeader) != request.Header.Get(platformauth.TokenHeader) {
+		if forwarded.header.Get("the8020-internal-authentication") != "" || forwarded.header.Get("the8020-internal-username") != "system" || forwarded.header.Get("Cookie") != request.Header.Get("Cookie") || forwarded.header.Get(platformauth.TokenHeader) != request.Header.Get(platformauth.TokenHeader) || forwarded.header.Get("Authorization") != request.Header.Get("Authorization") {
 			t.Fatalf("public metadata/credentials changed: %#v", forwarded.header)
 		}
 	}

@@ -15,6 +15,9 @@ type = "boolean"
 name = "failure"
 type = "string"
 [[result]]
+name = "application_failure"
+type = "string"
+[[result]]
 name = "configured_mode"
 type = "string"
 [[result]]

@@ -60,8 +60,10 @@ Parent DOX: [kernel/kernel/runtime DOX](../AGENTS.md).
   never the complete runtime.
 - Settings operations enforce their declared global or node storage boundary.
 - Cryptographic operations delegate to the kernel deployment signer. Arbitrary
-  bytes use base64 on the existing JSON bridge; JWT helpers use the explicit
-  platform token profile. Private keys never cross the bridge. Password/account
+  bytes use base64 with a required `purpose` on the existing JSON bridge.
+  The signer enforces bounded `app-` purposes for both signing and verification;
+  omitted, malformed, and reserved native purposes fail. JWT helpers use the
+  explicit platform token profile. Private keys never cross the bridge. Password/account
   and session policy belongs exclusively to Deno packages.
 - `event.emit` queues local asynchronous package listeners using the caller's
   execution user. `program.run` submits an ordinary program with inherited or
@@ -80,6 +82,8 @@ Parent DOX: [kernel/kernel/runtime DOX](../AGENTS.md).
 
 # Verification
 
+- `crypto_test.go` verifies purpose enforcement through private operation
+  dispatch, mismatched-purpose rejection, and opaque session-claim round trips.
 - Terminal operation tests cover Worker identity isolation, native input/output,
   release during creation, live lease cleanup without process destruction,
   reattachment, and explicit close after display-Worker loss. Run with the

@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-const ProtocolVersion = 4
+const ProtocolVersion = 5
 
 type MessageType string
 
@@ -24,7 +24,6 @@ const (
 	MessageJobResult                 MessageType = "job_result"
 	MessageServicePoolConfiguration  MessageType = "service_pool_configuration"
 	MessageServiceWorkerScaleRequest MessageType = "service_worker_scale_request"
-	MessageServiceOpenapi            MessageType = "service_openapi"
 	MessageRuntimeDrain              MessageType = "runtime_drain"
 	MessageRuntimeShutdown           MessageType = "runtime_shutdown"
 	MessageAdminCommand              MessageType = "admin_command"
@@ -48,7 +47,6 @@ var validMessageTypes = map[MessageType]bool{
 	MessageJobResult:                 true,
 	MessageServicePoolConfiguration:  true,
 	MessageServiceWorkerScaleRequest: true,
-	MessageServiceOpenapi:            true,
 	MessageRuntimeDrain:              true,
 	MessageRuntimeShutdown:           true,
 	MessageAdminCommand:              true,

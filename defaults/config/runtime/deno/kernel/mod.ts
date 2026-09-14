@@ -59,74 +59,6 @@ export interface SetSecretInput {
   value: string;
 }
 
-export interface CommandArgumentSpec {
-  values?: readonly string[];
-  booleans?: readonly string[];
-}
-
-export interface ParsedCommandArguments {
-  positionals: string[];
-  options: Record<string, string | boolean>;
-}
-
-/** Parse package-owned command flags while preserving positional token text. */
-export function parseCommandArguments(
-  arguments_: readonly string[],
-  spec: CommandArgumentSpec = {},
-): ParsedCommandArguments {
-  const valueOptions = new Set(spec.values ?? []);
-  const booleanOptions = new Set(spec.booleans ?? []);
-  const options: Record<string, string | boolean> = {};
-  const positionals: string[] = [];
-  let parseOptions = true;
-  for (let index = 0; index < arguments_.length; index++) {
-    const token = arguments_[index]!;
-    if (parseOptions && token === "--") {
-      parseOptions = false;
-      continue;
-    }
-    if (!parseOptions || !token.startsWith("--") || token === "--") {
-      positionals.push(token);
-      continue;
-    }
-    const option = token.slice(2);
-    const equals = option.indexOf("=");
-    const name = equals < 0 ? option : option.slice(0, equals);
-    const inline = equals < 0 ? undefined : option.slice(equals + 1);
-    if (name.length === 0 || options[name] !== undefined) {
-      throw invalidArguments(`invalid or repeated option --${name}`);
-    }
-    if (booleanOptions.has(name)) {
-      if (inline !== undefined && inline !== "true" && inline !== "false") {
-        throw invalidArguments(`--${name} must be true or false`);
-      }
-      options[name] = inline === undefined ? true : inline === "true";
-      continue;
-    }
-    if (!valueOptions.has(name)) {
-      throw invalidArguments(`unknown option --${name}`);
-    }
-    const value = inline ?? arguments_[++index];
-    if (value === undefined) {
-      throw invalidArguments(`--${name} requires a value`);
-    }
-    options[name] = value;
-  }
-  return { positionals, options };
-}
-
-export function requiredCommandArgument(
-  values: readonly string[],
-  index: number,
-  name: string,
-): string {
-  const value = values[index];
-  if (value === undefined || value.length === 0) {
-    throw invalidArguments(`${name} is required`);
-  }
-  return value;
-}
-
 export interface PackageIndex {
   author: string;
   repository: string;
@@ -157,6 +89,7 @@ export interface PackageSourceInspection {
 
 export interface PackageVersion {
   commit: string;
+  parents: string[];
   short_commit: string;
   authored_at: string;
   author: string;
@@ -178,6 +111,7 @@ export interface PackageSynchronization {
   package_id: string;
   commit: string;
   success: boolean;
+  error?: string;
 }
 
 export interface SetPackageIndexInput {
@@ -289,13 +223,8 @@ export class AdminCommandError extends Error {
   }
 }
 
-function invalidArguments(message: string): AdminCommandError {
-  return new AdminCommandError({ code: "invalid_arguments", message });
-}
-
 export type TaggedDatabaseValue =
   | { type: "bigint"; value: string }
-  | { type: "decimal"; value: string; precision: number; scale: number }
   | { type: "datetime"; value: string }
   | { type: "bytes"; value: string }
   | { type: "json"; value: unknown };
@@ -308,6 +237,8 @@ export type DatabaseValue =
   | TaggedDatabaseValue;
 
 export interface DatabaseInfo {
+  maximum_result_rows: number;
+  maximum_result_bytes: number;
   backend: "sqlite" | "postgresql";
   location: string;
   state:
@@ -610,7 +541,7 @@ function validDatabaseValue(value: unknown): value is DatabaseValue {
   if (typeof value === "number") return Number.isFinite(value);
   if (typeof value !== "object" || Array.isArray(value)) return false;
   const type = (value as { type?: unknown }).type;
-  return type === "bigint" || type === "decimal" || type === "datetime" ||
+  return type === "bigint" || type === "datetime" ||
     type === "bytes" || type === "json";
 }
 
@@ -711,15 +642,20 @@ export const kernel = Object.freeze({
     },
   }),
   crypto: Object.freeze({
-    sign(data: Uint8Array): Promise<string> {
+    sign(purpose: `app-${string}`, data: Uint8Array): Promise<string> {
       return runtimeOperationField(
         "crypto.sign",
-        { data: data.toBase64() },
+        { purpose, data: data.toBase64() },
         "signature",
       );
     },
-    verify(data: Uint8Array, signature: string): Promise<boolean> {
+    verify(
+      purpose: `app-${string}`,
+      data: Uint8Array,
+      signature: string,
+    ): Promise<boolean> {
       return runtimeOperationField("crypto.verify", {
+        purpose,
         data: data.toBase64(),
         signature,
       }, "valid");
@@ -773,13 +709,6 @@ export const kernel = Object.freeze({
       return executeRuntimeOperation("service.validate", {
         service_id: serviceId,
       });
-    },
-    openapi(serviceId: string): Promise<Record<string, unknown>> {
-      return runtimeOperationField(
-        "service.openapi",
-        { service_id: serviceId },
-        "openapi",
-      );
     },
     request(input: Record<string, unknown>): Promise<Record<string, unknown>> {
       return runtimeOperationField("service.request", input, "response");
@@ -1034,6 +963,7 @@ export const kernel = Object.freeze({
     async synchronize(
       packageIds: string[] = [],
       gitToken?: string,
+      gitUsername?: string,
     ): Promise<PackageSynchronization[]> {
       const result = await executeRuntimeOperation<
         { packages: PackageSynchronization[] }
@@ -1042,6 +972,7 @@ export const kernel = Object.freeze({
         optionalArguments({
           packages: packageIds.length === 0 ? undefined : packageIds.join(","),
           git_token: gitToken,
+          git_username: gitUsername,
         }),
       );
       return result.packages;

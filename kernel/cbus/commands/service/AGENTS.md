@@ -2,15 +2,15 @@ Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
 
 # Purpose
 
-- Adapt service discovery, lifecycle, validation, testing, and OpenAPI
+- Adapt service discovery, lifecycle, startup validation and test-request
   primitives for package runtime operations.
 
 # Ownership
 
 - Do not publish CBus metadata; `the8020/services` owns visible `services.*`
   command programs.
-- Retain thin list/inspect/refresh/validate/request/OpenAPI adapters only. Deno
-  services owns configuration and start/stop/restart/scale/defaults commands.
+- Retain thin list/inspect/refresh/validate/request adapters only. Deno services
+  owns configuration and start/stop/restart/scale/defaults commands.
 
 # Local Contracts
 

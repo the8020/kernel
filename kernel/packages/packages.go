@@ -76,11 +76,8 @@ type Package struct {
 type PackageProgram struct {
 	ID               string   `json:"program_id"`
 	Path             string   `json:"path"`
-	Description      string   `json:"description,omitempty"`
 	Entrypoint       string   `json:"entrypoint,omitempty"`
-	DefaultLayout    string   `json:"default_layout,omitempty"`
-	Discoverable     bool     `json:"discoverable"`
-	UUI              bool     `json:"uui"`
+	EntrypointURL    string   `json:"entrypoint_url,omitempty"`
 	Valid            bool     `json:"valid"`
 	ValidationErrors []string `json:"validation_errors,omitempty"`
 }
@@ -91,15 +88,6 @@ type PackageFile struct {
 	Path string `json:"path"`
 	Type string `json:"type"`
 	Size int64  `json:"size"`
-}
-
-type programManifest struct {
-	Schema        int    `toml:"schema"`
-	Description   string `toml:"description"`
-	Entrypoint    string `toml:"entrypoint,omitempty"`
-	DefaultLayout string `toml:"default_layout,omitempty"`
-	Discoverable  *bool  `toml:"discoverable,omitempty"`
-	UUI           bool   `toml:"uui,omitempty"`
 }
 
 type Config struct {
@@ -297,56 +285,15 @@ func (s *Store) inspectPackagePrograms(identity Identity, root string) ([]Packag
 			continue
 		}
 		item := PackageProgram{
-			ID:           identity.PackageID() + "/" + entry.Name(),
-			Path:         filepath.ToSlash(filepath.Join("programs", entry.Name())),
-			Discoverable: true,
+			ID:   identity.PackageID() + "/" + entry.Name(),
+			Path: filepath.ToSlash(filepath.Join("programs", entry.Name())),
 		}
-		if err := ValidateName(entry.Name()); err != nil {
+		program, err := ValidateProgram(root, identity.PackageID(), entry.Name(), "")
+		if err != nil {
 			item.ValidationErrors = append(item.ValidationErrors, err.Error())
-		}
-		canonical, canonicalErr := canonicalWithin(programRoot, root)
-		if canonicalErr != nil {
-			item.ValidationErrors = append(item.ValidationErrors, fmt.Sprintf("%s: %v", programRoot, canonicalErr))
-		} else if canonical != programRoot {
-			item.ValidationErrors = append(item.ValidationErrors, fmt.Sprintf("program root %s resolves through a symlink", programRoot))
-		}
-		var manifest programManifest
-		if canonicalErr == nil && canonical == programRoot {
-			if err := decodeTOMLWithin(manifestPath, programRoot, &manifest); err != nil {
-				item.ValidationErrors = append(item.ValidationErrors, fmt.Sprintf("%s: %v", manifestPath, err))
-			} else {
-				item.Description = manifest.Description
-				item.Entrypoint = manifest.Entrypoint
-				item.DefaultLayout = manifest.DefaultLayout
-				item.UUI = manifest.UUI
-				if manifest.Discoverable != nil {
-					item.Discoverable = *manifest.Discoverable
-				}
-				if manifest.Schema != packageManifestSchema {
-					item.ValidationErrors = append(item.ValidationErrors, fmt.Sprintf("%s: schema must equal %d", manifestPath, packageManifestSchema))
-				}
-				if manifest.Description == "" {
-					item.ValidationErrors = append(item.ValidationErrors, fmt.Sprintf("%s: description is required", manifestPath))
-				}
-				if item.Entrypoint == "" {
-					item.Entrypoint = "program.ts"
-				}
-				if err := validateProgramRelativePath(item.Entrypoint); err != nil {
-					item.ValidationErrors = append(item.ValidationErrors, fmt.Sprintf("%s: entrypoint %v", manifestPath, err))
-				} else if canonicalEntrypoint, err := canonicalWithin(filepath.Join(programRoot, filepath.FromSlash(item.Entrypoint)), programRoot); err != nil {
-					item.ValidationErrors = append(item.ValidationErrors, fmt.Sprintf("entrypoint %s: %v", item.Entrypoint, err))
-				} else if info, err := os.Stat(canonicalEntrypoint); err != nil || !info.Mode().IsRegular() {
-					if err == nil {
-						err = errors.New("entrypoint is not a regular file")
-					}
-					item.ValidationErrors = append(item.ValidationErrors, fmt.Sprintf("entrypoint %s: %v", item.Entrypoint, err))
-				}
-				if item.DefaultLayout != "" {
-					if err := validateProgramRelativePath(item.DefaultLayout); err != nil {
-						item.ValidationErrors = append(item.ValidationErrors, fmt.Sprintf("%s: default_layout %v", manifestPath, err))
-					}
-				}
-			}
+		} else {
+			item.Entrypoint = program.Entrypoint
+			item.EntrypointURL = program.EntrypointURL
 		}
 		item.Valid = len(item.ValidationErrors) == 0
 		result = append(result, item)

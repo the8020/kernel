@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"the8020/kernel/auth"
 	"the8020/kernel/database"
 	"the8020/kernel/execution"
 	"the8020/kernel/execution/supervisor"
@@ -120,9 +121,6 @@ func (f *fakeControl) RunJob(context.Context, model.SandboxSpec, string, []any, 
 }
 func (f *fakeControl) ConfigureService(context.Context, model.SandboxSpec, string, []string, int) error {
 	return nil
-}
-func (f *fakeControl) ServiceOpenAPI(context.Context, model.SandboxSpec, string) (map[string]any, error) {
-	return map[string]any{"openapi": "3.1.0"}, nil
 }
 func (f *fakeControl) DispatchService(context.Context, model.SandboxSpec, string, *http.Request) (*http.Response, error) {
 	return nil, nil
@@ -456,7 +454,11 @@ func TestForwardedCallsKeepParentAndUserAcrossWorkerReuse(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `CREATE TABLE "the8020__system__nodes" ("id" TEXT PRIMARY KEY, "url" TEXT NOT NULL, "recipientAddress" TEXT NOT NULL, "recipientPort" INTEGER NOT NULL, "enabled" INTEGER NOT NULL, "updatedAt" TEXT NOT NULL) STRICT`); err != nil {
 		t.Fatal(err)
 	}
-	owner, err := nodes.New(db, input.NodeID, "shared-node-test-secret")
+	signer, err := auth.OpenSigner(filepath.Join(t.TempDir(), "signing.key"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, err := nodes.New(db, input.NodeID, signer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -475,7 +477,7 @@ func TestForwardedCallsKeepParentAndUserAcrossWorkerReuse(t *testing.T) {
 	if err := owner.Start(http.NotFoundHandler()); err != nil {
 		t.Fatal(err)
 	}
-	peer, err := nodes.New(db, "nod-bbbbbbbbbb", "shared-node-test-secret")
+	peer, err := nodes.New(db, "nod-bbbbbbbbbb", signer)
 	if err != nil {
 		t.Fatal(err)
 	}

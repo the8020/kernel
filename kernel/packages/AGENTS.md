@@ -133,21 +133,22 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   files and directories, rejecting nesting and symlinks. Only `.toml` files
   declare runtime behavior; other regular files, including `AGENTS.md`, are
   ignored. Documentation must never prevent package activation or indexing.
-- Programs resolve from ready active database records and validate only the
-  selected manifest and entrypoint. Invocation never runs Git, fingerprints or
-  copies package trees, or acquires a repository lock. Entrypoints refer to the
-  ordinary shared packages mount; activation owns publishing that source.
-  Manifests may set `discoverable = false` without changing execution semantics.
-  The optional boolean `uui` defaults to false and identifies interactive
-  programs. Both flags are exposed in package inspection and ready-program
-  metadata; neither changes generic invocation. UUI Home uses their conjunction,
-  while explicit program selectors retain all ready programs. Commands, hooks,
-  and events share `ResolveProgramWithCandidates` for full
-  `namespace/package/program` references: all staged replacements take
-  precedence over ready active packages, and deleted targets fail validation.
-- Explicit program selectors use `ListPrograms`: ready package program manifests
-  only, including non-discoverable runnable programs, bounded to 2,000 entries.
-  They do not inspect Git status, services, or recursive files.
+- Programs resolve from ready active database records. Only `entrypoint` is
+  decoded from the selected program TOML, defaulting to `program.ts`; unknown
+  fields are ignored. TOML syntax and the 1 MiB read limit remain enforced.
+  Application manifest schema, descriptions, layout paths, and UI/discovery
+  fields are not native models, validation rules, or response data.
+- Invocation never runs Git, fingerprints/copies package trees, or acquires a
+  repository lock. Real non-symlink entrypoints stay contained by the owning
+  program and refer to the ordinary shared packages mount.
+- Commands, hooks, and events share `ResolveProgramWithCandidates` for full
+  `namespace/package/program` references: staged replacements take precedence
+  over ready active packages, and deleted targets fail validation.
+- `ListPrograms` returns up to 2,000 ready executable identities with
+  package/commit and entrypoint data. Selected package inspection uses the same
+  executable validator, including diagnostics for invalid programs. Neither path
+  reads application metadata; the packages application enriches its own catalog
+  and selected inspection inside the Worker.
 - Synchronization clones into a hidden same-filesystem staging directory,
   validates the exact commit, and replaces source by rename. Dirty shared
   worktrees are preserved and rejected. One failed batch package has explicit
@@ -158,10 +159,14 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Git credentials never enter URLs, command arguments, durable Git config,
   package records, results, or logs. A selected named secret or recovery command
   secure input is used only for a host-scoped transient HTTPS authorization
-  header.
+  header. Synchronization accepts an optional Basic username with its secure
+  password input; omitting it retains `x-access-token` for tokens. Redact both
+  the supplied secret and its actual encoded Basic header from failures.
 - Repository pull is clean-branch fetch plus fast-forward; push publishes the
   attached branch; checkout selects one local/remote branch or hexadecimal
   commit. Changed operations use the same activation transaction.
+- Bounded version listings include exact commit parent IDs. Local repositories
+  select their current HEAD and never require or fetch an upstream reference.
 - Kernel repository SQL remains portable across SQLite and PostgreSQL. Bind
   logical booleans as parameters or use boolean predicates; never encode them as
   SQLite-only `0`/`1` literals.

@@ -71,12 +71,11 @@ func (m *Manager) CloseTerminal(ctx context.Context, nodeID, terminalID string) 
 	if err != nil {
 		return err
 	}
-	target := "http://" + net.JoinHostPort(node.RecipientAddress, strconv.Itoa(node.RecipientPort)) + terminalClosePath
+	target := "https://" + net.JoinHostPort(node.RecipientAddress, strconv.Itoa(node.RecipientPort)) + terminalClosePath
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
-	request.Header.Set("Authorization", "Bearer "+m.secret)
 	request.Header.Set("Content-Type", "application/json")
 	client := *m.http
 	client.Timeout = terminalControlTimeout

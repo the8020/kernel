@@ -12,8 +12,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Running nodes refresh the catalog once per shared-state reconciliation.
   Request routing and allocation read an immutable in-memory snapshot, so a hot
   path never scans the node table. Local mutations refresh immediately.
-- The shared forwarding credential is created once in the secrets table and must
-  never enter a sandbox.
+- Native peer authority uses `kernel/auth`'s forwarding key derived from the
+  environment-provisioned deployment seed. It never reads or creates a named
+  secret. `New` receives the live native signer so key replacement also applies
+  to peer authentication.
 - The runtime supplies a read-only local capacity provider; this package exposes
   it to authenticated peers and uses peer reports only for spillover selection.
 - The runtime may register a local exact-Worker invoker; this package forwards
@@ -31,11 +33,16 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Every node has one stable canonical `nod-` ID, public URL, recipient address
   and port, and enabled state. Local construction and catalog writes use the
   shared identity validator.
+- Recipient addresses and ports always use HTTPS with native mutual TLS 1.3
+  and HTTP/1.1, including service forwarding, capacity, exact Worker calls, logs,
+  and terminal cleanup. Public node URLs keep their declared scheme. There is
+  no plaintext or bearer-token fallback.
 - End-user `the8020-authorization` and `the8020_auth` cookies survive every
-  forwarding hop unchanged; peer `Authorization` is verified and stripped before
-  service routing. The deployment signing key is separate from peer credentials.
-- Recipient listeners accept only the shared authenticated kernel transport and
-  proxy both HTTP and WebSocket traffic without interpreting service protocols.
+  forwarding hop unchanged. Strip ordinary `Authorization` before service
+  routing, verify the current native peer certificate on every request, then
+  remove recipient TLS metadata so internal encryption does not change the
+  public request's HTTPS status. TLS protects streamed requests, responses and
+  WebSocket frames without buffering bodies or adding application replay.
 - Node forwarding preserves client encoding preferences and encoded response
   bytes/headers. Its owned HTTP transport disables automatic gzip negotiation
   and decompression, so forwarding adds no compressor or decoder between the
@@ -95,7 +102,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   authentication, capacity-aware service forwarding, exact local/cross-node
   Worker invocation and bounds, status collection, and allocation partitioning.
 - Forwarding tests cover absent/explicit encoding preferences and unchanged
-  compressed response bytes, lengths, and negotiation headers.
+  compressed response bytes, lengths, and negotiation headers; HTTP/WebSocket
+  and control calls use independently loaded signers with the same seed and no
+  secrets table. Key isolation/replacement is verified in `kernel/auth` tests.
 - Terminal tests cover authenticated exact-node close without a Worker,
   cancellation, malformed or oversized control, unavailable nodes, and bounded
   acknowledgements matching the requested identity.

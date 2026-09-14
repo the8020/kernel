@@ -141,6 +141,11 @@ func TestPackageIndexRemoteInspectionSynchronizationAndVersionSelection(t *testi
 	if versions.CurrentCommit != secondCommit || len(versions.Versions) != 2 {
 		t.Fatalf("package versions = %#v", versions)
 	}
+	for _, version := range versions.Versions {
+		if version.Commit == secondCommit && !slices.Equal(version.Parents, []string{firstCommit}) {
+			t.Fatalf("commit parents = %#v", version)
+		}
+	}
 
 	if _, err := store.SetPackageIndex(ctx, PackageIndex{
 		Author: "the8020", Repository: "demo", Source: source, Tag: "v1.0.0",
@@ -212,6 +217,10 @@ func TestLocalPackageCreationWritesIndexManifestAndInitialCommit(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "packages", "example", "tools", ".git")); err != nil {
 		t.Fatalf("local Git repository: %v", err)
+	}
+	versions, err := store.ListPackageVersions(context.Background(), "example/tools", 10)
+	if err != nil || versions.SelectedCommit != created.Commit || len(versions.Versions) != 1 || len(versions.Versions[0].Parents) != 0 {
+		t.Fatalf("local versions without an upstream = %#v err=%v", versions, err)
 	}
 	results, err := store.SynchronizePackages(context.Background(), []string{"example/tools"})
 	if err != nil || len(results) != 1 || !results[0].Success || !results[0].Local || results[0].Changed {
@@ -414,8 +423,9 @@ func TestPackageSynchronizationAppliesTransientCredentialWithoutPersistingIt(t *
 	runTestGit(t, gitPath, "", "clone", "-q", "--bare", working, bare)
 	runTestGit(t, gitPath, bare, "update-server-info")
 
-	const token = "private-sync-token"
-	wantedAuthorization := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+token))
+	const token = "private-sync-password"
+	const username = "deploymentuser"
+	wantedAuthorization := "Basic " + base64.StdEncoding.EncodeToString([]byte(username+":"+token))
 	files := http.FileServer(http.Dir(remoteRoot))
 	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Header.Get("Authorization") != wantedAuthorization {
@@ -438,7 +448,7 @@ func TestPackageSynchronizationAppliesTransientCredentialWithoutPersistingIt(t *
 	}); err != nil {
 		t.Fatal(err)
 	}
-	results, err := store.SynchronizePackagesWithCredential(context.Background(), []string{"example/private"}, token)
+	results, err := store.SynchronizePackagesWithCredential(context.Background(), []string{"example/private"}, token, username)
 	if err != nil || len(results) != 1 || !results[0].Success || !results[0].Cloned {
 		t.Fatalf("authenticated synchronization = %#v, %v", results, err)
 	}
@@ -450,7 +460,7 @@ func TestPackageSynchronizationAppliesTransientCredentialWithoutPersistingIt(t *
 		t.Fatal("package synchronization logged repository credentials")
 	}
 	encoded := strings.TrimPrefix(wantedAuthorization, "Basic ")
-	if got := redactGitCredential("request failed: "+token+" Authorization: Basic "+encoded, token); strings.Contains(got, token) || strings.Contains(got, encoded) {
+	if got := redactGitCredential("request failed: "+token+" Authorization: Basic "+encoded, token, username); strings.Contains(got, token) || strings.Contains(got, encoded) {
 		t.Fatalf("credential error was not redacted: %q", got)
 	}
 }

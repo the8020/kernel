@@ -13,6 +13,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 # Local Contracts
 
+- Transient package synchronization credentials include an optional HTTP Basic
+  username and a secure token/password; the package owner confines their use.
+
 - Public API: `InstanceInfo`, `Services`, `RuntimeServices`, `RuntimeSnapshot`,
   `PublishRuntime`, narrow handler-facing domain interfaces, and `New`.
 - Fields are limited to settings, network, shared node topology/capacity,
@@ -32,11 +35,12 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   the native event command uses the same dispatcher. `Reindex(ctx, packageIDs)`
   exposes shared command/event/hook indexing to the native command; an empty
   selection means all packages.
-- Both runtime diagnostics remain present when initialization fails; unavailable
-  lifecycle fields stay nil with one safe failure string.
-- Runtime initialization publishes only complete immutable dependency snapshots
-  under synchronization; command handlers never read a partially composed
-  runtime.
+- Infrastructure `Failure` prevents runtime commands; `ApplicationFailure`
+  reports application initialization separately and does not revoke native jobs,
+  eval/run, or SQL repair. Unavailable application dependencies remain nil.
+- Runtime initialization publishes a complete immutable infrastructure snapshot
+  before schema work, then replaces it with the completed application snapshot.
+  Published structs are never mutated; both publications use synchronization.
 - Extend only when a generated handler has a current typed dependency.
 - Package management includes `DeletePackage` for the confirmed CBus/private
   operation; package activation owns removal and recovery.

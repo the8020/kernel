@@ -72,11 +72,6 @@ export interface ServiceExecutionMetadata {
   generation: number;
   canonicalBasePath: string;
   executionMode?: "stateless" | "persistent";
-  openapi?: {
-    title?: string;
-    version?: string;
-    description?: string;
-  };
 }
 
 export interface ServiceRequestMetadata {
@@ -193,6 +188,35 @@ export type ServiceEntrypoint = (
   request: Request,
   context: ServiceContext,
 ) => Promise<Response>;
+export interface ServiceHandler {
+  fetch(
+    request: Request,
+    context: RuntimeServiceContext,
+  ): Response | Promise<Response>;
+  connectWebSocket?(
+    request: Request,
+    context: RuntimeServiceContext,
+    socket: WebSocketSession,
+  ): Response | Promise<Response>;
+}
+
+export interface RuntimeServiceContext {
+  readonly signal: AbortSignal;
+  readonly meta: ServiceRequestMetadata;
+  log(event: RuntimeLogEvent): void;
+}
+
+export interface WebSocketSession {
+  readonly protocol: string;
+  readonly signal: AbortSignal;
+  send(data: string | Uint8Array): void;
+  receive(): Promise<
+    | { type: "message"; data: string | Uint8Array }
+    | { type: "close"; code: number; reason: string }
+  >;
+  close(code?: number, reason?: string): void;
+}
+
 export type JobEntrypoint = (
   ...arguments_: unknown[]
 ) => unknown | Promise<unknown>;

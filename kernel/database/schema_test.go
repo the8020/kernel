@@ -1,32 +1,36 @@
-package database
+package database_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
+	. "the8020/kernel/database"
+	"the8020/kernel/database/schematest"
 	"time"
 )
 
-func evaluatedTable(t *testing.T, descriptor TableDescriptor) EvaluatedTable {
+func evaluatedTable(t *testing.T, descriptor schematest.Descriptor) EvaluatedTable {
 	t.Helper()
-	encoded, err := marshalCanonicalJSON(descriptor)
+	encoded, err := canonicalJSON(descriptor)
 	if err != nil {
 		t.Fatal(err)
 	}
 	hash := sha256.Sum256(encoded)
 	return EvaluatedTable{
-		Descriptor: descriptor, DescriptorJSON: string(encoded), DescriptorHash: hex.EncodeToString(hash[:]),
+		Descriptor: schematest.Transport(descriptor), DescriptorJSON: string(encoded), DescriptorHash: hex.EncodeToString(hash[:]),
 		SourceModule: "/workspace/packages/acme/orders/tables/orders.ts", SourcePackage: "acme/orders", SourceCommit: strings.Repeat("a", 40),
 		Dependencies: []string{"/workspace/packages/acme/orders/tables/orders.ts"},
 	}
 }
 
-func testDescriptor() TableDescriptor {
-	return TableDescriptor{
+func testDescriptor() schematest.Descriptor {
+	return schematest.Descriptor{
 		FormatVersion: 1,
 		TableID:       "acme__orders__orders",
 		Columns: []ColumnDescriptor{
@@ -41,7 +45,7 @@ func testDescriptor() TableDescriptor {
 }
 
 func TestActivationOperationOwnership(t *testing.T) {
-	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
+	manager := newSchemaDatabase(t, sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
 	t.Cleanup(func() { _ = manager.Close() })
 	ctx := context.Background()
 	const first, second = "act-aaaaaaaaaa", "act-bbbbbbbbbb"
@@ -81,7 +85,7 @@ func TestActivationOperationOwnership(t *testing.T) {
 }
 
 func TestCatalogBootstrapAndAdditiveSynchronization(t *testing.T) {
-	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
+	manager := newSchemaDatabase(t, sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
 	t.Cleanup(func() { _ = manager.Close() })
 	ctx := context.Background()
 	status, err := manager.InitializeCatalog(ctx)
@@ -125,7 +129,7 @@ func TestCatalogBootstrapAndAdditiveSynchronization(t *testing.T) {
 }
 
 func TestDeploymentOutcomeRemainsVisibleAfterRollback(t *testing.T) {
-	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
+	manager := newSchemaDatabase(t, sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
 	t.Cleanup(func() { _ = manager.Close() })
 	ctx := context.Background()
 	if _, err := manager.InitializeCatalog(ctx); err != nil {
@@ -173,13 +177,13 @@ func TestDeploymentOutcomeRemainsVisibleAfterRollback(t *testing.T) {
 
 func TestExistingCatalogInitializationDoesNotCompeteWithWriters(t *testing.T) {
 	config := sqliteConfig(filepath.Join(t.TempDir(), "system.db"))
-	manager := New(config)
+	manager := newSchemaDatabase(t, config)
 	t.Cleanup(func() { _ = manager.Close() })
 	ctx := context.Background()
 	if _, err := manager.InitializeCatalog(ctx); err != nil {
 		t.Fatal(err)
 	}
-	writer, err := manager.db.BeginTx(ctx, nil)
+	writer, err := manager.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +191,7 @@ func TestExistingCatalogInitializationDoesNotCompeteWithWriters(t *testing.T) {
 	if _, err := writer.ExecContext(ctx, `UPDATE _8020_catalog SET updated_at = updated_at`); err != nil {
 		t.Fatal(err)
 	}
-	restarted := New(config)
+	restarted := newSchemaDatabase(t, config)
 	t.Cleanup(func() { _ = restarted.Close() })
 	validation, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
@@ -198,7 +202,7 @@ func TestExistingCatalogInitializationDoesNotCompeteWithWriters(t *testing.T) {
 }
 
 func TestCatalogBootstrapRejectsAnInvalidExistingCatalog(t *testing.T) {
-	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
+	manager := newSchemaDatabase(t, sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
 	t.Cleanup(func() { _ = manager.Close() })
 	ctx := context.Background()
 	if _, err := manager.Execute(ctx, `CREATE TABLE _8020_columns (table_id TEXT PRIMARY KEY) STRICT`, nil); err != nil {
@@ -211,7 +215,7 @@ func TestCatalogBootstrapRejectsAnInvalidExistingCatalog(t *testing.T) {
 }
 
 func TestUnsafeChangesStopBeforeCatalogSwitch(t *testing.T) {
-	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
+	manager := newSchemaDatabase(t, sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
 	t.Cleanup(func() { _ = manager.Close() })
 	ctx := context.Background()
 	if _, err := manager.InitializeCatalog(ctx); err != nil {
@@ -230,51 +234,27 @@ func TestUnsafeChangesStopBeforeCatalogSwitch(t *testing.T) {
 		t.Fatalf("unsafe synchronization = %#v, %v", results, err)
 	}
 	detail, inspectErr := manager.InspectTable(ctx, descriptor.TableID)
-	if inspectErr != nil || detail.Descriptor.Columns[2].LogicalType != "decimal" {
+	if inspectErr != nil || schematest.Decode(detail.Descriptor).Columns[2].LogicalType != "decimal" {
 		t.Fatalf("stored descriptor changed after rejected migration: %#v, %v", detail, inspectErr)
 	}
 }
 
 func TestDescriptorCanonicalJSONMatchesTypeScriptStringEscaping(t *testing.T) {
-	descriptor := testDescriptor()
-	descriptor.Columns[3].Default = &DefaultDescriptor{
-		Kind: "literal", Value: map[string]any{"markup": "<strong>&</strong>"},
+	manager := newSchemaDatabase(t, sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
+	defer manager.Close()
+	ctx := context.Background()
+	if _, err := manager.InitializeCatalog(ctx); err != nil {
+		t.Fatal(err)
 	}
-	if err := validateEvaluatedTable(evaluatedTable(t, descriptor)); err != nil {
+	descriptor := testDescriptor()
+	descriptor.Columns[3].Default = &DefaultDescriptor{Kind: "literal", Value: map[string]any{"markup": "<strong>&</strong>"}}
+	if _, err := manager.Synchronize(ctx, []EvaluatedTable{evaluatedTable(t, descriptor)}, SynchronizationOptions{}); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestPostgreSQLUsesPortablePhysicalMappings(t *testing.T) {
-	cases := []struct {
-		column ColumnDescriptor
-		want   string
-	}{
-		{ColumnDescriptor{LogicalType: "text"}, "text"},
-		{ColumnDescriptor{LogicalType: "boolean"}, "boolean"},
-		{ColumnDescriptor{LogicalType: "integer"}, "bigint"},
-		{ColumnDescriptor{LogicalType: "float"}, "double precision"},
-		{ColumnDescriptor{LogicalType: "decimal", Precision: 18, Scale: 8}, "bigint"},
-		{ColumnDescriptor{LogicalType: "datetime"}, "timestamp with time zone"},
-		{ColumnDescriptor{LogicalType: "bytes"}, "bytea"},
-		{ColumnDescriptor{LogicalType: "json"}, "jsonb"},
-	}
-	for _, test := range cases {
-		got, err := physicalType(BackendPostgreSQL, test.column)
-		if err != nil || got != test.want {
-			t.Fatalf("physical type for %s = %q, %v", test.column.LogicalType, got, err)
-		}
-	}
-	now, err := defaultSQLForBackend(BackendPostgreSQL, ColumnDescriptor{
-		LogicalType: "datetime", Default: &DefaultDescriptor{Kind: "now"},
-	})
-	if err != nil || now != "date_trunc('milliseconds', CURRENT_TIMESTAMP)" {
-		t.Fatalf("PostgreSQL defaultNow = %q, %v", now, err)
-	}
-}
-
 func TestRemovedDefinitionsRetireUntilExplicitTrim(t *testing.T) {
-	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
+	manager := newSchemaDatabase(t, sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
 	t.Cleanup(func() { _ = manager.Close() })
 	ctx := context.Background()
 	if _, err := manager.InitializeCatalog(ctx); err != nil {
@@ -324,18 +304,15 @@ func TestCanonicalTableIDIsPortableAndStable(t *testing.T) {
 	packageName := strings.Repeat("package", 8)
 	tableName := strings.Repeat("table", 8)
 	long, err := CanonicalTableID(namespace, packageName, tableName)
-	full := strings.Join([]string{normalizeIdentity(namespace), normalizeIdentity(packageName), normalizeIdentity(tableName)}, "__")
+	full := strings.Join([]string{namespace, packageName, tableName}, "__")
 	digest := sha256.Sum256([]byte(full))
 	want := full[:56] + "_" + hex.EncodeToString(digest[:])[:6]
 	if err != nil || long != want || len(long) != 63 {
 		t.Fatalf("long canonical ID = %q (%d), %v", long, len(long), err)
 	}
-	if !validTableID(long) {
-		t.Fatalf("shortened canonical ID is invalid: %q", long)
-	}
 	descriptor := testDescriptor()
 	descriptor.TableID = long
-	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
+	manager := newSchemaDatabase(t, sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
 	t.Cleanup(func() { _ = manager.Close() })
 	if _, err := manager.InitializeCatalog(context.Background()); err != nil {
 		t.Fatal(err)
@@ -356,7 +333,7 @@ func TestPackageSetHashIsIndependentOfMapOrder(t *testing.T) {
 }
 
 func TestCanonicalTableOwnershipCannotBeReplacedByAnotherSource(t *testing.T) {
-	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
+	manager := newSchemaDatabase(t, sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
 	t.Cleanup(func() { _ = manager.Close() })
 	ctx := context.Background()
 	if _, err := manager.InitializeCatalog(ctx); err != nil {
@@ -376,7 +353,7 @@ func TestCanonicalTableOwnershipCannotBeReplacedByAnotherSource(t *testing.T) {
 }
 
 func TestLogicalReferencesAreValidatedWithoutPhysicalForeignKeys(t *testing.T) {
-	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
+	manager := newSchemaDatabase(t, sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
 	t.Cleanup(func() { _ = manager.Close() })
 	ctx := context.Background()
 	if _, err := manager.InitializeCatalog(ctx); err != nil {
@@ -388,7 +365,7 @@ func TestLogicalReferencesAreValidatedWithoutPhysicalForeignKeys(t *testing.T) {
 	if err == nil || len(results) != 1 || results[0].State != "error" || !strings.Contains(results[0].Error, "references missing column") {
 		t.Fatalf("missing logical reference = %#v, %v", results, err)
 	}
-	customers := TableDescriptor{
+	customers := schematest.Descriptor{
 		FormatVersion: 1, TableID: "acme__customers__customers",
 		Columns:    []ColumnDescriptor{{Name: "status", LogicalType: "enum", EnumValues: []string{"draft", "confirmed"}, PrimaryKey: true}},
 		PrimaryKey: []string{"status"}, Indexes: []IndexDescriptor{},
@@ -400,7 +377,7 @@ func TestLogicalReferencesAreValidatedWithoutPhysicalForeignKeys(t *testing.T) {
 }
 
 func TestPhysicalAndLogicalCatalogDriftIsDetected(t *testing.T) {
-	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
+	manager := newSchemaDatabase(t, sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
 	t.Cleanup(func() { _ = manager.Close() })
 	ctx := context.Background()
 	if _, err := manager.InitializeCatalog(ctx); err != nil {
@@ -427,21 +404,19 @@ func TestPhysicalAndLogicalCatalogDriftIsDetected(t *testing.T) {
 }
 
 func TestManualMatchingTableIsAdoptedAndUncataloguedTablesRequireExplicitInspection(t *testing.T) {
-	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
+	manager := newSchemaDatabase(t, sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
 	t.Cleanup(func() { _ = manager.Close() })
 	ctx := context.Background()
 	if _, err := manager.InitializeCatalog(ctx); err != nil {
 		t.Fatal(err)
 	}
 	descriptor := testDescriptor()
-	tx, err := manager.db.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := manager.createTable(ctx, tx, descriptor); err != nil {
-		t.Fatal(err)
-	}
-	if err := tx.Commit(); err != nil {
+	// Create the matching physical table independently of catalog synchronization.
+	if _, err := manager.Execute(ctx, `CREATE TABLE acme__orders__orders (
+ id INTEGER PRIMARY KEY CONSTRAINT "acme__orders__orders__id__check" CHECK (id BETWEEN -9007199254740991 AND 9007199254740991),
+ status TEXT NOT NULL DEFAULT 'draft' CONSTRAINT "acme__orders__orders__status__check" CHECK (status IN ('draft', 'confirmed')),
+ total INTEGER NOT NULL CONSTRAINT "acme__orders__orders__total__check" CHECK (total BETWEEN -999999999999999999 AND 999999999999999999),
+ metadata TEXT) STRICT`, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := manager.Execute(ctx, `CREATE TABLE manual_notes (id INTEGER PRIMARY KEY, body TEXT) STRICT`, nil); err != nil {
@@ -468,13 +443,13 @@ func TestManualMatchingTableIsAdoptedAndUncataloguedTablesRequireExplicitInspect
 }
 
 func TestLogicalReferenceChangeDoesNotRequirePhysicalMigration(t *testing.T) {
-	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
+	manager := newSchemaDatabase(t, sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
 	t.Cleanup(func() { _ = manager.Close() })
 	ctx := context.Background()
 	if _, err := manager.InitializeCatalog(ctx); err != nil {
 		t.Fatal(err)
 	}
-	target := TableDescriptor{
+	target := schematest.Descriptor{
 		FormatVersion: 1, TableID: "acme__orders__targets",
 		Columns: []ColumnDescriptor{
 			{Name: "first", LogicalType: "enum", EnumValues: []string{"draft", "confirmed"}, PrimaryKey: true},
@@ -496,7 +471,7 @@ func TestLogicalReferenceChangeDoesNotRequirePhysicalMigration(t *testing.T) {
 }
 
 func TestUnsafeAdditionsAndRequiredSQLiteRetirementNeedMigration(t *testing.T) {
-	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
+	manager := newSchemaDatabase(t, sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
 	t.Cleanup(func() { _ = manager.Close() })
 	ctx := context.Background()
 	if _, err := manager.InitializeCatalog(ctx); err != nil {
@@ -523,7 +498,7 @@ func TestUnsafeAdditionsAndRequiredSQLiteRetirementNeedMigration(t *testing.T) {
 }
 
 func TestRetiredIndexedColumnRemainsPhysicallyCompatible(t *testing.T) {
-	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
+	manager := newSchemaDatabase(t, sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
 	t.Cleanup(func() { _ = manager.Close() })
 	ctx := context.Background()
 	if _, err := manager.InitializeCatalog(ctx); err != nil {
@@ -553,7 +528,7 @@ func TestRetiredIndexedColumnRemainsPhysicallyCompatible(t *testing.T) {
 }
 
 func TestRecoveryRemovesCandidateIndexOnActiveColumns(t *testing.T) {
-	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
+	manager := newSchemaDatabase(t, sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
 	t.Cleanup(func() { _ = manager.Close() })
 	ctx := context.Background()
 	if _, err := manager.InitializeCatalog(ctx); err != nil {
@@ -583,7 +558,7 @@ func TestRecoveryRemovesCandidateIndexOnActiveColumns(t *testing.T) {
 }
 
 func TestSynchronizeDefinitionEvaluatesOnlyTheSelectedTable(t *testing.T) {
-	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
+	manager := newSchemaDatabase(t, sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
 	t.Cleanup(func() { _ = manager.Close() })
 	ctx := context.Background()
 	if _, err := manager.InitializeCatalog(ctx); err != nil {
@@ -608,7 +583,7 @@ func TestSynchronizeDefinitionEvaluatesOnlyTheSelectedTable(t *testing.T) {
 }
 
 func TestTableBrowsingAvoidsSourceEvaluationAndComparisonIsExplicit(t *testing.T) {
-	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
+	manager := newSchemaDatabase(t, sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
 	t.Cleanup(func() { _ = manager.Close() })
 	ctx := context.Background()
 	if _, err := manager.InitializeCatalog(ctx); err != nil {
@@ -646,13 +621,13 @@ func TestTableBrowsingAvoidsSourceEvaluationAndComparisonIsExplicit(t *testing.T
 }
 
 func TestCatalogColumnsPreserveAuthoredOrderAfterRetirement(t *testing.T) {
-	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
+	manager := newSchemaDatabase(t, sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
 	t.Cleanup(func() { _ = manager.Close() })
 	ctx := context.Background()
 	if _, err := manager.InitializeCatalog(ctx); err != nil {
 		t.Fatal(err)
 	}
-	descriptor := TableDescriptor{
+	descriptor := schematest.Descriptor{
 		FormatVersion: 1,
 		TableID:       "acme__orders__ordered",
 		Columns: []ColumnDescriptor{
@@ -689,5 +664,101 @@ func TestCatalogColumnsPreserveAuthoredOrderAfterRetirement(t *testing.T) {
 	}
 	if detail.Columns[1].State != "retired" {
 		t.Fatalf("retired column = %#v", detail.Columns[1])
+	}
+}
+
+func sqliteConfig(location string) Config {
+	return Config{Backend: BackendSQLite, Location: location, MaximumOpenConnections: 32, MaximumIdleConnections: 8}
+}
+func newSchemaDatabase(t *testing.T, config Config) *Manager {
+	t.Helper()
+	manager := New(config)
+	schematest.Attach(t, manager)
+	return manager
+}
+func canonicalJSON(value any) ([]byte, error) {
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buffer.Bytes(), []byte("\n")), nil
+}
+
+type ColumnDescriptor = schematest.ColumnDescriptor
+type IndexDescriptor = schematest.IndexDescriptor
+type DefaultDescriptor = schematest.DefaultDescriptor
+type ReferenceDescriptor = schematest.ReferenceDescriptor
+
+func TestSchemaFailurePreservesNativeSQLAndOpaqueMetadata(t *testing.T) {
+	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
+	defer manager.Close()
+	ctx := context.Background()
+	manager.SetSchemaExecutor(func(context.Context, SchemaRequest) (json.RawMessage, error) {
+		return nil, errors.New("db package is broken")
+	})
+	if _, err := manager.InitializeCatalog(ctx); err == nil {
+		t.Fatal("accepted failed schema bootstrap")
+	}
+	token, err := manager.BeginTransaction(ctx, "repair", TransactionSettings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := manager.RunStatement(ctx, "repair", StatementRequest{Statement: "SELECT 1", ReturnRows: true, Transaction: token})
+	if err != nil || len(result.Rows) != 1 {
+		t.Fatalf("native repair SQL unavailable: %#v %v", result, err)
+	}
+	if err := manager.FinishTransaction(ctx, "repair", token, true); err != nil {
+		t.Fatal(err)
+	}
+
+	encoded := []byte(`{"table_id":"acme__future__values","columns":[{"name":"quantity","logical_type":"future_type","custom_storage":{"unit":"litre"}}],"new_schema_feature":true}`)
+	var descriptor TableDescriptor
+	if err := json.Unmarshal(encoded, &descriptor); err != nil {
+		t.Fatal(err)
+	}
+	roundTrip, err := json.Marshal(descriptor)
+	if err != nil || !bytes.Equal(roundTrip, encoded) {
+		t.Fatalf("kernel changed package-owned descriptor: %s: %v", roundTrip, err)
+	}
+}
+
+func TestSchemaCatalogAndPhysicalReadsRespectNativeRowLimits(t *testing.T) {
+	config := sqliteConfig(filepath.Join(t.TempDir(), "system.db"))
+	config.MaximumResultRows = 2
+	manager := newSchemaDatabase(t, config)
+	t.Cleanup(func() { _ = manager.Close() })
+	ctx := context.Background()
+	if _, err := manager.InitializeCatalog(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var tables []EvaluatedTable
+	for _, name := range []string{"first", "second", "third"} {
+		descriptor := testDescriptor()
+		descriptor.TableID = "acme__orders__" + name
+		descriptor.Indexes[0].Name = name + "_status"
+		table := evaluatedTable(t, descriptor)
+		table.SourceModule = "/workspace/packages/acme/orders/tables/" + name + ".ts"
+		tables = append(tables, table)
+	}
+	if _, err := manager.Synchronize(ctx, tables, SynchronizationOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.CompleteInitialization(ctx, map[string]string{"acme/orders": tables[0].SourceCommit}); err != nil {
+		t.Fatal(err)
+	}
+	if listed, err := manager.ListTables(ctx); err != nil || len(listed) != 3 {
+		t.Fatalf("catalog scan: %d tables, %v", len(listed), err)
+	}
+	if detail, err := manager.InspectTable(ctx, tables[0].Descriptor.TableID); err != nil || len(detail.Physical) != 4 || len(detail.Differences) != 0 {
+		t.Fatalf("physical scan: %+v, %v", detail, err)
+	}
+	if err := manager.ValidateCatalogReferences(ctx); err != nil {
+		t.Fatal(err)
+	}
+	results, err := manager.Synchronize(ctx, tables[:1], SynchronizationOptions{RetireTables: []string{"acme__orders__missing"}})
+	if err == nil || len(results) != 1 || results[0].State != "synchronized" {
+		t.Fatalf("retirement failure lost completed table results: %+v, %v", results, err)
 	}
 }

@@ -107,7 +107,6 @@ type Manager struct {
 	openErr              error
 	statusMu             sync.RWMutex
 	status               Status
-	schemaMu             sync.Mutex
 	deploymentMu         sync.Mutex
 	activationOperations sync.Map
 	transactionsMu       sync.Mutex
@@ -117,6 +116,7 @@ type Manager struct {
 	evaluator            DefinitionEvaluator
 	fullSynchronizer     FullSynchronizer
 	sourceEvaluator      SourceEvaluator
+	schemaExecutor       SchemaExecutor
 }
 
 // New prepares the configured database without requiring it to be reachable.

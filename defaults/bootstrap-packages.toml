@@ -21,6 +21,10 @@ id = "the8020/demo"
 source = "https://github.com/the8020/demo.git"
 
 [[packages]]
+id = "the8020/deployments"
+source = "https://github.com/the8020/deployments.git"
+
+[[packages]]
 id = "the8020/dev-core"
 source = "https://github.com/the8020/dev-core.git"
 

@@ -4,9 +4,7 @@ package secrets
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -127,28 +125,6 @@ func (s *Store) Set(ctx context.Context, name, value string) (Summary, error) {
 		return Summary{}, err
 	}
 	return Summary{Name: name, UpdatedAt: now}, nil
-}
-
-// EnsureRandom returns one shared random secret, creating it exactly once.
-// Concurrent kernels may generate candidates, but all read the winning row.
-func (s *Store) EnsureRandom(ctx context.Context, name string, size int) (Secret, error) {
-	name, err := normalizeName(name)
-	if err != nil {
-		return Secret{}, err
-	}
-	if size < 16 || size > maximumValueSize {
-		return Secret{}, errors.New("random secret size must be between 16 and 65536 bytes")
-	}
-	value := make([]byte, size)
-	if _, err := rand.Read(value); err != nil {
-		return Secret{}, err
-	}
-	now := s.now().UTC()
-	encoded := base64.RawURLEncoding.EncodeToString(value)
-	if _, err := s.database.ExecContext(ctx, `INSERT INTO `+secretsTable+` ("name", "value", "updatedAt") VALUES ($1, $2, $3) ON CONFLICT ("name") DO NOTHING`, name, encoded, database.EncodeTime(s.database, now)); err != nil {
-		return Secret{}, err
-	}
-	return s.Get(name)
 }
 
 func normalizeName(value string) (string, error) {

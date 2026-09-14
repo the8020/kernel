@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"the8020/kernel/execution"
-	"the8020/kernel/execution/supervisor"
 	"the8020/kernel/packages"
 )
 
@@ -23,16 +22,14 @@ import (
 // database row. The kernel supplies no defaults and persists no configuration.
 // Durations use the runtime's existing JSON nanosecond convention.
 type Specification struct {
-	ServiceID     string                     `json:"service_id"`
-	Version       uint64                     `json:"version"`
-	CodeRevision  string                     `json:"code_revision"`
-	EntrypointURL string                     `json:"entrypoint"`
-	Enabled       bool                       `json:"enabled"`
-	Description   string                     `json:"description,omitempty"`
-	OpenAPI       supervisor.OpenAPIMetadata `json:"openapi"`
-	Access        AccessPolicy               `json:"access"`
-	Effective     Configuration              `json:"configuration"`
-
+	ServiceID           string            `json:"service_id"`
+	Version             uint64            `json:"version"`
+	CodeRevision        string            `json:"code_revision"`
+	EntrypointURL       string            `json:"entrypoint"`
+	Enabled             bool              `json:"enabled"`
+	Description         string            `json:"description,omitempty"`
+	Access              AccessPolicy      `json:"access"`
+	Effective           Configuration     `json:"configuration"`
 	Identity            packages.Identity `json:"-"`
 	Release             string            `json:"-"`
 	RestartRevision     uint64            `json:"-"`

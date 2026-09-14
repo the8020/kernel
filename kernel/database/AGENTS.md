@@ -2,14 +2,17 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 # Purpose
 
-- Own the kernel system-database pool, built-in 80|20 catalog, physical schema
-  synchronization, runtime SQL execution, and transaction scopes.
+- Own the system-database pool, physical value transport, bounded SQL execution,
+  transaction scopes, and native delegation to package-owned schema operations.
 
 # Ownership
 
-- Open SQLite or PostgreSQL, apply pool/result policy, expose credential-free
-  status, bootstrap `_8020_*`, introspect physical schemas, and store normalized
-  package table descriptors.
+- Open SQLite or PostgreSQL, apply pool/result policy, and expose
+  credential-free status. `the8020/db` owns schema SQL, introspection, logical
+  validation, catalog bootstrap/storage, synchronization, retirement, and trim.
+- `schema.go` delegates to the ordinary db schema job and retains native
+  activation/publication locks, source identities, and cached readiness. Go
+  forwards complete descriptors opaquely; new logical fields do not change it.
 - The Go kernel is the only holder of database credentials. Sandboxed code uses
   the authenticated runtime callback API.
 - Kernel-owned domain repositories receive only the small internal `Store`
@@ -22,14 +25,16 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 - SQLite is the single-node default. It stores `system.db` beneath the mapped
   instance database root, uses strict tables and WAL, and serializes schema work
-  locally. PostgreSQL uses a database advisory lock for schema/catalog mutation;
-  installed activation does not retain it while awaiting package hooks.
+  through its writer transaction. Package-owned PostgreSQL schema transactions
+  share the native publication key and skip acquisition only when the native
+  request already owns it; installed activation does not retain a schema
+  transaction while awaiting package hooks.
 - Readiness distinguishes `UNAVAILABLE`, `CONNECTED`, `INITIALIZING`, `READY`,
   and `INITIALIZATION_FAILED`. Catalog failure blocks the service plane but
   never the command socket or raw SQL recovery path.
-- Embedded engine SQL owns only `_8020_catalog`, `_8020_tables`,
-  `_8020_columns`, `_8020_dependencies`, and `_8020_pending_deployment`. Every
-  non-catalog table comes from an activated package TypeScript descriptor.
+- The db package owns `_8020_catalog`, `_8020_tables`, `_8020_columns`,
+  `_8020_dependencies`, and `_8020_pending_deployment`. Their SQL is absent from
+  the kernel. Every other table comes from activated package descriptors.
 - A fresh database synchronizes all installed definitions in bounded batches
   before becoming initialized. An initialized ordinary boot validates only the
   small catalog contract and pending deployment state; full definition and drift
@@ -64,7 +69,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   application claims can fail promptly. Mutations return an insert ID only when
   the caller explicitly identifies an insert, preventing connection-local stale
   IDs from leaking into updates or deletes. Values use explicit lossless tags
-  for bigint, decimal, datetime, bytes, and JSON.
+  for bigint, datetime, bytes, and JSON. Decimal validation/scaling belongs to
+  db and uses ordinary bigint parameters.
 - Kernel-owned repositories normalize engine-native stored values through this
   package's shared encoders and decoders. Sandboxed package CRUD uses the
   descriptor-aware `/p/the8020/db/mod.ts` codec; deliberately raw SQL results
@@ -83,11 +89,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - SQLite file permissions are established after the first successful open, not
   re-applied by every readiness ping. Readiness uses lightweight connection and
   catalog checks rather than repeated full definition scans.
-- Decimals are canonical strings in TypeScript and signed scaled 64-bit integers
-  in both engines. Integers are physically signed 64-bit but limited to the
-  JavaScript safe range. Datetimes are UTC milliseconds. Physical foreign keys,
-  streaming, savepoints, destructive automatic migration, and a generalized
-  migration framework are intentionally deferred.
+- Native transport preserves signed 64-bit integers and UTC millisecond
+  timestamps. Logical decimal/integer restrictions and SQL constraints belong to
+  db. Physical foreign keys, streaming, savepoints, destructive automatic
+  migration, and a generalized migration framework are intentionally deferred.
 
 # Work Guidance
 
@@ -101,13 +106,13 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 # Verification
 
-- Tests cover catalog readiness/idempotence/failure, existing-catalog startup
-  alongside a held writer, SQLite WAL and schema synchronization, naming and
-  descriptors, safe/unsafe changes, drift, retirement/trim, pending recovery,
-  deployment outcome visibility, logical references, exact values,
-  deadline-bound transaction acquisition and cleanup, application/kernel pool
-  isolation, concurrent runtime read load, pool pressure, and configurable
-  result bounds.
+- With Deno on PATH, tests run the actual sibling db implementation and cover
+  catalog readiness/idempotence/failure, existing-catalog startup alongside a
+  held writer, SQLite WAL and schema synchronization, naming and descriptors,
+  safe/unsafe changes, drift, retirement/trim, pending recovery, deployment
+  outcome visibility, logical references, exact values, deadline-bound
+  transaction acquisition and cleanup, application/kernel pool isolation,
+  concurrent runtime read load, pool pressure, and configurable result bounds.
 - PostgreSQL JSON parameters and short conditional claims have an optional live
   regression test. Set `THE8020_TEST_POSTGRES_LOCATION` and, if needed,
   `THE8020_TEST_POSTGRES_USERNAME` to a disposable PostgreSQL database; the test
@@ -116,5 +121,7 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 # Child DOX Index
 
-- [evaluator/AGENTS.md](evaluator/AGENTS.md): sandboxed activated-package
-  definition evaluation.
+- [evaluator/AGENTS.md](evaluator/AGENTS.md): confined source evaluation and
+  ordinary package-owned schema job submission.
+- [schematest/AGENTS.md](schematest/AGENTS.md): cross-language schema regression
+  bridge running ordinary package sources against native SQL.

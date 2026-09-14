@@ -36,7 +36,6 @@ type Control interface {
 	InvokeWorker(context.Context, model.SandboxSpec, string, string, string, any, execution.User) (supervisor.WorkerInvocationResult, error)
 	RunJob(context.Context, model.SandboxSpec, string, []any, map[string]string, []string) (supervisor.JobResult, error)
 	ConfigureService(context.Context, model.SandboxSpec, string, []string, int) error
-	ServiceOpenAPI(context.Context, model.SandboxSpec, string) (map[string]any, error)
 	DispatchService(context.Context, model.SandboxSpec, string, *http.Request) (*http.Response, error)
 	ProxyServiceWebSocket(context.Context, model.SandboxSpec, string, http.ResponseWriter, *http.Request, func(*http.Response) error) error
 }
@@ -395,19 +394,6 @@ func (m *Manager) ConfigureService(ctx context.Context, sandboxID, serviceID str
 		return errors.New("sandbox is not a service group")
 	}
 	return m.control.ConfigureService(ctx, inspection.Spec, serviceID, workerIDs, concurrencyPerWorker)
-}
-func (m *Manager) ServiceOpenAPI(ctx context.Context, sandboxID, serviceID string) (map[string]any, error) {
-	inspection, err := m.sandboxes.Inspect(ctx, sandboxID)
-	if err != nil {
-		return nil, err
-	}
-	if err := requireWorkerRuntime(inspection); err != nil {
-		return nil, err
-	}
-	if inspection.Spec.WorkloadType != model.WorkloadService {
-		return nil, errors.New("sandbox is not a service group")
-	}
-	return m.control.ServiceOpenAPI(ctx, inspection.Spec, serviceID)
 }
 func (m *Manager) DispatchService(ctx context.Context, sandboxID, serviceID string, request *http.Request) (*http.Response, error) {
 	inspection, err := m.sandboxes.Inspect(ctx, sandboxID)

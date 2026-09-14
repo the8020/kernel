@@ -17,10 +17,12 @@ import (
 	"time"
 
 	"the8020/kernel/database"
+	"the8020/kernel/database/schematest"
 	"the8020/kernel/deployment"
 	"the8020/kernel/execution/jobs"
 	"the8020/kernel/execution/supervisor"
 	workspacepackages "the8020/kernel/packages"
+	"the8020/kernel/sandbox/model"
 )
 
 type fakeJobs struct {
@@ -28,7 +30,7 @@ type fakeJobs struct {
 	malformed    bool
 	failAt       int
 	dependencies map[string][]string
-	descriptor   func(evaluationItem) database.TableDescriptor
+	descriptor   func(evaluationItem) schematest.Descriptor
 	beforeRun    func(context.Context, evaluationRequest) error
 }
 
@@ -62,10 +64,10 @@ func (f *fakeJobs) Run(ctx context.Context, _, _ string, options jobs.Options) (
 	}
 	tables := make([]database.EvaluatedTable, 0, len(request.Tables))
 	for _, item := range request.Tables {
-		descriptor := database.TableDescriptor{
+		descriptor := schematest.Descriptor{
 			FormatVersion: 1, TableID: item.ExpectedTableID,
-			Columns:    []database.ColumnDescriptor{{Name: "id", LogicalType: "text", PrimaryKey: true}},
-			PrimaryKey: []string{"id"}, Indexes: []database.IndexDescriptor{},
+			Columns:    []schematest.ColumnDescriptor{{Name: "id", LogicalType: "text", PrimaryKey: true}},
+			PrimaryKey: []string{"id"}, Indexes: []schematest.IndexDescriptor{},
 		}
 		if f.descriptor != nil {
 			descriptor = f.descriptor(item)
@@ -73,7 +75,7 @@ func (f *fakeJobs) Run(ctx context.Context, _, _ string, options jobs.Options) (
 		encoded, _ := json.Marshal(descriptor)
 		hash := sha256.Sum256(encoded)
 		tables = append(tables, database.EvaluatedTable{
-			Descriptor: descriptor, DescriptorJSON: string(encoded), DescriptorHash: hex.EncodeToString(hash[:]),
+			Descriptor: schematest.Transport(descriptor), DescriptorJSON: string(encoded), DescriptorHash: hex.EncodeToString(hash[:]),
 			SourceModule: item.Module, SourcePackage: item.PackageID, SourceCommit: item.PackageCommit,
 			Dependencies: append([]string(nil), item.Dependencies...),
 		})
@@ -110,6 +112,7 @@ func testEvaluator(t *testing.T, tableCount int) (*Evaluator, *fakeJobs, *databa
 		MaximumOpenConnections: 4, MaximumIdleConnections: 1,
 	})
 	t.Cleanup(func() { _ = databaseManager.Close() })
+	schematest.Attach(t, databaseManager)
 	if _, err := databaseManager.InitializeCatalog(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -447,16 +450,16 @@ func TestPendingDeploymentRecoveryAlignsTheActivePackageTree(t *testing.T) {
 	if _, err := manager.BeginDeployment(ctx, "act-0123456789", []database.DeploymentCandidate{{PackageID: "acme/orders", CandidateCommit: "candidate"}}); err != nil {
 		t.Fatal(err)
 	}
-	descriptor := database.TableDescriptor{
+	descriptor := schematest.Descriptor{
 		FormatVersion: 1, TableID: tableID,
-		Columns:    []database.ColumnDescriptor{{Name: "id", LogicalType: "text", PrimaryKey: true}},
+		Columns:    []schematest.ColumnDescriptor{{Name: "id", LogicalType: "text", PrimaryKey: true}},
 		PrimaryKey: []string{"id"},
-		Indexes:    []database.IndexDescriptor{{Name: "candidate_id_index", Columns: []string{"id"}}},
+		Indexes:    []schematest.IndexDescriptor{{Name: "candidate_id_index", Columns: []string{"id"}}},
 	}
 	encoded, _ := json.Marshal(descriptor)
 	digest := sha256.Sum256(encoded)
 	candidate := database.EvaluatedTable{
-		Descriptor: descriptor, DescriptorJSON: string(encoded), DescriptorHash: hex.EncodeToString(digest[:]),
+		Descriptor: schematest.Transport(descriptor), DescriptorJSON: string(encoded), DescriptorHash: hex.EncodeToString(digest[:]),
 		SourceModule:  packageMountRoot + "/acme/orders/tables/" + tableFile(0),
 		SourcePackage: "acme/orders", SourceCommit: "candidate",
 		Dependencies: []string{packageMountRoot + "/acme/orders/tables/" + tableFile(0)},
@@ -571,4 +574,33 @@ func commitRepository(t *testing.T, root, message string) string {
 		t.Fatal(err)
 	}
 	return string(output[:len(output)-1])
+}
+
+type schemaJobFunc func(context.Context, string, string, jobs.Options) (jobs.Record, error)
+
+func (f schemaJobFunc) Run(ctx context.Context, name, entry string, options jobs.Options) (jobs.Record, error) {
+	return f(ctx, name, entry, options)
+}
+
+func TestSchemaApplicationUsesOrdinarySQLJobAndCandidateMounts(t *testing.T) {
+	manager := database.New(database.Config{Backend: database.BackendSQLite, Location: filepath.Join(t.TempDir(), "system.db")})
+	defer manager.Close()
+	calls := 0
+	evaluator := &Evaluator{database: manager, jobs: schemaJobFunc(func(_ context.Context, name, entry string, options jobs.Options) (jobs.Record, error) {
+		calls++
+		if name != "database-schema" || entry != "file:///workspace/packages/the8020/db/internal/schema.ts" || options.DatabaseAccess == "none" || options.Permissions != nil || options.Parallelism != 1 || options.Reuse == nil || !*options.Reuse {
+			t.Fatalf("schema application is not an ordinary reusable SQL job: %+v", options)
+		}
+		if !options.Arguments[0].(database.SchemaRequest).PublicationLockHeld {
+			t.Fatal("lost native publication lock ownership")
+		}
+		if options.ReleaseID != "candidate" || len(options.Mounts) != 1 {
+			t.Fatalf("candidate schema source was lost: %+v", options)
+		}
+		return jobs.Record{Result: map[string]any{"value": nil}}, nil
+	})}
+	ctx := context.WithValue(context.Background(), schemaSourceContextKey{}, schemaSource{release: "candidate", mounts: []model.Mount{{}}})
+	if _, err := evaluator.RunSchema(ctx, database.SchemaRequest{Operation: "initialize", PublicationLockHeld: true}); err != nil || calls != 1 {
+		t.Fatalf("schema job: %d %v", calls, err)
+	}
 }

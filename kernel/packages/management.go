@@ -65,6 +65,7 @@ type SourceInspection struct {
 
 type PackageVersion struct {
 	Commit      string   `json:"commit"`
+	Parents     []string `json:"parents"`
 	ShortCommit string   `json:"short_commit"`
 	AuthoredAt  string   `json:"authored_at"`
 	Author      string   `json:"author"`
@@ -229,11 +230,14 @@ func (s *Store) ListPackageVersions(ctx context.Context, packageID string, limit
 	if err != nil {
 		return PackageVersions{}, fmt.Errorf("read installed package commit: %w", err)
 	}
-	selected, err := s.resolveDesiredCommit(ctx, repositoryPath, entry, false)
-	if err != nil {
-		return PackageVersions{}, err
+	selected := current
+	if !entry.Local {
+		selected, err = s.resolveDesiredCommit(ctx, repositoryPath, entry, false)
+		if err != nil {
+			return PackageVersions{}, err
+		}
 	}
-	format := "%H%x1f%h%x1f%aI%x1f%an%x1f%s%x1f%D%x1e"
+	format := "%H%x1f%h%x1f%aI%x1f%an%x1f%s%x1f%D%x1f%P%x1e"
 	output, err := s.runGit(ctx, repositoryPath, nil, "log", "--all", "--max-count="+strconv.Itoa(limit), "--date=iso-strict", "--pretty=format:"+format)
 	if err != nil {
 		return PackageVersions{}, fmt.Errorf("list package versions: %w: %s", err, cleanGitOutput(output))
@@ -241,7 +245,7 @@ func (s *Store) ListPackageVersions(ctx context.Context, packageID string, limit
 	versions := []PackageVersion{}
 	for _, raw := range strings.Split(output, "\x1e") {
 		fields := strings.Split(strings.TrimSpace(raw), "\x1f")
-		if len(fields) != 6 {
+		if len(fields) != 7 {
 			continue
 		}
 		tags := []string{}
@@ -252,23 +256,23 @@ func (s *Store) ListPackageVersions(ctx context.Context, packageID string, limit
 			}
 		}
 		sort.Strings(tags)
-		versions = append(versions, PackageVersion{Commit: fields[0], ShortCommit: fields[1], AuthoredAt: fields[2], Author: fields[3], Subject: fields[4], Tags: tags, Current: fields[0] == current, Selected: fields[0] == selected})
+		versions = append(versions, PackageVersion{Commit: fields[0], Parents: append([]string{}, strings.Fields(fields[6])...), ShortCommit: fields[1], AuthoredAt: fields[2], Author: fields[3], Subject: fields[4], Tags: tags, Current: fields[0] == current, Selected: fields[0] == selected})
 	}
 	return PackageVersions{PackageID: packageID, Source: entry.Source, CurrentCommit: current, SelectedCommit: selected, Versions: versions}, nil
 }
 
 func (s *Store) SynchronizePackages(ctx context.Context, packageIDs []string) ([]PackageSynchronization, error) {
-	return s.synchronizePackages(ctx, packageIDs, "")
+	return s.synchronizePackages(ctx, packageIDs, "", "")
 }
 
-// SynchronizePackagesWithCredential uses one invocation-scoped Git token
+// SynchronizePackagesWithCredential uses one invocation-scoped Git token or Basic password
 // without adding it to package state. The caller owns acquiring and discarding
-// the token.
-func (s *Store) SynchronizePackagesWithCredential(ctx context.Context, packageIDs []string, token string) ([]PackageSynchronization, error) {
-	return s.synchronizePackages(ctx, packageIDs, token)
+// the credential. An empty username uses the conventional token username.
+func (s *Store) SynchronizePackagesWithCredential(ctx context.Context, packageIDs []string, token, username string) ([]PackageSynchronization, error) {
+	return s.synchronizePackages(ctx, packageIDs, token, username)
 }
 
-func (s *Store) synchronizePackages(ctx context.Context, packageIDs []string, token string) ([]PackageSynchronization, error) {
+func (s *Store) synchronizePackages(ctx context.Context, packageIDs []string, token, username string) ([]PackageSynchronization, error) {
 	if len(packageIDs) == 0 {
 		entries, err := s.ListPackageIndexes()
 		if err != nil {
@@ -294,9 +298,9 @@ func (s *Store) synchronizePackages(ctx context.Context, packageIDs []string, to
 	sort.Strings(ids)
 	results := make([]PackageSynchronization, 0, len(ids))
 	for _, packageID := range ids {
-		result, err := s.synchronizePackage(ctx, packageID, token)
+		result, err := s.synchronizePackage(ctx, packageID, token, username)
 		if err != nil {
-			result.PackageID, result.Error, result.Success = packageID, redactGitCredential(err.Error(), token), false
+			result.PackageID, result.Error, result.Success = packageID, redactGitCredential(err.Error(), token, username), false
 		} else {
 			result.Success = true
 		}
@@ -308,7 +312,7 @@ func (s *Store) synchronizePackages(ctx context.Context, packageIDs []string, to
 	return results, nil
 }
 
-func (s *Store) synchronizePackage(ctx context.Context, packageID, transientToken string) (PackageSynchronization, error) {
+func (s *Store) synchronizePackage(ctx context.Context, packageID, transientToken, username string) (PackageSynchronization, error) {
 	unlock, err := s.lockPackage(ctx, packageID)
 	if err != nil {
 		return PackageSynchronization{}, err
@@ -359,7 +363,7 @@ func (s *Store) synchronizePackage(ctx context.Context, packageID, transientToke
 	}
 	defer os.RemoveAll(stageRoot)
 	stage := filepath.Join(stageRoot, "repository")
-	authentication, err := s.repositoryAuthenticationWithCredential(packageID, entry.Source, transientToken)
+	authentication, err := s.repositoryAuthenticationWithCredential(packageID, entry.Source, transientToken, username)
 	if err != nil {
 		return result, err
 	}

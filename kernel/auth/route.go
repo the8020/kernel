@@ -43,8 +43,8 @@ func (s *Signer) SignRoute(target RouteTarget) (string, error) {
 		RouteTarget:      target,
 		RegisteredClaims: jwt.RegisteredClaims{Issuer: TokenIssuer, Audience: jwt.ClaimStrings{TokenAudience}},
 	})
-	token.Header["typ"], token.Header["kid"] = RouteTokenType, keyFingerprint(s.key)
-	return token.SignedString(s.key)
+	token.Header["typ"], token.Header["kid"] = RouteTokenType, keyFingerprint(s.routing)
+	return token.SignedString(s.routing)
 }
 
 func (s *Signer) VerifyRoute(encoded string) (RouteTarget, error) {
@@ -55,10 +55,10 @@ func (s *Signer) VerifyRoute(encoded string) (RouteTarget, error) {
 	defer s.mu.RUnlock()
 	claims := &routeClaims{}
 	token, err := jwt.ParseWithClaims(encoded, claims, func(token *jwt.Token) (any, error) {
-		if token.Header["typ"] != RouteTokenType || token.Header["kid"] != keyFingerprint(s.key) {
+		if token.Header["typ"] != RouteTokenType || token.Header["kid"] != keyFingerprint(s.routing) {
 			return nil, ErrInvalidRoute
 		}
-		return s.key.Public().(ed25519.PublicKey), nil
+		return s.routing.Public().(ed25519.PublicKey), nil
 	}, jwt.WithValidMethods([]string{jwt.SigningMethodEdDSA.Alg()}),
 		jwt.WithIssuer(TokenIssuer), jwt.WithAudience(TokenAudience), jwt.WithStrictDecoding())
 	if err != nil || !token.Valid || claims.RouteTarget.validate() != nil {

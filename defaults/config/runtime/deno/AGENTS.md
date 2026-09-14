@@ -2,7 +2,7 @@ Parent DOX: [kernel/defaults/config/runtime DOX](../AGENTS.md).
 
 # Purpose
 
-- Implement the package-neutral supervisor, Worker bootstrap, HTTP framework,
+- Implement the package-neutral supervisor, Worker bootstrap, HTTP transport,
   kernel SDK, and immutable execution-context SDK packaged in the service/job
   runtime image.
 
@@ -74,13 +74,13 @@ Parent DOX: [kernel/defaults/config/runtime DOX](../AGENTS.md).
 # Public API
 
 - `supervisor/main.ts` is the image entrypoint. Exported supervisor, Worker,
-  HTTP, and kernel modules are production SDKs or test APIs as documented by
-  their child contracts.
+  transport, and kernel modules are production SDKs or test APIs as documented
+  by their child contracts.
 
 # Dependencies
 
-- Pinned Deno, Web Platform APIs, generated generic protocol models, and the
-  bundled Hono/Zod HTTP framework; no Node, Bun, or `deno_core`.
+- Pinned Deno, Web Platform APIs, native Node compatibility APIs, and generated
+  generic protocol models. Application libraries belong to packages.
 
 # Non-Responsibilities
 
@@ -98,8 +98,6 @@ Parent DOX: [kernel/defaults/config/runtime DOX](../AGENTS.md).
 
 - [context/AGENTS.md](context/AGENTS.md): immutable package-facing execution
   context.
-- [http/AGENTS.md](http/AGENTS.md): generic Hono/Zod HTTP and WebSocket service
-  framework.
 - [identity/AGENTS.md](identity/AGENTS.md): shared operational ID encoding,
   generation, and validation.
 - [kernel/AGENTS.md](kernel/AGENTS.md): package-neutral Worker-to-kernel SDK and

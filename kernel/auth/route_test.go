@@ -77,8 +77,8 @@ func TestRouteValidationRequiresEveryTargetAndExactJWTProfile(t *testing.T) {
 			}
 			// A correctly signed token still has to satisfy the runtime ID contract.
 			token := jwt.NewWithClaims(jwt.SigningMethodEdDSA, routeClaims{RouteTarget: invalid, RegisteredClaims: jwt.RegisteredClaims{Issuer: TokenIssuer, Audience: jwt.ClaimStrings{TokenAudience}}})
-			token.Header["typ"], token.Header["kid"] = RouteTokenType, signer.Fingerprint()
-			encoded, err := token.SignedString(signer.key)
+			token.Header["typ"], token.Header["kid"] = RouteTokenType, keyFingerprint(signer.routing)
+			encoded, err := token.SignedString(signer.routing)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -89,8 +89,8 @@ func TestRouteValidationRequiresEveryTargetAndExactJWTProfile(t *testing.T) {
 	}
 	for _, typ := range []string{"JWT", TokenType, ""} {
 		token := jwt.NewWithClaims(jwt.SigningMethodEdDSA, routeClaims{RouteTarget: base, RegisteredClaims: jwt.RegisteredClaims{Issuer: TokenIssuer, Audience: jwt.ClaimStrings{TokenAudience}}})
-		token.Header["typ"], token.Header["kid"] = typ, signer.Fingerprint()
-		encoded, err := token.SignedString(signer.key)
+		token.Header["typ"], token.Header["kid"] = typ, keyFingerprint(signer.routing)
+		encoded, err := token.SignedString(signer.routing)
 		if err != nil {
 			t.Fatal(err)
 		}

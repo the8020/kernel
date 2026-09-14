@@ -301,10 +301,13 @@ func Run(parent context.Context, config Config) error {
 		}
 		serviceSet.PublishRuntime(runtimeServices)
 		if runtimeServices.Failure == "" {
-			if runtimeServices.Events != nil {
+			if runtimeServices.Events != nil && runtimeServices.ApplicationFailure == "" {
 				runtimeServices.Events.Start()
 			}
 			logger.Info("kernel runtime ready", "mode", runtimeServices.Isolation.SelectedMode)
+			if runtimeServices.ApplicationFailure != "" && runtimeContext.Err() == nil {
+				logger.Error("application initialization failed; native runtime repair is available", "error", runtimeServices.ApplicationFailure)
+			}
 		} else if runtimeContext.Err() == nil {
 			logger.Error("kernel runtime unavailable", "error", runtimeServices.Failure)
 		}

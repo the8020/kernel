@@ -80,10 +80,6 @@ func TestSQLiteCreatesPrivateInstanceDatabaseAndExecutesSQL(t *testing.T) {
 	if status.State != StateConnected {
 		t.Fatalf("pre-catalog status = %#v", status)
 	}
-	status, err = manager.InitializeCatalog(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
 	path := filepath.Join(root, "database", "system.db")
 	if status.State != StateConnected || status.Backend != BackendSQLite || status.Location != path {
 		t.Fatalf("status = %#v", status)
@@ -165,9 +161,6 @@ func TestConnectivityCheckPreservesCatalogFailureState(t *testing.T) {
 	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "database.db")))
 	t.Cleanup(func() { _ = manager.Close() })
 	ctx := context.Background()
-	if _, err := manager.InitializeCatalog(ctx); err != nil {
-		t.Fatal(err)
-	}
 	manager.SetInitializationFailure(ctx, fmt.Errorf("invalid package table"))
 	status, err := manager.Check(ctx)
 	if err != nil {

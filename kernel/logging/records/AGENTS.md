@@ -16,6 +16,10 @@ Parent DOX: [logging DOX](../AGENTS.md).
   escaped message, optional TAB plus JSON string-valued attributes, newline. The
   fixed source is `kernel`, `deno`, or `logd`; component names stay bounded.
   Parent contexts use `parent:ctx-*` to distinguish their relationship.
+- Declared object kinds are `service`, `module`, and `program`, matching
+  execution origins. `job` identifies the workload/operational ID, never an
+  object kind. Module-origin hook and direct-invocation diagnostics must
+  round-trip.
 - Execution records include the actual `@context.username` as `user:<username>`
   alongside their declared object. Capture this invocation-local value in jobs
   and services before forwarding. Omit it when no execution principal is known,
