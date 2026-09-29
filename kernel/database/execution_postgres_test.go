@@ -45,6 +45,13 @@ func TestPostgreSQLRuntimeJSONAndShortClaimLocks(t *testing.T) {
 	if len(result.Rows) != 1 || !reflect.DeepEqual(result.Rows[0][0], expected) {
 		t.Fatalf("JSON round trip=%#v", result)
 	}
+	if _, err := m.RunStatement(ctx, "insert-null", StatementRequest{Statement: `INSERT INTO ` + table + ` (id) VALUES (2)`}); err != nil {
+		t.Fatal(err)
+	}
+	result, err = m.RunStatement(ctx, "read-null", StatementRequest{Statement: `SELECT payload FROM ` + table + ` WHERE id=2`, ReturnRows: true})
+	if err != nil || len(result.Rows) != 1 || result.Rows[0][0] != nil {
+		t.Fatalf("JSON NULL=%#v, %v", result, err)
+	}
 	holder, err := m.BeginTransaction(ctx, "holder", TransactionSettings{})
 	if err != nil {
 		t.Fatal(err)

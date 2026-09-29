@@ -69,8 +69,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   application claims can fail promptly. Mutations return an insert ID only when
   the caller explicitly identifies an insert, preventing connection-local stale
   IDs from leaking into updates or deletes. Values use explicit lossless tags
-  for bigint, datetime, bytes, and JSON. Decimal validation/scaling belongs to
-  db and uses ordinary bigint parameters.
+  for bigint, datetime, bytes, and JSON; SQL NULL stays untagged `null` for
+  every column type. Decimal validation/scaling belongs to db and uses ordinary
+  bigint parameters.
 - Kernel-owned repositories normalize engine-native stored values through this
   package's shared encoders and decoders. Sandboxed package CRUD uses the
   descriptor-aware `/p/the8020/db/mod.ts` codec; deliberately raw SQL results

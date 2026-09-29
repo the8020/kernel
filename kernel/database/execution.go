@@ -388,7 +388,9 @@ func (m *Manager) runQuery(ctx context.Context, runner sqlRunner, statement stri
 
 func runtimeValue(value any, databaseType string) (any, error) {
 	switch typed := value.(type) {
-	case nil, bool, float64, string:
+	case nil:
+		return nil, nil
+	case bool, float64, string:
 		if strings.EqualFold(databaseType, "JSON") || strings.EqualFold(databaseType, "JSONB") {
 			var decoded any
 			if err := json.Unmarshal([]byte(fmt.Sprint(typed)), &decoded); err != nil {

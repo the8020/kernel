@@ -246,6 +246,14 @@ func TestRuntimeDatetimeUsesCanonicalUTCMilliseconds(t *testing.T) {
 	}
 }
 
+func TestRuntimeJSONNullRemainsNull(t *testing.T) {
+	for _, databaseType := range []string{"JSON", "JSONB"} {
+		if value, err := runtimeValue(nil, databaseType); err != nil || value != nil {
+			t.Fatalf("%s NULL = %#v, %v", databaseType, value, err)
+		}
+	}
+}
+
 func TestTransactionLockTimeoutIsBoundedAndConnectionSettingRestored(t *testing.T) {
 	manager := New(sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
 	defer manager.Close()
