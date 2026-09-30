@@ -74,6 +74,13 @@ prepare() {
   printf 'old runtime\n' > "$CASE_ROOT/instance/node/kernel/bin/runsc"
   printf 'private work\n' > "$CASE_ROOT/instance/users/admin/work.txt"
   touch "$CASE_ROOT/instance/node/kernel/runtime/images/rootless/smoke.json"
+  mkdir -p "$CASE_ROOT/instance/node/kernel/runtime/definitions" \
+    "$CASE_ROOT/runtime-state/definitions" "$CASE_ROOT/runtime-state/images/rootless"
+  printf 'old definitions\n' > "$CASE_ROOT/instance/node/kernel/runtime/definitions/mod.ts"
+  printf 'old image\n' > "$CASE_ROOT/instance/node/kernel/runtime/images/rootless/image.json"
+  printf 'new definitions\n' > "$CASE_ROOT/runtime-state/definitions/mod.ts"
+  printf 'new image\n' > "$CASE_ROOT/runtime-state/images/rootless/image.json"
+  printf 'release-2\n' > "$CASE_ROOT/runtime-state/id"
   touch "$CASE_ROOT/instance/kernel.toml"
   while IFS= read -r line; do
     case "$line" in
@@ -82,6 +89,7 @@ prepare() {
       readonly\ DENO=*) printf 'readonly DENO=%q\n' "$(command -v deno)" ;;
       readonly\ ADMIN=*) printf 'readonly ADMIN=%q\n' "$TEST_ROOT/bin/admin" ;;
       readonly\ RUNTIME_BIN=*) printf 'readonly RUNTIME_BIN=%q\n' "$CASE_ROOT/runtime-bin" ;;
+      readonly\ RUNTIME_STATE=*) printf 'readonly RUNTIME_STATE=%q\n' "$CASE_ROOT/runtime-state" ;;
       readonly\ PORTABLE_SMOKE=*) printf 'readonly PORTABLE_SMOKE=%q\n' "$TEST_ROOT/bin/smoke" ;;
       *) printf '%s\n' "$line" ;;
     esac
@@ -117,6 +125,11 @@ wait_for '80|20 is ready' "$CASE_ROOT/output"
 [[ -f "$CASE_ROOT/instance/node/docker/initial-user.done" ]]
 [[ -L "$CASE_ROOT/instance/node/kernel/bin" ]]
 grep -Fxq 'private work' "$CASE_ROOT/instance/users/admin/work.txt"
+grep -Fq 'startup: refreshing the platform runtime from the image' "$CASE_ROOT/output"
+grep -Fxq 'new definitions' "$CASE_ROOT/instance/node/kernel/runtime/definitions/mod.ts"
+grep -Fxq 'new image' "$CASE_ROOT/instance/node/kernel/runtime/images/rootless/image.json"
+grep -Fxq 'release-2' "$CASE_ROOT/instance/node/kernel/runtime/.image-runtime-state"
+! compgen -G "$CASE_ROOT/instance/node/kernel/runtime/.refresh-*" >/dev/null
 grep -Fq 'initial user bootstrap skipped' "$CASE_ROOT/output"
 grep -Fxq 'http://127.0.0.1:18080/the8020/uui/login/' "$CASE_ROOT/curl.args"
 grep -Fxq -- '--noproxy' "$CASE_ROOT/curl.args"
@@ -160,6 +173,7 @@ bash "$CASE_ROOT/entrypoint.sh" > "$CASE_ROOT/output" 2>&1 &
 entrypoint_pid=$!
 wait_for '80|20 is ready' "$CASE_ROOT/output"
 [[ ! -f "$CASE_ROOT/users-calls" && ! -f "$CASE_ROOT/user-created" ]]
+! grep -Fq 'refreshing the platform runtime' "$CASE_ROOT/output"
 [[ -L "$CASE_ROOT/instance/node/kernel/bin" ]]
 grep -Fxq 'private work' "$CASE_ROOT/instance/users/admin/work.txt"
 ! grep -Fq 'waiting for package initialization and user commands' "$CASE_ROOT/output"
@@ -218,6 +232,38 @@ fi
 [[ ! -f "$CASE_ROOT/user-created" ]]
 [[ ! -f "$CASE_ROOT/instance/node/docker/initial-user.done" ]]
 
+prepare interrupted-refresh
+printf '%s\n' 200 > "$CASE_ROOT/http-status"
+# A refresh interrupted after moving the old tree aside leaves no recorded
+# identity for the new release; the next start must rebuild the runtime.
+runtime="$CASE_ROOT/instance/node/kernel/runtime"
+mv "$runtime/definitions" "$runtime/.refresh-old-definitions"
+mkdir "$runtime/.refresh-new-images"
+printf 'release-1\n' > "$runtime/.image-runtime-state"
+bash "$CASE_ROOT/entrypoint.sh" > "$CASE_ROOT/output" 2>&1 &
+entrypoint_pid=$!
+wait_for '80|20 is ready' "$CASE_ROOT/output"
+grep -Fxq 'new definitions' "$runtime/definitions/mod.ts"
+grep -Fxq 'new image' "$runtime/images/rootless/image.json"
+grep -Fxq 'release-2' "$runtime/.image-runtime-state"
+! compgen -G "$runtime/.refresh-*" >/dev/null
+kill -TERM "$entrypoint_pid"
+wait "$entrypoint_pid" 2>/dev/null || true
+entrypoint_pid=""
+
+prepare legacy-image
+printf '%s\n' 200 > "$CASE_ROOT/http-status"
+rm -rf "$CASE_ROOT/runtime-state"
+bash "$CASE_ROOT/entrypoint.sh" > "$CASE_ROOT/output" 2>&1 &
+entrypoint_pid=$!
+wait_for '80|20 is ready' "$CASE_ROOT/output"
+! grep -Fq 'refreshing the platform runtime' "$CASE_ROOT/output"
+grep -Fxq 'old definitions' "$CASE_ROOT/instance/node/kernel/runtime/definitions/mod.ts"
+[[ ! -e "$CASE_ROOT/instance/node/kernel/runtime/.image-runtime-state" ]]
+kill -TERM "$entrypoint_pid"
+wait "$entrypoint_pid" 2>/dev/null || true
+entrypoint_pid=""
+
 prepare missing-curl
 if PATH=/nonexistent "$BASH" "$CASE_ROOT/entrypoint.sh" > "$CASE_ROOT/output" 2>&1; then
   echo 'entrypoint succeeded without its readiness dependency' >&2
@@ -225,4 +271,4 @@ if PATH=/nonexistent "$BASH" "$CASE_ROOT/entrypoint.sh" > "$CASE_ROOT/output" 2>
 fi
 grep -Fq 'curl is required for container startup' "$CASE_ROOT/output"
 
-echo 'Docker entrypoint checks passed: common runtime replacement without losing private work, fresh runtime smoke, one-time account bootstrap, restart bypass, failed-creation retry, HTTP readiness, diagnostics, and structural login-user detection.'
+echo 'Docker entrypoint checks passed: common runtime replacement without losing private work, image runtime refresh with interrupted-refresh recovery and legacy-image passthrough, fresh runtime smoke, one-time account bootstrap, restart bypass, failed-creation retry, HTTP readiness, diagnostics, and structural login-user detection.'

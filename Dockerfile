@@ -40,7 +40,14 @@ RUN kernel_tag=$(git describe --tags --exact-match HEAD) \
         /8020/node/kernel/runtime/tmp \
         /8020/node/kernel/runtime/verification-deno-cache \
     && mv /8020/node/kernel/bin /usr/local/share/the8020/runtime-bin \
-    && ln -s /usr/local/share/the8020/runtime-bin /8020/node/kernel/bin
+    && ln -s /usr/local/share/the8020/runtime-bin /8020/node/kernel/bin \
+    && install -d -m 0755 /usr/local/share/the8020/runtime-state \
+    && mv /8020/node/kernel/runtime/definitions /8020/node/kernel/runtime/images \
+      /usr/local/share/the8020/runtime-state/ \
+    && cd /usr/local/share/the8020/runtime-state \
+    && { cat ../release; cat images/*/image.json; \
+      tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - definitions; } \
+      | sha256sum | cut -d' ' -f1 > id
 
 FROM debian:trixie-slim
 

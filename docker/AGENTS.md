@@ -28,6 +28,18 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 - The deploy Dockerfile selects the newest kernel patch for its requested
   major.minor line before using the same installer and runtime payload folders.
 - Copy semantic directories rather than enumerating executables or helper files.
+- Dockerfiles move the initialized platform runtime,
+  `node/kernel/runtime/definitions/` and `images/`, to
+  `/usr/local/share/the8020/runtime-state/` and write its `id` from the release metadata, every `images/*/image.json`, and a
+  normalized archive of the definitions. Before the smoke, the entrypoint
+  compares that `id` with the instance's
+  `node/kernel/runtime/.image-runtime-state` and, when they differ or either
+  directory is missing, replaces exactly those two directories through staged
+  siblings and renames, recording the identity last so an interrupted refresh
+  repeats. It runs before the kernel starts and never touches `users/`,
+  `packages/`, or other instance state; development sandboxes keep their own
+  system roots. Images without `runtime-state/` leave the instance runtime
+  unchanged.
 - The initialized instance includes one common `node/kernel/bin/runsc` for
   services, jobs and development. `.development/bin/` contains
   kernel/admin/logd; do not add another runsc to the Docker executable payload.
@@ -63,7 +75,10 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   user removal, retry after failed creation, and rejection of invalid user
   responses without a completion marker. It also replaces an old volume's
   runtime directory with the image payload link, repeats the smoke on restart,
-  and verifies private work remains intact.
+  and verifies private work remains intact. Runtime cases refresh stale
+  definitions and images from the image payload, skip an unchanged identity on
+  restart, recover an interrupted refresh, and leave a legacy image's instance
+  runtime untouched.
 - Build both the version-selected deploy image and the local tagged-checkout
   kernel image; exercise first-user bootstrap on a fresh instance.
 

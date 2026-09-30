@@ -5,6 +5,9 @@ readonly INSTANCE_ROOT=/8020
 readonly KERNEL=/usr/local/bin/kernel
 readonly ADMIN=/usr/local/bin/admin
 readonly RUNTIME_BIN=/usr/local/share/the8020/runtime-bin
+readonly RUNTIME_STATE=/usr/local/share/the8020/runtime-state
+readonly RUNTIME_ROOT="$INSTANCE_ROOT/node/kernel/runtime"
+readonly RUNTIME_STATE_ID="$RUNTIME_ROOT/.image-runtime-state"
 readonly DENO="$INSTANCE_ROOT/node/kernel/runtime/images/rootless/rootfs/usr/bin/deno"
 readonly PORTABLE_SMOKE="$INSTANCE_ROOT/node/kernel/runtime/definitions/smoke-portable.sh"
 readonly BOOTSTRAP_DONE="$INSTANCE_ROOT/node/docker/initial-user.done"
@@ -32,6 +35,36 @@ fi
 # Runtime executables follow the image, including with an existing data volume.
 rm -rf -- "$INSTANCE_ROOT/node/kernel/bin"
 ln -s -- "$RUNTIME_BIN" "$INSTANCE_ROOT/node/kernel/bin"
+
+# Platform runtime definitions and sandbox images follow the image too. An
+# existing volume would otherwise keep the generic Deno runtime it was created
+# with. Each directory is staged beside its target and renamed into place; the
+# recorded identity is written last, so an interrupted refresh repeats.
+refresh_runtime_state() {
+  [[ -f "$RUNTIME_STATE/id" ]] || return 0
+  local wanted current="" name
+  IFS= read -r wanted < "$RUNTIME_STATE/id"
+  if [[ -f "$RUNTIME_STATE_ID" ]]; then
+    IFS= read -r current < "$RUNTIME_STATE_ID"
+  fi
+  rm -rf -- "$RUNTIME_ROOT"/.refresh-*
+  if [[ "$wanted" == "$current" && -d "$RUNTIME_ROOT/definitions" && -d "$RUNTIME_ROOT/images" ]]; then
+    return 0
+  fi
+  echo "startup: refreshing the platform runtime from the image" >&2
+  mkdir -p -- "$RUNTIME_ROOT"
+  for name in definitions images; do
+    cp -a -- "$RUNTIME_STATE/$name" "$RUNTIME_ROOT/.refresh-new-$name"
+    if [[ -e "$RUNTIME_ROOT/$name" ]]; then
+      mv -- "$RUNTIME_ROOT/$name" "$RUNTIME_ROOT/.refresh-old-$name"
+    fi
+    mv -- "$RUNTIME_ROOT/.refresh-new-$name" "$RUNTIME_ROOT/$name"
+    rm -rf -- "$RUNTIME_ROOT/.refresh-old-$name"
+  done
+  printf '%s\n' "$wanted" > "$RUNTIME_STATE_ID.tmp"
+  mv -- "$RUNTIME_STATE_ID.tmp" "$RUNTIME_STATE_ID"
+}
+refresh_runtime_state
 # A retained smoke record may describe a different image's engine.
 rm -f -- "$INSTANCE_ROOT/node/kernel/runtime/images/rootless/smoke.json"
 
