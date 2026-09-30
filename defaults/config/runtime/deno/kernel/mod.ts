@@ -942,10 +942,18 @@ export const kernel = Object.freeze({
       },
     }),
     source: Object.freeze({
-      async inspect(source: string): Promise<PackageSourceInspection> {
+      /** Inspect a source before indexing; `secret` names credentials for a private repository. */
+      async inspect(
+        source: string,
+        options: { secret?: string } = {},
+      ): Promise<PackageSourceInspection> {
+        const secret = options.secret?.trim();
         const result = await executeRuntimeOperation<
           { source: PackageSourceInspection }
-        >("package.source.inspect", { source });
+        >(
+          "package.source.inspect",
+          secret ? { source, secret } : { source },
+        );
         return result.source;
       },
     }),

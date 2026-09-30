@@ -1083,6 +1083,37 @@ Deno.test("typed secret and package APIs use private runtime operations", async 
         references: [],
       },
     );
+    assertEquals(
+      await respond(
+        inContext(() =>
+          kernel.packages.source.inspect(
+            "https://gitlab.example.com/group/team/private",
+            { secret: " gitlab " },
+          )
+        ),
+        "package.source.inspect",
+        {
+          source: "https://gitlab.example.com/group/team/private",
+          secret: "gitlab",
+        },
+        {
+          source: {
+            source: "https://gitlab.example.com/group/team/private.git",
+            author: "team",
+            repository: "private",
+            package_id: "team/private",
+            references: [],
+          },
+        },
+      ),
+      {
+        source: "https://gitlab.example.com/group/team/private.git",
+        author: "team",
+        repository: "private",
+        package_id: "team/private",
+        references: [],
+      },
+    );
 
     const index = {
       author: "the8020",

@@ -133,14 +133,21 @@ func (s *Store) SetPackageIndex(ctx context.Context, entry PackageIndex) (Packag
 	return s.InspectPackageIndex(entry.PackageID)
 }
 
-func (s *Store) InspectPackageSource(ctx context.Context, source string) (SourceInspection, error) {
+// InspectPackageSource lists a source's references before it is indexed. An
+// optional secret name authenticates private sources with the same transient
+// header as other package Git operations; its value is never persisted.
+func (s *Store) InspectPackageSource(ctx context.Context, source, secret string) (SourceInspection, error) {
 	normalized, author, repository, err := normalizePackageSource(source)
 	if err != nil {
 		return SourceInspection{}, err
 	}
-	output, err := s.runGit(ctx, "", nil, "ls-remote", "--symref", normalized, "HEAD", "refs/heads/*", "refs/tags/*")
+	environment, token, err := s.sourceAuthentication(normalized, secret)
 	if err != nil {
-		return SourceInspection{}, fmt.Errorf("inspect Git source: %w: %s", err, cleanGitOutput(output))
+		return SourceInspection{}, err
+	}
+	output, err := s.runGit(ctx, "", environment, "ls-remote", "--symref", normalized, "HEAD", "refs/heads/*", "refs/tags/*")
+	if err != nil {
+		return SourceInspection{}, fmt.Errorf("inspect Git source: %w: %s", err, redactGitCredential(cleanGitOutput(output), token, ""))
 	}
 	defaultBranch := ""
 	references := map[string]SourceReference{}
@@ -189,6 +196,26 @@ func (s *Store) InspectPackageSource(ctx context.Context, source string) (Source
 		items = items[:maximumSourceRefs]
 	}
 	return SourceInspection{Source: normalized, Author: author, Repository: repository, PackageID: author + "/" + repository, DefaultBranch: defaultBranch, References: items}, nil
+}
+
+func (s *Store) sourceAuthentication(source, secret string) ([]string, string, error) {
+	secret = strings.TrimSpace(secret)
+	if secret == "" {
+		return nil, "", nil
+	}
+	if s.secrets == nil {
+		return nil, "", errors.New("package repository secret storage is unavailable")
+	}
+	token, err := s.secrets.SecretValue(secret)
+	if err != nil {
+		return nil, "", fmt.Errorf("resolve package Git secret %q: %w", secret, err)
+	}
+	parsed, err := url.Parse(source)
+	if err != nil {
+		return nil, "", err
+	}
+	environment, err := gitAuthorizationEnvironment(parsed, token, "")
+	return environment, token, err
 }
 
 func (s *Store) ListPackageVersions(ctx context.Context, packageID string, limit int) (PackageVersions, error) {

@@ -92,7 +92,7 @@ func TestPackageIndexRemoteInspectionSynchronizationAndVersionSelection(t *testi
 		t.Fatalf("package index = %#v", entry)
 	}
 
-	inspection, err := store.InspectPackageSource(ctx, source)
+	inspection, err := store.InspectPackageSource(ctx, source, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -402,6 +402,64 @@ func TestPackageRepositoryUsesSelectedSecretWithoutPersistingOrPassingPlaintext(
 	}
 	if _, err := store.PushPackageRepository(context.Background(), "example/repo"); err == nil || !strings.Contains(err.Error(), "must not contain credentials") {
 		t.Fatalf("embedded remote credentials error = %v", err)
+	}
+}
+
+func TestPackageSourceInspectionUsesSelectedSecretForPrivateSources(t *testing.T) {
+	capture := filepath.Join(t.TempDir(), "ls-remote")
+	wrapper := filepath.Join(t.TempDir(), "git-wrapper")
+	script := "#!/bin/sh\n" +
+		"env > \"$TEST_GIT_CAPTURE.env\"\n" +
+		"printf '%s\\n' \"$*\" > \"$TEST_GIT_CAPTURE.args\"\n" +
+		"printf 'ref: refs/heads/main\\tHEAD\\n1111111111111111111111111111111111111111\\tHEAD\\n1111111111111111111111111111111111111111\\trefs/heads/main\\n'\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TEST_GIT_CAPTURE", capture)
+	const token = "gitlab-plain-token"
+	store, err := New(Config{
+		WorkspaceRoot: t.TempDir(), GitPath: wrapper,
+		Secrets:    testSecretResolver{"gitlab": token},
+		IndexStore: newMemoryPackageIndexStore(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := "https://gitlab.example.com/group/team/private"
+	inspection, err := store.InspectPackageSource(context.Background(), source, " gitlab ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspection.PackageID != "team/private" || inspection.DefaultBranch != "main" {
+		t.Fatalf("source inspection = %#v", inspection)
+	}
+	environment, err := os.ReadFile(capture + ".env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	arguments, err := os.ReadFile(capture + ".args")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedHeader := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
+	if !strings.Contains(string(environment), "GIT_CONFIG_KEY_0=http.https://gitlab.example.com/.extraHeader") || !strings.Contains(string(environment), "GIT_CONFIG_VALUE_0=Authorization: Basic "+expectedHeader) || strings.Contains(string(environment), token) || strings.Contains(string(arguments), token) {
+		t.Fatalf("authenticated source inspection environment = %s, arguments = %s", environment, arguments)
+	}
+	if _, err := store.InspectPackageSource(context.Background(), source, "missing"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing selected secret error = %v", err)
+	}
+	if err := os.Remove(capture + ".env"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.InspectPackageSource(context.Background(), source, ""); err != nil {
+		t.Fatal(err)
+	}
+	environment, err = os.ReadFile(capture + ".env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(environment), "extraHeader") {
+		t.Fatalf("public source inspection used credentials: %s", environment)
 	}
 }
 

@@ -27,12 +27,14 @@ Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
   until the schema evaluator/job runtime and database deployment coordinator are
   ready.
 - Recovery list/inspect/set manage kernel-owned desired package records. Source
-  inspection lists bounded refs without cloning; version listing fetches and
-  reports bounded commit history. Synchronization accepts one, several, or all
-  indexed packages and reports only package ID, resolved commit, and success for
-  each result; Git and service-refresh details remain internal. The optional
-  `--git-username` selects a Basic username; `--git-token-stdin` supplies either
-  its password or a token securely, without storing either in package state.
+  inspection lists bounded refs without cloning and may name one global secret
+  for a private source, applied only as a transient authorization header.
+  Version listing fetches and reports bounded commit history. Synchronization
+  accepts one, several, or all indexed packages and reports only package ID,
+  resolved commit, and success for each result; Git and service-refresh details
+  remain internal. The optional `--git-username` selects a Basic username;
+  `--git-token-stdin` supplies either its password or a token securely, without
+  storing either in package state.
 - Activation invokes the shared package-scoped reindex entry point after source
   publication. Command adapters neither enumerate services nor implement their
   configuration or refresh. Publication failures remain explicit package

@@ -178,7 +178,7 @@ type PackageManagementService interface {
 	ListPackageIndexes() ([]workspacepackages.PackageIndex, error)
 	InspectPackageIndex(string) (workspacepackages.PackageIndex, error)
 	SetPackageIndex(context.Context, workspacepackages.PackageIndex) (workspacepackages.PackageIndex, error)
-	InspectPackageSource(context.Context, string) (workspacepackages.SourceInspection, error)
+	InspectPackageSource(context.Context, string, string) (workspacepackages.SourceInspection, error)
 	ListPackageVersions(context.Context, string, int) (workspacepackages.PackageVersions, error)
 	SynchronizePackages(context.Context, []string) ([]workspacepackages.PackageSynchronization, error)
 	DeletePackage(context.Context, string) error

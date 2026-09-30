@@ -16,7 +16,7 @@ func New(serviceSet *services.Services) core.Handler {
 		if err != nil {
 			return nil, err
 		}
-		source, err := management.InspectPackageSource(ctx, commandutil.String(request, "source"))
+		source, err := management.InspectPackageSource(ctx, commandutil.String(request, "source"), commandutil.String(request, "secret"))
 		return core.Result{"source": source}, commandutil.OperationError(err)
 	}
 }
