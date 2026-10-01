@@ -150,6 +150,50 @@ Deno.test("cryptographic operations use the existing request bridge", async () =
       payload: { success: true, result: { valid: true } },
     });
     assertEquals(await verification, true);
+    const encrypting = bridge.withRequest(
+      metadata,
+      () =>
+        kernel.crypto.encrypt(
+          "app-example",
+          new Uint8Array([1, 2, 3]),
+          new Uint8Array([4]),
+        ),
+    );
+    const encrypt = await calls.next();
+    assertEquals((encrypt.payload as { arguments: unknown }).arguments, {
+      operation: "crypto.encrypt",
+      input: { purpose: "app-example", data: "AQID", associated_data: "BA==" },
+    });
+    bridge.handle({
+      type: "kernel_result",
+      correlationId: encrypt.correlationId as string,
+      payload: { success: true, result: { encrypted: "v1:encrypted" } },
+    });
+    assertEquals(await encrypting, "v1:encrypted");
+    const decrypting = bridge.withRequest(
+      metadata,
+      () =>
+        kernel.crypto.decrypt(
+          "app-example",
+          "v1:encrypted",
+          new Uint8Array([4]),
+        ),
+    );
+    const decrypt = await calls.next();
+    assertEquals((decrypt.payload as { arguments: unknown }).arguments, {
+      operation: "crypto.decrypt",
+      input: {
+        purpose: "app-example",
+        encrypted: "v1:encrypted",
+        associated_data: "BA==",
+      },
+    });
+    bridge.handle({
+      type: "kernel_result",
+      correlationId: decrypt.correlationId as string,
+      payload: { success: true, result: { data: "AQID" } },
+    });
+    assertEquals(await decrypting, new Uint8Array([1, 2, 3]));
   } finally {
     bridge.close();
     channel.port1.close();
@@ -929,7 +973,7 @@ Deno.test("log query cancellation affects only its own pending call", async () =
   }
 });
 
-Deno.test("typed secret and package APIs use private runtime operations", async () => {
+Deno.test("typed package and runtime APIs use private runtime operations", async () => {
   const channel = new MessageChannel();
   const bridge = createKernelBridge(channel.port1, workerMetadata);
   const calls = createCallQueue(channel.port2);
@@ -1016,46 +1060,6 @@ Deno.test("typed secret and package APIs use private runtime operations", async 
         programResult,
       ),
       programResult,
-    );
-
-    assertEquals(
-      await respond(
-        inContext(() => kernel.secrets.list()),
-        "secret.list",
-        {},
-        { secrets: [{ name: "github", updated_at: "2026-09-01T00:00:00Z" }] },
-      ),
-      [{ name: "github", updated_at: "2026-09-01T00:00:00Z" }],
-    );
-    assertEquals(
-      await respond(
-        inContext(() =>
-          kernel.secrets.set({ name: "github", value: "replacement" })
-        ),
-        "secret.set",
-        { name: "github", value: "replacement" },
-        { secret: { name: "github", updated_at: "2026-09-01T00:01:00Z" } },
-      ),
-      { name: "github", updated_at: "2026-09-01T00:01:00Z" },
-    );
-    assertEquals(
-      await respond(
-        inContext(() => kernel.secrets.get("github")),
-        "secret.get",
-        { name: "github" },
-        {
-          secret: {
-            name: "github",
-            value: "replacement",
-            updated_at: "2026-09-01T00:01:00Z",
-          },
-        },
-      ),
-      {
-        name: "github",
-        value: "replacement",
-        updated_at: "2026-09-01T00:01:00Z",
-      },
     );
 
     assertEquals(

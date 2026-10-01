@@ -63,6 +63,31 @@ func TestRuntimeIndexPublishesOnlyCompleteValidatedPackageFragments(t *testing.T
 	}
 }
 
+func TestRuntimeIndexPublishesAuthenticationCookieAtomically(t *testing.T) {
+	index := NewIndex()
+	spec := indexedTestSpecification("acme/api/one")
+	spec.Access.CookieName = "the8020_auth_sys-aaaaaaaaaa"
+	if _, err := index.ReplacePackage("acme/api", []Specification{spec}); err != nil {
+		t.Fatal(err)
+	}
+	other := indexedTestSpecification("acme/other/one")
+	for _, name := range []string{"invalid cookie", "the8020_auth_sys-bbbbbbbbbb"} {
+		other.Access.CookieName = name
+		if _, err := index.ReplacePackage("acme/other", []Specification{other}); err == nil {
+			t.Fatal("invalid cookie publication accepted")
+		}
+		if index.AuthenticationCookie() != spec.Access.CookieName || len(index.ServiceIDs()) != 1 {
+			t.Fatal("failed fragment changed accepted cookie")
+		}
+	}
+	if _, err := index.ReplacePackage("acme/api", nil); err != nil {
+		t.Fatal(err)
+	}
+	if index.AuthenticationCookie() != "" {
+		t.Fatal("removed cookie remains published")
+	}
+}
+
 func TestRuntimeIndexReleaseIncludesConfigurationButSourceChangesRequireObservedImports(t *testing.T) {
 	index := NewIndex()
 	spec := indexedTestSpecification("acme/api/one")

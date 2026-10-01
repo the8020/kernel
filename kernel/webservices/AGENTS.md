@@ -62,7 +62,7 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   execution principal and preserves credentials as ordinary unverified request
   data. Authenticated dispatch accepts platform tokens or HTTP Basic before cold
   reconciliation, capacity, persistent binding, or Worker dispatch. Explicit
-  `the8020-authorization` takes precedence over Basic, then `the8020_auth`,
+  `the8020-authorization` takes precedence over Basic, then the indexed cookie,
   including when invalid. Basic uses the composition-supplied users password
   verifier; malformed/duplicate credentials fail closed. Basic failures return
   401 with `WWW-Authenticate: Basic`; missing credentials retain declared
@@ -187,6 +187,11 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   one short publication lock and reports removed IDs for retirement. Hook or
   specification failure leaves the old fragment untouched. The owning reindex
   path handles boot, activation, removal, edits, and revision convergence.
+- `access.cookie_name` is an application-published credential selector,
+  validated as an HTTP cookie name and required to agree across accepted
+  fragments. `AuthenticationCookie()` exposes its derived memory value to native
+  console admission. Empty means header-only; native routing never reads system
+  settings or guesses another system's cookie name.
 - Entrypoint startup validation uses an isolated temporary pool and removes its
   terminal record after validation. Documentation export belongs to Deno
   services; reconciliation garbage-collects stopped validation records left by

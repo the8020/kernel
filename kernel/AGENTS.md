@@ -29,7 +29,7 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   rootless gVisor is the automatic reduced fallback.
 - The kernel additionally owns development-image/sandbox lifecycle, durable
   per-user sandbox storage, sandbox-scoped activation ingress, database-backed
-  package persistence and global named-secret storage, Git source/version and
+  package persistence, Git source/version and
   working-tree inspection, authenticated pull/push/checkout, and package
   synchronization, plus the generic authenticated local console broker and
   backend PTY exec boundary. It owns the SSH listener and protocol adapter while
@@ -110,15 +110,15 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   `the8020/jobs` owns Deno scheduling, per-node cursors, Any claims, independent
   All executions, and result persistence. Ordinary low-level jobs remain
   non-durable. Existing activation hooks retain synchronous semantics.
-- Package-index commands validate HTTPS Git sources, list bounded refs and
-  commits, atomically synchronize clean mapped repositories to latest, tag, or
-  commit selections, create unlinked local repositories, and reload only
+- Package-index commands validate HTTP or HTTPS Git sources, list bounded refs
+  and commits, atomically synchronize clean mapped repositories to latest, tag,
+  or commit selections, create unlinked local repositories, and reload only
   services owned by changed packages. Independent repository commands inspect,
   fast-forward pull, push, and check out a branch or commit while preserving
-  dirty worktrees. The database-backed global secret store owns values; package
-  records contain at most a selected secret name. Git credentials never belong
-  in index documents, repository URLs, durable Git configuration, or command
-  arguments.
+  dirty worktrees. The Deno secrets package owns encrypted database values;
+  package records contain at most a selected secret name. Git credentials never
+  belong in index documents, repository URLs, durable Git configuration, or
+  command arguments.
 - Supervised Deno code may invoke a registered JSON-in/JSON-out function on one
   exact node/sandbox/Worker through the generic kernel SDK. Go validates
   infrastructure identity, bounds, timeout, and forwarding while treating the
@@ -308,8 +308,8 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   readiness diagnostics, and mode selection.
 - [sandbox/AGENTS.md](sandbox/AGENTS.md): sandbox models, full containerd and
   direct rootless gVisor backends, resources, mounts, state, and lifecycle.
-- [secrets/AGENTS.md](secrets/AGENTS.md): private global named-secret
-  persistence and value access.
+- [secrets/AGENTS.md](secrets/AGENTS.md): native Git credential-reference
+  validation; the Deno secrets package owns encrypted storage and access.
 - [services/AGENTS.md](services/AGENTS.md): typed handler dependencies.
 - [settings/AGENTS.md](settings/AGENTS.md): definitions, precedence,
   persistence, queries, and runtime transactions.

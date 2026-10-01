@@ -20,18 +20,22 @@ func TestStageInstalledPreservesResolvedBootstrapTag(t *testing.T) {
 	runTestGit(t, gitPath, packageRoot, "commit", "-q", "-m", "initial")
 	commit := runTestGit(t, gitPath, packageRoot, "rev-parse", "HEAD")
 	runTestGit(t, gitPath, packageRoot, "tag", "0.1.7")
-	runTestGit(t, gitPath, packageRoot, "remote", "add", "origin", "https://github.com/the8020/demo.git")
+	runTestGit(t, gitPath, packageRoot, "remote", "add", "origin", "https://example.test/the8020/demo.git")
 	runTestGit(t, gitPath, packageRoot, "config", "--local", bootstrapRequestedTagConfig, "0.1.7")
 
-	store := newTestStore(t, root)
-	if _, err := store.stageInstalled(context.Background(), map[string]string{"the8020/demo": commit}); err != nil {
-		t.Fatal(err)
-	}
-	entry, exists, err := store.index.Get(context.Background(), "the8020/demo")
-	if err != nil || !exists {
-		t.Fatalf("bootstrap package index exists=%t err=%v", exists, err)
-	}
-	if entry.Source != "https://github.com/the8020/demo.git" || entry.Tag != "0.1.7" || entry.Commit != "" || entry.Local {
-		t.Fatalf("bootstrap package index = %#v", entry)
+	for _, scheme := range []string{"http", "https"} {
+		source := scheme + "://example.test/the8020/demo.git"
+		runTestGit(t, gitPath, packageRoot, "remote", "set-url", "origin", source)
+		store := newTestStore(t, root)
+		if _, err := store.stageInstalled(context.Background(), map[string]string{"the8020/demo": commit}); err != nil {
+			t.Fatal(err)
+		}
+		entry, exists, err := store.index.Get(context.Background(), "the8020/demo")
+		if err != nil || !exists {
+			t.Fatalf("bootstrap package index exists=%t err=%v", exists, err)
+		}
+		if entry.Source != source || entry.Tag != "0.1.7" || entry.Commit != "" || entry.Local {
+			t.Fatalf("bootstrap package index = %#v", entry)
+		}
 	}
 }

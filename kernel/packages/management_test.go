@@ -233,13 +233,26 @@ func TestLocalPackageCreationWritesIndexManifestAndInitialCommit(t *testing.T) {
 
 func TestPackageIndexValidationRejectsUnsafeSourcesAndSelectors(t *testing.T) {
 	store := newTestStore(t, t.TempDir())
+	for _, scheme := range []string{"http", "https"} {
+		source := scheme + "://example.test:8080/the8020/demo"
+		entry, err := store.SetPackageIndex(context.Background(), PackageIndex{
+			Author: "the8020", Repository: "demo", Source: source,
+		})
+		if err != nil || entry.Source != source+".git" {
+			t.Fatalf("%s package source = %#v, %v", scheme, entry, err)
+		}
+	}
 	for name, entry := range map[string]PackageIndex{
-		"credentials":       {Author: "the8020", Repository: "demo", Source: "https://token@example.test/the8020/demo.git"},
-		"identity mismatch": {Author: "the8020", Repository: "demo", Source: "https://example.test/other/demo.git"},
-		"commit and tag":    {Author: "the8020", Repository: "demo", Source: "https://example.test/the8020/demo.git", Commit: "abcdef1", Tag: "v1"},
-		"unsafe tag":        {Author: "the8020", Repository: "demo", Source: "https://example.test/the8020/demo.git", Tag: "../main"},
-		"unsafe secret":     {Author: "the8020", Repository: "demo", Source: "https://example.test/the8020/demo.git", Secret: "../token"},
-		"long secret":       {Author: "the8020", Repository: "demo", Source: "https://example.test/the8020/demo.git", Secret: strings.Repeat("a", 129)},
+		"unsupported protocol": {Author: "the8020", Repository: "demo", Source: "ftp://example.test/the8020/demo.git"},
+		"HTTP credentials":     {Author: "the8020", Repository: "demo", Source: "http://token@example.test/the8020/demo.git"},
+		"query":                {Author: "the8020", Repository: "demo", Source: "http://example.test/the8020/demo.git?token=value"},
+		"fragment":             {Author: "the8020", Repository: "demo", Source: "http://example.test/the8020/demo.git#main"},
+		"credentials":          {Author: "the8020", Repository: "demo", Source: "https://token@example.test/the8020/demo.git"},
+		"identity mismatch":    {Author: "the8020", Repository: "demo", Source: "https://example.test/other/demo.git"},
+		"commit and tag":       {Author: "the8020", Repository: "demo", Source: "https://example.test/the8020/demo.git", Commit: "abcdef1", Tag: "v1"},
+		"unsafe tag":           {Author: "the8020", Repository: "demo", Source: "https://example.test/the8020/demo.git", Tag: "../main"},
+		"unsafe secret":        {Author: "the8020", Repository: "demo", Source: "https://example.test/the8020/demo.git", Secret: "../token"},
+		"long secret":          {Author: "the8020", Repository: "demo", Source: "https://example.test/the8020/demo.git", Secret: strings.Repeat("a", 129)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := store.SetPackageIndex(context.Background(), entry); err == nil {
@@ -485,7 +498,7 @@ func TestPackageSynchronizationAppliesTransientCredentialWithoutPersistingIt(t *
 	const username = "deploymentuser"
 	wantedAuthorization := "Basic " + base64.StdEncoding.EncodeToString([]byte(username+":"+token))
 	files := http.FileServer(http.Dir(remoteRoot))
-	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Header.Get("Authorization") != wantedAuthorization {
 			writer.Header().Set("WWW-Authenticate", `Basic realm="packages"`)
 			http.Error(writer, "authentication required", http.StatusUnauthorized)
@@ -494,7 +507,6 @@ func TestPackageSynchronizationAppliesTransientCredentialWithoutPersistingIt(t *
 		files.ServeHTTP(writer, request)
 	}))
 	defer server.Close()
-	t.Setenv("GIT_SSL_NO_VERIFY", "true")
 
 	root := t.TempDir()
 	store := newTestStore(t, root)

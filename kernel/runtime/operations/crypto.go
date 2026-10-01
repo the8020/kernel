@@ -12,6 +12,31 @@ import (
 func (d *Dispatcher) crypto(operation string, input map[string]any) (any, error) {
 	signer := d.services.Signing
 	switch operation {
+	case "crypto.encrypt", "crypto.decrypt":
+		purpose, _ := input["purpose"].(string)
+		associated, ok := input["associated_data"].(string)
+		if !ok {
+			return nil, errors.New("associated_data must be base64")
+		}
+		aad, err := base64.StdEncoding.Strict().DecodeString(associated)
+		if err != nil {
+			return nil, errors.New("associated_data must be base64")
+		}
+		if operation == "crypto.decrypt" {
+			encrypted, _ := input["encrypted"].(string)
+			data, err := signer.Decrypt(purpose, encrypted, aad)
+			return map[string]any{"data": base64.StdEncoding.EncodeToString(data)}, err
+		}
+		encoded, ok := input["data"].(string)
+		if !ok {
+			return nil, errors.New("data must be base64")
+		}
+		data, err := base64.StdEncoding.Strict().DecodeString(encoded)
+		if err != nil {
+			return nil, errors.New("data must be base64")
+		}
+		encrypted, err := signer.Encrypt(purpose, data, aad)
+		return map[string]any{"encrypted": encrypted}, err
 	case "crypto.token.sign":
 		claims, ok := input["claims"].(map[string]any)
 		if !ok {

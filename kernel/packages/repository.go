@@ -497,8 +497,8 @@ func (s *Store) repositoryAuthenticationWithCredential(packageID, remoteURL, tra
 }
 
 func gitAuthorizationEnvironment(parsed *url.URL, token, username string) ([]string, error) {
-	if parsed.Scheme != "https" || parsed.Host == "" {
-		return nil, errors.New("a Git credential requires an HTTPS remote without embedded credentials")
+	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return nil, errors.New("a Git credential requires an HTTP or HTTPS remote without embedded credentials")
 	}
 	if username == "" {
 		username = "x-access-token"

@@ -14,7 +14,6 @@ import (
 
 const (
 	TokenHeader       = "the8020-authorization"
-	TokenCookie       = "the8020_auth"
 	TokenType         = "the8020-auth+jwt"
 	TokenIssuer       = "the8020"
 	TokenAudience     = "the8020"
@@ -108,7 +107,7 @@ func (s *Signer) verifyTokenAt(encoded string, now time.Time) (TokenClaims, erro
 
 // RequestToken selects exactly one credential. Presence of a header forbids
 // cookie fallback, including when that header is empty or malformed.
-func RequestToken(request *http.Request) (token string, cookie bool) {
+func RequestToken(request *http.Request, cookieName string) (token string, cookie bool) {
 	if values, present := request.Header[http.CanonicalHeaderKey(TokenHeader)]; present {
 		if len(values) != 1 {
 			return "", false
@@ -119,15 +118,21 @@ func RequestToken(request *http.Request) (token string, cookie bool) {
 		}
 		return parts[1], false
 	}
-	values := request.CookiesNamed(TokenCookie)
+	if cookieName == "" {
+		return "", false
+	}
+	values := request.CookiesNamed(cookieName)
 	if len(values) != 1 {
 		return "", len(values) > 0
 	}
 	return values[0].Value, true
 }
 
-func ClearTokenCookie(writer http.ResponseWriter, secure bool) {
-	http.SetCookie(writer, &http.Cookie{Name: TokenCookie, Value: "", Path: "/", MaxAge: -1,
+func ClearTokenCookie(writer http.ResponseWriter, cookieName string, secure bool) {
+	if cookieName == "" {
+		return
+	}
+	http.SetCookie(writer, &http.Cookie{Name: cookieName, Value: "", Path: "/", MaxAge: -1,
 		Expires: time.Unix(1, 0).UTC(), HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode})
 }
 

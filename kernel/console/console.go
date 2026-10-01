@@ -39,25 +39,27 @@ type Provider interface {
 }
 
 type Config struct {
-	Authentication     Authentication
-	Development        Provider
-	AcquireDevelopment func(string) (func(), error)
+	Authentication       Authentication
+	AuthenticationCookie func() string
+	Development          Provider
+	AcquireDevelopment   func(string) (func(), error)
 }
 
 type Manager struct {
-	mu                 sync.Mutex
-	authentication     Authentication
-	development        Provider
-	runtime            Provider
-	sessions           map[*session]struct{}
-	terminals          map[string]*Terminal
-	namedOpening       map[string]chan struct{}
-	opening            int
-	lifetime           context.Context
-	cancel             context.CancelFunc
-	closed             bool
-	acquireDevelopment func(string) (func(), error)
-	idleTimeout        atomic.Int64
+	mu                   sync.Mutex
+	authentication       Authentication
+	authenticationCookie func() string
+	development          Provider
+	runtime              Provider
+	sessions             map[*session]struct{}
+	terminals            map[string]*Terminal
+	namedOpening         map[string]chan struct{}
+	opening              int
+	lifetime             context.Context
+	cancel               context.CancelFunc
+	closed               bool
+	acquireDevelopment   func(string) (func(), error)
+	idleTimeout          atomic.Int64
 }
 
 type session struct {
@@ -115,14 +117,15 @@ func New(config Config) (*Manager, error) {
 	}
 	lifetime, cancel := context.WithCancel(context.Background())
 	return &Manager{
-		authentication:     config.Authentication,
-		development:        config.Development,
-		sessions:           make(map[*session]struct{}),
-		terminals:          make(map[string]*Terminal),
-		namedOpening:       make(map[string]chan struct{}),
-		lifetime:           lifetime,
-		cancel:             cancel,
-		acquireDevelopment: config.AcquireDevelopment,
+		authentication:       config.Authentication,
+		authenticationCookie: config.AuthenticationCookie,
+		development:          config.Development,
+		sessions:             make(map[*session]struct{}),
+		terminals:            make(map[string]*Terminal),
+		namedOpening:         make(map[string]chan struct{}),
+		lifetime:             lifetime,
+		cancel:               cancel,
+		acquireDevelopment:   config.AcquireDevelopment,
 	}, nil
 }
 
@@ -164,11 +167,15 @@ func (m *Manager) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		http.Error(writer, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	token, fromCookie := auth.RequestToken(request)
+	cookieName := ""
+	if m.authenticationCookie != nil {
+		cookieName = m.authenticationCookie()
+	}
+	token, fromCookie := auth.RequestToken(request, cookieName)
 	identity, err := m.authentication.AuthenticateToken(request.Context(), token)
 	if err != nil || !identity.Valid() {
 		if fromCookie {
-			auth.ClearTokenCookie(writer, auth.SecureTransport(request))
+			auth.ClearTokenCookie(writer, cookieName, auth.SecureTransport(request))
 		}
 		http.Error(writer, "Authentication required", http.StatusUnauthorized)
 		return

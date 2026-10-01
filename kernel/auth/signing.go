@@ -162,15 +162,22 @@ func (s *Signer) String() string { return "Signer(" + s.Fingerprint() + ")" }
 // appSigningKey requires a bounded application purpose, never a native one.
 // The caller holds s.mu. Application keys are derived on demand, without a cache.
 func (s *Signer) appSigningKey(purpose string) (ed25519.PrivateKey, error) {
+	if err := validateAppPurpose(purpose); err != nil {
+		return nil, err
+	}
+	return deriveSigningKey(s.master, purpose)
+}
+
+func validateAppPurpose(purpose string) error {
 	if !strings.HasPrefix(purpose, "app-") || len(purpose) <= 4 || len(purpose) > 128 {
-		return nil, errors.New("signing purpose must start with app- and contain 5 to 128 lowercase ASCII letters, digits, or hyphens")
+		return errors.New("cryptographic purpose must start with app- and contain 5 to 128 lowercase ASCII letters, digits, or hyphens")
 	}
 	for _, ch := range purpose {
 		if (ch < 'a' || ch > 'z') && (ch < '0' || ch > '9') && ch != '-' {
-			return nil, errors.New("signing purpose must contain only lowercase ASCII letters, digits, or hyphens")
+			return errors.New("cryptographic purpose must contain only lowercase ASCII letters, digits, or hyphens")
 		}
 	}
-	return deriveSigningKey(s.master, purpose)
+	return nil
 }
 
 // Sign and Verify use the caller's expected application purpose, independently

@@ -33,14 +33,14 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Every node has one stable canonical `nod-` ID, public URL, recipient address
   and port, and enabled state. Local construction and catalog writes use the
   shared identity validator.
-- Recipient addresses and ports always use HTTPS with native mutual TLS 1.3
-  and HTTP/1.1, including service forwarding, capacity, exact Worker calls, logs,
-  and terminal cleanup. Public node URLs keep their declared scheme. There is
-  no plaintext or bearer-token fallback.
-- End-user `the8020-authorization` and `the8020_auth` cookies survive every
-  forwarding hop unchanged. Strip ordinary `Authorization` before service
-  routing, verify the current native peer certificate on every request, then
-  remove recipient TLS metadata so internal encryption does not change the
+- Recipient addresses and ports always use HTTPS with native mutual TLS 1.3 and
+  HTTP/1.1, including service forwarding, capacity, exact Worker calls, logs,
+  and terminal cleanup. Public node URLs keep their declared scheme. There is no
+  plaintext or bearer-token fallback.
+- End-user `the8020-authorization` and system-scoped authentication cookies
+  survive every forwarding hop unchanged. Strip ordinary `Authorization` before
+  service routing, verify the current native peer certificate on every request,
+  then remove recipient TLS metadata so internal encryption does not change the
   public request's HTTPS status. TLS protects streamed requests, responses and
   WebSocket frames without buffering bodies or adding application replay.
 - Node forwarding preserves client encoding preferences and encoded response

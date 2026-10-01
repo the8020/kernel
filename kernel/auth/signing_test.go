@@ -134,30 +134,38 @@ func TestTokenProfileAndCrossNodeVerification(t *testing.T) {
 }
 
 func TestRequestTokenUsesHeaderWithoutCookieFallback(t *testing.T) {
+	const tokenCookie = "the8020_auth_sys-aaaaaaaaaa"
 	request := httptest.NewRequest("GET", "/", nil)
-	request.AddCookie(&http.Cookie{Name: TokenCookie, Value: "cookie-token"})
-	if token, cookie := RequestToken(request); token != "cookie-token" || !cookie {
+	request.AddCookie(&http.Cookie{Name: tokenCookie, Value: "cookie-token"})
+	if token, cookie := RequestToken(request, tokenCookie); token != "cookie-token" || !cookie {
 		t.Fatal("cookie was not selected")
 	}
+	request.AddCookie(&http.Cookie{Name: "the8020_auth_sys-bbbbbbbbbb", Value: "other-system"})
+	if token, cookie := RequestToken(request, tokenCookie); token != "cookie-token" || !cookie {
+		t.Fatal("another system's cookie interfered with credential selection")
+	}
+	if token, cookie := RequestToken(request, "the8020_auth_sys-cccccccccc"); token != "" || cookie {
+		t.Fatal("another system's cookie was selected")
+	}
 	request.Header.Set(TokenHeader, "Bearer header-token")
-	if token, cookie := RequestToken(request); token != "header-token" || cookie {
+	if token, cookie := RequestToken(request, tokenCookie); token != "header-token" || cookie {
 		t.Fatal("explicit header did not take precedence")
 	}
 	for _, value := range []string{"", "Basic value", "Bearer", "Bearer one two"} {
 		request.Header.Set(TokenHeader, value)
-		if token, cookie := RequestToken(request); token != "" || cookie {
+		if token, cookie := RequestToken(request, tokenCookie); token != "" || cookie {
 			t.Fatal("malformed header fell back to cookie")
 		}
 	}
 	request.Header.Del(TokenHeader)
-	request.AddCookie(&http.Cookie{Name: TokenCookie, Value: "second-cookie"})
-	if token, cookie := RequestToken(request); token != "" || !cookie {
+	request.AddCookie(&http.Cookie{Name: tokenCookie, Value: "second-cookie"})
+	if token, cookie := RequestToken(request, tokenCookie); token != "" || !cookie {
 		t.Fatal("ambiguous cookie accepted")
 	}
 	response := httptest.NewRecorder()
-	ClearTokenCookie(response, true)
+	ClearTokenCookie(response, tokenCookie, true)
 	cleared := response.Result().Cookies()
-	if len(cleared) != 1 || cleared[0].Name != TokenCookie || cleared[0].Path != "/" || cleared[0].MaxAge != -1 || !cleared[0].HttpOnly || !cleared[0].Secure {
+	if len(cleared) != 1 || cleared[0].Name != tokenCookie || cleared[0].Path != "/" || cleared[0].MaxAge != -1 || !cleared[0].HttpOnly || !cleared[0].Secure {
 		t.Fatal("rejected cookie does not clear the issuing scope")
 	}
 }

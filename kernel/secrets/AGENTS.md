@@ -2,32 +2,32 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 # Purpose
 
-- Own global named secrets used by kernel-authoritative operations.
+- Validate named credential references at native Git boundaries.
 
 # Ownership
 
-- Persist secret values in `the8020__secrets__secrets`, expose explicit
-  list/get/set operations, and resolve values for trusted kernel consumers.
+- Own only `ValidateName`. The Deno secrets package owns storage, encryption
+  calls, and explicit list/get/set. Native Git composition resolves values by
+  invoking its ordinary get program.
 - Do not own package metadata, Git behavior, authorization policy, command-bus
   transport, or application screens.
 
 # Local Contracts
 
-- Secret names use the platform-safe name grammar. Values are nonempty, bounded,
-  and never included in list or set results.
-- Database upserts serialize shared mutations across kernels. The database
-  connection and credentials remain private to the kernel.
-- Secret values are intentionally retrievable only by the explicit get method
-  and trusted in-process resolvers. Callers must never log them.
+- Names contain 1–128 ASCII letters/digits/dots/underscores/hyphens, start with
+  a letter or digit, and have no surrounding whitespace.
+- This package reads no database and provides no secret storage API.
 
 # Work Guidance
 
-- Do not add reversible encryption without a separately managed root key.
+- Generic private-key encryption belongs to `kernel/auth`; package code owns
+  storage semantics and automatic encryption/decryption.
 
 # Verification
 
-- `store_test.go` covers empty stores, validation, overwrite behavior,
-  concurrent serialization, durable reopening, and non-disclosing summaries.
+- Package index tests cover native reference validation. Secrets-package tests
+  cover encrypted storage; app composition tests cover ordinary-program
+  resolution.
 
 # Child DOX Index
 

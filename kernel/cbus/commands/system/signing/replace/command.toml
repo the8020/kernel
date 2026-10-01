@@ -2,7 +2,7 @@ version = 1
 id = "kernel.signing.replace"
 path = ["kernel.signing.replace"]
 summary = "Replace the deployment master key"
-description = "Atomically persists a master seed and replaces all derived signing keys. Previous signatures and tokens become invalid immediately; peer connections require the new key. A non-empty THE8020_SIGNING_KEY overrides this value at the next startup."
+description = "Atomically persists a master seed and replaces all derived signing and encryption keys. Previous signatures and tokens become invalid; encrypted secrets become unreadable. Peer connections require the new key. A non-empty THE8020_SIGNING_KEY overrides this value at the next startup."
 mutates_state = true
 restart_behavior = "none"
 [handler]

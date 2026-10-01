@@ -7,10 +7,11 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 
 # Ownership
 
-- Own typed signing/verification, administrative command, system-database calls,
-  execution-scoped secrets, private package/domain operations, exact-Worker
-  invocation, and persistent-completion contracts; bind calls to trusted current
-  request/execution context and correlate their results.
+- Own typed signing/verification/encryption, administrative command,
+  system-database calls, execution-scoped secrets, private package/domain
+  operations, exact-Worker invocation, and persistent-completion contracts; bind
+  calls to trusted current request/execution context and correlate their
+  results.
 - Own the private execution-local provider consumed by `@the8020/context`;
   public context types and getters remain in the sibling context package.
 - The bootstrap's internal executionContext accessor reads that same ALS store
@@ -36,11 +37,11 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 - `newId` and `isId` expose the shared operational ID contract to package
   creation owners; they perform no kernel call.
 - Public API is `kernel.crypto`, `kernel.admin.execute()`, `kernel.execution`,
-  `kernel.secrets`, `kernel.packages`, `kernel.services`, `kernel.nodes`,
-  `kernel.development`, `kernel.terminals`, `kernel.settings`, `kernel.events`,
-  `kernel.programs`, `kernel.database.info()`, unified
-  `kernel.database.execute()`, `kernel.database.transaction`,
-  `kernel.database.tables`, `kernel.worker.invoke()`, and
+  `kernel.packages`, `kernel.services`, `kernel.nodes`, `kernel.development`,
+  `kernel.terminals`, `kernel.settings`, `kernel.events`, `kernel.programs`,
+  `kernel.database.info()`, unified `kernel.database.execute()`,
+  `kernel.database.transaction`, `kernel.database.tables`,
+  `kernel.worker.invoke()`, and
   `kernel.execution.runPersistent()`/`completePersistent()`.
 - `terminals.ts` exposes native PTY
   open/create/list/inspect/attach/read/write/respond/resize/detach/close through
@@ -108,8 +109,8 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 - `kernel.execution.secret()` reads one required value from only the active job;
   `optionalSecret()` returns `undefined` when absent. No service or concurrent
   job can observe it.
-- `kernel.secrets` provides typed list/get/set delegation. List and set return
-  value-free summaries; get is deliberately explicit.
+- Named-secret APIs belong to `/p/the8020/secrets/mod.ts`, which owns SQL and
+  transparent encryption/decryption. The SDK exports no named-secret operations.
 - `kernel.packages` provides typed index list/inspect/set, source inspection,
   version listing, repository inspect/pull/push/checkout, concise
   ID/commit/success synchronization results, and local creation through one
@@ -155,6 +156,15 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   native verification checks signatures, timing, principal, and transport.
   Private keys never cross the bridge. All trusted services and jobs may use
   application purposes and the token API; package permissions remain deferred.
+- `kernel.crypto.encrypt(purpose, bytes, associatedData?)` returns an opaque
+  ciphertext string; `decrypt(purpose, ciphertext, associatedData?)` returns
+  bytes or throws on failed authentication. The existing bridge carries bytes as
+  base64 and empty associated data explicitly. Go enforces application purposes
+  and 1 MiB bounds, derives a separate AES-256-GCM key from the master, and
+  never returns keys. Replacing the master invalidates existing ciphertext.
+- `ServiceAccess.cookie_name` carries the users-package cookie selector through
+  the services index. The kernel validates/caches it without learning
+  application system/profile storage policy.
 - `AdminCommandError` is the shared structured command-failure contract.
   Argument parsing and required-argument helpers belong to
   `/p/the8020/packages/commands.ts`, which raises `invalid_arguments` through

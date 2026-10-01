@@ -66,6 +66,7 @@ export PATH="$TEST_ROOT/bin:$PATH" THE8020_NETWORK_MAIN_PORT=18080
 
 prepare() {
   export CASE_MODE=$1 CASE_ROOT="$TEST_ROOT/$1"
+  export THE8020_INSTANCE_ROOT="$CASE_ROOT/instance"
   mkdir -p "$CASE_ROOT/instance"
   mkdir -p "$CASE_ROOT/runtime-bin" "$CASE_ROOT/instance/node/kernel/bin" \
     "$CASE_ROOT/instance/node/kernel/runtime/images/rootless" "$CASE_ROOT/instance/users/admin"
@@ -84,7 +85,6 @@ prepare() {
   touch "$CASE_ROOT/instance/kernel.toml"
   while IFS= read -r line; do
     case "$line" in
-      readonly\ INSTANCE_ROOT=*) printf 'readonly INSTANCE_ROOT=%q\n' "$CASE_ROOT/instance" ;;
       readonly\ KERNEL=*) printf 'readonly KERNEL=%q\n' "$TEST_ROOT/bin/kernel" ;;
       readonly\ DENO=*) printf 'readonly DENO=%q\n' "$(command -v deno)" ;;
       readonly\ ADMIN=*) printf 'readonly ADMIN=%q\n' "$TEST_ROOT/bin/admin" ;;

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly INSTANCE_ROOT=/8020
+readonly INSTANCE_ROOT=${THE8020_INSTANCE_ROOT:-/8020}
 readonly KERNEL=/usr/local/bin/kernel
 readonly ADMIN=/usr/local/bin/admin
 readonly RUNTIME_BIN=/usr/local/share/the8020/runtime-bin

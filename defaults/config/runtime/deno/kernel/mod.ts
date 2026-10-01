@@ -45,20 +45,6 @@ export type {
 // The signing key stays in the kernel. Claim meanings belong to callers.
 export type TokenClaims = Readonly<Record<string, unknown>>;
 
-export interface SecretSummary {
-  name: string;
-  updated_at: string;
-}
-
-export interface Secret extends SecretSummary {
-  value: string;
-}
-
-export interface SetSecretInput {
-  name: string;
-  value: string;
-}
-
 export interface PackageIndex {
   author: string;
   repository: string;
@@ -642,6 +628,29 @@ export const kernel = Object.freeze({
     },
   }),
   crypto: Object.freeze({
+    encrypt(
+      purpose: `app-${string}`,
+      data: Uint8Array,
+      associatedData = new Uint8Array(),
+    ): Promise<string> {
+      return runtimeOperationField("crypto.encrypt", {
+        purpose,
+        data: data.toBase64(),
+        associated_data: associatedData.toBase64(),
+      }, "encrypted");
+    },
+    async decrypt(
+      purpose: `app-${string}`,
+      encrypted: string,
+      associatedData = new Uint8Array(),
+    ): Promise<Uint8Array> {
+      const data = await runtimeOperationField<string>("crypto.decrypt", {
+        purpose,
+        encrypted,
+        associated_data: associatedData.toBase64(),
+      }, "data");
+      return Uint8Array.fromBase64(data);
+    },
     sign(purpose: `app-${string}`, data: Uint8Array): Promise<string> {
       return runtimeOperationField(
         "crypto.sign",
@@ -873,30 +882,6 @@ export const kernel = Object.freeze({
         );
       },
     }),
-  }),
-  secrets: Object.freeze({
-    async list(): Promise<SecretSummary[]> {
-      const result = await executeRuntimeOperation<
-        { secrets: SecretSummary[] }
-      >(
-        "secret.list",
-      );
-      return result.secrets;
-    },
-    async get(name: string): Promise<Secret> {
-      const result = await executeRuntimeOperation<{ secret: Secret }>(
-        "secret.get",
-        { name },
-      );
-      return result.secret;
-    },
-    async set(input: SetSecretInput): Promise<SecretSummary> {
-      const result = await executeRuntimeOperation<{ secret: SecretSummary }>(
-        "secret.set",
-        { name: input.name, value: input.value },
-      );
-      return result.secret;
-    },
   }),
   packages: Object.freeze({
     async delete(packageId: string, confirm: true): Promise<void> {

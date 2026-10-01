@@ -93,7 +93,7 @@ func (c *testConsole) Close() error {
 
 func TestConsoleWebSocketStreamsAndResizes(t *testing.T) {
 	development := &testProvider{opened: make(chan testOpen, 1)}
-	manager, err := New(Config{Authentication: testAuthentication{}, Development: development})
+	manager, err := New(Config{Authentication: testAuthentication{}, AuthenticationCookie: func() string { return "the8020_auth_sys-aaaaaaaaaa" }, Development: development})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestConsoleWebSocketStreamsAndResizes(t *testing.T) {
 	server := httptest.NewServer(manager)
 	t.Cleanup(server.Close)
 
-	socket := dialTestConsole(t, server, server.URL, Subprotocol, "the8020_auth=valid")
+	socket := dialTestConsole(t, server, server.URL, Subprotocol, "the8020_auth_sys-aaaaaaaaaa=valid")
 	if err := websocket.Message.Send(socket, `{"type":"open","target":{"kind":"development","sandboxId":"sbx-aaaaaaaaaa"},"arguments":["/bin/bash","-l"],"environment":["TERM=xterm-256color"],"workingDirectory":"/workspace","columns":90,"rows":27}`); err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestConsoleWebSocketStreamsAndResizes(t *testing.T) {
 
 func TestConsoleWebSocketRequiresAuthenticationOriginAndProtocol(t *testing.T) {
 	development := &testProvider{opened: make(chan testOpen, 1)}
-	manager, err := New(Config{Authentication: testAuthentication{}, Development: development})
+	manager, err := New(Config{Authentication: testAuthentication{}, AuthenticationCookie: func() string { return "the8020_auth_sys-aaaaaaaaaa" }, Development: development})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,15 +186,15 @@ func TestConsoleWebSocketRequiresAuthenticationOriginAndProtocol(t *testing.T) {
 		t.Fatalf("unauthenticated status = %d", response.StatusCode)
 	}
 
-	assertDialFails(t, server, server.URL, "", "the8020_auth=valid")
-	assertDialFails(t, server, "http://different-origin.invalid", Subprotocol, "the8020_auth=valid")
-	assertDialFails(t, server, server.URL, Subprotocol, "the8020_auth=invalid")
+	assertDialFails(t, server, server.URL, "", "the8020_auth_sys-aaaaaaaaaa=valid")
+	assertDialFails(t, server, "http://different-origin.invalid", Subprotocol, "the8020_auth_sys-aaaaaaaaaa=valid")
+	assertDialFails(t, server, server.URL, Subprotocol, "the8020_auth_sys-aaaaaaaaaa=invalid")
 }
 
 func TestRemovingRuntimeProviderClosesItsConsoles(t *testing.T) {
 	development := &testProvider{opened: make(chan testOpen, 1)}
 	runtimeProvider := &testProvider{opened: make(chan testOpen, 1)}
-	manager, err := New(Config{Authentication: testAuthentication{}, Development: development})
+	manager, err := New(Config{Authentication: testAuthentication{}, AuthenticationCookie: func() string { return "the8020_auth_sys-aaaaaaaaaa" }, Development: development})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ func TestRemovingRuntimeProviderClosesItsConsoles(t *testing.T) {
 		_ = manager.Close()
 	})
 
-	socket := dialTestConsole(t, server, server.URL, Subprotocol, "the8020_auth=valid")
+	socket := dialTestConsole(t, server, server.URL, Subprotocol, "the8020_auth_sys-aaaaaaaaaa=valid")
 	if err := websocket.Message.Send(socket, `{"type":"open","target":{"kind":"runtime","sandboxId":"sbx-bbbbbbbbbb"},"arguments":["/bin/bash","-l"],"environment":["HOME=/tmp"],"workingDirectory":"/","columns":80,"rows":24}`); err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +223,7 @@ func TestRemovingRuntimeProviderClosesItsConsoles(t *testing.T) {
 		t.Fatal("runtime console remained open after provider removal")
 	}
 
-	unavailable := dialTestConsole(t, server, server.URL, Subprotocol, "the8020_auth=valid")
+	unavailable := dialTestConsole(t, server, server.URL, Subprotocol, "the8020_auth_sys-aaaaaaaaaa=valid")
 	defer unavailable.Close()
 	if err := websocket.Message.Send(unavailable, `{"type":"open","target":{"kind":"runtime","sandboxId":"sbx-bbbbbbbbbb"},"arguments":["/bin/bash"],"environment":["HOME=/tmp"],"workingDirectory":"/","columns":80,"rows":24}`); err != nil {
 		t.Fatal(err)
@@ -239,7 +239,7 @@ func TestRemovingRuntimeProviderClosesItsConsoles(t *testing.T) {
 
 func TestTransportNeutralConsoleLeaseIsTracked(t *testing.T) {
 	development := &testProvider{opened: make(chan testOpen, 1)}
-	manager, err := New(Config{Authentication: testAuthentication{}, Development: development})
+	manager, err := New(Config{Authentication: testAuthentication{}, AuthenticationCookie: func() string { return "the8020_auth_sys-aaaaaaaaaa" }, Development: development})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +271,7 @@ func TestTransportNeutralConsoleLeaseIsTracked(t *testing.T) {
 
 func TestConsoleWebSocketRejectsBinaryOpenFrame(t *testing.T) {
 	development := &testProvider{opened: make(chan testOpen, 1)}
-	manager, err := New(Config{Authentication: testAuthentication{}, Development: development})
+	manager, err := New(Config{Authentication: testAuthentication{}, AuthenticationCookie: func() string { return "the8020_auth_sys-aaaaaaaaaa" }, Development: development})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +280,7 @@ func TestConsoleWebSocketRejectsBinaryOpenFrame(t *testing.T) {
 		server.Close()
 		_ = manager.Close()
 	})
-	socket := dialTestConsole(t, server, server.URL, Subprotocol, "the8020_auth=valid")
+	socket := dialTestConsole(t, server, server.URL, Subprotocol, "the8020_auth_sys-aaaaaaaaaa=valid")
 	defer socket.Close()
 	if err := websocket.Message.Send(socket, []byte(`{"type":"open"}`)); err != nil {
 		t.Fatal(err)
@@ -339,7 +339,7 @@ func assertDialFails(t *testing.T, server *httptest.Server, origin, protocol, co
 func TestResolveOpaqueSandboxOwner(t *testing.T) {
 	development := &testProvider{ids: map[string]bool{"sbx-aaaaaaaaaa": true}}
 	runtime := &testProvider{ids: map[string]bool{"sbx-bbbbbbbbbb": true}}
-	manager, err := New(Config{Authentication: testAuthentication{}, Development: development})
+	manager, err := New(Config{Authentication: testAuthentication{}, AuthenticationCookie: func() string { return "the8020_auth_sys-aaaaaaaaaa" }, Development: development})
 	if err != nil {
 		t.Fatal(err)
 	}

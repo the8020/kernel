@@ -1471,7 +1471,7 @@ func (m *Manager) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		}
 		authentication = &authenticationSetup{Approved: true, Claims: auth.TokenClaims{"sub": user.ID}}
 	} else if admission.Access.Mode == "authenticated" {
-		token, fromCookie := auth.RequestToken(request)
+		token, fromCookie := auth.RequestToken(request, admission.Access.CookieName)
 		var claims auth.TokenClaims
 		if m.authentication != nil && token != "" {
 			claims, err = m.authentication.VerifyToken(token)
@@ -1483,7 +1483,7 @@ func (m *Manager) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		}
 		if err != nil {
 			if fromCookie {
-				auth.ClearTokenCookie(writer, requestScheme(request) == "https")
+				auth.ClearTokenCookie(writer, admission.Access.CookieName, requestScheme(request) == "https")
 			}
 			m.respondUnauthenticated(writer, admission.Access.Unauthenticated)
 			return

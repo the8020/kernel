@@ -57,8 +57,6 @@ Parent DOX: [kernel/kernel/cbus DOX](../AGENTS.md).
   eval/run, and aggregate status.
 - [sandbox/AGENTS.md](sandbox/AGENTS.md): sandbox inventory, inspection,
   resources, and lifecycle.
-- [secret/AGENTS.md](secret/AGENTS.md): private named-secret implementation
-  adapters.
 - [service/AGENTS.md](service/AGENTS.md): private service implementation
   adapters.
 - [settings/AGENTS.md](settings/AGENTS.md): node-local `kernel.config.*`

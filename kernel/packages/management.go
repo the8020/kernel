@@ -655,8 +655,8 @@ func validatePackageIndex(entry *PackageIndex) error {
 
 func normalizePackageSource(raw string) (string, string, string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", "", "", errors.New("package source must be an HTTPS Git URL without credentials, query, or fragment")
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", "", "", errors.New("package source must be an HTTP or HTTPS Git URL without credentials, query, or fragment")
 	}
 	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
 	if len(parts) < 2 {

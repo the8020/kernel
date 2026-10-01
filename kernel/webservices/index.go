@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"net/url"
 	"os"
 	"slices"
@@ -39,6 +40,7 @@ type Specification struct {
 
 type AccessPolicy struct {
 	Mode            string                `json:"mode"`
+	CookieName      string                `json:"cookie_name,omitempty"`
 	Unauthenticated UnauthenticatedPolicy `json:"unauthenticated"`
 }
 
@@ -89,9 +91,10 @@ type TimeoutConfiguration struct {
 // Index contains only accepted immutable package fragments. Dispatch reads this
 // derived memory index; the services package owns all durable desired state.
 type Index struct {
-	mu       sync.RWMutex
-	services map[string]Specification
-	restarts map[string]RestartRevision
+	mu         sync.RWMutex
+	services   map[string]Specification
+	restarts   map[string]RestartRevision
+	cookieName string
 }
 
 func NewIndex() *Index {
@@ -132,6 +135,28 @@ func (i *Index) ReplacePackage(packageID string, draft []Specification) ([]strin
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	cookieName := ""
+	checkCookie := func(spec Specification) error {
+		if spec.Access.CookieName != "" {
+			if cookieName != "" && cookieName != spec.Access.CookieName {
+				return errors.New("service authentication cookie names disagree")
+			}
+			cookieName = spec.Access.CookieName
+		}
+		return nil
+	}
+	for _, spec := range i.services {
+		if spec.Identity.PackageID() != packageID {
+			if err := checkCookie(spec); err != nil {
+				return nil, err
+			}
+		}
+	}
+	for _, spec := range next {
+		if err := checkCookie(spec); err != nil {
+			return nil, err
+		}
+	}
 	var removed []string
 	for id, spec := range i.services {
 		if spec.Identity.PackageID() == packageID {
@@ -144,8 +169,16 @@ func (i *Index) ReplacePackage(packageID string, draft []Specification) ([]strin
 	for id, spec := range next {
 		i.services[id] = withRestart(spec, i.restarts[id])
 	}
+	i.cookieName = cookieName
 	slices.Sort(removed)
 	return removed, nil
+}
+
+// AuthenticationCookie exposes only application-published credential selection.
+func (i *Index) AuthenticationCookie() string {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.cookieName
 }
 
 func (i *Index) ReadService(serviceID string) (Specification, error) {
@@ -215,6 +248,11 @@ func validateSpecification(spec Specification) error {
 	}
 	if spec.Access.Mode != "public" && spec.Access.Mode != "authenticated" {
 		return errors.New("access mode must be public or authenticated")
+	}
+	if spec.Access.CookieName != "" {
+		if err := (&http.Cookie{Name: spec.Access.CookieName, Value: "valid"}).Valid(); err != nil {
+			return errors.New("invalid authentication cookie name")
+		}
 	}
 	if spec.Access.Mode == "authenticated" {
 		policy := spec.Access.Unauthenticated

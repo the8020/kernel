@@ -53,7 +53,6 @@ import (
 	sandboxmounts "the8020/kernel/sandbox/mounts"
 	sandboxnetwork "the8020/kernel/sandbox/network"
 	"the8020/kernel/sandbox/state"
-	secretstore "the8020/kernel/secrets"
 	"the8020/kernel/services"
 	"the8020/kernel/settings"
 	settingsdb "the8020/kernel/settings/dbstore"
@@ -517,11 +516,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
 	}
-	secretManager, err := secretstore.New(secretstore.Config{Database: systemDatabase})
-	if err != nil {
-		runtimeServices.Failure = "initialize shared secrets: " + err.Error()
-		return runtimeServices, closeRuntime
-	}
+	secretManager := &packageSecrets{context: ctx}
 	packageStore, err := workspacepackages.New(workspacepackages.Config{
 		WorkspaceRoot: root, PackagesRoot: paths.Packages,
 		Secrets: secretManager, Database: systemDatabase, Logger: logger,
@@ -535,6 +530,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		runtimeServices.Failure = "initialize program runner: " + err.Error()
 		return runtimeServices, closeRuntime
 	}
+	secretManager.programs = programRunner
 	commandIndexer, err := discovery.New(packageStore, programRunner, commandRegistry)
 	if err != nil {
 		runtimeServices.Failure = "initialize package command index: " + err.Error()
@@ -703,7 +699,8 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	}
 	consoleManager, err := platformconsole.New(platformconsole.Config{
 		Authentication: authentication, Development: developmentManager,
-		AcquireDevelopment: developmentManager.AcquireConsole,
+		AuthenticationCookie: serviceIndex.AuthenticationCookie,
+		AcquireDevelopment:   developmentManager.AcquireConsole,
 	})
 	if err != nil {
 		runtimeServices.Failure = "initialize sandbox console broker: " + err.Error()
@@ -793,7 +790,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		return runtimeServices, closeRuntime
 	}
 	serviceSet.PublishPlatform(services.PlatformServices{
-		Network: publicNetwork, Nodes: nodeManager, Secrets: secretManager,
+		Network: publicNetwork, Nodes: nodeManager,
 		Packages: packageStore, Development: developmentManager, Consoles: consoleManager,
 	})
 	cleanup.webservices, runtimeServices.Services = webServiceManager, webServiceManager

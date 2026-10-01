@@ -19,6 +19,21 @@ func TestCryptoBridgeRequiresApplicationPurpose(t *testing.T) {
 		t.Fatal(err)
 	}
 	input := map[string]any{"purpose": "app-example", "data": "AQID"}
+	input["associated_data"] = "bmFtZQ=="
+	encrypted, err := dispatcher.Execute(t.Context(), "crypto.encrypt", input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input["encrypted"] = encrypted.(map[string]any)["encrypted"]
+	decrypted, err := dispatcher.Execute(t.Context(), "crypto.decrypt", input)
+	if err != nil || decrypted.(map[string]any)["data"] != "AQID" {
+		t.Fatalf("encryption bridge roundtrip failed: %v", err)
+	}
+	input["associated_data"] = "b3RoZXI="
+	if _, err := dispatcher.Execute(t.Context(), "crypto.decrypt", input); err == nil {
+		t.Fatal("decryption ignored associated data")
+	}
+	input["associated_data"] = "bmFtZQ=="
 	result, err := dispatcher.Execute(t.Context(), "crypto.sign", input)
 	if err != nil {
 		t.Fatal(err)
@@ -33,7 +48,7 @@ func TestCryptoBridgeRequiresApplicationPurpose(t *testing.T) {
 	}
 	for _, purpose := range []any{nil, 3, "", "app-", "node-forwarding", "service-routing", "app-../service-routing"} {
 		input["purpose"] = purpose
-		for _, op := range []string{"crypto.sign", "crypto.verify"} {
+		for _, op := range []string{"crypto.sign", "crypto.verify", "crypto.encrypt", "crypto.decrypt"} {
 			if _, err := dispatcher.Execute(t.Context(), op, input); err == nil {
 				t.Fatalf("%s accepted invalid purpose", op)
 			}

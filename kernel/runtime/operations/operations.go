@@ -53,9 +53,6 @@ import (
 	packagesourceinspect "the8020/kernel/cbus/commands/package/source/inspect"
 	packagesynchronize "the8020/kernel/cbus/commands/package/synchronize"
 	packageversionlist "the8020/kernel/cbus/commands/package/version/list"
-	secretget "the8020/kernel/cbus/commands/secret/get"
-	secretlist "the8020/kernel/cbus/commands/secret/list"
-	secretset "the8020/kernel/cbus/commands/secret/set"
 	serviceinspect "the8020/kernel/cbus/commands/service/inspect"
 	servicelist "the8020/kernel/cbus/commands/service/list"
 
@@ -99,7 +96,6 @@ func New(serviceSet *services.Services) (*Dispatcher, error) {
 		"package.repository.pull": packagerepositorypull.New(serviceSet), "package.repository.push": packagerepositorypush.New(serviceSet),
 		"package.repository.remote": packagerepositoryremote.New(serviceSet), "package.repository.status": packagerepositorystatus.New(serviceSet),
 		"package.source.inspect": packagesourceinspect.New(serviceSet), "package.synchronize": packagesynchronize.New(serviceSet), "package.version.list": packageversionlist.New(serviceSet),
-		"secret.get": secretget.New(serviceSet), "secret.list": secretlist.New(serviceSet), "secret.set": secretset.New(serviceSet),
 		"service.inspect": serviceinspect.New(serviceSet), "service.list": servicelist.New(serviceSet), "service.refresh": servicerefresh.New(serviceSet),
 		"service.request":  servicerequest.New(serviceSet),
 		"service.validate": servicevalidate.New(serviceSet),

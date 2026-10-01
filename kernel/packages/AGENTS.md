@@ -156,9 +156,11 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Activated-source consumers can require a clean installed checkout whose HEAD
   or content fingerprint exactly matches the ready database commit; schema
   evaluation uses this guard while staged activation evaluates its candidate.
+- Package sources, bootstrap remotes, and Git credentials support HTTP and
+  HTTPS. Transport security is the system owner's responsibility.
 - Git credentials never enter URLs, command arguments, durable Git config,
   package records, results, or logs. A selected named secret or recovery command
-  secure input is used only for a host-scoped transient HTTPS authorization
+  secure input is used only for a host-scoped transient HTTP authorization
   header. Synchronization accepts an optional Basic username with its secure
   password input; omitting it retains `x-access-token` for tokens. Redact both
   the supplied secret and its actual encoded Basic header from failures.

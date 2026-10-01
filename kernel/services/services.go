@@ -30,7 +30,6 @@ import (
 	"the8020/kernel/sandbox/history"
 	"the8020/kernel/sandbox/manager"
 	"the8020/kernel/sandbox/model"
-	"the8020/kernel/secrets"
 	"the8020/kernel/settings"
 	"the8020/kernel/webservices"
 )
@@ -52,7 +51,6 @@ type Services struct {
 	Logging           *logging.Manager
 	Lifecycle         *lifecycle.Manager
 	Signing           *auth.Signer
-	Secrets           SecretService
 	Instance          InstanceInfo
 	Runtime           *RuntimeServices
 	Packages          PackageService
@@ -70,7 +68,6 @@ type Services struct {
 type PlatformServices struct {
 	Network     *network.Manager
 	Nodes       *nodes.Manager
-	Secrets     SecretService
 	Packages    PackageService
 	Development DevelopmentService
 	Consoles    *console.Manager
@@ -83,7 +80,6 @@ func (s *Services) PublishPlatform(platform PlatformServices) {
 	s.platformMu.Lock()
 	s.Network = platform.Network
 	s.Nodes = platform.Nodes
-	s.Secrets = platform.Secrets
 	s.Packages = platform.Packages
 	s.Development = platform.Development
 	s.Consoles = platform.Consoles
@@ -98,7 +94,7 @@ func (s *Services) PlatformSnapshot() PlatformServices {
 	s.platformMu.RLock()
 	defer s.platformMu.RUnlock()
 	return PlatformServices{
-		Network: s.Network, Nodes: s.Nodes, Secrets: s.Secrets,
+		Network: s.Network, Nodes: s.Nodes,
 		Packages: s.Packages, Development: s.Development, Consoles: s.Consoles,
 	}
 }
@@ -137,13 +133,6 @@ type DatabaseService interface {
 	SynchronizeDefinition(context.Context, string, string) (database.SynchronizationResult, error)
 	SynchronizeDefinitions(context.Context, []string, bool) ([]database.SynchronizationResult, error)
 	Trim(context.Context, string, []string, bool) error
-}
-
-// SecretService is the handler-facing global named-secret contract.
-type SecretService interface {
-	List() ([]secrets.Summary, error)
-	Get(string) (secrets.Secret, error)
-	Set(context.Context, string, string) (secrets.Summary, error)
 }
 
 // SandboxService is the handler-facing sandbox lifecycle contract.

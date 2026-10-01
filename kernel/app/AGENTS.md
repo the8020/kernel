@@ -193,10 +193,13 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   configuration. The initial probe client closes after its read; the retained
   doctor uses the live runtime backend once connected, never the retired probe
   client.
-- Package composition injects only the secret store's narrow value resolver into
-  the package manager; command services separately expose authenticated secret
-  administration. Deno and application packages never receive the secret storage
-  internals.
+- Package composition injects a narrow value resolver that invokes
+  `the8020/secrets/get` as an ordinary system-user program with a 30-second
+  timeout. Native Git receives only the requested value; no native secret-table
+  queries or named-secret runtime operations remain. Packages use their owning
+  Deno API and native purpose-separated cryptography without receiving keys.
+- The console's credential selector reads the services index's derived
+  application-published cookie name. It never queries the system profile.
 - Service defaults never override the normal runtime dependency profile. Online
   imports remain available to dynamic package dependencies, including request
   authentication, without warming an unrelated service or job first.
@@ -323,6 +326,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   '^TestDatabaseFailureDoesNotBlockControlPlane$'`.
 - `runtime_test.go` also verifies shared-cache retention across service/job
   profiles and recreation while preserving private bounded SQLite storage.
+- `secrets_test.go` verifies native Git credential resolution through the owning
+  package program with ordinary execution policy and rejection of invalid
+  results.
 
 # Child DOX Index
 

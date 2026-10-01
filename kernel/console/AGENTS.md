@@ -23,6 +23,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - JWT failure is rejected before an ordinary users-package validation job
   starts. Selected invalid cookies are cleared with the common platform cookie
   scope.
+- Composition supplies the application-published authentication cookie name from
+  the services index. Select and clear only that name; missing publication
+  leaves header tokens available and never falls back to an unscoped cookie.
 - Any authenticated user may currently open a console in any selected running
   runtime or development sandbox. Granular authorization is deferred to the full
   permission system.

@@ -49,7 +49,7 @@ func sandboxUserAccess(authentication *packageAuthentication, services func() *w
 		for key, value := range input.Headers {
 			headers.Set(key, value)
 		}
-		token, _ := auth.RequestToken(&http.Request{Header: headers})
+		token, _ := auth.RequestToken(&http.Request{Header: headers}, "")
 		claims, err := authentication.signing.VerifyToken(token)
 		if err != nil || claims["sub"] != user.ID {
 			http.Error(writer, "invalid user allowance", http.StatusUnauthorized)

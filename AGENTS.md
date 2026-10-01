@@ -239,9 +239,10 @@ relevant child AGENTS.md
   state. Browsers establish over HTTP and reuse the token as `?route=` for
   WebSockets. No route database, duplicate lease timer, or token refresh exists.
 - Platform headers use lowercase `the8020-authorization`, `the8020-route`, and
-  `the8020-internal-<purpose>`; cookies use `the8020_<purpose>`, including
-  `the8020_auth`. Header lookup/stripping remains case-insensitive. Internal
-  metadata must be stripped or regenerated at its trusted transport boundary.
+  `the8020-internal-<purpose>`; users-package cookies use
+  `the8020_auth_<system ID>` and services publishes that exact selector to Go.
+  Header lookup/stripping remains case-insensitive. Internal metadata must be
+  stripped or regenerated at its trusted transport boundary.
 - One sandbox has exactly one placement-group value and at most one allocation
   of a logical service; compatible different services may share it. A
   Workers-per-sandbox value of one is strict isolation; larger values are
@@ -341,12 +342,15 @@ relevant child AGENTS.md
   generation placement, replacement, and drain paths. Old connections and
   bindings survive soft replacement; hard restart terminates all generations of
   that service. Running jobs retain their identity and execution.
-- Global named secrets live only in `the8020__secrets__secrets`. Package records
-  may retain one secret name but never its value. Kernel-owned Git operations
-  resolve that value only for the selected package, inject it as a host-scoped
-  transient HTTPS authorization header, and never write credentials into a
-  repository URL or Git configuration. Administrative secret lists and writes
-  omit stored values; only an explicit authenticated get returns one.
+- The Deno secrets package encrypts global named secrets in
+  `the8020__secrets__secrets` through the kernel's purpose-separated AES-GCM
+  primitive. Master/derived keys remain private. Package records may retain one
+  secret name but never its value. Kernel-owned Git operations resolve that
+  value through the ordinary secrets get program for the selected package,
+  inject it as a host-scoped transient HTTP authorization header, and never
+  write credentials into a repository URL or Git configuration. Administrative
+  secret lists and writes omit stored values; only an explicit authenticated get
+  returns one.
 - The package-neutral Deno kernel SDK may invoke only explicitly registered
   JSON-in/JSON-out functions on one exact node, sandbox, and Worker. The kernel
   validates infrastructure identity, size, timeout, authentication, and

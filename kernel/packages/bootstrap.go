@@ -32,7 +32,7 @@ func (s *Store) stageInstalled(ctx context.Context, commits map[string]string) (
 			PackageID: item.ID, Local: true,
 		}
 		if source, sourceErr := s.gitValue(ctx, item.Path, "remote", "get-url", "origin"); sourceErr == nil {
-			if parsed, parseErr := url.Parse(strings.TrimSpace(source)); parseErr == nil && parsed.Scheme == "https" {
+			if parsed, parseErr := url.Parse(strings.TrimSpace(source)); parseErr == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") {
 				entry.Source, entry.Commit, entry.Local = source, commit, false
 				if requestedTag, tagErr := s.gitValue(ctx, item.Path, "config", "--local", "--get", bootstrapRequestedTagConfig); tagErr == nil {
 					requestedTag = strings.TrimSpace(requestedTag)

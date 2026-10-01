@@ -7,8 +7,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 # Ownership
 
 - Own `Services`, `RuntimeServices`, immutable `InstanceInfo`, and narrow
-  handler-facing cryptographic, database, secrets, package, development, and
-  web-service interfaces only.
+  handler-facing cryptographic, database, package, development, and web-service
+  interfaces only.
 - Do not perform lookup, lifecycle behavior, validation, or domain operations.
 
 # Local Contracts
@@ -20,8 +20,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   `PublishRuntime`, narrow handler-facing domain interfaces, and `New`.
 - Fields are limited to settings, network, shared node topology/capacity,
   logging, lifecycle, deployment signing, instance status, system-database
-  status/raw SQL/catalog/synchronization operations, named-secret list/get/set,
-  package discovery/index/synchronization/repository operations, development
+  status/raw SQL/catalog/synchronization operations, package
+  discovery/index/synchronization/repository operations, development
   image/workspace/activation operations, selected isolation diagnostics,
   low-level runtime pools, and exact operations used by current handlers/runtime
   bridges.

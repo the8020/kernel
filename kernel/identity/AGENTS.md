@@ -37,6 +37,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - `uis` identifies a UUI session. UUI creates it and initial database insertion
   rejects primary-key collisions. Resumes retain the ID through the session's
   lifetime.
+- `sys` identifies an application system database. The system package creates it
+  once with `newId("sys")` in `system.profile`, preserving it across profile
+  edits. Nodes share it through that database; independent systems create their
+  own IDs. Users uses it to distinguish browser cookies across systems.
 - `mdl` identifies one retained UUI Model wrapper within a session. Model
   construction owns creation; screen registration rejects collisions among
   pending Models without replacing the existing screen.

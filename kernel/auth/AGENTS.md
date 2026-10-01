@@ -8,9 +8,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 # Ownership
 
 - Own the master seed, atomic persistence/replacement, derived Ed25519 signing
-  credentials, arbitrary-byte signing/verification, JWT issuance/verification,
-  credential selection, and rejected-cookie removal. Never query application
-  tables or depend on a database.
+  credentials, purpose-separated authenticated encryption, arbitrary-byte
+  signing/verification, JWT issuance/verification, credential selection, and
+  rejected-cookie removal. Never query application tables or depend on a
+  database.
 - Deno users owns accounts, password hashing, sessions, revocation, application
   cookie construction, and login/logout. Kernel execution principals are
   independent of all account rows, including system.
@@ -29,23 +30,30 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   SHA-256 fingerprint of the derived authentication public key. Never log or
   return private material.
 - The master is used only for HKDF-SHA256 derivation, never directly as a
-  signing key. Use nil HKDF salt and `the8020/<purpose>/ed25519/v1` as `info`
-  to derive each 32-byte Ed25519 seed. Fixed purposes are `app-session-cookie`
-  for authentication JWTs, `service-routing` for route JWTs, and
-  `node-forwarding` for peer TLS. Replacement publishes all derived keys
-  together after successful persistence. No previous-key fallback exists.
+  signing key. Use nil HKDF salt and `the8020/<purpose>/ed25519/v1` as `info` to
+  derive each 32-byte Ed25519 seed. Fixed purposes are `app-session-cookie` for
+  authentication JWTs, `service-routing` for route JWTs, and `node-forwarding`
+  for peer TLS. Replacement publishes all derived keys together after successful
+  persistence. No previous-key fallback exists.
 - Nodes explicitly provisioned with the same seed accept the same tokens.
   Replacing it invalidates previous tokens immediately; there is no key ring,
   rotation grace period or external key lookup.
+- `Encrypt`/`Decrypt` use AES-256-GCM with a random 96-bit nonce and HKDF-SHA256
+  info `the8020/<app-purpose>/aes-256-gcm/v1`, distinct from signing keys. The
+  envelope is `v1:` plus standard base64 of nonce/ciphertext/tag. Both data and
+  associated data are bounded to 1 MiB. Decryption authenticates purpose, key,
+  associated data, and ciphertext; invalid envelopes fail without data. Keys
+  stay private. Replacing the master makes previous ciphertext unreadable;
+  storage policy and encryption/decryption calls belong to the secrets package.
 - Cluster deployment supplies the same `THE8020_SIGNING_KEY` to every node:
   standard base64 of one randomly generated 32-byte seed, provisioned once.
-  Without the environment value or a persisted key, each node generates its
-  own seed and does not automatically trust other nodes.
+  Without the environment value or a persisted key, each node generates its own
+  seed and does not automatically trust other nodes.
 - `forwarding.go` uses the derived native-only peer key to create an in-memory
-  certificate for mutual TLS 1.3. Both peers pin the current derived public
-  key; public CAs, DNS certificates, application JWTs and arbitrary-byte
-  signatures do not confer peer authority. No additional secret or certificate
-  is persisted, mounted, or exposed through the package crypto bridge.
+  certificate for mutual TLS 1.3. Both peers pin the current derived public key;
+  public CAs, DNS certificates, application JWTs and arbitrary-byte signatures
+  do not confer peer authority. No additional secret or certificate is
+  persisted, mounted, or exposed through the package crypto bridge.
 - Forwarding TLS callbacks use the current certificate after root replacement.
   Session tickets are disabled. The recipient revalidates every request against
   the current derived key, rejecting old pooled credentials and closing that
@@ -59,10 +67,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Routing JWTs use their own derived key and its public-key fingerprint as kid,
   with the same EdDSA/issuer/audience and distinct `the8020-route+jwt` type.
   Their only target fields are node, sandbox, Worker, and persistent execution
-  IDs. They carry no service/user records or
-  expiry lease: live supervisors alone govern keepalive and completion. Token
-  verification proves integrity, never existence or permission to recreate an
-  execution. Routing and authentication profiles reject each other's tokens.
+  IDs. They carry no service/user records or expiry lease: live supervisors
+  alone govern keepalive and completion. Token verification proves integrity,
+  never existence or permission to recreate an execution. Routing and
+  authentication profiles reject each other's tokens.
 - Route signing and verification require canonical `nod-`/`sbx-`/`wrk-`/`pex-`
   targets through the shared identity helper, including for correctly signed
   tokens. Opaque application authentication sessions keep their own contract.
@@ -75,9 +83,12 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   Local tokens require a native transport context; public HTTP, including
   loopback requests, cannot assert it. The authenticated node recipient alone
   may restore that marker when forwarding a native request across nodes.
-- `the8020-authorization: Bearer <jwt>` and `the8020_auth=<jwt>` carry the same
-  token. Explicit header presence wins, including empty, duplicate, or malformed
-  headers; it never falls back to cookies. Duplicate platform cookies fail.
+- `the8020-authorization: Bearer <jwt>` and the application-published cookie
+  carry the same token. Explicit header presence wins, including empty,
+  duplicate, or malformed headers; it never falls back to cookies. Duplicate
+  platform cookies fail. Credential selection and clearing take the exact cookie
+  name; an empty name permits headers only. Cookies from other systems are
+  ignored and never cleared.
 - Public services ignore tokens completely and forward credentials unverified
   under their configured user. Protected services verify before
   request-triggered execution and pass trusted claims to the existing target
@@ -89,8 +100,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   Generic signing and verification require 5–128 lowercase ASCII letters,
   digits, or hyphens, including the prefix and a nonempty suffix. Native Go
   enforces this boundary; verification uses the consumer's expected purpose.
-  Arbitrary purposes are derived on demand without an unbounded cache.
-  All trusted packages may use every application purpose, including
+  Arbitrary purposes are derived on demand without an unbounded cache. All
+  trusted packages may use every application purpose, including
   `app-session-cookie`, and the dedicated JWT API; per-package permissions
   remain deferred. Native peer and routing keys are unavailable to generic
   signing. Raw signatures alone never qualify as HTTP authentication.
@@ -109,11 +120,16 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Tests cover private key persistence/modes/replacement, safe invalid input,
   DB-independent cross-node signatures and routes, cross-purpose/master-key
   rejection, strict native JWT checks, opaque session claims, precedence, and
-  cookie scope. HTTP/Worker and users-package regressions cover the policy split.
+  cookie scope. HTTP/Worker and users-package regressions cover the policy
+  split.
+- `encryption_test.go` verifies random nonces, same-master node roundtrips,
+  other-key/purpose/associated-data rejection, tampering, plaintext rejection,
+  and input limits.
 - `forwarding_test.go` verifies environment provisioning, restart precedence,
   separation from package signing, mutual peer authentication, and replacement
   on existing TLS configurations. Node tests verify pooled-connection rejection.
-  Run `go test ./kernel/auth ./kernel/nodes` using the repository-local Go toolchain.
+  Run `go test ./kernel/auth ./kernel/nodes` using the repository-local Go
+  toolchain.
 
 # Child DOX Index
 

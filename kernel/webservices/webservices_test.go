@@ -1258,7 +1258,7 @@ func TestAuthenticatedBoundaryRejectsOrRedirectsBeforeDispatchAndAttachesTrusted
 
 	invalid := httptest.NewRecorder()
 	invalidRequest := httptest.NewRequest(http.MethodGet, "/the8020/demo/protected/value", nil)
-	invalidRequest.AddCookie(&http.Cookie{Name: "the8020_auth", Value: "invalid-cookie"})
+	invalidRequest.AddCookie(&http.Cookie{Name: "the8020_auth_sys-aaaaaaaaaa", Value: "invalid-cookie"})
 	manager.ServeHTTP(invalid, invalidRequest)
 	if invalid.Code != 401 || authentication.calls != 1 {
 		t.Fatalf("invalid-cookie response=%d calls=%d", invalid.Code, authentication.calls)
@@ -1267,7 +1267,7 @@ func TestAuthenticatedBoundaryRejectsOrRedirectsBeforeDispatchAndAttachesTrusted
 	authorized := httptest.NewRecorder()
 	authorizedRequest := httptest.NewRequest(http.MethodGet, "/the8020/demo/protected/value", nil)
 	authorizedRequest.AddCookie(&http.Cookie{Name: "other", Value: "preserved"})
-	authorizedRequest.AddCookie(&http.Cookie{Name: "the8020_auth", Value: "valid-jwt"})
+	authorizedRequest.AddCookie(&http.Cookie{Name: "the8020_auth_sys-aaaaaaaaaa", Value: "valid-jwt"})
 	authorizedRequest.Header.Set("the8020-internal-auth-username", "attacker")
 	authorizedRequest.Header.Set("the8020-internal-username", "attacker")
 	manager.ServeHTTP(authorized, authorizedRequest)
@@ -1288,7 +1288,7 @@ func TestAuthenticatedBoundaryRejectsOrRedirectsBeforeDispatchAndAttachesTrusted
 			t.Errorf("forwarded %s = %q, want %q", name, got, want)
 		}
 	}
-	if cookie := forwarded.header.Get("Cookie"); cookie != "other=preserved; the8020_auth=valid-jwt" {
+	if cookie := forwarded.header.Get("Cookie"); cookie != "other=preserved; the8020_auth_sys-aaaaaaaaaa=valid-jwt" {
 		t.Fatalf("forwarded cookies = %q", cookie)
 	}
 	if forwarded.header.Get("the8020-internal-authentication") == "" {
@@ -1351,7 +1351,7 @@ func TestAuthenticatedBoundaryRejectsOrRedirectsBeforeDispatchAndAttachesTrusted
 	}
 	basicRequest := httptest.NewRequest(http.MethodPost, "/the8020/demo/protected/value", nil)
 	basicRequest.SetBasicAuth("alice", "páss:word")
-	basicRequest.AddCookie(&http.Cookie{Name: "the8020_auth", Value: "invalid-cookie"})
+	basicRequest.AddCookie(&http.Cookie{Name: "the8020_auth_sys-aaaaaaaaaa", Value: "invalid-cookie"})
 	basicResponse := httptest.NewRecorder()
 	manager.ServeHTTP(basicResponse, basicRequest)
 	if basicResponse.Code != http.StatusOK || passwordCalls != 2 {
@@ -1380,7 +1380,7 @@ func TestAuthenticatedBoundaryRejectsOrRedirectsBeforeDispatchAndAttachesTrusted
 					request = websocketRequest(path, "")
 				}
 				if cookie != "" {
-					request.AddCookie(&http.Cookie{Name: platformauth.TokenCookie, Value: cookie})
+					request.AddCookie(&http.Cookie{Name: "the8020_auth_sys-aaaaaaaaaa", Value: cookie})
 				}
 				redirected := httptest.NewRecorder()
 				manager.ServeHTTP(redirected, request)
@@ -1414,7 +1414,7 @@ func TestPublicServiceIgnoresTokensAndPreservesRawCredentials(t *testing.T) {
 	for _, token := range []string{"", "valid-jwt", "invalid-jwt", "expired-jwt"} {
 		request := httptest.NewRequest(http.MethodGet, "/the8020/demo/public/", nil)
 		if token != "" {
-			request.AddCookie(&http.Cookie{Name: "the8020_auth", Value: token})
+			request.AddCookie(&http.Cookie{Name: "the8020_auth_sys-aaaaaaaaaa", Value: token})
 			request.Header.Set(platformauth.TokenHeader, "Bearer "+token)
 		}
 		request.Header.Set("the8020-internal-authentication", "forged")
@@ -1507,7 +1507,7 @@ func TestSessionServiceEstablishesHTTPRouteThenReconnectsWebSocketToExactSandbox
 	}
 	pools.dispatched = make(chan dispatchedRequest, 1)
 	establish := httptest.NewRequest(http.MethodPost, "/example/realtime/channel/connect", nil)
-	establish.AddCookie(&http.Cookie{Name: "the8020_auth", Value: "valid-jwt"})
+	establish.AddCookie(&http.Cookie{Name: "the8020_auth_sys-aaaaaaaaaa", Value: "valid-jwt"})
 	established := httptest.NewRecorder()
 	manager.ServeHTTP(established, establish)
 	route := established.Header().Get(RouteHeader)
@@ -1517,7 +1517,7 @@ func TestSessionServiceEstablishesHTTPRouteThenReconnectsWebSocketToExactSandbox
 	}
 
 	upgrade := websocketRequest("/example/realtime/channel/connect?route="+route, "")
-	upgrade.AddCookie(&http.Cookie{Name: "the8020_auth", Value: "valid-jwt"})
+	upgrade.AddCookie(&http.Cookie{Name: "the8020_auth_sys-aaaaaaaaaa", Value: "valid-jwt"})
 	upgrade.Header.Set("the8020-internal-auth-username", "attacker")
 	response := httptest.NewRecorder()
 	manager.ServeHTTP(response, upgrade)
@@ -1525,7 +1525,7 @@ func TestSessionServiceEstablishesHTTPRouteThenReconnectsWebSocketToExactSandbox
 		t.Fatalf("upgrade status=%d proxies=%#v", response.Code, pools.websockets)
 	}
 	proxied := pools.websockets[0]
-	if proxied.poolID != initial.poolID || proxied.path != "/connect" || proxied.query != "" || proxied.header.Get("the8020-internal-authentication") == "" || proxied.header.Get("the8020-internal-username") != "admin" || proxied.header.Get("the8020-internal-persistent-execution-id") == "" || proxied.header.Get("Cookie") != "the8020_auth=valid-jwt" {
+	if proxied.poolID != initial.poolID || proxied.path != "/connect" || proxied.query != "" || proxied.header.Get("the8020-internal-authentication") == "" || proxied.header.Get("the8020-internal-username") != "admin" || proxied.header.Get("the8020-internal-persistent-execution-id") == "" || proxied.header.Get("Cookie") != "the8020_auth_sys-aaaaaaaaaa=valid-jwt" {
 		t.Fatalf("proxied persistent request = %#v", proxied)
 	}
 
@@ -1539,7 +1539,7 @@ func TestSessionServiceEstablishesHTTPRouteThenReconnectsWebSocketToExactSandbox
 	}
 	stale := httptest.NewRequest(http.MethodPost, "/example/realtime/channel/connect", nil)
 	stale.Header.Set(RouteHeader, staleToken)
-	stale.AddCookie(&http.Cookie{Name: "the8020_auth", Value: "valid-jwt"})
+	stale.AddCookie(&http.Cookie{Name: "the8020_auth_sys-aaaaaaaaaa", Value: "valid-jwt"})
 	staleResponse := httptest.NewRecorder()
 	manager.ServeHTTP(staleResponse, stale)
 	if staleResponse.Code != http.StatusConflict {
@@ -1585,7 +1585,7 @@ func TestReloadRoutesNewWorkToCurrentGenerationAndRetainsOldBindings(t *testing.
 	oldPool := initial.Sandboxes[0].PoolID
 	pools.dispatched = make(chan dispatchedRequest, 1)
 	establish := httptest.NewRequest(http.MethodPost, "/example/realtime/channel/connect", nil)
-	establish.AddCookie(&http.Cookie{Name: "the8020_auth", Value: "valid-jwt"})
+	establish.AddCookie(&http.Cookie{Name: "the8020_auth_sys-aaaaaaaaaa", Value: "valid-jwt"})
 	established := httptest.NewRecorder()
 	manager.ServeHTTP(established, establish)
 	route := established.Header().Get(RouteHeader)
@@ -1621,7 +1621,7 @@ func TestReloadRoutesNewWorkToCurrentGenerationAndRetainsOldBindings(t *testing.
 	}
 
 	resume := websocketRequest("/example/realtime/channel/connect?route="+route, "")
-	resume.AddCookie(&http.Cookie{Name: "the8020_auth", Value: "valid-jwt"})
+	resume.AddCookie(&http.Cookie{Name: "the8020_auth_sys-aaaaaaaaaa", Value: "valid-jwt"})
 	response := httptest.NewRecorder()
 	manager.ServeHTTP(response, resume)
 	if response.Code != http.StatusOK || len(pools.websockets) != 1 || pools.websockets[0].poolID != oldPool {
@@ -1630,7 +1630,7 @@ func TestReloadRoutesNewWorkToCurrentGenerationAndRetainsOldBindings(t *testing.
 
 	pools.dispatched = make(chan dispatchedRequest, 1)
 	currentRequest := httptest.NewRequest(http.MethodPost, "/example/realtime/channel/connect", nil)
-	currentRequest.AddCookie(&http.Cookie{Name: "the8020_auth", Value: "valid-jwt"})
+	currentRequest.AddCookie(&http.Cookie{Name: "the8020_auth_sys-aaaaaaaaaa", Value: "valid-jwt"})
 	manager.ServeHTTP(httptest.NewRecorder(), currentRequest)
 	if dispatched := <-pools.dispatched; dispatched.poolID == oldPool {
 		t.Fatalf("new request reached draining pool %s", oldPool)
@@ -1733,7 +1733,7 @@ func TestPersistentRouteReceivedByAnotherNodeForwardsToOwner(t *testing.T) {
 	}
 	request := httptest.NewRequest(http.MethodPost, "/example/realtime/channel/connect", nil)
 	request.Header.Set(RouteHeader, token)
-	request.AddCookie(&http.Cookie{Name: "the8020_auth", Value: "valid-jwt"})
+	request.AddCookie(&http.Cookie{Name: "the8020_auth_sys-aaaaaaaaaa", Value: "valid-jwt"})
 	response := httptest.NewRecorder()
 	manager.ServeHTTP(response, request)
 	if response.Code != http.StatusAccepted || nodeRouter.calls != 1 || nodeRouter.node != "nod-aaaaaaaaaa" {
@@ -2349,7 +2349,7 @@ func newTestServiceIndex(t testing.TB, root, serviceID string, configure func(*S
 	identity, _ := workspacepackages.ParseServiceID(serviceID)
 	spec.EntrypointURL = "file:///workspace/packages/" + identity.PackageID() + "/services/" + identity.Service + "/service.ts"
 	spec.Description = "Test service"
-	spec.Access = AccessPolicy{Mode: "public", Unauthenticated: UnauthenticatedPolicy{Action: "reject", Status: 401, Message: "Authentication is required."}}
+	spec.Access = AccessPolicy{Mode: "public", CookieName: "the8020_auth_sys-aaaaaaaaaa", Unauthenticated: UnauthenticatedPolicy{Action: "reject", Status: 401, Message: "Authentication is required."}}
 	spec.Effective.Lifecycle.SessionKeepAlive = 10 * time.Minute
 	spec.Effective.Scaling = ScalingConfiguration{MinimumWorkers: 1, MaximumWorkers: 4, ConcurrencyPerWorker: 32, TargetUtilization: 0.7, WorkerKeepAlive: 2 * time.Minute}
 	spec.Effective.Placement = PlacementConfiguration{MinimumSandboxes: 1, WorkersPerSandbox: 4}

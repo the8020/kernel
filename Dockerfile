@@ -49,6 +49,10 @@ RUN kernel_tag=$(git describe --tags --exact-match HEAD) \
       tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - definitions; } \
       | sha256sum | cut -d' ' -f1 > id
 
+# Keep only platform assets from the build instance's observed runtime state.
+RUN find /8020/node/kernel/runtime -mindepth 1 -maxdepth 1 \
+    ! -name definitions ! -name images -exec rm -rf -- {} +
+
 FROM debian:trixie-slim
 
 ARG DEBIAN_FRONTEND=noninteractive
@@ -66,7 +70,14 @@ RUN apt-get update \
 COPY --from=builder /usr/local/src/the8020/.development/bin/ /usr/local/bin/
 COPY --from=builder /usr/local/src/the8020/docker/rootfs/ /
 COPY --from=builder /usr/local/share/the8020/ /usr/local/share/the8020/
-COPY --from=builder /8020/ /8020/
+COPY --from=builder /8020/packages/ /8020/packages/
+COPY --from=builder /8020/scripts/ /8020/scripts/
+COPY --from=builder /8020/node/kernel/runtime/ /8020/node/kernel/runtime/
+
+# Ship code and runtime assets, with fresh database, identities and keys per volume.
+RUN install -d -m 0700 /8020/node/kernel /8020/database \
+    && install -d -m 0755 /8020/users \
+    && install -m 0600 /dev/null /8020/kernel.toml
 
 WORKDIR /8020
 VOLUME ["/8020"]

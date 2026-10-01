@@ -52,7 +52,7 @@ func TestJWTGateRejectsBeforeColdExecutionAndUsesHeaderPrecedence(t *testing.T) 
 					value = websocketRequest("/"+serviceID+"/", "")
 				}
 				if cookie != "" {
-					value.AddCookie(&http.Cookie{Name: auth.TokenCookie, Value: cookie})
+					value.AddCookie(&http.Cookie{Name: "the8020_auth_sys-aaaaaaaaaa", Value: cookie})
 				}
 				if header != nil {
 					value.Header.Set(auth.TokenHeader, *header)

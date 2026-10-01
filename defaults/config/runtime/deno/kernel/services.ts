@@ -38,6 +38,7 @@ export interface ServiceSpecification {
   description: string;
   access: {
     mode: "public" | "authenticated";
+    cookie_name?: string;
     unauthenticated: {
       action: "reject" | "redirect";
       status: number;

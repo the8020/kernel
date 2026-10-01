@@ -14,6 +14,10 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 
 # Local Contracts
 
+- `THE8020_INSTANCE_ROOT` selects the initialized instance (default `/8020`).
+  All runtime links, bootstrap markers, and administrative calls follow that
+  root so multiple instances can reuse the same container startup script.
+
 - Fresh Docker bootstrap grants the initial user role `**` with permission
   `"*" = "*"` using `auth.roles.create --if-missing`, `auth.roles.grant`, and
   `auth.users.assign`. No authorization policy enters Go or the supervisor. The
@@ -28,10 +32,17 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 - The deploy Dockerfile selects the newest kernel patch for its requested
   major.minor line before using the same installer and runtime payload folders.
 - Copy semantic directories rather than enumerating executables or helper files.
+- The final image copies packages, scripts, and runtime assets only from the
+  built instance. Supply an empty private `kernel.toml` marker and empty data
+  roots; do not copy the builder's database, users, node identities, master/SSH
+  keys, or other node state. First startup creates fresh IDs and keys, retained
+  by the instance volume. Separate fresh containers from one image remain
+  independent systems.
 - Dockerfiles move the initialized platform runtime,
   `node/kernel/runtime/definitions/` and `images/`, to
-  `/usr/local/share/the8020/runtime-state/` and write its `id` from the release metadata, every `images/*/image.json`, and a
-  normalized archive of the definitions. Before the smoke, the entrypoint
+  `/usr/local/share/the8020/runtime-state/` and write its `id` from the release
+  metadata, every `images/*/image.json`, and a normalized archive of the
+  definitions. Before the smoke, the entrypoint
   compares that `id` with the instance's
   `node/kernel/runtime/.image-runtime-state` and, when they differ or either
   directory is missing, replaces exactly those two directories through staged
@@ -75,8 +86,9 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   user removal, retry after failed creation, and rejection of invalid user
   responses without a completion marker. It also replaces an old volume's
   runtime directory with the image payload link, repeats the smoke on restart,
-  and verifies private work remains intact. Runtime cases refresh stale
-  definitions and images from the image payload, skip an unchanged identity on
+  and verifies private work remains intact at the selected instance root.
+  Runtime cases refresh stale definitions and images from the image payload,
+  skip an unchanged identity on
   restart, recover an interrupted refresh, and leave a legacy image's instance
   runtime untouched.
 - Build both the version-selected deploy image and the local tagged-checkout
