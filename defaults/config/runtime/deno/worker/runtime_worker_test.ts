@@ -112,6 +112,7 @@ Deno.test("a CPU-bound Worker keeps its dated sample while a resource request ti
       worker.resources!.cpu_usage_micros > before!.cpu_usage_micros,
       true,
     );
+    assertEquals(Number.isInteger(worker.resources!.cpu_usage_micros), true);
   } finally {
     worker.kill();
   }

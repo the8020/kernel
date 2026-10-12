@@ -71,7 +71,8 @@ function measureResources(): WorkerResources {
   const cpu = threadCpuUsage();
   return {
     heap_used_bytes: Deno.memoryUsage().heapUsed,
-    cpu_usage_micros: cpu.user + cpu.system,
+    // Deno reports fractional microseconds; the kernel decodes an int64.
+    cpu_usage_micros: Math.trunc(cpu.user + cpu.system),
     sampled_at: new Date().toISOString(),
   };
 }

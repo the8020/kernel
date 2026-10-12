@@ -34,7 +34,7 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   matching scans existing import paths, so deleting source needs no retained
   repository or additional dependency index.
 - Resource samples report this Worker isolate’s heap-used bytes, current-thread
-  CPU microseconds, and sample time. Readiness supplies an initial sample;
+  CPU microseconds (whole, as the kernel decodes an integer), and sample time. Readiness supplies an initial sample;
   explicit requests are coalesced and bounded to 250 ms, retain the last dated
   sample on timeout, and never change request counts or idle timing.
 - Workload types are exactly `service` and `job`. Worker permissions are
