@@ -92,7 +92,7 @@ echo "development image [full 1/2]: building inside BuildKit" >&2
   --opt "build-arg:DENO_BASE=$BASE_IMAGE@$BASE_MANIFEST" \
   --output "type=local,dest=$STAGE"
 
-for required in deno git bash clear curl nano find grep sed apt-get apt-cache dpkg dpkg-deb; do
+for required in deno git bash clear curl nano find grep ps sed apt-get apt-cache dpkg dpkg-deb; do
   if [[ ! -x "$STAGE/usr/bin/$required" && ! -x "$STAGE/usr/local/bin/$required" && ! -x "$STAGE/bin/$required" ]]; then
     echo "development Containerfile omitted $required" >&2
     exit 1

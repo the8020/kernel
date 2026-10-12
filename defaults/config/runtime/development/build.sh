@@ -4,7 +4,8 @@ set -euo pipefail
 apt-get update -qq
 apt-get install -qq -y --no-install-recommends \
   bash ca-certificates coreutils curl findutils git grep nano ncurses-base \
-  ncurses-bin sed
+  ncurses-bin procps sed
+ps --version >/dev/null
 TERM=xterm clear >/dev/null
 TERM=xterm-256color clear >/dev/null
 apt-get clean

@@ -17,7 +17,8 @@ Parent DOX: [kernel/defaults/config/runtime DOX](../AGENTS.md).
 
 # Local Contracts
 
-- The image contains Git, pinned Deno, Bash, common Unix tools, `clear`, the
+- The image contains Git, pinned Deno, Bash, common Unix tools, `procps` (including
+  `ps` for developer tools such as Codex), `clear`, the
   common `ncurses-base` terminal definitions including `xterm` and
   `xterm-256color`, CA certificates, curl, Nano, and APT/dpkg. The canonical
   `activate` helper is supplied separately through the read-only
@@ -56,7 +57,8 @@ Parent DOX: [kernel/defaults/config/runtime DOX](../AGENTS.md).
 
 # Verification
 
-- Portable installation verifies required executables, the absence of Codex,
+- Both image builds verify `ps` runs and require its executable before publication.
+  Portable installation verifies required executables, the absence of Codex,
   Node.js, and npm, APT metadata, Debian `dpkg`, common terminfo, pinned tools,
   and image identity. The real rootless/rootful E2E requires a contextual
   working-directory prompt, a native dpkg transaction, an actual `xterm`

@@ -59,7 +59,7 @@ cp -a "$RUNTIME_SOURCE/development/image/files/." "$STAGE/opt/development/"
 chmod 0555 "$STAGE/opt/development/sandbox.sh"
 install -m 0444 "$RUNTIME_SOURCE/development/image/files/profile" "$STAGE/etc/profile"
 
-for required in deno git bash clear curl nano find grep sed apt-get apt-cache dpkg dpkg-deb; do
+for required in deno git bash clear curl nano find grep ps sed apt-get apt-cache dpkg dpkg-deb; do
   if [[ ! -x "$STAGE/usr/bin/$required" && ! -x "$STAGE/usr/local/bin/$required" && ! -x "$STAGE/bin/$required" ]]; then
     echo "development image build omitted $required" >&2
     exit 1
