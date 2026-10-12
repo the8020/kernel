@@ -57,7 +57,8 @@ Parent DOX: [kernel/defaults/config/runtime DOX](../AGENTS.md).
 
 # Verification
 
-- Both image builds verify `ps` runs and require its executable before publication.
+- Both image builds verify `ps` runs (or, inside a Docker outer build chroot without
+  `/proc`, that it is installed) and require its executable before publication.
   Portable installation verifies required executables, the absence of Codex,
   Node.js, and npm, APT metadata, Debian `dpkg`, common terminfo, pinned tools,
   and image identity. The real rootless/rootful E2E requires a contextual

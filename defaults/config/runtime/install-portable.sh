@@ -82,7 +82,10 @@ case $(uname -m) in
 esac
 
 GVISOR_RELEASE=$(toml_value gvisor release)
-if ! "$RUNSC_SOURCE" --version | grep -Fxq "runsc version release-$GVISOR_RELEASE (the8020)"; then
+# Capture the output first: grep -q closing the pipe early can SIGPIPE runsc,
+# which pipefail would report as a version mismatch.
+RUNSC_VERSION=$("$RUNSC_SOURCE" --version)
+if ! grep -Fxq "runsc version release-$GVISOR_RELEASE (the8020)" <<< "$RUNSC_VERSION"; then
   echo "built runsc does not match the pinned 80|20 runtime release" >&2
   exit 1
 fi
