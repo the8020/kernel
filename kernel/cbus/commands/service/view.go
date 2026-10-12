@@ -3,8 +3,10 @@ package service
 
 import (
 	"context"
+	"slices"
 	"sync"
 
+	"the8020/kernel/sandbox/model"
 	"the8020/kernel/services"
 	"the8020/kernel/webservices"
 )
@@ -18,23 +20,27 @@ func Observed(ctx context.Context, status webservices.Status, sandboxes services
 	status.Sandboxes = append([]webservices.ServiceSandboxStatus(nil), status.Sandboxes...)
 	uniqueSandboxes := map[string]bool{}
 	uniqueWorkers := map[string]bool{}
+	resources := &model.WorkerResources{}
+	measured := true
 	for index := range status.Sandboxes {
 		sandbox := &status.Sandboxes[index]
 		inspection, err := sandboxes.Inspect(ctx, sandbox.SandboxID)
 		if err != nil || inspection.Runtime.Revision == 0 {
+			measured = measured && len(sandbox.WorkerIDs) == 0
 			for _, workerID := range sandbox.WorkerIDs {
 				uniqueWorkers[workerID] = true
 			}
 			uniqueSandboxes[sandbox.SandboxID] = true
 			continue
 		}
-		sandbox.WorkerIDs = sandbox.WorkerIDs[:0]
+		allocated := sandbox.WorkerIDs
+		sandbox.WorkerIDs = nil
 		sandbox.ActiveRequests = 0
 		sandbox.ActiveExecutions = 0
 		sandbox.SnapshotRevision = inspection.Runtime.Revision
 		sandbox.SnapshotObservedAt = inspection.Runtime.ObservedAt
 		for _, worker := range inspection.Runtime.Workers {
-			if worker.WorkloadID != sandbox.PoolID {
+			if worker.WorkloadID != sandbox.PoolID && !slices.Contains(allocated, worker.WorkerID) {
 				continue
 			}
 			sandbox.WorkerIDs = append(sandbox.WorkerIDs, worker.WorkerID)
@@ -44,12 +50,27 @@ func Observed(ctx context.Context, status webservices.Status, sandboxes services
 				active = worker.PersistentExecutions
 			}
 			sandbox.ActiveExecutions += active
+			if worker.Resources == nil {
+				measured = false
+			} else {
+				if !uniqueWorkers[worker.WorkerID] {
+					resources.HeapUsedBytes += worker.Resources.HeapUsedBytes
+					resources.CPUUsageMicros += worker.Resources.CPUUsageMicros
+					if resources.SampledAt.IsZero() || worker.Resources.SampledAt.Before(resources.SampledAt) {
+						resources.SampledAt = worker.Resources.SampledAt
+					}
+				}
+			}
 			uniqueWorkers[worker.WorkerID] = true
 		}
 		uniqueSandboxes[sandbox.SandboxID] = true
 	}
 	status.SandboxCount = len(uniqueSandboxes)
 	status.WorkerCount = len(uniqueWorkers)
+	status.Resources = nil
+	if measured {
+		status.Resources = resources
+	}
 	return status
 }
 

@@ -674,16 +674,7 @@ func (m *Manager) cachedInspection(spec model.SandboxSpec, status model.SandboxS
 	if status.ObservedState != model.StateReady && status.ObservedState != model.StateActive && status.ObservedState != model.StateDraining {
 		return Inspection{Spec: spec, Status: status}
 	}
-	workers := make([]supervisor.WorkerStatus, len(snapshot.Workers))
-	for index, worker := range snapshot.Workers {
-		workers[index] = supervisor.WorkerStatus{
-			WorkerID: worker.WorkerID, WorkloadID: worker.WorkloadID,
-			OwnerID: worker.OwnerID, DebuggerName: worker.DebuggerName, Entrypoint: worker.Entrypoint,
-			ReleaseID: worker.ReleaseID, InFlight: worker.InFlight,
-			PersistentExecutions: worker.PersistentExecutions, IdleSinceMS: worker.IdleSinceMS,
-			State: worker.State, Failure: worker.Failure,
-		}
-	}
+	workers := append([]supervisor.WorkerStatus{}, snapshot.Workers...)
 	return Inspection{Spec: spec, Status: status, Workers: workers, Runtime: snapshot}
 }
 

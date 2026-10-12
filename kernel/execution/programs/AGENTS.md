@@ -10,8 +10,9 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
 - A program is a package artifact; a job is one invocation of that artifact.
 - `Run` submits package CBus commands as `system`, retaining the caller context
   for synchronous child-job admission. `RunWithOptions` forwards the runtime
-  caller's execution user, optional sandbox placement group, and timeout. Both
-  use the same job path and own no durable scheduling or history.
+  caller's execution user, optional sandbox placement group, timeout, and
+  optional caller-allocated execution ID. Both use the same job path and own no
+  durable scheduling or history.
 - Use the ordinary job runtime profile, complete shared read-only packages
   mount, permissions, grouping, capacity, and configured Worker reuse policy.
   Commands may import and call other packages just like services and jobs.

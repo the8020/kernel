@@ -53,6 +53,7 @@ type Policy struct {
 }
 
 type Options struct {
+	ExecutionID       string
 	OwnerID           string
 	Arguments         []any
 	Secrets           map[string]string
@@ -301,9 +302,14 @@ func (m *Manager) prepare(jobID, entrypoint string, options Options) (submission
 	if options.Reuse != nil {
 		reuse = *options.Reuse
 	}
-	executionID, err := identity.New("job")
-	if err != nil {
-		return submission{}, err
+	executionID := options.ExecutionID
+	if executionID == "" {
+		executionID, err = identity.New("job")
+		if err != nil {
+			return submission{}, err
+		}
+	} else if !identity.Is(executionID, "job") {
+		return submission{}, errors.New("job execution ID is invalid")
 	}
 	contextID, err := identity.New("ctx")
 	if err != nil {

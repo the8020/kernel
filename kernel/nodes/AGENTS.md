@@ -28,6 +28,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   `SetTerminalCloser`. Exact-node close uses that same private recipient
   transport and does not require a surviving display Worker.
 
+- Runtime composition registers `SetExecutionReader`. `InspectExecution` reads
+  one canonical job ID on one exact node over the existing authenticated peer
+  transport, without fan-out, retries, output capture, or execution changes.
+
 # Local Contracts
 
 - Every node has one stable canonical `nod-` ID, public URL, recipient address

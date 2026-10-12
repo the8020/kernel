@@ -1,4 +1,5 @@
 import { registerHooks } from "node:module";
+import { threadCpuUsage } from "node:process";
 import { fileURLToPath } from "node:url";
 import type {
   BaseContext,
@@ -12,6 +13,7 @@ import type {
   ServiceRequestMetadata,
   WorkerControlFunctions,
   WorkerExecutionFailure,
+  WorkerResources,
 } from "./contracts.ts";
 import { canonicalExecutionUser, canonicalInvocation } from "./contracts.ts";
 import { authenticateRequest } from "./request_authentication.ts";
@@ -31,6 +33,7 @@ interface InitializeMessage {
 
 interface ControlMessage {
   type:
+    | "resources"
     | "job_run"
     | "worker_invoke"
     | "service_request"
@@ -63,6 +66,15 @@ class AsyncQueue<T> {
 }
 
 type WebSocketData = string | Uint8Array;
+
+function measureResources(): WorkerResources {
+  const cpu = threadCpuUsage();
+  return {
+    heap_used_bytes: Deno.memoryUsage().heapUsed,
+    cpu_usage_micros: cpu.user + cpu.system,
+    sampled_at: new Date().toISOString(),
+  };
+}
 type WebSocketInboundEvent =
   | { type: "message"; data: WebSocketData }
   | { type: "close"; code: number; reason: string };
@@ -168,6 +180,14 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
     | undefined;
 
   port.onmessage = (controlEvent: MessageEvent<ControlMessage>) => {
+    if (controlEvent.data.type === "resources") {
+      port.postMessage({
+        type: "resources",
+        correlationId: controlEvent.data.correlationId,
+        payload: measureResources(),
+      });
+      return;
+    }
     if (logSender.handle(controlEvent.data)) return;
     if (kernelBridge.handle(controlEvent.data)) return;
     if (dispatchControl === undefined) {
@@ -675,7 +695,7 @@ self.onmessage = async (event: MessageEvent<InitializeMessage>) => {
     for (const controlEvent of pendingControls.splice(0)) {
       void dispatchControl(controlEvent);
     }
-    port.postMessage({ type: "ready" });
+    port.postMessage({ type: "ready", payload: measureResources() });
   } catch (error: unknown) {
     port.postMessage({ type: "fatal", error: errorMessage(error) });
   }

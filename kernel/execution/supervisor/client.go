@@ -79,19 +79,7 @@ type WorkerFailure struct {
 	Reason   string `json:"reason"`
 }
 
-type WorkerStatus struct {
-	WorkerID             string `json:"worker_id"`
-	WorkloadID           string `json:"workload_id"`
-	OwnerID              string `json:"owner_id"`
-	DebuggerName         string `json:"debugger_name"`
-	Entrypoint           string `json:"entrypoint"`
-	ReleaseID            string `json:"release_id"`
-	InFlight             int    `json:"in_flight"`
-	PersistentExecutions int    `json:"persistent_executions,omitempty"`
-	IdleSinceMS          int64  `json:"idle_since_ms,omitempty"`
-	State                string `json:"state"`
-	Failure              string `json:"failure,omitempty"`
-}
+type WorkerStatus = model.RuntimeWorkerStatus
 
 type ExecutionMetadata struct {
 	WorkerID        string                    `json:"workerId"`

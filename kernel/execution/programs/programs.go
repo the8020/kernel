@@ -48,6 +48,7 @@ type Result struct {
 
 // Options selects execution identity, placement, and timeout for an ordinary job.
 type Options struct {
+	ExecutionID  string
 	User         execution.User
 	SandboxGroup *string
 	Timeout      time.Duration
@@ -75,7 +76,8 @@ func (r *Runner) RunWithOptions(ctx context.Context, programID, expectedCommit s
 	}
 	namespace, _, _ := strings.Cut(program.PackageID, "/")
 	record, err := r.jobs.Run(ctx, program.ID, program.EntrypointURL, jobs.Options{
-		User: options.User, PlacementGroup: options.SandboxGroup, Timeout: options.Timeout,
+		ExecutionID: options.ExecutionID,
+		User:        options.User, PlacementGroup: options.SandboxGroup, Timeout: options.Timeout,
 		OwnerID: program.PackageID, Arguments: arguments,
 		Secrets: secrets, Namespace: namespace, ReleaseID: program.Commit,
 		Origin: execution.Origin{Type: execution.OriginProgram, ID: program.ID},

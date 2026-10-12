@@ -69,6 +69,10 @@ Parent DOX: [kernel/kernel/runtime DOX](../AGENTS.md).
   grammar, base64 byte inputs/results, and required base64 `associated_data`.
   Ciphertext is an opaque versioned string. Only cryptography is native;
   named-secret persistence and automatic encryption calls belong to Deno.
+- `program.inspect` reads one exact execution on its owning node through the
+  native node transport, refreshes its known sandbox when running, and returns
+  live state, Worker/sandbox references, and optional Worker resource samples.
+  Missing or completed executions are unavailable and are never recreated.
 - `event.emit` queues local asynchronous package listeners using the caller's
   execution user. `program.run` submits an ordinary program with inherited or
   selected user, sandbox group, and timeout, returning status/result, allocated

@@ -32,6 +32,7 @@ import (
 	executionservices "the8020/kernel/execution/services"
 	executionworkers "the8020/kernel/execution/workers"
 	workspacepackages "the8020/kernel/packages"
+	"the8020/kernel/sandbox/model"
 )
 
 const internalHeaderPrefix = "the8020-internal-"
@@ -165,6 +166,7 @@ type Status struct {
 	LastRestartTime   time.Time              `json:"last_restart_time,omitempty"`
 	FailedVersion     uint64                 `json:"failed_version,omitempty"`
 	Metrics           Metrics                `json:"metrics"`
+	Resources         *model.WorkerResources `json:"resources,omitempty"`
 }
 
 type ValidationResult struct {

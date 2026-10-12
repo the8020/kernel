@@ -3,6 +3,12 @@ import { isId } from "../identity/mod.ts";
 
 export type WorkloadType = "service" | "job";
 
+export interface WorkerResources {
+  heap_used_bytes: number;
+  cpu_usage_micros: number;
+  sampled_at?: string;
+}
+
 export interface ExecutionUserMetadata {
   readonly userId: string;
   readonly username: string;

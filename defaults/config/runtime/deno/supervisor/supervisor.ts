@@ -15,6 +15,7 @@ import type {
   KernelCall,
   ServiceRequestMetadata,
   WorkerPermissionSet,
+  WorkerResources,
   WorkloadType,
 } from "../worker/contracts.ts";
 import {
@@ -65,6 +66,7 @@ export interface WorkerStatus {
   persistent_executions: number;
   state: "starting" | "ready" | "stopping" | "stopped" | "failed";
   failure?: string;
+  resources?: WorkerResources;
 }
 
 interface PersistentBinding {
@@ -1084,6 +1086,7 @@ export class Supervisor {
           ? "starting"
           : "ready",
         failure: worker.failure,
+        resources: worker.resources,
       };
     }).sort((left, right) => left.worker_id.localeCompare(right.worker_id));
   }
@@ -1103,6 +1106,13 @@ export class Supervisor {
       return worker !== undefined && !worker.closed && !worker.draining &&
         !worker.starting && worker.importsAny(changed);
     });
+  }
+
+  async refreshResources(): Promise<void> {
+    await Promise.all(
+      [...this.#workers.values()].map((worker) => worker.refreshResources()),
+    );
+    this.#stateChanged();
   }
 
   heartbeat(): Envelope<Record<string, unknown>> {
@@ -1145,6 +1155,7 @@ export class Supervisor {
       return Response.json(this.status());
     }
     if (request.method === "GET" && url.pathname === "/v1/snapshot") {
+      await this.refreshResources();
       return Response.json(this.snapshot());
     }
     if (request.method === "GET" && url.pathname === "/v1/workers") {

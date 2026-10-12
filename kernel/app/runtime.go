@@ -657,6 +657,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	nodeManager.SetWorkerInvoker(workerManager)
 	nodeManager.SetTerminalCloser(operationDispatcher)
 	nodeManager.SetLogReader(serviceSet.Logging)
+	nodeManager.SetExecutionReader(operationDispatcher)
 	cleanup.nodes = nodeManager
 	developmentRunsc := developmentRunscConfig(ctx, root, paths, settingManager)
 	var sandboxServices atomic.Pointer[webservices.Manager]

@@ -1030,6 +1030,7 @@ Deno.test("typed package and runtime APIs use private runtime operations", async
       { id: "event-1", listeners: 2 },
     );
     const programInput = {
+      executionId: "job-0123456789",
       programId: "acme/tools/report",
       arguments: [{ day: 1 }],
       username: "robot",
@@ -1060,6 +1061,31 @@ Deno.test("typed package and runtime APIs use private runtime operations", async
         programResult,
       ),
       programResult,
+    );
+
+    const inspection = {
+      node_id: "nod-0123456789",
+      execution_id: programInput.executionId,
+      state: "RUNNING",
+      resources: {
+        heap_used_bytes: 100,
+        cpu_usage_micros: 200,
+        sampled_at: "2026-10-12T10:00:00Z",
+      },
+    };
+    assertEquals(
+      await respond(
+        inContext(() =>
+          kernel.programs.inspect({
+            executionId: programInput.executionId,
+            nodeId: inspection.node_id,
+          })
+        ),
+        "program.inspect",
+        { executionId: programInput.executionId, nodeId: inspection.node_id },
+        inspection,
+      ),
+      inspection,
     );
 
     assertEquals(

@@ -46,6 +46,7 @@ func (d *Dispatcher) execution(ctx context.Context, operation string, input map[
 		return nil, core.NewError(core.CodeRuntimeUnavailable, "program runner is unavailable")
 	}
 	var request struct {
+		ExecutionID  string  `json:"executionId"`
 		ProgramID    string  `json:"programId"`
 		Arguments    []any   `json:"arguments"`
 		Username     string  `json:"username"`
@@ -64,7 +65,7 @@ func (d *Dispatcher) execution(ctx context.Context, operation string, input map[
 	if request.TimeoutMS < 0 || request.TimeoutMS > 600000 {
 		return nil, core.NewError(core.CodeInvalidArguments, "timeoutMs must be between 0 and 600000")
 	}
-	result, runErr := runtime.Programs.RunWithOptions(ctx, request.ProgramID, "", request.Arguments, nil, programs.Options{User: user, SandboxGroup: request.SandboxGroup, Timeout: time.Duration(request.TimeoutMS) * time.Millisecond})
+	result, runErr := runtime.Programs.RunWithOptions(ctx, request.ProgramID, "", request.Arguments, nil, programs.Options{ExecutionID: request.ExecutionID, User: user, SandboxGroup: request.SandboxGroup, Timeout: time.Duration(request.TimeoutMS) * time.Millisecond})
 	state, failure := "succeeded", ""
 	if runErr != nil {
 		state, failure = "failed", runErr.Error()

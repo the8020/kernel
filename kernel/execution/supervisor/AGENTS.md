@@ -32,6 +32,8 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
   retain its caller context. Worker state reports Worker identity only.
 - Job arguments are always encoded as a JSON array, including an empty array for
   a no-argument program.
+- `WorkerStatus` reuses `model.RuntimeWorkerStatus`, preserving optional dated
+  Worker resource samples through live queries and cached observations.
 - Worker status and job results contain no log arrays. Console and native
   records travel independently through the bounded logging producer to logd;
   execution owners retain identifiers and reader positions for later queries.

@@ -12,8 +12,8 @@ Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
 # Local Contracts
 
 - `worker list` exposes only Worker ID, workload type, state, workload/owner
-  identity, sandbox ID, in-flight count, and any failure; `worker inspect` owns
-  the complete Worker record.
+  identity, sandbox ID, in-flight count, optional dated heap/CPU resources, and
+  any failure; `worker inspect` owns the complete Worker record.
 - Kill requests immediate supervisor termination; it does not implicitly kill a
   sandbox.
 

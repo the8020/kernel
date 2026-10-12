@@ -20,6 +20,7 @@ import type {
   ServiceRequestMetadata,
   WorkerExecutionFailure,
   WorkerPermissionSet,
+  WorkerResources,
 } from "./contracts.ts";
 
 interface RuntimeWorkerOptions {
@@ -63,6 +64,7 @@ interface Pending {
   reject(reason: Error): void;
   cleanup(): void;
   retainInFlight: boolean;
+  activity: boolean;
 }
 
 interface KernelCallPayload {
@@ -129,6 +131,29 @@ export class RuntimeWorker {
   #now: () => number;
   #onCapacityChange?: () => void;
   #onClose?: () => void;
+  #resources?: WorkerResources;
+  #resourceSample?: Promise<void>;
+
+  get resources(): WorkerResources | undefined {
+    return this.#resources;
+  }
+
+  refreshResources(): Promise<void> {
+    if (this.#closed || this.#starting) return Promise.resolve();
+    return this.#resourceSample ??= this.#request(
+      { type: "resources" },
+      [],
+      AbortSignal.timeout(250),
+      false,
+      false,
+    ).then((message) => {
+      this.#resources = (message as WorkerMessage).payload as WorkerResources;
+    }).catch(() => {
+      // shortcut: blocked Workers retain stale samples; revisit for live blocked-Worker metrics.
+    }).finally(() => {
+      this.#resourceSample = undefined;
+    });
+  }
 
   constructor(options: RuntimeWorkerOptions) {
     if (
@@ -172,6 +197,7 @@ export class RuntimeWorker {
         return;
       }
       if (message.type === "ready") {
+        this.#resources = message.payload as WorkerResources;
         this.#starting = false;
         this.#idleSinceMilliseconds = this.#now();
         this.#logLifecycle("Worker ready");
@@ -240,7 +266,7 @@ export class RuntimeWorker {
         message.error !== undefined || message.failure !== undefined ||
         !pending.retainInFlight
       ) {
-        this.#completeInFlight();
+        if (pending.activity) this.#completeInFlight();
       }
       pending.cleanup();
       if (message.failure !== undefined) {
@@ -708,6 +734,7 @@ export class RuntimeWorker {
     transfer: Transferable[] = [],
     signal?: AbortSignal,
     retainInFlight = false,
+    activity = true,
   ): Promise<unknown> {
     if (this.#closed) throw new Error(this.#failure ?? "Worker is closed");
     if (this.#starting) await this.ready;
@@ -718,9 +745,11 @@ export class RuntimeWorker {
     if (this.#pending.has(correlationId)) {
       throw new Error("Worker correlation identity collision");
     }
-    this.#idleSinceMilliseconds = undefined;
-    this.#inFlight++;
-    this.#onCapacityChange?.();
+    if (activity) {
+      this.#idleSinceMilliseconds = undefined;
+      this.#inFlight++;
+      this.#onCapacityChange?.();
+    }
     let abort: (() => void) | undefined;
     const result = new Promise<unknown>((resolve, reject) => {
       const cleanup = (): void => {
@@ -731,12 +760,13 @@ export class RuntimeWorker {
         reject,
         cleanup,
         retainInFlight,
+        activity,
       });
       abort = (): void => {
         const pending = this.#pending.get(correlationId);
         if (pending === undefined) return;
         this.#pending.delete(correlationId);
-        this.#completeInFlight();
+        if (pending.activity) this.#completeInFlight();
         pending.cleanup();
         this.#port.postMessage({ type: "cancel", correlationId });
         reject(signal?.reason ?? new DOMException("Aborted", "AbortError"));

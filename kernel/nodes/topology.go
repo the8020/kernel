@@ -118,18 +118,19 @@ type Status struct {
 }
 
 type Manager struct {
-	mu        sync.RWMutex
-	database  database.Store
-	signing   *auth.Signer
-	localID   string
-	nodes     map[string]Node
-	server    *http.Server
-	listener  net.Listener
-	http      *http.Client
-	capacity  CapacityProvider
-	workers   WorkerInvoker
-	logs      LogReader
-	terminals TerminalCloser
+	mu         sync.RWMutex
+	database   database.Store
+	signing    *auth.Signer
+	localID    string
+	nodes      map[string]Node
+	server     *http.Server
+	listener   net.Listener
+	http       *http.Client
+	capacity   CapacityProvider
+	workers    WorkerInvoker
+	logs       LogReader
+	terminals  TerminalCloser
+	executions ExecutionReader
 }
 
 func New(store database.Store, localID string, signing *auth.Signer) (*Manager, error) {
@@ -516,6 +517,10 @@ func (m *Manager) recipientHandler(next http.Handler) http.Handler {
 		}
 		if request.Method == http.MethodPost && request.URL.Path == logQueryPath {
 			m.serveLogs(writer, request)
+			return
+		}
+		if request.Method == http.MethodPost && request.URL.Path == executionInspectPath {
+			m.serveExecution(writer, request)
 			return
 		}
 		if request.Method == http.MethodGet && request.URL.Path == capacityPath {

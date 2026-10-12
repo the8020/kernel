@@ -44,6 +44,79 @@ Deno.test("Worker records only loaded direct, transitive and late dynamic import
   assertEquals(observed("entry"), false);
 });
 
+Deno.test("resource samples isolate Worker heaps and CPU without changing activity", async () => {
+  const entry = new URL("./testdata/resources_entry.ts", import.meta.url);
+  const workers = ["busy", "idle"].map((suffix) =>
+    new RuntimeWorker({
+      metadata: metadata("job", entry.href, suffix),
+      permissions: { read: [new URL("./testdata/", import.meta.url).pathname] },
+    })
+  );
+  const busy = workers[0]!, idle = workers[1]!;
+  try {
+    await Promise.all(workers.map((worker) => worker.ready));
+    await Promise.all(workers.map((worker) => worker.refreshResources()));
+    const before = workers.map((worker) => ({ ...worker.resources! }));
+    assertEquals(
+      await busy.runJob(testInvocation(), [1_000_000, 100]),
+      1_000_000,
+    );
+    const idleSince = busy.idleSinceMilliseconds;
+    const first = busy.refreshResources();
+    assertEquals(first === busy.refreshResources(), true);
+    assertEquals(busy.inFlight, 0);
+    await Promise.all([first, idle.refreshResources()]);
+    assertEquals(busy.idleSinceMilliseconds, idleSince);
+    assertEquals(
+      busy.resources!.heap_used_bytes - before[0]!.heap_used_bytes > 5_000_000,
+      true,
+    );
+    assertEquals(
+      busy.resources!.cpu_usage_micros - before[0]!.cpu_usage_micros > 50_000,
+      true,
+    );
+    assertEquals(
+      idle.resources!.heap_used_bytes - before[1]!.heap_used_bytes < 1_000_000,
+      true,
+    );
+    assertEquals(
+      idle.resources!.cpu_usage_micros - before[1]!.cpu_usage_micros < 50_000,
+      true,
+    );
+    assertEquals(Number.isNaN(Date.parse(busy.resources!.sampled_at!)), false);
+  } finally {
+    for (const worker of workers) worker.kill();
+  }
+});
+
+Deno.test("a CPU-bound Worker keeps its dated sample while a resource request times out", async () => {
+  const worker = new RuntimeWorker({
+    metadata: metadata(
+      "job",
+      new URL("./testdata/resources_entry.ts", import.meta.url).href,
+    ),
+    permissions: { read: [new URL("./testdata/", import.meta.url).pathname] },
+  });
+  try {
+    await worker.ready;
+    const before = worker.resources;
+    const running = worker.runJob(testInvocation(), [0, 400]);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await worker.refreshResources();
+    assertEquals(worker.resources, before);
+    assertEquals(worker.inFlight, 1);
+    await running;
+    await worker.refreshResources();
+    assertEquals(worker.inFlight, 0);
+    assertEquals(
+      worker.resources!.cpu_usage_micros > before!.cpu_usage_micros,
+      true,
+    );
+  } finally {
+    worker.kill();
+  }
+});
+
 function metadata(
   workloadType: WorkloadType,
   entrypoint: string,

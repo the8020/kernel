@@ -97,11 +97,11 @@ func TestConfiguredRunPreservesUserPlacementAndTimeout(t *testing.T) {
 	}}, jobRunner)
 	user, _ := execution.UserForUsername("robot")
 	group := "batch"
-	_, err := runner.RunWithOptions(context.Background(), "the8020/jobs/echo", "", []any{true}, nil, Options{User: user, SandboxGroup: &group, Timeout: time.Minute})
+	_, err := runner.RunWithOptions(context.Background(), "the8020/jobs/echo", "", []any{true}, nil, Options{ExecutionID: "job-0123456789", User: user, SandboxGroup: &group, Timeout: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if jobRunner.options.User != user || jobRunner.options.PlacementGroup != &group || jobRunner.options.Timeout != time.Minute || jobRunner.options.Reuse != nil || len(jobRunner.options.Mounts) != 0 {
+	if jobRunner.options.ExecutionID != "job-0123456789" || jobRunner.options.User != user || jobRunner.options.PlacementGroup != &group || jobRunner.options.Timeout != time.Minute || jobRunner.options.Reuse != nil || len(jobRunner.options.Mounts) != 0 {
 		t.Fatalf("job options=%#v", jobRunner.options)
 	}
 }

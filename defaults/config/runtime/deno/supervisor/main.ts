@@ -167,7 +167,9 @@ try {
     await send("/v1/runtime/register", supervisor.registration());
     snapshots.enable();
     snapshots.markDirty();
-    heartbeat = setInterval(() => snapshots.markDirty(), heartbeatInterval);
+    heartbeat = setInterval(() => {
+      void supervisor.refreshResources();
+    }, heartbeatInterval);
     await snapshots.flush();
   }
   console.info("Supervisor ready");

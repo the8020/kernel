@@ -275,7 +275,7 @@ func TestSupervisorSnapshotsAreAbsoluteRevisionedAndMemoryOnly(t *testing.T) {
 	first := model.RuntimeSnapshot{
 		Revision: 2, SupervisorStartedAtMS: 100,
 		SandboxID: spec.SandboxID, WorkloadType: spec.WorkloadType, WorkerCount: 1,
-		Workers: []model.RuntimeWorkerStatus{{WorkerID: "worker-new", State: "ready"}},
+		Workers: []model.RuntimeWorkerStatus{{WorkerID: "worker-new", State: "ready", Resources: &model.WorkerResources{HeapUsedBytes: 123, CPUUsageMicros: 456, SampledAt: firstTime}}},
 	}
 	if applied, err := store.Observe(spec.SandboxID, first, firstTime); err != nil || !applied {
 		t.Fatalf("first observation applied=%t err=%v", applied, err)
@@ -290,6 +290,10 @@ func TestSupervisorSnapshotsAreAbsoluteRevisionedAndMemoryOnly(t *testing.T) {
 	snapshot, ok := store.Snapshot(spec.SandboxID)
 	if !ok || snapshot.Revision != 2 || snapshot.Workers[0].WorkerID != "worker-new" {
 		t.Fatalf("snapshot rolled back = %#v", snapshot)
+	}
+	snapshot.Workers[0].Resources.HeapUsedBytes = 999
+	if fresh, _ := store.Snapshot(spec.SandboxID); fresh.Workers[0].Resources.HeapUsedBytes != 123 {
+		t.Fatal("resource observations share mutable cache pointers")
 	}
 	_, observed, err := store.Load(spec.SandboxID)
 	if err != nil || !observed.LastHeartbeat.Equal(secondTime) {

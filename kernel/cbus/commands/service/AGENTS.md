@@ -14,6 +14,10 @@ Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
 
 # Local Contracts
 
+- Observed service details sum heap-used bytes and thread CPU time only for
+  their live Workers, including draining versions in shared sandboxes.
+  Deduplicate Worker IDs, exclude colocated services, retain the oldest sample
+  time, and leave totals unavailable if any contributing Worker is unmeasured.
 - Runtime list/inspect read accepted identity and supervisor observations;
   refresh performs bounded probes of the selected service's sandboxes.
 - List includes the accepted package owner and source entrypoint, allowing Deno

@@ -98,7 +98,7 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   and entrypoint data only. Application metadata belongs to
   `/p/the8020/packages/programs.ts` and never crosses this native contract.
   `kernel.programs.run({programId, arguments, username?,
-  sandboxGroup?, timeoutMs?})`
+  sandboxGroup?, timeoutMs?, executionId?})`
   executes asynchronously and returns terminal state, result, failure, package
   commit, allocated node/sandbox/Worker/job/context IDs, saved log position, and
   invocation times. Allocated references survive execution failure; results
@@ -106,6 +106,10 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   ordinary execution owner validates it. `programs.ts` owns these generic models
   and the PackageEvent envelope. Schedules and history are owned by
   `/p/the8020/jobs/mod.ts`.
+- `kernel.programs.inspect({executionId, nodeId?})` observes one exact live
+  execution and its Worker resources on the selected node. `WorkerResources`
+  reports heap-used bytes, accumulated thread CPU microseconds, and sample time.
+  These are diagnostics and never admission controls.
 - `kernel.execution.secret()` reads one required value from only the active job;
   `optionalSecret()` returns `undefined` when absent. No service or concurrent
   job can observe it.

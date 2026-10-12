@@ -19,6 +19,9 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
   `Close`, and policy/options/record types.
 - `Options.Arguments` is the positional array spread into the job's default
   export. `Options.Secrets` travels separately and is cleared after every path.
+- Optional `Options.ExecutionID` accepts a caller-allocated canonical `job-*`
+  ID; omission allocates normally. Admission rejects collisions with live work.
+  This lets application history correlate running work before completion.
 - `Record.ExecutionID` is the actual `job-` run ID, independent of the declared
   `JobID`. `ContextID` is its `ctx-` invocation and `ParentContextID` is the
   caller context. Admission rejects live run/context collisions. The same

@@ -1,6 +1,8 @@
 export { isId, newId } from "../identity/mod.ts";
 import { terminalAPI } from "./terminals.ts";
 export { TerminalClosedError, TerminalControlBusyError } from "./terminals.ts";
+export type { WorkerResources } from "../worker/contracts.ts";
+
 export type {
   TerminalAttachment,
   TerminalBatch,
@@ -30,6 +32,7 @@ export type {
 import type { PersistentServiceTarget } from "./services.ts";
 import type {
   EventReceipt,
+  ProgramInspection,
   ProgramRun,
   ProgramRunInput,
   ProgramSummary,
@@ -37,6 +40,7 @@ import type {
 export type {
   EventReceipt,
   PackageEvent,
+  ProgramInspection,
   ProgramRun,
   ProgramRunInput,
   ProgramSummary,
@@ -573,6 +577,11 @@ export const kernel = Object.freeze({
     },
   }),
   programs: Object.freeze({
+    inspect(
+      input: { executionId: string; nodeId?: string },
+    ): Promise<ProgramInspection> {
+      return executeRuntimeOperation("program.inspect", { ...input });
+    },
     list(): Promise<ProgramSummary[]> {
       return executeRuntimeOperation("program.list");
     },

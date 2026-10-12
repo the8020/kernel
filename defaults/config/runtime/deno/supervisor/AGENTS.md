@@ -16,6 +16,10 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 
 # Local Contracts
 
+- Worker snapshots carry optional heap-used bytes, thread CPU microseconds, and
+  sample time. The existing periodic heartbeat and targeted snapshot refresh
+  sample live Workers through their private ports; a busy Worker retains its
+  last sample without blocking supervisor health or admission.
 - One supervisor serves one sandbox and one workload type: `service` or `job`.
   Its bearer token never reaches Workers. Construction validates canonical node
   and sandbox IDs; Worker admission validates the Worker ID before startup.

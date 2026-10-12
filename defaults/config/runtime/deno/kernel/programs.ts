@@ -8,11 +8,20 @@ export interface ProgramSummary {
 }
 
 export interface ProgramRunInput {
+  executionId?: string;
   programId: string;
   arguments?: unknown[];
   username?: string;
   sandboxGroup?: string;
   timeoutMs?: number;
+}
+export interface ProgramInspection {
+  node_id: string;
+  execution_id: string;
+  state: string;
+  sandbox_id?: string;
+  worker_id?: string;
+  resources?: import("../worker/contracts.ts").WorkerResources;
 }
 export interface ProgramRun {
   state: "succeeded" | "failed";

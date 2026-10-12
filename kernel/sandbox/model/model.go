@@ -377,18 +377,25 @@ type SandboxStatus struct {
 
 // RuntimeWorkerStatus is the supervisor's current observation of one Worker.
 // Logs are queried separately from logd; supervisors retain no log history.
+type WorkerResources struct {
+	HeapUsedBytes  int64     `json:"heap_used_bytes"`
+	CPUUsageMicros int64     `json:"cpu_usage_micros"`
+	SampledAt      time.Time `json:"sampled_at,omitzero"`
+}
+
 type RuntimeWorkerStatus struct {
-	WorkerID             string `json:"worker_id"`
-	WorkloadID           string `json:"workload_id"`
-	OwnerID              string `json:"owner_id"`
-	DebuggerName         string `json:"debugger_name"`
-	Entrypoint           string `json:"entrypoint"`
-	ReleaseID            string `json:"release_id"`
-	InFlight             int    `json:"in_flight"`
-	PersistentExecutions int    `json:"persistent_executions,omitempty"`
-	IdleSinceMS          int64  `json:"idle_since_ms,omitempty"`
-	State                string `json:"state"`
-	Failure              string `json:"failure,omitempty"`
+	WorkerID             string           `json:"worker_id"`
+	WorkloadID           string           `json:"workload_id"`
+	OwnerID              string           `json:"owner_id"`
+	DebuggerName         string           `json:"debugger_name"`
+	Entrypoint           string           `json:"entrypoint"`
+	ReleaseID            string           `json:"release_id"`
+	InFlight             int              `json:"in_flight"`
+	PersistentExecutions int              `json:"persistent_executions,omitempty"`
+	IdleSinceMS          int64            `json:"idle_since_ms,omitempty"`
+	State                string           `json:"state"`
+	Failure              string           `json:"failure,omitempty"`
+	Resources            *WorkerResources `json:"resources,omitempty"`
 }
 
 type RuntimeFailure struct {

@@ -6,18 +6,20 @@ import (
 
 	"the8020/kernel/cbus/commands/internal/commandutil"
 	"the8020/kernel/cbus/core"
+	"the8020/kernel/sandbox/model"
 	"the8020/kernel/services"
 )
 
 type summary struct {
-	WorkerID     string `json:"worker_id"`
-	WorkloadType string `json:"workload_type"`
-	State        string `json:"state"`
-	WorkloadID   string `json:"workload_id"`
-	OwnerID      string `json:"owner_id"`
-	SandboxID    string `json:"sandbox_id"`
-	InFlight     int    `json:"in_flight"`
-	Failure      string `json:"failure,omitempty"`
+	WorkerID     string                 `json:"worker_id"`
+	WorkloadType string                 `json:"workload_type"`
+	State        string                 `json:"state"`
+	WorkloadID   string                 `json:"workload_id"`
+	OwnerID      string                 `json:"owner_id"`
+	SandboxID    string                 `json:"sandbox_id"`
+	InFlight     int                    `json:"in_flight"`
+	Failure      string                 `json:"failure,omitempty"`
+	Resources    *model.WorkerResources `json:"resources,omitempty"`
 }
 
 func New(serviceSet *services.Services) core.Handler {
@@ -44,6 +46,7 @@ func New(serviceSet *services.Services) core.Handler {
 				SandboxID:    record.SandboxID,
 				InFlight:     record.Worker.InFlight,
 				Failure:      record.Worker.Failure,
+				Resources:    record.Worker.Resources,
 			})
 		}
 		return core.Result{"workers": items}, nil

@@ -428,6 +428,25 @@ func TestJobUsesExplicitOwnerAndRelease(t *testing.T) {
 	}
 }
 
+func TestCallerAllocatedExecutionIDIsValidatedAndCannotReplaceLiveWork(t *testing.T) {
+	manager, _ := New(&fakeCoordinator{}, &fakeWorkers{}, testPolicy())
+	defer manager.Close()
+	const id = "job-0123456789"
+	options := Options{ExecutionID: id, User: execution.SystemUser()}
+	prepared, err := manager.prepare("example", "file:///programs/main.ts", options)
+	if err != nil || prepared.record.ExecutionID != id {
+		t.Fatalf("prepared=%#v err=%v", prepared, err)
+	}
+	manager.records[id] = prepared.record
+	if _, err := manager.Run(context.Background(), "example", "file:///programs/main.ts", options); err == nil || !strings.Contains(err.Error(), "already registered") {
+		t.Fatalf("live execution collision: %v", err)
+	}
+	options.ExecutionID = "invalid"
+	if _, err := manager.prepare("example", "file:///programs/main.ts", options); err == nil {
+		t.Fatal("accepted invalid execution ID")
+	}
+}
+
 func testPolicy() Policy {
 	return Policy{
 		NodeID:   "nod-0123456789",

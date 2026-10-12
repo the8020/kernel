@@ -629,5 +629,11 @@ func cloneCounterMap(value map[string]uint64) map[string]uint64 {
 func cloneSnapshot(value model.RuntimeSnapshot) model.RuntimeSnapshot {
 	value.RecentFailures = append([]model.RuntimeFailure(nil), value.RecentFailures...)
 	value.Workers = append([]model.RuntimeWorkerStatus(nil), value.Workers...)
+	for index, worker := range value.Workers {
+		if worker.Resources != nil {
+			resources := *worker.Resources
+			value.Workers[index].Resources = &resources
+		}
+	}
 	return value
 }

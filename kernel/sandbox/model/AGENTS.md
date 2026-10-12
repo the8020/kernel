@@ -41,8 +41,9 @@ Parent DOX: [kernel/kernel/sandbox DOX](../AGENTS.md).
 - A `RuntimeSnapshot` is one complete supervisor observation, including its
   restart epoch, monotonic revision, Worker states, active requests, persistent
   executions, recent failures, and kernel receipt time. It contains no Worker
-  logs; bounded logd queries own diagnostic log access for live and retired
-  Workers.
+  logs. Worker status includes optional `WorkerResources` with heap-used bytes,
+  accumulated thread CPU microseconds, and sample time; bounded logd queries own
+  diagnostic log access for live and retired Workers.
 
 # Lifecycle
 
