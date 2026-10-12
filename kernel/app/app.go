@@ -79,6 +79,7 @@ func Main(args []string, definitions []settings.Definition, register RegisterHan
 	root := flags.String("root", "", "explicit instance root")
 	initOnly := flags.Bool("init-only", false, "initialize the node and exit")
 	initDefaults := flags.Bool("init-defaults", false, "initialize noninteractively with default paths")
+	version := flags.Bool("version", false, "print the kernel build version and exit")
 	startup := repeatedSettings{}
 	flags.Var(&startup, "set", "startup setting override (key=value, repeatable)")
 	if err := flags.Parse(args); err != nil {
@@ -87,6 +88,10 @@ func Main(args []string, definitions []settings.Definition, register RegisterHan
 	if flags.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, "error: unexpected arguments")
 		return 2
+	}
+	if *version {
+		fmt.Fprintln(os.Stdout, buildID)
+		return 0
 	}
 	resolved, err := instance.ResolveRoot(*root)
 	if err != nil {

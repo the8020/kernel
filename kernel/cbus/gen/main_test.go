@@ -260,7 +260,7 @@ func TestRepositoryCatalogContainsOnlyKernelAndDeferredCommands(t *testing.T) {
 		"kernel.config.get", "kernel.config.list", "kernel.config.set", "kernel.config.unset",
 		"kernel.events.emit", "kernel.logs",
 		"kernel.packages.delete", "kernel.packages.inspect", "kernel.packages.list", "kernel.packages.set", "kernel.packages.synchronize",
-		"kernel.reindex", "kernel.restart", "kernel.shutdown", "kernel.signing.replace", "kernel.signing.status", "kernel.status",
+		"kernel.reindex", "kernel.restart", "kernel.shutdown", "kernel.signing.replace", "kernel.signing.status", "kernel.status", "kernel.update",
 		"pool.resize", "pool.status", "port.close", "port.expose", "port.list",
 		"runtime.doctor", "runtime.eval", "runtime.image.status", "runtime.run", "runtime.status",
 		"sandbox.delete", "sandbox.history.inspect", "sandbox.history.list", "sandbox.inspect", "sandbox.kill", "sandbox.list", "sandbox.metrics", "sandbox.refresh", "sandbox.stop",
@@ -344,8 +344,8 @@ func TestEveryKernelRecoveryCommandExampleTraversesBothCLIModes(t *testing.T) {
 		}
 		count++
 	}
-	if count != 17 {
-		t.Fatalf("kernel recovery CLI command count = %d, want 17", count)
+	if count != 18 {
+		t.Fatalf("kernel recovery CLI command count = %d, want 18", count)
 	}
 }
 

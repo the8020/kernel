@@ -38,22 +38,19 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   keys, or other node state. First startup creates fresh IDs and keys, retained
   by the instance volume. Separate fresh containers from one image remain
   independent systems.
-- Dockerfiles move the initialized platform runtime,
-  `node/kernel/runtime/definitions/` and `images/`, to
-  `/usr/local/share/the8020/runtime-state/` and write its `id` from the release
-  metadata, every `images/*/image.json`, and a normalized archive of the
-  definitions. Before the smoke, the entrypoint
-  compares that `id` with the instance's
-  `node/kernel/runtime/.image-runtime-state` and, when they differ or either
-  directory is missing, replaces exactly those two directories through staged
-  siblings and renames, recording the identity last so an interrupted refresh
-  repeats. It runs before the kernel starts and never touches `users/`,
-  `packages/`, or other instance state; development sandboxes keep their own
-  system roots. Images without `runtime-state/` leave the instance runtime
-  unchanged.
-- The initialized instance includes one common `node/kernel/bin/runsc` for
-  services, jobs and development. `.development/bin/` contains
-  kernel/admin/logd; do not add another runsc to the Docker executable payload.
+- Dockerfiles bundle binaries, runtime definitions/images, host updater scripts,
+  and development helpers under `/usr/local/share/the8020/`. Before first
+  startup, the entrypoint stages these as `node/kernel/releases/<version>` and
+  links bin, scripts, definitions/images, and helpers through
+  `node/kernel/current`. Publish current last so an interrupted seed repeats.
+  Later starts preserve the selected instance release even when the factory
+  image differs. Seeding never touches users, packages, database, keys, or IDs.
+- `launch.sh` owns the kernel child. An intentional update leaves this launcher
+  and the outer entrypoint alive while the kernel stops, migrations run, and
+  the target starts; the paired instance and HTTPS proxy remain running.
+- The instance bin directory includes kernel/admin/logd and one common runsc
+  for services, jobs and development. Keep `.development/bin/` free of a second
+  runsc; the image's factory bin payload seeds the instance installation.
 - Invoke the portable smoke helper from the instance's installed runtime
   definitions. Keep all startup credentials in process memory and preserve
   existing login users. Parse `users.list` JSON with the already bundled Deno
@@ -84,13 +81,10 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   readiness, failure diagnostics, the curl dependency, existing-user detection
   with reordered JSON properties, one-time bootstrap and restart bypass after
   user removal, retry after failed creation, and rejection of invalid user
-  responses without a completion marker. It also replaces an old volume's
-  runtime directory with the image payload link, repeats the smoke on restart,
-  and verifies private work remains intact at the selected instance root.
-  Runtime cases refresh stale definitions and images from the image payload,
-  skip an unchanged identity on
-  restart, recover an interrupted refresh, and leave a legacy image's instance
-  runtime untouched.
+  responses without a completion marker. It also verifies initial platform
+  seeding, interrupted-seed recovery, fresh smoke on restart, retention of a
+  selected newer release despite changed factory assets, and private-work
+  preservation. Missing bootstrap assets fail before kernel startup.
 - Build both the version-selected deploy image and the local tagged-checkout
   kernel image; exercise first-user bootstrap on a fresh instance.
 

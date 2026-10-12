@@ -4,12 +4,12 @@ set -euo pipefail
 readonly INSTANCE_ROOT=${THE8020_INSTANCE_ROOT:-/8020}
 readonly KERNEL=/usr/local/bin/kernel
 readonly ADMIN=/usr/local/bin/admin
+readonly LOGD=/usr/local/bin/logd
+readonly RELEASE=/usr/local/share/the8020/release
 readonly RUNTIME_BIN=/usr/local/share/the8020/runtime-bin
 readonly RUNTIME_STATE=/usr/local/share/the8020/runtime-state
 readonly RUNTIME_ROOT="$INSTANCE_ROOT/node/kernel/runtime"
-readonly RUNTIME_STATE_ID="$RUNTIME_ROOT/.image-runtime-state"
 readonly DENO="$INSTANCE_ROOT/node/kernel/runtime/images/rootless/rootfs/usr/bin/deno"
-readonly PORTABLE_SMOKE="$INSTANCE_ROOT/node/kernel/runtime/definitions/smoke-portable.sh"
 readonly BOOTSTRAP_DONE="$INSTANCE_ROOT/node/docker/initial-user.done"
 readonly BOOTSTRAP_PENDING="$INSTANCE_ROOT/node/docker/initial-user.pending"
 
@@ -27,44 +27,51 @@ if ! command -v curl >/dev/null 2>&1; then
   echo "curl is required for container startup; rebuild using the current the8020/deploy Dockerfile" >&2
   exit 1
 fi
-if [[ ! -x "$RUNTIME_BIN/runsc" ]]; then
+if [[ ! -L "$INSTANCE_ROOT/node/kernel/current" && ! -x "$RUNTIME_BIN/runsc" ]]; then
   echo "the image's bundled sandbox runtime is missing" >&2
   exit 1
 fi
 
-# Runtime executables follow the image, including with an existing data volume.
-rm -rf -- "$INSTANCE_ROOT/node/kernel/bin"
-ln -s -- "$RUNTIME_BIN" "$INSTANCE_ROOT/node/kernel/bin"
-
-# Platform runtime definitions and sandbox images follow the image too. An
-# existing volume would otherwise keep the generic Deno runtime it was created
-# with. Each directory is staged beside its target and renamed into place; the
-# recorded identity is written last, so an interrupted refresh repeats.
-refresh_runtime_state() {
-  [[ -f "$RUNTIME_STATE/id" ]] || return 0
-  local wanted current="" name
-  IFS= read -r wanted < "$RUNTIME_STATE/id"
-  if [[ -f "$RUNTIME_STATE_ID" ]]; then
-    IFS= read -r current < "$RUNTIME_STATE_ID"
+# Seed once. The instance owns subsequent releases, including container restarts.
+if [[ ! -L "$INSTANCE_ROOT/node/kernel/current" ]]; then
+  if [[ ! -d "$RUNTIME_STATE/kernel-scripts" ]]; then
+    echo "the image's kernel update scripts are missing; install the updater bootstrap before restarting" >&2
+    exit 1
   fi
-  rm -rf -- "$RUNTIME_ROOT"/.refresh-*
-  if [[ "$wanted" == "$current" && -d "$RUNTIME_ROOT/definitions" && -d "$RUNTIME_ROOT/images" ]]; then
-    return 0
-  fi
-  echo "startup: refreshing the platform runtime from the image" >&2
-  mkdir -p -- "$RUNTIME_ROOT"
-  for name in definitions images; do
-    cp -a -- "$RUNTIME_STATE/$name" "$RUNTIME_ROOT/.refresh-new-$name"
-    if [[ -e "$RUNTIME_ROOT/$name" ]]; then
-      mv -- "$RUNTIME_ROOT/$name" "$RUNTIME_ROOT/.refresh-old-$name"
-    fi
-    mv -- "$RUNTIME_ROOT/.refresh-new-$name" "$RUNTIME_ROOT/$name"
-    rm -rf -- "$RUNTIME_ROOT/.refresh-old-$name"
+  echo "startup: installing the initial platform runtime from the image" >&2
+  version=$(sed -n 's/^kernel_tag=//p' "$RELEASE")
+  commit=$(sed -n 's/^kernel_commit=//p' "$RELEASE")
+  [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ && "$commit" =~ ^[a-f0-9]{40}$ ]] || { echo "invalid image release metadata" >&2; exit 1; }
+  case $(uname -m) in
+    x86_64) architecture=amd64 ;;
+    aarch64|arm64) architecture=arm64 ;;
+    *) echo "unsupported kernel architecture" >&2; exit 1 ;;
+  esac
+  kernel_root="$INSTANCE_ROOT/node/kernel"
+  mkdir -p "$kernel_root/releases" "$RUNTIME_ROOT"
+  rm -rf -- "$kernel_root/releases"/.seed.*
+  stage=$(mktemp -d "$kernel_root/releases/.seed.XXXXXX")
+  cp -a "$RUNTIME_BIN" "$stage/bin"
+  for binary in "$KERNEL" "$ADMIN" "$LOGD"; do cp -a "$binary" "$stage/bin/"; done
+  cp -a "$RUNTIME_STATE/kernel-scripts" "$stage/scripts"
+  cp -a "$RUNTIME_STATE/development-scripts" "$stage/development-scripts"
+  mkdir "$stage/runtime"
+  for directory in definitions images; do cp -a "$RUNTIME_STATE/$directory" "$stage/runtime/"; done
+  printf '{"version":"%s","commit":"%s","architecture":"%s"}\n' "$version" "$commit" "$architecture" > "$stage/release.json"
+  rm -rf -- "$kernel_root/releases/$version"
+  mv -- "$stage" "$kernel_root/releases/$version"
+  for name in bin scripts; do
+    rm -rf -- "$kernel_root/$name"
+    ln -s "current/$name" "$kernel_root/$name"
   done
-  printf '%s\n' "$wanted" > "$RUNTIME_STATE_ID.tmp"
-  mv -- "$RUNTIME_STATE_ID.tmp" "$RUNTIME_STATE_ID"
-}
-refresh_runtime_state
+  for name in definitions images; do
+    rm -rf -- "$RUNTIME_ROOT/$name"
+    ln -s "../current/runtime/$name" "$RUNTIME_ROOT/$name"
+  done
+  rm -rf -- "$INSTANCE_ROOT/scripts"
+  ln -s "node/kernel/current/development-scripts" "$INSTANCE_ROOT/scripts"
+  ln -s "releases/$version" "$kernel_root/current"
+fi
 # A retained smoke record may describe a different image's engine.
 rm -f -- "$INSTANCE_ROOT/node/kernel/runtime/images/rootless/smoke.json"
 
@@ -74,13 +81,6 @@ initial_password=${THE8020_PASSWORD:-admin}
 # Do not pass initial-user inputs to the kernel or any sandbox process. They are
 # consulted only by this entrypoint while completing the first boot.
 unset THE8020_USERNAME THE8020_PASSWORD || true
-
-bash "$PORTABLE_SMOKE" \
-  "$INSTANCE_ROOT/node/kernel/bin/runsc" \
-  "$INSTANCE_ROOT/node/kernel/runtime/images/rootless/rootfs" \
-  "$INSTANCE_ROOT/node/kernel/runtime/images/rootless/image.json" \
-  "$INSTANCE_ROOT/node/kernel/runtime/images/rootless/smoke.json" \
-  "$INSTANCE_ROOT/node/kernel/runtime/tmp"
 
 kernel_pid=""
 stop_kernel() {
@@ -98,12 +98,12 @@ trap finish EXIT
 trap stop_kernel INT TERM HUP
 
 echo "startup: starting the kernel" >&2
-"$KERNEL" --root "$INSTANCE_ROOT" &
+bash "$INSTANCE_ROOT/node/kernel/scripts/launch.sh" "$INSTANCE_ROOT" &
 kernel_pid=$!
 
 admin_ready=false
 for _ in {1..300}; do
-  if "$ADMIN" --root "$INSTANCE_ROOT" kernel.status >/dev/null 2>&1; then
+  if "$INSTANCE_ROOT/node/kernel/bin/admin" --root "$INSTANCE_ROOT" kernel.status >/dev/null 2>&1; then
     admin_ready=true
     break
   fi

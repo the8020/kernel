@@ -1,0 +1,27 @@
+version = 1
+id = "kernel.update"
+path = ["kernel.update"]
+summary = "Update the installed kernel"
+description = "Starts the installed updater in the background. Downloads an exact same-major release before gracefully stopping this instance, running migrations, and starting the selected kernel. Read the returned log file for progress and failures. Packages change only through explicit migrations."
+mutates_state = true
+restart_behavior = "restarts_kernel"
+[handler]
+file = "kernel/cbus/commands/system/update/update.go"
+symbol = "New"
+[[parameters]]
+name = "version"
+type = "string"
+position = 0
+required = true
+description = "Exact major.minor.patch kernel release."
+[[result]]
+name = "requested"
+type = "boolean"
+[[result]]
+name = "pid"
+type = "integer"
+[[result]]
+name = "log_file"
+type = "string"
+[[examples]]
+command = "kernel.update 0.8.1"

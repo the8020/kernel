@@ -18,6 +18,8 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   opt-in installers install the latest native Codex or Claude Code release into
   the persistent sandbox home and configure each tool's no-prompt, full-access
   mode plus shared development guidance discovery.
+- `kernel-scripts/` owns host-side kernel update, launch, and versioned migration
+  scripts installed under `node/kernel/scripts/`, outside development mounts.
 - Defaults contain no node identity, credentials, users, shared settings,
   operational state, package source, or materialized images.
 
@@ -46,6 +48,9 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 - Materialized images, build caches, downloads, smoke records, and temporary
   construction output belong under `node/kernel/runtime/` or source
   `.development/`, never in this tree.
+- Managed kernel releases switch their platform assets and development helpers
+  together through `node/kernel/current`; container images seed this once and
+  preserve the installed release on subsequent starts.
 
 # Work Guidance
 
@@ -66,3 +71,5 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   runtime source, image definitions, materialization, and verification.
 - [scripts/AGENTS.md](scripts/AGENTS.md): Provide platform-owned helpers
   installed into development sandboxes.
+- [kernel-scripts/AGENTS.md](kernel-scripts/AGENTS.md): host updater, launcher,
+  kernel release payload, and migration history.

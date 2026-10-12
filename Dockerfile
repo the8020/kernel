@@ -42,6 +42,8 @@ RUN kernel_tag=$(git describe --tags --exact-match HEAD) \
     && mv /8020/node/kernel/bin /usr/local/share/the8020/runtime-bin \
     && ln -s /usr/local/share/the8020/runtime-bin /8020/node/kernel/bin \
     && install -d -m 0755 /usr/local/share/the8020/runtime-state \
+    && cp -a /8020/node/kernel/scripts /usr/local/share/the8020/runtime-state/kernel-scripts \
+    && cp -a /8020/scripts /usr/local/share/the8020/runtime-state/development-scripts \
     && mv /8020/node/kernel/runtime/definitions /8020/node/kernel/runtime/images \
       /usr/local/share/the8020/runtime-state/ \
     && cd /usr/local/share/the8020/runtime-state \

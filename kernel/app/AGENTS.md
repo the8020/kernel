@@ -37,6 +37,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   fixed package/user/node/database layout, validates Unix permissions, and
   records node identity and node-local settings in `kernel.toml`; it never
   installs packages, tools, or images. `--init-only` exits after node creation.
+- `--version` prints the supplied build ID and exits before resolving or
+  initializing any instance. Tagged builds supply `<version>+<commit>`.
 - Startup brings up the command socket, database pool, runtime diagnostics,
   sandbox/Worker owners, inherited-workload cleanup, ordinary jobs and native
   eval/run before running application initialization. Publish an immutable

@@ -204,6 +204,9 @@ relevant child AGENTS.md
   performs the same graceful cleanup and then replaces the kernel process with
   the current binary, independent of whether the active `run.sh` owns that
   process.
+- `kernel.update <major.minor.patch>` detaches the installed updater and returns
+  its PID and log path. The instance launcher owns the later graceful shutdown,
+  migration, and restart; an update does not exit the enclosing container.
 - Uncaught UUI program exceptions must open the package-configured standard
   Program terminated short-dump program without ending the session; it must
   expose bounded exception, stack, and source context, support copying the dump,
@@ -406,10 +409,13 @@ relevant child AGENTS.md
   execution history. A fully retired service-pool record must be removed so an
   absent inherited sandbox cannot create an endless reconciliation failure after
   restart.
-- Kernel development uses destructive schema evolution. Do not add compatibility
-  adapters, persisted-data migrations, deprecated aliases, or dual sources of
-  truth for old kernels; discard and initialize a fresh instance when a schema,
-  settings key, runtime record, or node layout changes.
+- Same-major kernel releases support in-place minor and patch upgrades. Required
+  on-disk changes ship as immutable versioned migration scripts; the first
+  version position reserves incompatible upgrades. Do not add compatibility
+  adapters, deprecated aliases, or duplicate state for older kernels. The
+  [host updater](defaults/kernel-scripts/AGENTS.md) owns staging, migration,
+  explicit retry, and restart; packages update separately unless a migration
+  explicitly invokes their owning commands.
 - Service configuration discovery belongs to Deno indexing at boot, activation,
   edits, or explicit reindex. Kernel reconciliation consumes the memory index.
   The maintenance timer touches only services with live runtime capacity or
@@ -569,7 +575,8 @@ below.
 - Root-owned paths include `.vscode/`, `go.mod`, `go.sum`, `.go-version`,
   `.gitignore`, `install.sh`, `run.sh`, `release-tag.sh`, release resolver
   tests, `Dockerfile`, `.dockerignore`, `docker-entrypoint_test.sh`,
-  `install-development-assets.sh`, and root-level project documentation.
+  `install-development-assets.sh`, `release-build.sh`, and root-level project
+  documentation.
 
 # 80|20
 
@@ -672,6 +679,15 @@ below.
   runs a UUI build or browser E2E. `THE8020_RELEASE_VERSION=<major.minor>` is an
   installer-only release input: it disables sibling-source snapshots and stages
   every bootstrap package from its compatible resolved Git tag.
+- Installation also ships kernel/admin/logd beside runsc and host scripts under
+  `node/kernel/scripts/`. Managed release instances use the updater; the source
+  installer refuses to overwrite their active release. Clean exact tags stamp
+  `kernel --version` and `kernel.status.build_id` as `<version>+<commit>`;
+  source builds identify as `development`.
+- `release-build.sh <installed-instance> <output-directory>` packages the clean
+  tagged platform, preserving internal links and excluding instance data and
+  packages. Publish its architecture-specific archive and `.sha256` file to
+  the matching GitHub release before offering that version to the updater.
 - `run.sh` may be invoked from any directory. It treats that current directory
   as the instance root and runs `install.sh --skip-verification`, which
   refreshes all three binaries, initializes the default layout when absent, and

@@ -8,13 +8,19 @@ export GOCACHE=${GOCACHE:-"$SOURCE_ROOT/.development/cache/go-build"}
 export GOMODCACHE=${GOMODCACHE:-"$SOURCE_ROOT/.development/cache/go-mod"}
 LINK_FLAGS=
 if [[ ${THE8020_OUTER_CONTAINER_BUILD:-false} == true ]]; then LINK_FLAGS=-s; fi
+BUILD_ID=development
+if tag=$(git -C "$SOURCE_ROOT" describe --tags --exact-match HEAD 2>/dev/null) &&
+  [[ "$tag" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] &&
+  [[ -z "$(git -C "$SOURCE_ROOT" status --porcelain --untracked-files=normal)" ]]; then
+  BUILD_ID="$tag+$(git -C "$SOURCE_ROOT" rev-parse HEAD)"
+fi
 mkdir -p "$SOURCE_ROOT/.development/bin"
 cd "$SOURCE_ROOT"
 "$GO_CMD" run ./kernel/cbus/gen
 (
   cd .development/generated
   "$GO_CMD" fmt ./...
-  "$GO_CMD" build -mod=mod -trimpath -ldflags="$LINK_FLAGS" -o ../bin/kernel ./cmd/kernel
+  "$GO_CMD" build -mod=mod -trimpath -ldflags="$LINK_FLAGS -X main.buildID=$BUILD_ID" -o ../bin/kernel ./cmd/kernel
   "$GO_CMD" build -mod=mod -trimpath -ldflags="$LINK_FLAGS" -o ../bin/admin ./cmd/admin
 )
 "$GO_CMD" build -trimpath -ldflags="$LINK_FLAGS" -o .development/bin/logd ./kernel/logd

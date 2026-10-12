@@ -7,7 +7,8 @@ Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
 # Ownership
 
 - Own only `kernel.status`, `kernel.restart`, `kernel.shutdown`, and
-  `kernel.reindex`, `kernel.events.emit`, and `kernel.signing.status/replace`.
+  `kernel.update`, `kernel.reindex`, `kernel.events.emit`, and
+  `kernel.signing.status/replace`.
 
 # Local Contracts
 
@@ -18,6 +19,8 @@ Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
   failures retain actionable messages and partial-publication details. Event
   emission parses JSON data and delegates asynchronous admission to the shared
   event dispatcher.
+- Update detaches the installed host updater and returns its PID and log path;
+  release selection, migrations, and update lifetime stay in the host scripts.
 
 # Work Guidance
 
@@ -38,3 +41,4 @@ Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
 - [shutdown/AGENTS.md](shutdown/AGENTS.md): lifecycle shutdown request.
 - [signing/AGENTS.md](signing/AGENTS.md): private deployment-key administration.
 - [status/AGENTS.md](status/AGENTS.md): status result assembly.
+- [update/AGENTS.md](update/AGENTS.md): detached installed updater launch.

@@ -46,7 +46,7 @@ EOF
 cat > "$TEST_ROOT/bin/smoke" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-[[ "$1" -ef "$CASE_ROOT/runtime-bin/runsc" ]]
+cmp "$1" "$CASE_ROOT/runtime-bin/runsc"
 [[ ! -e "$4" ]]
 touch "$4"
 EOF
@@ -62,6 +62,7 @@ fi
 printf '%s' "$status"
 EOF
 chmod +x "$TEST_ROOT/bin/"*
+cp "$TEST_ROOT/bin/kernel" "$TEST_ROOT/bin/logd"
 export PATH="$TEST_ROOT/bin:$PATH" THE8020_NETWORK_MAIN_PORT=18080
 
 prepare() {
@@ -82,12 +83,18 @@ prepare() {
   printf 'new definitions\n' > "$CASE_ROOT/runtime-state/definitions/mod.ts"
   printf 'new image\n' > "$CASE_ROOT/runtime-state/images/rootless/image.json"
   printf 'release-2\n' > "$CASE_ROOT/runtime-state/id"
+  mkdir -p "$CASE_ROOT/runtime-state/kernel-scripts/update" "$CASE_ROOT/runtime-state/development-scripts"
+  cp "$SOURCE_ROOT/defaults/kernel-scripts/"{launch.sh,update.sh,update.ts} "$CASE_ROOT/runtime-state/kernel-scripts/"
+  cp "$TEST_ROOT/bin/smoke" "$CASE_ROOT/runtime-state/definitions/smoke-portable.sh"
+  printf 'kernel_tag=0.8.0\nkernel_commit=%040d\n' 0 > "$CASE_ROOT/release"
   touch "$CASE_ROOT/instance/kernel.toml"
   while IFS= read -r line; do
     case "$line" in
       readonly\ KERNEL=*) printf 'readonly KERNEL=%q\n' "$TEST_ROOT/bin/kernel" ;;
       readonly\ DENO=*) printf 'readonly DENO=%q\n' "$(command -v deno)" ;;
       readonly\ ADMIN=*) printf 'readonly ADMIN=%q\n' "$TEST_ROOT/bin/admin" ;;
+      readonly\ LOGD=*) printf 'readonly LOGD=%q\n' "$TEST_ROOT/bin/logd" ;;
+      readonly\ RELEASE=*) printf 'readonly RELEASE=%q\n' "$CASE_ROOT/release" ;;
       readonly\ RUNTIME_BIN=*) printf 'readonly RUNTIME_BIN=%q\n' "$CASE_ROOT/runtime-bin" ;;
       readonly\ RUNTIME_STATE=*) printf 'readonly RUNTIME_STATE=%q\n' "$CASE_ROOT/runtime-state" ;;
       readonly\ PORTABLE_SMOKE=*) printf 'readonly PORTABLE_SMOKE=%q\n' "$TEST_ROOT/bin/smoke" ;;
@@ -125,15 +132,33 @@ wait_for '80|20 is ready' "$CASE_ROOT/output"
 [[ -f "$CASE_ROOT/instance/node/docker/initial-user.done" ]]
 [[ -L "$CASE_ROOT/instance/node/kernel/bin" ]]
 grep -Fxq 'private work' "$CASE_ROOT/instance/users/admin/work.txt"
-grep -Fq 'startup: refreshing the platform runtime from the image' "$CASE_ROOT/output"
+grep -Fq 'startup: installing the initial platform runtime from the image' "$CASE_ROOT/output"
 grep -Fxq 'new definitions' "$CASE_ROOT/instance/node/kernel/runtime/definitions/mod.ts"
 grep -Fxq 'new image' "$CASE_ROOT/instance/node/kernel/runtime/images/rootless/image.json"
-grep -Fxq 'release-2' "$CASE_ROOT/instance/node/kernel/runtime/.image-runtime-state"
-! compgen -G "$CASE_ROOT/instance/node/kernel/runtime/.refresh-*" >/dev/null
+[[ $(readlink "$CASE_ROOT/instance/node/kernel/current") == releases/0.8.0 ]]
 grep -Fq 'initial user bootstrap skipped' "$CASE_ROOT/output"
 grep -Fxq 'http://127.0.0.1:18080/the8020/uui/login/' "$CASE_ROOT/curl.args"
 grep -Fxq -- '--noproxy' "$CASE_ROOT/curl.args"
 [[ $(grep -Fc '80|20 is ready' "$CASE_ROOT/output") == 1 ]]
+kill -TERM "$entrypoint_pid"
+wait "$entrypoint_pid" 2>/dev/null || true
+entrypoint_pid=""
+
+# A selected newer release survives restart even when the factory payload differs.
+kernel_root="$CASE_ROOT/instance/node/kernel"
+cp -a "$kernel_root/releases/0.8.0" "$kernel_root/releases/0.8.2"
+ln -s releases/0.8.2 "$kernel_root/current.next"
+mv -Tf "$kernel_root/current.next" "$kernel_root/current"
+printf 'factory changed\n' > "$CASE_ROOT/runtime-state/definitions/mod.ts"
+printf 'factory changed\n' > "$CASE_ROOT/runtime-state/images/rootless/image.json"
+: > "$CASE_ROOT/output"
+bash "$CASE_ROOT/entrypoint.sh" > "$CASE_ROOT/output" 2>&1 &
+entrypoint_pid=$!
+wait_for '80|20 is ready' "$CASE_ROOT/output"
+[[ $(readlink "$kernel_root/current") == releases/0.8.2 ]]
+grep -Fxq 'new definitions' "$kernel_root/runtime/definitions/mod.ts"
+grep -Fxq 'new image' "$kernel_root/runtime/images/rootless/image.json"
+! grep -Fq 'installing the initial platform runtime' "$CASE_ROOT/output"
 kill -TERM "$entrypoint_pid"
 wait "$entrypoint_pid" 2>/dev/null || true
 entrypoint_pid=""
@@ -173,7 +198,7 @@ bash "$CASE_ROOT/entrypoint.sh" > "$CASE_ROOT/output" 2>&1 &
 entrypoint_pid=$!
 wait_for '80|20 is ready' "$CASE_ROOT/output"
 [[ ! -f "$CASE_ROOT/users-calls" && ! -f "$CASE_ROOT/user-created" ]]
-! grep -Fq 'refreshing the platform runtime' "$CASE_ROOT/output"
+! grep -Fq 'installing the initial platform runtime' "$CASE_ROOT/output"
 [[ -L "$CASE_ROOT/instance/node/kernel/bin" ]]
 grep -Fxq 'private work' "$CASE_ROOT/instance/users/admin/work.txt"
 ! grep -Fq 'waiting for package initialization and user commands' "$CASE_ROOT/output"
@@ -232,37 +257,33 @@ fi
 [[ ! -f "$CASE_ROOT/user-created" ]]
 [[ ! -f "$CASE_ROOT/instance/node/docker/initial-user.done" ]]
 
-prepare interrupted-refresh
+prepare interrupted-seed
 printf '%s\n' 200 > "$CASE_ROOT/http-status"
-# A refresh interrupted after moving the old tree aside leaves no recorded
-# identity for the new release; the next start must rebuild the runtime.
+# An initial seed interrupted before publishing current is rebuilt from image.
 runtime="$CASE_ROOT/instance/node/kernel/runtime"
-mv "$runtime/definitions" "$runtime/.refresh-old-definitions"
-mkdir "$runtime/.refresh-new-images"
-printf 'release-1\n' > "$runtime/.image-runtime-state"
+rm -rf "$runtime/definitions"
+mkdir -p "$CASE_ROOT/instance/node/kernel/releases/0.8.0"
+printf 'incomplete seed\n' > "$CASE_ROOT/instance/node/kernel/releases/0.8.0/release.json"
 bash "$CASE_ROOT/entrypoint.sh" > "$CASE_ROOT/output" 2>&1 &
 entrypoint_pid=$!
 wait_for '80|20 is ready' "$CASE_ROOT/output"
 grep -Fxq 'new definitions' "$runtime/definitions/mod.ts"
 grep -Fxq 'new image' "$runtime/images/rootless/image.json"
-grep -Fxq 'release-2' "$runtime/.image-runtime-state"
-! compgen -G "$runtime/.refresh-*" >/dev/null
+[[ $(readlink "$CASE_ROOT/instance/node/kernel/current") == releases/0.8.0 ]]
 kill -TERM "$entrypoint_pid"
 wait "$entrypoint_pid" 2>/dev/null || true
 entrypoint_pid=""
 
-prepare legacy-image
+prepare missing-platform
 printf '%s\n' 200 > "$CASE_ROOT/http-status"
 rm -rf "$CASE_ROOT/runtime-state"
-bash "$CASE_ROOT/entrypoint.sh" > "$CASE_ROOT/output" 2>&1 &
-entrypoint_pid=$!
-wait_for '80|20 is ready' "$CASE_ROOT/output"
-! grep -Fq 'refreshing the platform runtime' "$CASE_ROOT/output"
+if bash "$CASE_ROOT/entrypoint.sh" > "$CASE_ROOT/output" 2>&1; then
+  echo 'entrypoint accepted missing updater payload' >&2
+  exit 1
+fi
+grep -Fq 'kernel update scripts are missing' "$CASE_ROOT/output"
 grep -Fxq 'old definitions' "$CASE_ROOT/instance/node/kernel/runtime/definitions/mod.ts"
 [[ ! -e "$CASE_ROOT/instance/node/kernel/runtime/.image-runtime-state" ]]
-kill -TERM "$entrypoint_pid"
-wait "$entrypoint_pid" 2>/dev/null || true
-entrypoint_pid=""
 
 prepare missing-curl
 if PATH=/nonexistent "$BASH" "$CASE_ROOT/entrypoint.sh" > "$CASE_ROOT/output" 2>&1; then
@@ -271,4 +292,4 @@ if PATH=/nonexistent "$BASH" "$CASE_ROOT/entrypoint.sh" > "$CASE_ROOT/output" 2>
 fi
 grep -Fq 'curl is required for container startup' "$CASE_ROOT/output"
 
-echo 'Docker entrypoint checks passed: common runtime replacement without losing private work, image runtime refresh with interrupted-refresh recovery and legacy-image passthrough, fresh runtime smoke, one-time account bootstrap, restart bypass, failed-creation retry, HTTP readiness, diagnostics, and structural login-user detection.'
+echo 'Docker entrypoint checks passed: initial platform seeding, interrupted-seed recovery, retained instance runtime, fresh smoke, one-time account bootstrap, failed-bootstrap retries, HTTP readiness, and diagnostics.'

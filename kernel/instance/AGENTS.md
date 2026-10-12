@@ -30,6 +30,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Runtime definitions and materialized images live below `node/kernel/runtime/`;
   the private `database/` directory owns the default single-node SQLite file and
   is never sandbox-mounted.
+- Managed release scripts link bin, runtime definitions/images, and development
+  helpers through `node/kernel/current`; `releases/` retains platform payloads
+  and `update/` owns the update journal. These are host-script artifacts, not
+  additional shared configuration or application state.
 - An explicit instance root may be absent. Resolution canonicalizes its nearest
   existing ancestor without creating it before the initialization decision.
 - Private node/kernel and database directories are mode `0700`; the SQLite file

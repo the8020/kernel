@@ -45,6 +45,10 @@ if [[ ! -d "$INSTANCE_ROOT" ]]; then
   exit 1
 fi
 INSTANCE_ROOT=$(cd -- "$INSTANCE_ROOT" && pwd -P)
+if [[ -L "$INSTANCE_ROOT/node/kernel/current" ]]; then
+  echo "this instance uses kernel releases; update it with node/kernel/scripts/update.sh" >&2
+  exit 1
+fi
 cd "$SOURCE_ROOT"
 
 DEVELOPMENT_DIR="$SOURCE_ROOT/.development"
@@ -163,6 +167,15 @@ NODE_KERNEL="$INSTANCE_ROOT/node/kernel"
 NODE_RUNTIME="$NODE_KERNEL/runtime"
 RUNTIME_DEFINITIONS="$NODE_RUNTIME/definitions"
 mkdir -p "$NODE_RUNTIME/images/rootless" "$NODE_RUNTIME/images/full" "$NODE_RUNTIME/images/development" "$NODE_KERNEL/bin"
+for binary in kernel admin logd; do
+  install -m 0555 "$DEVELOPMENT_DIR/bin/$binary" "$NODE_KERNEL/bin/$binary.new"
+  mv -f -- "$NODE_KERNEL/bin/$binary.new" "$NODE_KERNEL/bin/$binary"
+done
+mkdir -p "$NODE_KERNEL/scripts/update"
+for script in update.sh update.ts launch.sh; do
+  install -m 0555 "$SOURCE_ROOT/defaults/kernel-scripts/$script" "$NODE_KERNEL/scripts/$script"
+done
+cp -a "$SOURCE_ROOT/defaults/kernel-scripts/update/." "$NODE_KERNEL/scripts/update/"
 
 # Refresh the platform-owned development helpers.
 bash "$SOURCE_ROOT/install-development-assets.sh" "$INSTANCE_ROOT"
@@ -373,6 +386,11 @@ if [[ "$RUN_VERIFICATION" == true ]]; then
   "$DENO_CMD" fmt --check "$SOURCE_ROOT/defaults/scripts/activate.ts"
   "$DENO_CMD" lint "$SOURCE_ROOT/defaults/scripts/activate.ts"
   "$DENO_CMD" check "$SOURCE_ROOT/defaults/scripts/activate.ts"
+  bash -n "$SOURCE_ROOT/defaults/kernel-scripts/update.sh" "$SOURCE_ROOT/defaults/kernel-scripts/launch.sh" "$SOURCE_ROOT/release-build.sh"
+  "$DENO_CMD" fmt --check "$SOURCE_ROOT/defaults/kernel-scripts"
+  "$DENO_CMD" lint --no-config "$SOURCE_ROOT/defaults/kernel-scripts"
+  "$DENO_CMD" check --no-config "$SOURCE_ROOT/defaults/kernel-scripts/update.ts"
+  "$DENO_CMD" test --no-config -A "$SOURCE_ROOT/defaults/kernel-scripts/update_test.ts"
 else
   echo "platform verification gates skipped; required binaries and images are current" >&2
 fi
