@@ -176,6 +176,7 @@ type PackageManagementService interface {
 	InspectPackageRepository(context.Context, string) (workspacepackages.Repository, error)
 	InitializePackageRepository(context.Context, string, string, string, string) (workspacepackages.Repository, error)
 	ConfigurePackageRemote(context.Context, string, string, string) (workspacepackages.Repository, error)
+	FetchPackageRepository(context.Context, string) (workspacepackages.Repository, error)
 	PullPackageRepository(context.Context, string) (workspacepackages.RepositoryMutation, error)
 	PushPackageRepository(context.Context, string) (workspacepackages.Repository, error)
 	CheckoutPackageRepository(context.Context, string, string, string) (workspacepackages.RepositoryMutation, error)

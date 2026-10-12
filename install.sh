@@ -198,7 +198,8 @@ if [[ "$NEW_LAYOUT" == true ]]; then
     elif [[ -n "$RELEASE_VERSION" ]]; then
       resolution=$("$SOURCE_ROOT/release-tag.sh" package "$RELEASE_VERSION" "$package_source")
       IFS=$'\t' read -r package_tag package_commit <<< "$resolution"
-      git -c advice.detachedHead=false clone --quiet --branch "$package_tag" -- "$package_source" "$package_stage"
+      git clone --quiet --no-checkout -- "$package_source" "$package_stage"
+      git -C "$package_stage" reset --quiet --hard "$package_tag^{commit}"
       installed_commit=$(git -C "$package_stage" rev-parse --verify 'HEAD^{commit}')
       if [[ "$installed_commit" != "$package_commit" ]]; then
         rm -rf -- "$package_stage"

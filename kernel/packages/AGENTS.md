@@ -149,10 +149,11 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   executable validator, including diagnostics for invalid programs. Neither path
   reads application metadata; the packages application enriches its own catalog
   and selected inspection inside the Worker.
-- Synchronization clones into a hidden same-filesystem staging directory,
-  validates the exact commit, and replaces source by rename. Dirty shared
-  worktrees are preserved and rejected. One failed batch package has explicit
-  durable failure state.
+- Synchronization stages the existing Git repository, or clones on first install,
+  validates the exact commit, and replaces source by rename. Preserve Git objects,
+  branch names, and history when applying versions. Dirty shared worktrees are
+  preserved and rejected. One failed batch package has explicit durable failure
+  state.
 - Activated-source consumers can require a clean installed checkout whose HEAD
   or content fingerprint exactly matches the ready database commit; schema
   evaluation uses this guard while staged activation evaluates its candidate.
@@ -164,9 +165,15 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   header. Synchronization accepts an optional Basic username with its secure
   password input; omitting it retains `x-access-token` for tokens. Redact both
   the supplied secret and its actual encoded Basic header from failures.
-- Repository pull is clean-branch fetch plus fast-forward; push publishes the
-  attached branch; checkout selects one local/remote branch or hexadecimal
-  commit. Changed operations use the same activation transaction.
+- Installed versions stay attached to the current branch, using the remote's
+  default branch on first install. Tags and commits select the initial or applied
+  version without detaching; branch tracking does not advance that version.
+  Git owns branch state; the database continues to own the exact active commit.
+- Repository fetch updates remote references and tags without changing HEAD,
+  worktree files, desired/active versions, or running services; dirty worktrees
+  remain fetchable. Pull explicitly fast-forwards a clean attached branch; push
+  publishes it without force. Commit checkout retains the branch. Source-changing
+  operations use the same activation transaction.
 - Bounded version listings include exact commit parent IDs. Local repositories
   select their current HEAD and never require or fetch an upstream reference.
 - Kernel repository SQL remains portable across SQLite and PostgreSQL. Bind
@@ -191,6 +198,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   ordering/idempotence, durable phase recovery, PostgreSQL lock ordering,
   retirement/trim behavior, targeted package refresh, and automatic cross-node
   index propagation without application-table scans.
+- Git regressions cover older-version installation with upstream tracking,
+  fetch without activation, attached commit selection, retained local Git history,
+  and fetch/select/push through ordinary repositories.
 - Declaration regressions include documentation-only and documented TOML
   folders, candidate activation validation, and live handler reindexing.
 - Deletion regressions cover dirty-source rejection, namespace containment,

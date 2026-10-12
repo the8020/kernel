@@ -112,10 +112,13 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 - Named-secret APIs belong to `/p/the8020/secrets/mod.ts`, which owns SQL and
   transparent encryption/decryption. The SDK exports no named-secret operations.
 - `kernel.packages` provides typed index list/inspect/set, source inspection,
-  version listing, repository inspect/pull/push/checkout, concise
+  version listing, repository inspect/fetch/pull/push/checkout, concise
   ID/commit/success synchronization results, and local creation through one
   generic private runtime-operation bridge; the supervisor interprets no package
   semantics.
+- `kernel.packages.repository.fetch(id)` refreshes remote branches and tags
+  without activating code or changing the selected version. Commit checkout
+  applies a version while keeping the repository's branch attached.
 - `kernel.packages.delete(packageId, true)` requires explicit confirmation and
   delegates to `package.delete`. It removes installed code through activation
   while retaining physical database data.

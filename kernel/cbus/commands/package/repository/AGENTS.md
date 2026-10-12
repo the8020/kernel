@@ -7,13 +7,14 @@ Parent DOX: [kernel/kernel/cbus/commands/package DOX](../AGENTS.md).
 # Ownership
 
 - Own list, inspect, explicit initialization, remote configuration, status,
-  pull, push, and branch/commit checkout command leaves.
+  fetch, pull, push, and branch/commit checkout command leaves.
 
 # Local Contracts
 
 - Package IDs resolve to exactly `packages/<namespace>/<repository>/`.
   Initialization creates the package's first local commit; remote configuration
-  never pushes and rejects embedded credentials. Pull is fast-forward only;
+  never pushes and rejects embedded credentials. Fetch changes only Git remote
+  references and tags; commit selection keeps HEAD attached. Pull is fast-forward only;
   checkout and pull reject dirty worktrees. Changed HEAD operations trigger the
   shared targeted package-service refresh. No root-level repository command
   exists.
@@ -26,7 +27,7 @@ Parent DOX: [kernel/kernel/cbus/commands/package DOX](../AGENTS.md).
 # Verification
 
 - Package-store and command tests prove path safety, independent histories,
-  local-only initialization, configured remotes, pull/push/checkout behavior,
+  local-only initialization, configured remotes, fetch/pull/push/checkout behavior,
   transient authentication, and targeted service refresh.
 
 # Child DOX Index

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -394,25 +395,48 @@ func (s *Store) synchronizePackage(ctx context.Context, packageID, transientToke
 	if err != nil {
 		return result, err
 	}
-	if output, commandErr := s.runGit(ctx, "", authentication, "clone", "--quiet", "--no-checkout", "--origin", "origin", entry.Source, stage); commandErr != nil {
+	if exists {
+		if err := copyRepository(destination, stage); err != nil {
+			return result, fmt.Errorf("stage package repository: %w", err)
+		}
+		remotes, err := s.gitValue(ctx, stage, "remote")
+		if err != nil {
+			return result, err
+		}
+		operation := "add"
+		if slices.Contains(strings.Fields(remotes), "origin") {
+			operation = "set-url"
+		}
+		if output, err := s.runGit(ctx, stage, nil, "remote", operation, "origin", entry.Source); err != nil {
+			return result, fmt.Errorf("configure package source: %w: %s", err, cleanGitOutput(output))
+		}
+		if output, err := s.runGit(ctx, stage, authentication, "fetch", "--quiet", "--prune", "--tags", "origin"); err != nil {
+			return result, fmt.Errorf("fetch package source: %w: %s", err, cleanGitOutput(output))
+		}
+		if entry.Tag == "" && entry.Commit == "" {
+			if output, err := s.runGit(ctx, stage, authentication, "remote", "set-head", "origin", "--auto"); err != nil {
+				return result, fmt.Errorf("resolve package default branch: %w: %s", err, cleanGitOutput(output))
+			}
+		}
+	} else if output, commandErr := s.runGit(ctx, "", authentication, "clone", "--quiet", "--no-checkout", "--origin", "origin", entry.Source, stage); commandErr != nil {
 		return result, fmt.Errorf("clone package: %w: %s", commandErr, cleanGitOutput(output))
 	}
 	commit, err := s.resolveDesiredCommit(ctx, stage, entry, true)
 	if err != nil {
 		return result, err
 	}
-	if output, commandErr := s.runGit(ctx, stage, nil, "checkout", "--quiet", "--detach", commit); commandErr != nil {
-		return result, fmt.Errorf("check out package commit: %w: %s", commandErr, cleanGitOutput(output))
+	if err := s.checkoutPackageVersion(ctx, stage, "origin", commit); err != nil {
+		return result, err
 	}
 	if err := validateStagedPackage(stage); err != nil {
 		return result, err
 	}
 	result.Commit = commit
 	if exists && result.PreviousCommit == result.Commit && entry.State == "ready" && entry.ActiveCommit == result.Commit {
-		if output, commandErr := s.runGit(ctx, destination, nil, "remote", "set-url", "origin", entry.Source); commandErr != nil {
-			return result, fmt.Errorf("update package remote: %w: %s", commandErr, cleanGitOutput(output))
+		if _, err := replacePackageDirectory(destination, stage); err != nil {
+			return result, err
 		}
-		return result, nil
+		return result, finalizePackageDirectory(destination)
 	}
 	hook := s.schemaDeployment()
 	transactionID, err := activationID()

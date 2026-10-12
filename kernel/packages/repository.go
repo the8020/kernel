@@ -233,6 +233,56 @@ func (s *Store) ConfigurePackageRemote(ctx context.Context, packageID, name, rem
 	return s.inspectPackageRepositoryUnlocked(ctx, packageID)
 }
 
+func (s *Store) FetchPackageRepository(ctx context.Context, packageID string) (Repository, error) {
+	unlock, err := s.lockPackage(ctx, packageID)
+	if err != nil {
+		return Repository{}, err
+	}
+	defer unlock()
+	repository, err := s.inspectPackageRepositoryUnlocked(ctx, packageID)
+	if err != nil {
+		return Repository{}, err
+	}
+	if !repository.ActivationReady {
+		return Repository{}, errors.New("package repository is not initialized")
+	}
+	if repository.RemoteName == "" {
+		return Repository{}, errors.New("package repository has no Git remote")
+	}
+	environment, err := s.repositoryAuthentication(packageID, repository.remoteURL)
+	if err != nil {
+		return Repository{}, err
+	}
+	if output, err := s.runGit(ctx, repository.Path, environment, "fetch", "--quiet", "--prune", "--tags", repository.RemoteName); err != nil {
+		return Repository{}, fmt.Errorf("fetch package repository: %w: %s", err, cleanGitOutput(output))
+	}
+	return s.inspectPackageRepositoryUnlocked(ctx, packageID)
+}
+
+// Version selection moves the attached branch; its upstream can remain newer.
+func (s *Store) checkoutPackageVersion(ctx context.Context, path, remote, commit string) error {
+	branch, err := s.gitValue(ctx, path, "branch", "--show-current")
+	if err != nil {
+		return err
+	}
+	if branch == "" {
+		reference, err := s.gitValue(ctx, path, "symbolic-ref", "--quiet", "--short", "refs/remotes/"+remote+"/HEAD")
+		if err != nil {
+			return errors.New("select a branch before applying a package version")
+		}
+		branch = strings.TrimPrefix(reference, remote+"/")
+	}
+	if output, err := s.runGit(ctx, path, nil, "checkout", "--quiet", "-B", branch, commit); err != nil {
+		return fmt.Errorf("check out package version: %w: %s", err, cleanGitOutput(output))
+	}
+	if _, err := s.gitValue(ctx, path, "show-ref", "--verify", "refs/remotes/"+remote+"/"+branch); err == nil {
+		if output, err := s.runGit(ctx, path, nil, "branch", "--set-upstream-to="+remote+"/"+branch, branch); err != nil {
+			return fmt.Errorf("track package branch: %w: %s", err, cleanGitOutput(output))
+		}
+	}
+	return nil
+}
+
 func (s *Store) PullPackageRepository(ctx context.Context, packageID string) (RepositoryMutation, error) {
 	return s.mutatePackageRepository(ctx, packageID, func(path string, repository Repository) error {
 		if !repository.Clean {
@@ -348,10 +398,7 @@ func (s *Store) CheckoutPackageRepository(ctx context.Context, packageID, branch
 				return fmt.Errorf("fetch package commit: %w: %s", fetchErr, cleanGitOutput(output))
 			}
 		}
-		if output, err := s.runGit(ctx, path, nil, "checkout", "--quiet", "--detach", commit); err != nil {
-			return fmt.Errorf("check out package commit: %w: %s", err, cleanGitOutput(output))
-		}
-		return nil
+		return s.checkoutPackageVersion(ctx, path, repository.RemoteName, commit)
 	})
 }
 

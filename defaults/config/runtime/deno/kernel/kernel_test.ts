@@ -1229,6 +1229,15 @@ Deno.test("typed package and runtime APIs use private runtime operations", async
     );
     assertEquals(
       await respond(
+        inContext(() => kernel.packages.repository.fetch("the8020/uui")),
+        "package.repository.fetch",
+        { package_id: "the8020/uui" },
+        { repository },
+      ),
+      repository,
+    );
+    assertEquals(
+      await respond(
         inContext(() => kernel.packages.repository.pull("the8020/uui")),
         "package.repository.pull",
         { package_id: "the8020/uui" },

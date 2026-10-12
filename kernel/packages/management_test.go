@@ -110,6 +110,25 @@ func TestPackageIndexRemoteInspectionSynchronizationAndVersionSelection(t *testi
 	if packages, err := store.ListPackages(); err != nil || len(packages) != 1 || packages[0].ID != "the8020/demo" {
 		t.Fatalf("installed packages = %#v err=%v", packages, err)
 	}
+	installed := filepath.Join(root, "packages", "the8020", "demo")
+	if branch := runTestGit(t, gitPath, installed, "branch", "--show-current"); branch != "main" {
+		t.Fatalf("installed branch = %q", branch)
+	}
+	if upstream := runTestGit(t, gitPath, installed, "rev-parse", "--abbrev-ref", "@{upstream}"); upstream != "origin/main" {
+		t.Fatalf("installed upstream = %q", upstream)
+	}
+	runTestGit(t, gitPath, installed, "remote", "remove", "origin")
+	entry.State, entry.ActiveCommit = "ready", firstCommit
+	if err := store.index.Put(ctx, entry); err != nil {
+		t.Fatal(err)
+	}
+	results, err = store.SynchronizePackages(ctx, []string{"the8020/demo"})
+	if err != nil || len(results) != 1 || !results[0].Success || results[0].Changed {
+		t.Fatalf("connect existing repository without changing version = %#v, %v", results, err)
+	}
+	if upstream := runTestGit(t, gitPath, installed, "rev-parse", "--abbrev-ref", "@{upstream}"); upstream != "origin/main" {
+		t.Fatalf("existing repository upstream = %q", upstream)
+	}
 
 	if err := os.RemoveAll(filepath.Join(working, "services", "old")); err != nil {
 		t.Fatal(err)
@@ -167,6 +186,56 @@ func TestPackageIndexRemoteInspectionSynchronizationAndVersionSelection(t *testi
 	}
 	if len(results) != 1 || !results[0].Success || results[0].Commit != firstCommit || results[0].Requested != "tag:v1.0.0" {
 		t.Fatalf("tag synchronization = %#v", results)
+	}
+	if branch := runTestGit(t, gitPath, installed, "branch", "--show-current"); branch != "main" {
+		t.Fatalf("tag selection detached branch: %q", branch)
+	}
+	before, err := store.InspectPackageIndex("the8020/demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hook.prepared, hook.completed = nil, nil
+	fetched, err := store.FetchPackageRepository(ctx, "the8020/demo")
+	if err != nil || fetched.Branch != "main" || fetched.Head != firstCommit {
+		t.Fatalf("fetch changed installed version = %#v, %v", fetched, err)
+	}
+	after, err := store.InspectPackageIndex("the8020/demo")
+	if err != nil || after != before || len(hook.prepared) != 0 || len(hook.completed) != 0 {
+		t.Fatalf("fetch changed package index or activated: before=%#v after=%#v err=%v", before, after, err)
+	}
+	versions, err = store.ListPackageVersions(ctx, "the8020/demo", 20)
+	if err != nil || versions.CurrentCommit != firstCommit || len(versions.Versions) != 2 {
+		t.Fatalf("available versions = %#v, %v", versions, err)
+	}
+	runTestGit(t, gitPath, installed, "checkout", "-q", "-b", "private-changes")
+	writeFile(t, filepath.Join(installed, "README.md"), "local history\n")
+	runTestGit(t, gitPath, installed, "add", "README.md")
+	runTestGit(t, gitPath, installed, "commit", "-q", "-m", "local history")
+	localCommit := runTestGit(t, gitPath, installed, "rev-parse", "HEAD")
+	results, err = store.SynchronizePackages(ctx, []string{"the8020/demo"})
+	if err != nil || len(results) != 1 || !results[0].Success || results[0].Commit != firstCommit {
+		t.Fatalf("reapply tag = %#v, %v", results, err)
+	}
+	if branch := runTestGit(t, gitPath, installed, "branch", "--show-current"); branch != "private-changes" {
+		t.Fatalf("version selection lost branch: %q", branch)
+	}
+	runTestGit(t, gitPath, installed, "cat-file", "-e", localCommit+"^{commit}")
+	fresh := newTestStore(t, t.TempDir())
+	if _, err := fresh.SetPackageIndex(ctx, PackageIndex{
+		Author: "the8020", Repository: "demo", Source: source, Tag: "v1.0.0",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	initial, err := fresh.SynchronizePackages(ctx, []string{"the8020/demo"})
+	if err != nil || len(initial) != 1 || !initial[0].Success || initial[0].Commit != firstCommit {
+		t.Fatalf("install older tag = %#v, %v", initial, err)
+	}
+	freshRepository, err := fresh.InspectPackageRepository(ctx, "the8020/demo")
+	if err != nil || freshRepository.Branch != "main" || freshRepository.Head != firstCommit {
+		t.Fatalf("older installation branch = %#v, %v", freshRepository, err)
+	}
+	if head := runTestGit(t, gitPath, freshRepository.Path, "rev-parse", "@{upstream}"); head != secondCommit {
+		t.Fatalf("older installation upstream = %s", head)
 	}
 
 	writeFile(t, filepath.Join(root, "packages", "the8020", "demo", "uncommitted.txt"), "preserve me\n")
@@ -313,6 +382,17 @@ func TestPackageRepositoryPullCheckoutAndPush(t *testing.T) {
 		return nil
 	}}
 	store.SetSchemaDeployment(hook)
+	writeFile(t, filepath.Join(installed, "uncommitted.txt"), "preserve me\n")
+	fetched, err := store.FetchPackageRepository(context.Background(), "example/repo")
+	if err != nil || fetched.Head != first || fetched.Branch != "main" || fetched.Clean || len(hook.prepared) != 0 {
+		t.Fatalf("fetch = %#v, %v; schema preparations = %#v", fetched, err, hook.prepared)
+	}
+	if head := runTestGit(t, gitPath, installed, "rev-parse", "origin/main"); head != second {
+		t.Fatalf("fetch did not discover newer commit: %s", head)
+	}
+	if err := os.Remove(filepath.Join(installed, "uncommitted.txt")); err != nil {
+		t.Fatal(err)
+	}
 	pulled, err := store.PullPackageRepository(context.Background(), "example/repo")
 	if err != nil || !pulled.Changed || pulled.Repository.Head != second {
 		t.Fatalf("pull = %#v, %v", pulled, err)
@@ -329,13 +409,16 @@ func TestPackageRepositoryPullCheckoutAndPush(t *testing.T) {
 		t.Fatalf("schema rejection moved active checkout to %s", active)
 	}
 	hook.failure = nil
-	detached, err := store.CheckoutPackageRepository(context.Background(), "example/repo", "", first)
-	if err != nil || !detached.Changed || detached.Repository.Branch != "" || detached.Repository.Head != first {
-		t.Fatalf("commit checkout = %#v, %v", detached, err)
+	selected, err := store.CheckoutPackageRepository(context.Background(), "example/repo", "", first)
+	if err != nil || !selected.Changed || selected.Repository.Branch != "main" || selected.Repository.Head != first {
+		t.Fatalf("commit checkout = %#v, %v", selected, err)
 	}
 	main, err := store.CheckoutPackageRepository(context.Background(), "example/repo", "main", "")
-	if err != nil || !main.Changed || main.Repository.Branch != "main" || main.Repository.Head != second {
+	if err != nil || main.Changed || main.Repository.Branch != "main" || main.Repository.Head != first {
 		t.Fatalf("branch checkout = %#v, %v", main, err)
+	}
+	if _, err := store.PullPackageRepository(context.Background(), "example/repo"); err != nil {
+		t.Fatal(err)
 	}
 	runTestGit(t, gitPath, installed, "config", "user.name", "Package Test")
 	runTestGit(t, gitPath, installed, "config", "user.email", "packages@example.test")

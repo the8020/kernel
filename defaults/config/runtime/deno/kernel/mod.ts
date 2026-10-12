@@ -53,6 +53,7 @@ export interface PackageIndex {
   tag?: string;
   secret?: string;
   local: boolean;
+  active_commit?: string;
   package_id: string;
   valid: boolean;
   validation_error?: string;
@@ -1018,6 +1019,12 @@ export const kernel = Object.freeze({
         const result = await executeRuntimeOperation<
           { repository: PackageRepository }
         >("package.repository.inspect", { package_id: packageId });
+        return result.repository;
+      },
+      async fetch(packageId: string): Promise<PackageRepository> {
+        const result = await executeRuntimeOperation<
+          { repository: PackageRepository }
+        >("package.repository.fetch", { package_id: packageId });
         return result.repository;
       },
       async pull(packageId: string): Promise<PackageRepository> {

@@ -46,8 +46,9 @@ Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
   through activation, preserves dirty work, and retains physical database data.
 - Repository initialization is explicit, never inferred from discovery, and
   creates one initial commit at the package root. Remote configuration rejects
-  embedded credentials. Pull fast-forwards a clean attached branch, push
-  publishes it, and checkout selects a branch or detached commit. Pull and
+  embedded credentials. Fetch refreshes refs/tags without changing the checkout.
+  Pull fast-forwards a clean attached branch, push publishes it, and commit
+  checkout retains the current branch. Pull and
   checkout refresh only services affected by a changed HEAD. A package record
   may select a global secret by name; handlers never resolve or return its
   value.
@@ -68,7 +69,7 @@ Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
 # Child DOX Index
 
 - [repository/AGENTS.md](repository/AGENTS.md): independent package Git
-  inspection, initialization, remote configuration, status, pull, push, and
+  inspection, initialization, remote configuration, status, fetch, pull, push, and
   checkout.
 
 - The `index/list`, `index/inspect`, `index/set`, and `synchronize` leaves own

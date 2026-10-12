@@ -162,7 +162,9 @@ relevant child AGENTS.md
   rootless service and development sandbox images. Package tags must share the
   kernel major and may use the requested minor or an older one; the highest
   compatible minor and patch win. The exact selected package tag and active
-  commit are retained in the database package index. Missing compatible tags
+  commit are retained in the database package index. Bootstrap keeps the remote
+  default branch attached at that selected commit, retaining its upstream without
+  advancing the version. Missing compatible tags
   fail installation. Docker runs require an unconfined outer seccomp profile and
   complete the pinned runsc smoke before kernel startup. The entrypoint performs
   initial-account bootstrap once per persistent instance volume and creates the
