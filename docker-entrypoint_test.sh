@@ -274,6 +274,18 @@ kill -TERM "$entrypoint_pid"
 wait "$entrypoint_pid" 2>/dev/null || true
 entrypoint_pid=""
 
+prepare legacy-bootstrap
+printf 'kernel_tag=0.7.4\nkernel_commit=9870f8363cf44b804df6234c3307b31ce0121f72\n' > "$CASE_ROOT/release"
+printf '%s\n' 200 > "$CASE_ROOT/http-status"
+bash "$CASE_ROOT/entrypoint.sh" > "$CASE_ROOT/output" 2>&1 &
+entrypoint_pid=$!
+wait_for '80|20 is ready' "$CASE_ROOT/output"
+[[ $(readlink "$CASE_ROOT/instance/node/kernel/current") == releases/0.7.4 ]]
+grep -Fxq 'private work' "$CASE_ROOT/instance/users/admin/work.txt"
+kill -TERM "$entrypoint_pid"
+wait "$entrypoint_pid" 2>/dev/null || true
+entrypoint_pid=""
+
 prepare missing-platform
 printf '%s\n' 200 > "$CASE_ROOT/http-status"
 rm -rf "$CASE_ROOT/runtime-state"

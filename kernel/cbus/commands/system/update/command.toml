@@ -2,7 +2,7 @@ version = 1
 id = "kernel.update"
 path = ["kernel.update"]
 summary = "Update the installed kernel"
-description = "Starts the installed updater in the background. Downloads an exact same-major release before gracefully stopping this instance, running migrations, and starting the selected kernel. Read the returned log file for progress and failures. Packages change only through explicit migrations."
+description = "Starts the installed updater in the background. Fetches and prepares an exact same-major kernel tag before gracefully stopping this instance, running migrations, and starting the selected kernel. Read the returned log file for progress and failures. Packages change only through explicit migrations."
 mutates_state = true
 restart_behavior = "restarts_kernel"
 [handler]
@@ -24,4 +24,4 @@ type = "integer"
 name = "log_file"
 type = "string"
 [[examples]]
-command = "kernel.update 0.8.1"
+command = "kernel.update 0.8.3"

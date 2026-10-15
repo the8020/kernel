@@ -9,7 +9,8 @@ Parent DOX: [system commands](../AGENTS.md).
 - Validate the version's shape, require the installed updater and live launcher,
   detach with a new process session, and return PID and private log path.
 - The installed [host scripts](../../../../../defaults/kernel-scripts/AGENTS.md)
-  own release validation, locking, download, shutdown, migrations, and restart.
+  own release validation, locking, source preparation, shutdown, migrations,
+  and restart.
 
 # Local Contracts
 

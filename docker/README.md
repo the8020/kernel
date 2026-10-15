@@ -32,44 +32,38 @@ this integration must also publish a compatible `the8020/auth` package tag.
 
 ## Update the kernel in the same container
 
-On an update-capable instance, use the administrative command:
+For an existing `0.7.4` container, run this one-time bootstrap on the Docker
+host. Replace `the8020` with its container name or ID:
 
 ```sh
-docker exec the8020 admin --root /8020 kernel.update 0.8.1
+curl -fsSL https://raw.githubusercontent.com/the8020/kernel/0.8.3/docker/update.sh -o /tmp/the8020-update.sh
+bash /tmp/the8020-update.sh the8020 0.8.3
 docker exec the8020 tail -f /8020/node/kernel/update.log
 ```
 
-Choose an exact published kernel version with an update archive. Only
-same-major forward updates are supported. Download and verification happen
-before shutdown; live work is interrupted during installation. Packages retain
-their versions unless a release migration explicitly updates them.
+The bootstrap installs the updater and restarts the same container once, then
+starts the update in the background. It keeps the existing volume and packages.
 
-You can invoke the same updater directly, including after an offline migration
-failure:
+Once the updater is installed, use the administrative command:
 
 ```sh
-docker exec the8020 /8020/node/kernel/scripts/update.sh 0.8.1
+docker exec the8020 admin --root /8020 kernel.update 0.8.3
 ```
 
-Repair the reported failure and retry the same version. Completed migration
-steps are retained. On the dev/prod image, `/8020-prod` selects production;
-each instance has its own installation and log.
-
-Existing containers at `0.8.0` need this one-time bootstrap from an updater-capable
-kernel checkout, followed by a restart of the same container:
+Or run the script directly, including after an offline migration failure:
 
 ```sh
-docker cp defaults/kernel-scripts the8020:/usr/local/share/the8020/runtime-state/kernel-scripts
-docker exec the8020 sh -c 'cp -a /8020/scripts /usr/local/share/the8020/runtime-state/development-scripts'
-docker cp docker/rootfs/usr/local/bin/docker-entrypoint.sh the8020:/usr/local/bin/docker-entrypoint.sh
-docker restart the8020
+docker exec the8020 /8020/node/kernel/scripts/update.sh 0.8.3
 ```
 
-The old kernel has no `kernel.update` command yet; invoke the installed script
-directly for that first upgrade. Container recreation requires an update-capable
-image to preserve the installed release. Older instance layouts and major
-upgrades require separate migration handling.
+Use an exact same-major forward version. The updater fetches that Git tag and
+prepares it locally with the existing installer before stopping the running
+kernel. It requires network access and 6 GiB of free temporary disk space;
+preparation may take several minutes. No new container or CI build is needed.
+Packages keep their versions unless a migration explicitly updates them.
 
-Release maintainers build the ordinary tagged installation, then run
-`./release-build.sh <instance-root> <output-directory>` and attach its archive
-and `.sha256` file to the matching GitHub release.
+Updates interrupt live work. Repair a failed migration and retry the same
+version; completed steps are retained. On an update-capable dev/prod image,
+`/8020-prod` selects production, with its own installation and log. The one-time
+bootstrap script targets the single-system `/8020` instance. Container
+recreation requires an update-capable image to preserve the selected kernel.

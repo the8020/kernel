@@ -6,6 +6,8 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 
 # Ownership
 
+- `update.sh` bootstraps an existing single-system Docker container from its
+  host, restarts that same container, and starts the installed updater detached.
 - `rootfs/` is the complete Docker runtime payload, copied to `/` by both the
   kernel and deploy Dockerfiles. Its entrypoint starts the kernel, creates the
   first login user, and waits for the public login service.
@@ -45,6 +47,10 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   `node/kernel/current`. Publish current last so an interrupted seed repeats.
   Later starts preserve the selected instance release even when the factory
   image differs. Seeding never touches users, packages, database, keys, or IDs.
+- Existing `0.7.4` and newer containers install the host scripts, preserved
+  development helpers, and new entrypoint once, then restart the same container.
+  Their first upgrade calls the script directly; old kernels have no update
+  command. `update.sh` performs the bootstrap; the README owns its invocation.
 - `launch.sh` owns the kernel child. An intentional update leaves this launcher
   and the outer entrypoint alive while the kernel stops, migrations run, and
   the target starts; the paired instance and HTTPS proxy remain running.
@@ -77,6 +83,9 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 
 # Verification
 
+- `bash docker/update_test.sh` checks one-time bootstrap ordering, atomic
+  entrypoint installation, detached invocation, and argument validation with
+  process doubles.
 - With Deno on PATH, `bash docker-entrypoint_test.sh` checks progress, HTTP 200
   readiness, failure diagnostics, the curl dependency, existing-user detection
   with reordered JSON properties, one-time bootstrap and restart bypass after

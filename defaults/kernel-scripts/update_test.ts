@@ -26,13 +26,13 @@ async function run(
   };
 }
 
-async function fixture() {
+async function fixture(baseline = "0.8.0") {
   const temp = await Deno.makeTempDir({ prefix: "kernel-update-" });
   const root = `${temp}/instance`, kernel = `${root}/node/kernel`;
-  const archives = `${temp}/archives`, tools = `${temp}/tools`;
+  const versions = `${temp}/versions`, tools = `${temp}/tools`;
   for (
     const directory of [
-      archives,
+      versions,
       tools,
       `${kernel}/releases`,
       `${kernel}/run`,
@@ -52,26 +52,34 @@ async function fixture() {
   ) await Deno.writeTextFile(`${root}/${file}`, "keep");
   await Deno.writeTextFile(`${kernel}/run/launcher.pid`, String(Deno.pid));
   await Deno.writeTextFile(
-    `${tools}/curl`,
+    `${tools}/git`,
     `#!/bin/bash
 set -eu
-while (( $# )); do
-  if [[ "$1" == --output ]]; then destination=$2; shift 2; else url=$1; shift; fi
-done
-cp "$FIXTURE_ARCHIVES/\${url##*/}" "$destination"
+if [[ "$1" == clone ]]; then
+  [[ ! -f "$FIXTURE_ROOT/fail-git" ]] || exit 2
+  version=; previous=
+  for argument in "$@"; do
+    [[ "$previous" != --branch ]] || version=$argument
+    previous=$argument
+  done
+  cp -a "$FIXTURE_VERSIONS/$version" "${"${!#}"}"
+else printf '%040d\\n' 0; fi
 `,
     { mode: 0o755 },
   );
   const env = {
-    FIXTURE_ARCHIVES: archives,
+    FIXTURE_VERSIONS: versions,
+    FIXTURE_ROOT: temp,
     THE8020_INSTANCE_ROOT: root,
+    THE8020_USERNAME: "bootstrap-only",
+    THE8020_PASSWORD: "bootstrap-only",
     PATH: `${tools}:${Deno.env.get("PATH")}`,
   };
   async function release(
     version: string,
     scripts: Record<string, string> = {},
   ) {
-    const directory = `${temp}/release-${version}`;
+    const directory = `${versions}/${version}`;
     for (
       const name of [
         "bin",
@@ -95,7 +103,13 @@ cp "$FIXTURE_ARCHIVES/\${url##*/}" "$destination"
     );
     await Deno.writeTextFile(
       `${directory}/bin/kernel`,
-      `#!/bin/bash\necho '${version}+${commit}'\n`,
+      `#!/bin/bash
+if [[ "$1" == --version ]]; then echo '${version}+${commit}'; exit; fi
+[[ -z "${"${THE8020_USERNAME:-}"}" && -z "${"${THE8020_PASSWORD:-}"}" ]] || exit 2
+root=$2
+mkdir -p "$root/packages" "$root/users"
+touch "$root/kernel.toml"
+`,
       { mode: 0o755 },
     );
     await Deno.writeTextFile(
@@ -130,39 +144,33 @@ else echo '{"success":true,"result":{"build_id":"${version}+${commit}","runtime_
     }
     return directory;
   }
-  async function pack(version: string, scripts: Record<string, string> = {}) {
-    const directory = await release(version, scripts),
-      filename = `the8020-kernel-${version}-linux-${arch}.tar.gz`;
-    assert(
-      (await run("tar", [
-        "-czf",
-        `${archives}/${filename}`,
-        "-C",
-        directory,
-        "release.json",
-        "bin",
-        "scripts",
-        "runtime",
-        "development-scripts",
-      ])).code === 0,
+  async function version(
+    version: string,
+    scripts: Record<string, string> = {},
+  ) {
+    const directory = await release(version, scripts);
+    await Deno.writeTextFile(
+      `${directory}/install.sh`,
+      `#!/bin/bash
+set -eu
+[[ ! -f "$FIXTURE_ROOT/fail-build" ]] || exit 2
+root=
+for argument in "$@"; do
+  case "$argument" in --instance-root=*) root=${"${argument#*=}"} ;; esac
+ done
+[[ -f "$root/kernel.toml" && -d "$root/packages" && ! -f "$root/packages/keep" ]]
+mkdir -p "$root/node/kernel" "$root/scripts"
+for name in bin scripts runtime; do
+  cp -a "$PWD/$name" "$root/node/kernel/"
+done
+`,
+      { mode: 0o755 },
     );
-    await checksum(version);
     return directory;
   }
-  async function checksum(version: string) {
-    const filename = `the8020-kernel-${version}-linux-${arch}.tar.gz`;
-    const digest =
-      (await run("sha256sum", [`${archives}/${filename}`])).output.split(
-        " ",
-      )[0];
-    await Deno.writeTextFile(
-      `${archives}/${filename}.sha256`,
-      `${digest}  ${filename}\n`,
-    );
-  }
-  const initial = await release("0.8.0");
-  await Deno.rename(initial, `${kernel}/releases/0.8.0`);
-  await Deno.symlink("releases/0.8.0", `${kernel}/current`);
+  const initial = await release(baseline);
+  await Deno.rename(initial, `${kernel}/releases/${baseline}`);
+  await Deno.symlink(`releases/${baseline}`, `${kernel}/current`);
   for (const name of ["bin", "scripts"]) {
     await Deno.symlink(`current/${name}`, `${kernel}/${name}`);
   }
@@ -180,9 +188,7 @@ else echo '{"success":true,"result":{"build_id":"${version}+${commit}","runtime_
     temp,
     root,
     kernel,
-    archives,
-    pack,
-    checksum,
+    version,
     update: (action: string) =>
       run("bash", [`${kernel}/scripts/update.sh`, action], env),
     state: async () => JSON.parse(await read(`${kernel}/update/state.json`)),
@@ -204,7 +210,7 @@ Deno.test("numeric version ordering and migration phases", async () => {
   }
   const f = await fixture();
   try {
-    const directory = await f.pack("0.10.0", {
+    const directory = await f.version("0.10.0", {
       "0.8.0/010-old.sh": "exit 1",
       "0.9.0/020-second.sh": "exit 0",
       "0.9.0/010-first.sh": "exit 0",
@@ -219,71 +225,6 @@ Deno.test("numeric version ordering and migration phases", async () => {
     );
     assert(
       (await migrationScripts(directory, "0.8.0", "0.10.0", true)).length === 1,
-    );
-  } finally {
-    await f.cleanup();
-  }
-});
-
-Deno.test("release builder preserves links and excludes instance data", async () => {
-  const f = await fixture();
-  try {
-    const repository = `${f.temp}/repository`, output = `${f.temp}/published`;
-    await Deno.mkdir(repository);
-    await Deno.copyFile(
-      new URL("../../release-build.sh", import.meta.url),
-      `${repository}/release-build.sh`,
-    );
-    assert((await run("git", ["init", "--quiet", repository])).code === 0);
-    assert(
-      (await run("git", ["-C", repository, "add", "release-build.sh"])).code ===
-        0,
-    );
-    assert(
-      (await run("git", [
-        "-C",
-        repository,
-        "-c",
-        "user.name=Fixture",
-        "-c",
-        "user.email=fixture@invalid",
-        "-c",
-        "commit.gpgsign=false",
-        "commit",
-        "--quiet",
-        "-m",
-        "fixture",
-      ])).code === 0,
-    );
-    assert((await run("git", ["-C", repository, "tag", "0.8.0"])).code === 0);
-    const sha = (await run("git", ["-C", repository, "rev-parse", "HEAD"]))
-      .output.trim();
-    await Deno.writeTextFile(
-      `${f.kernel}/bin/kernel`,
-      `#!/bin/bash\necho '0.8.0+${sha}'\n`,
-    );
-    await Deno.writeTextFile(`${f.temp}/private`, "do not copy this data");
-    await Deno.symlink(`${f.temp}/private`, `${f.root}/scripts/link`);
-    const packed = await run("bash", [
-      `${repository}/release-build.sh`,
-      f.root,
-      output,
-    ]);
-    assert(packed.code === 0, packed.output);
-    const archive = `${output}/the8020-kernel-0.8.0-linux-${arch}.tar.gz`;
-    const listing = (await run("tar", ["-tvzf", archive])).output;
-    assert(
-      listing.includes("development-scripts/link ->"),
-      "publisher dereferenced a link",
-    );
-    assert(
-      !listing.includes("packages/keep") && !listing.includes("users/keep") &&
-        !listing.includes("database/keep"),
-    );
-    await Deno.writeTextFile(`${repository}/untracked-source`, "changed");
-    assert(
-      (await run("bash", [`${repository}/release-build.sh`, f.root, output]))
-        .code !== 0,
     );
   } finally {
     await f.cleanup();
@@ -310,10 +251,25 @@ Deno.test("update lock rejects simultaneous requests without touching the kernel
   }
 });
 
+Deno.test("bootstrapped 0.7.4 upgrades across the minor version", async () => {
+  const f = await fixture("0.7.4");
+  try {
+    await f.version("0.8.2");
+    for (const action of ["0.8.2", "--apply", "--finish"]) {
+      const result = await f.update(action);
+      assert(result.code === 0, result.output);
+    }
+    assert(await Deno.readLink(`${f.kernel}/current`) === "releases/0.8.2");
+    assert((await f.state()).phase === "complete");
+  } finally {
+    await f.cleanup();
+  }
+});
+
 Deno.test("skip releases, preserve instance state, switch one pointer, and finish", async () => {
   const f = await fixture();
   try {
-    await f.pack("0.10.0", {
+    await f.version("0.10.0", {
       "0.8.1/020-b.sh": "echo b >> trace",
       "0.8.1/010-a.sh": "echo a >> trace",
       "0.9.0/010-c.sh": "echo c >> trace",
@@ -368,7 +324,7 @@ Deno.test("skip releases, preserve instance state, switch one pointer, and finis
 Deno.test("failed migration resumes without repeating completed scripts", async () => {
   const f = await fixture();
   try {
-    await f.pack("0.8.2", {
+    await f.version("0.8.2", {
       "0.8.1/010-once.sh": "echo once >> trace",
       "0.8.2/010-repair.sh": "[[ -f allow ]] || exit 2; echo repaired >> trace",
     });
@@ -394,75 +350,44 @@ Deno.test("failed migration resumes without repeating completed scripts", async 
   }
 });
 
-Deno.test("checksum and archive errors cannot shut down the active kernel", async () => {
-  const f = await fixture();
-  try {
-    const directory = await f.pack("0.8.1");
-    const filename = `the8020-kernel-0.8.1-linux-${arch}.tar.gz`;
-    await Deno.writeTextFile(
-      `${f.archives}/${filename}.sha256`,
-      `${"f".repeat(64)}  ${filename}\n`,
-    );
-    assert((await f.update("0.8.1")).code !== 0);
-    await Deno.mkdir(`${directory}/packages`);
-    await Deno.writeTextFile(
-      `${directory}/packages/forbidden`,
-      "must not install",
-    );
-    assert(
-      (await run("tar", [
-        "-czf",
-        `${f.archives}/${filename}`,
-        "-C",
-        directory,
-        "release.json",
-        "bin",
-        "scripts",
-        "runtime",
-        "development-scripts",
-        "packages",
-      ])).code === 0,
-    );
-    await f.checksum("0.8.1");
-    const result = await f.update("0.8.1");
-    assert(
-      result.code !== 0 && result.output.includes("Unsafe release archive"),
-      result.output,
-    );
-    // GNU tar must refuse an archive that writes through an outside symlink.
-    const outside = `${f.temp}/outside`;
-    await Deno.mkdir(outside);
-    await Deno.writeTextFile(`${outside}/keep`, "unchanged");
-    const crafted = await run("python3", [
-      "-c",
-      `import io,sys,tarfile
-with tarfile.open(sys.argv[2], "w:gz") as archive:
-  for name in ["release.json", "bin", "scripts", "runtime", "development-scripts"]:
-    archive.add(sys.argv[1] + "/" + name, arcname=name)
-  link=tarfile.TarInfo("bin/outside")
-  link.type=tarfile.SYMTYPE
-  link.linkname=sys.argv[3]
-  archive.addfile(link)
-  file=tarfile.TarInfo("bin/outside/keep")
-  file.size=len(b"overwritten")
-  archive.addfile(file, io.BytesIO(b"overwritten"))
-`,
-      directory,
-      `${f.archives}/${filename}`,
-      outside,
-    ]);
-    assert(crafted.code === 0, crafted.output);
-    await f.checksum("0.8.1");
-    assert((await f.update("0.8.1")).code !== 0);
-    assert(await read(`${outside}/keep`) === "unchanged");
-    assert(await Deno.readLink(`${f.kernel}/current`) === "releases/0.8.0");
-    let stopped = false;
+Deno.test("fetch, preparation, and validation errors preserve the active kernel", async () => {
+  for (const failure of ["git", "build", "binary"]) {
+    const f = await fixture();
     try {
-      await read(`${f.root}/stops`);
-      stopped = true;
-    } catch { /* not stopped */ }
-    assert(!stopped);
-  } finally {
-    await f.cleanup();
+      const directory = await f.version("0.8.3");
+      if (failure === "binary") {
+        await Deno.writeTextFile(
+          `${directory}/bin/kernel`,
+          "#!/bin/bash\necho invalid\n",
+        );
+      } else await Deno.writeTextFile(`${f.temp}/fail-${failure}`, "");
+      const result = await f.update("0.8.3");
+      assert(result.code !== 0, result.output);
+      let staging = false;
+      try {
+        await Deno.stat(`${f.kernel}/update/download`);
+        staging = true;
+      } catch { /* Removed. */ }
+      assert(!staging, "failed preparation retained temporary data");
+      assert(await Deno.readLink(`${f.kernel}/current`) === "releases/0.8.0");
+      let stopped = false;
+      try {
+        await read(`${f.root}/stops`);
+        stopped = true;
+      } catch { /* Not stopped. */ }
+      assert(!stopped);
+      for (
+        const file of [
+          "kernel.toml",
+          "packages/keep",
+          "users/keep",
+          "database/keep",
+        ]
+      ) {
+        assert(await read(`${f.root}/${file}`) === "keep");
+      }
+    } finally {
+      await f.cleanup();
+    }
   }
 });

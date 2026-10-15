@@ -575,7 +575,7 @@ below.
 - Root-owned paths include `.vscode/`, `go.mod`, `go.sum`, `.go-version`,
   `.gitignore`, `install.sh`, `run.sh`, `release-tag.sh`, release resolver
   tests, `Dockerfile`, `.dockerignore`, `docker-entrypoint_test.sh`,
-  `install-development-assets.sh`, `release-build.sh`, and root-level project
+  `install-development-assets.sh`, and root-level project
   documentation.
 
 # 80|20
@@ -684,10 +684,13 @@ below.
   installer refuses to overwrite their active release. Clean exact tags stamp
   `kernel --version` and `kernel.status.build_id` as `<version>+<commit>`;
   source builds identify as `development`.
-- `release-build.sh <installed-instance> <output-directory>` packages the clean
-  tagged platform, preserving internal links and excluding instance data and
-  packages. Publish its architecture-specific archive and `.sha256` file to
-  the matching GitHub release before offering that version to the updater.
+- The installed updater fetches an exact kernel Git tag and runs its ordinary
+  installer in a separate initialized staging instance. No bootstrap packages
+  are installed there and no application package changes occur. Build and smoke
+  checks complete before the old kernel is stopped. Limit Go to two processors,
+  512 MiB runtime memory, and a 30-minute preparation deadline. The updater needs
+  6 GiB of free temporary disk space; successful completion removes its build
+  source, toolchain, and caches. No prebuilt release archive or CI is required.
 - `run.sh` may be invoked from any directory. It treats that current directory
   as the instance root and runs `install.sh --skip-verification`, which
   refreshes all three binaries, initializes the default layout when absent, and

@@ -386,7 +386,7 @@ if [[ "$RUN_VERIFICATION" == true ]]; then
   "$DENO_CMD" fmt --check "$SOURCE_ROOT/defaults/scripts/activate.ts"
   "$DENO_CMD" lint "$SOURCE_ROOT/defaults/scripts/activate.ts"
   "$DENO_CMD" check "$SOURCE_ROOT/defaults/scripts/activate.ts"
-  bash -n "$SOURCE_ROOT/defaults/kernel-scripts/update.sh" "$SOURCE_ROOT/defaults/kernel-scripts/launch.sh" "$SOURCE_ROOT/release-build.sh"
+  bash -n "$SOURCE_ROOT/defaults/kernel-scripts/update.sh" "$SOURCE_ROOT/defaults/kernel-scripts/launch.sh"
   "$DENO_CMD" fmt --check "$SOURCE_ROOT/defaults/kernel-scripts"
   "$DENO_CMD" lint --no-config "$SOURCE_ROOT/defaults/kernel-scripts"
   "$DENO_CMD" check --no-config "$SOURCE_ROOT/defaults/kernel-scripts/update.ts"

@@ -10,18 +10,23 @@ Parent DOX: [kernel defaults](../AGENTS.md).
   its kernel child and keeps the enclosing container alive during updates.
 - The native `kernel.update` command only detaches the installed updater and
   returns its PID and private `node/kernel/update.log` path.
-- The root `release-build.sh` packages an installed tagged kernel. Docker owns
-  initial seeding; these scripts never install the bootstrap package list.
+- Docker owns initial seeding; these scripts never install the bootstrap
+  package list.
 
 # Local Contracts
 
 - Initial scope is explicitly configured Linux rootless instances started by
-  `launch.sh`, baseline `0.8.0`. Exact numeric same-major upgrades only; equal
+  `launch.sh`, baseline `0.7.4`. Exact numeric same-major upgrades only; equal
   versions do nothing. Major upgrades, downgrades, source builds, and
   coordinated cluster migrations require separate operator handling.
-- Download the selected GitHub release archive and SHA-256 file before shutdown.
-  Archives contain only `release.json`, `bin/`, `scripts/`, `runtime/`, and
-  `development-scripts/`; no database, users, keys, or packages.
+- Fetch the selected exact Git tag and prepare it on the instance's native
+  architecture with its ordinary installer in a separate initialized staging
+  instance. Preinitialization suppresses bootstrap packages. Move only bin,
+  host scripts, runtime definitions/images, and development helpers into the
+  release; never move staging identities, keys, users, database, or packages.
+- Preparation uses at most two Go processors, a 512 MiB Go memory target, a
+  30-minute deadline and at least 6 GiB free temporary disk space. The old kernel
+  stays running until compilation and the candidate runtime smoke succeed.
 - `node/kernel/current` atomically selects `releases/<version>`. Existing bin,
   runtime definition/image, and helper paths link through it. Retain current and
   one previous platform payload after success; no application source snapshots.
@@ -42,9 +47,8 @@ Parent DOX: [kernel defaults](../AGENTS.md).
 - Keep orchestration in these scripts and use existing shutdown/status commands.
   Reuse pinned Deno and host tools; add no update daemon or package policy to
   Go.
-- Publish the architecture-specific archive and `.sha256` alongside each exact
-  release tag. `release-build.sh` requires clean tagged source and a matching
-  installed binary; build using the ordinary installer first.
+- Use the selected tag's existing installer; do not add an updater build system
+  or require CI, prebuilt archives, or GitHub credentials for public releases.
 
 # Verification
 
@@ -62,6 +66,10 @@ Parent DOX: [kernel defaults](../AGENTS.md).
   verifies real gVisor, cbus, migration, kernel replacement, and
   launcher/private-data preservation. Bound its CPU, memory, and runtime using
   the workspace's native-test guidance.
+- The native check compiles the actual released `0.7.4` kernel, stages its
+  ordinary runtime sources, and prepares the target through the real installer.
+  Only the GitHub source transport is redirected to a local tagged repository.
+  It verifies unchanged packages, configuration, private work, and launcher.
 
 # Child DOX Index
 

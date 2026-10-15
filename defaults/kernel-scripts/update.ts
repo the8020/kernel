@@ -56,14 +56,17 @@ async function command(
   program: string,
   args: string[],
   cwd?: string,
+  env?: Record<string, string>,
+  timeout = 300_000,
 ): Promise<string> {
   const child = new Deno.Command(program, {
     args,
     cwd,
+    env,
     stdin: "null",
     stdout: "piped",
     stderr: "inherit",
-    signal: AbortSignal.any([interrupted.signal, AbortSignal.timeout(300_000)]),
+    signal: AbortSignal.any([interrupted.signal, AbortSignal.timeout(timeout)]),
   }).spawn();
   const decoder = new TextDecoder(), output: string[] = [];
   let size = 0;
@@ -238,9 +241,9 @@ async function prepare(root: string, target: string) {
   if (compareVersions(target, current.version) < 0) {
     throw new Error("Kernel downgrades are unsupported");
   }
-  if (compareVersions(current.version, "0.8.0") < 0) {
+  if (compareVersions(current.version, "0.7.4") < 0) {
     throw new Error(
-      "This instance predates the supported update baseline (0.8.0)",
+      "This instance predates the supported update baseline (0.7.4)",
     );
   }
   const pending = await exists(stateFile)
@@ -294,81 +297,80 @@ async function prepare(root: string, target: string) {
     if (!(error instanceof Deno.errors.NotFound)) throw error;
   });
   await Deno.mkdir(stage, { recursive: true, mode: 0o700 });
-  const filename = `the8020-kernel-${target}-linux-${architecture()}.tar.gz`;
-  const url =
-    `https://github.com/the8020/kernel/releases/download/${target}/${filename}`;
-  console.log(`update: downloading ${target}`);
-  for (const suffix of [".sha256", ""]) {
-    await command("curl", [
-      "--fail",
-      "--location",
-      "--silent",
-      "--show-error",
-      "--connect-timeout",
-      "10",
-      "--max-time",
-      "300",
-      "--max-filesize",
-      suffix ? "256" : "1073741824",
-      "--retry",
-      "2",
-      "--output",
-      `${stage}/${filename}${suffix}`,
-      url + suffix,
-    ]);
-  }
-  const checksum = await Deno.readTextFile(`${stage}/${filename}.sha256`);
-  if (checksum.length > 256) throw new Error("Oversized release checksum file");
-  if (
-    !new RegExp(`^[a-f0-9]{64}  ${filename.replaceAll(".", "\\.")}\\n?$`).test(
-      checksum,
-    )
-  ) throw new Error("Invalid release checksum file");
-  await command(
-    "sha256sum",
-    ["--check", "--status", `${filename}.sha256`],
-    stage,
-  );
-  const entries = (await command("tar", ["-tzf", `${stage}/${filename}`]))
-    .split("\n");
-  for (const raw of entries) {
-    const name = raw.replace(/^\.\//, "");
-    if (!name || name === ".") continue;
-    if (
-      name.startsWith("/") || name.split("/").includes("..") ||
-      !/^(release\.json$|(bin|scripts|runtime|development-scripts)(\/|$))/.test(
-        name,
-      )
-    ) {
-      throw new Error(`Unsafe release archive entry: ${name}`);
-    }
-  }
-  const listing = await command("tar", [
-    "--numeric-owner",
-    "-tvzf",
-    `${stage}/${filename}`,
-  ]);
-  let size = 0;
-  for (const line of listing.split("\n")) {
-    const match = line.match(/^([dlh-])\S*\s+\S+\s+(\d+)\s/);
-    if (!match) throw new Error("Unsupported release archive entry");
-    size += Number(match[2]);
-  }
   const free = Number(
     (await command("df", ["--output=avail", "-B1", kernel])).split("\n").at(-1),
   );
-  if (!Number.isFinite(free) || free < size + 64 * 1024 * 1024) {
-    throw new Error("Insufficient disk space for the staged release");
+  if (!Number.isFinite(free) || free < 6 * 1024 ** 3) {
+    throw new Error(
+      "Preparing a kernel update requires 6 GiB of free temporary disk space",
+    );
   }
-  const unpack = `${stage}/unpacked`;
-  await Deno.mkdir(unpack);
-  await command("tar", [
-    "-xzf",
-    `${stage}/${filename}`,
-    "--delay-directory-restore",
-    "-C",
-    unpack,
+  const source = `${stage}/source`, instance = `${stage}/instance`;
+  console.log(`update: fetching kernel ${target}`);
+  await command("git", [
+    "clone",
+    "--depth",
+    "1",
+    "--single-branch",
+    "--branch",
+    target,
+    "https://github.com/the8020/kernel.git",
+    source,
   ]);
+  const commit = await command("git", ["rev-parse", "HEAD"], source);
+  if (
+    !/^[a-f0-9]{40}$/.test(commit) ||
+    await command(
+        "git",
+        ["rev-parse", `refs/tags/${target}^{commit}`],
+        source,
+      ) !== commit
+  ) throw new Error("The selected version is not an exact kernel tag");
+  await Deno.mkdir(instance);
+  await command(`${kernel}/bin/kernel`, [
+    "--root",
+    instance,
+    "--init-defaults",
+    "--init-only",
+  ]);
+  const runtime = `${instance}/node/kernel/runtime`;
+  console.log(
+    `update: preparing kernel ${target}; the current kernel stays running`,
+  );
+  await command(
+    "timeout",
+    [
+      "--kill-after=10s",
+      "1800",
+      "bash",
+      `${source}/install.sh`,
+      `--instance-root=${instance}`,
+      "--skip-runtime-host",
+      "--skip-verification",
+    ],
+    source,
+    {
+      GOMAXPROCS: "2",
+      GOMEMLIMIT: "512MiB",
+      GOFLAGS: "-p=1",
+      THE8020_RELEASE_VERSION: target.split(".").slice(0, 2).join("."),
+    },
+    1_810_000,
+  );
+  const unpack = `${stage}/unpacked`;
+  await Deno.mkdir(`${unpack}/runtime`, { recursive: true });
+  for (const name of ["bin", "scripts"]) {
+    await Deno.rename(`${instance}/node/kernel/${name}`, `${unpack}/${name}`);
+  }
+  for (const name of ["definitions", "images"]) {
+    await Deno.rename(`${runtime}/${name}`, `${unpack}/runtime/${name}`);
+  }
+  await Deno.rename(`${instance}/scripts`, `${unpack}/development-scripts`);
+  await save(`${unpack}/release.json`, {
+    version: target,
+    commit,
+    architecture: architecture(),
+  });
   await validateRelease(unpack, target);
   await migrationScripts(unpack, current.version, target, false);
   await migrationScripts(unpack, current.version, target, true);
@@ -391,6 +393,7 @@ async function prepare(root: string, target: string) {
     if (!(error instanceof Deno.errors.NotFound)) throw error;
   });
   await Deno.rename(unpack, destination);
+  await Deno.remove(stage, { recursive: true });
   await save(
     stateFile,
     {
@@ -550,6 +553,13 @@ if (import.meta.main) {
       await finish(root, await json<Update>(`${kernel}/update/state.json`));
     } else await prepare(root, action);
   } catch (error) {
+    try {
+      await Deno.remove(`${kernel}/update/download`, { recursive: true });
+    } catch (cleanup) {
+      if (!(cleanup instanceof Deno.errors.NotFound)) {
+        console.error(`Could not clean update preparation: ${cleanup}`);
+      }
+    }
     const path = `${kernel}/update/state.json`;
     if (await exists(path)) {
       const state = await json<Update>(path);

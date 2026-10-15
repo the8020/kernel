@@ -1,38 +1,46 @@
-// Opt-in single-node test: use a fresh numbered /root/8020/test<N> directory.
+// Opt-in single-node check: use a fresh numbered /root/8020/test<N> directory.
 const testRoot = Deno.env.get("THE8020_NATIVE_UPDATE_ROOT");
 const source = new URL("../../", import.meta.url).pathname;
-const commit = "0".repeat(40);
+const baselineCommit = "0".repeat(40);
 
 Deno.test({
   name:
-    "native cbus update keeps its launcher alive and boots the selected kernel",
+    "0.7.4 prepares tagged source with the ordinary installer and updates in place",
   ignore: !testRoot,
   async fn() {
     const root = `${testRoot}/instance`, kernel = `${root}/node/kernel`;
-    const tools = `${testRoot}/tools`, archives = `${testRoot}/archives`;
+    const baseline = `${kernel}/releases/0.7.4`, tools = `${testRoot}/tools`;
+    const released = `${testRoot}/released-source`,
+      oldSource = `${testRoot}/old-source`;
+    const go = Deno.env.get("THE8020_BUILD_GO") ??
+      `${source}/.development/toolchains/go/bin/go`;
     const env: Record<string, string> = {
       ...Deno.env.toObject(),
       GOMAXPROCS: "2",
-      GOMEMLIMIT: "256MiB",
+      GOMEMLIMIT: "512MiB",
+      GOFLAGS: "-p=1",
       GOWORK: "off",
       GOCACHE: `${source}/.development/cache/go-build`,
       GOMODCACHE: `${source}/.development/cache/go-mod`,
-      PATH: `${tools}:${Deno.env.get("PATH")}`,
+      PATH: `${tools}:${go.slice(0, go.lastIndexOf("/"))}:${
+        Deno.env.get("PATH")
+      }`,
       THE8020_INSTANCE_ROOT: root,
       THE8020_SANDBOX_RUNTIME_MODE: "rootless",
-      FIXTURE_ARCHIVES: archives,
+      FIXTURE_SOURCE: released,
+      FIXTURE_CACHE: `${source}/.development/cache`,
     };
     async function run(program: string, args: string[], cwd = source) {
       const result = await new Deno.Command(program, {
         args,
-        env,
         cwd,
+        env,
         stdout: "piped",
         stderr: "piped",
       }).output();
       if (!result.success) {
         throw new Error(
-          `${program}: ${new TextDecoder().decode(result.stderr).slice(-4000)}`,
+          `${program}: ${new TextDecoder().decode(result.stderr).slice(-6000)}`,
         );
       }
       return new TextDecoder().decode(result.stdout).trim();
@@ -40,149 +48,101 @@ Deno.test({
     const assert = (value: unknown, message: string) => {
       if (!value) throw new Error(message);
     };
-    await Deno.mkdir(testRoot!); // Refuse a reused instance.
+    await Deno.mkdir(testRoot!);
     for (
       const directory of [
         tools,
-        archives,
-        `${kernel}/releases`,
+        released,
+        oldSource,
+        `${baseline}/bin`,
+        `${baseline}/scripts`,
+        `${baseline}/runtime/images/rootless`,
+        `${baseline}/runtime/images/development`,
+        `${baseline}/runtime/definitions`,
+        `${baseline}/development-scripts`,
         `${kernel}/runtime`,
-        `${root}/packages`,
-        `${root}/users`,
-        `${root}/database`,
       ]
-    ) await Deno.mkdir(directory, { recursive: true });
-    const go = `${source}/.development/toolchains/go/bin/go`;
-    await run(go, ["run", "./kernel/cbus/gen"]);
-    for (const version of ["0.8.0", "0.8.2"]) {
-      const release = `${kernel}/releases/${version}`;
-      for (
-        const directory of [
-          "bin",
-          "scripts/update",
-          "runtime/definitions",
-          "runtime/images/rootless",
-          "runtime/images/development",
-          "development-scripts",
-        ]
-      ) await Deno.mkdir(`${release}/${directory}`, { recursive: true });
+    ) {
+      await Deno.mkdir(directory, { recursive: true });
+    }
+    await run("bash", [
+      "-o",
+      "pipefail",
+      "-c",
+      'git -C "$1" archive 0.7.4 | tar -xf - -C "$2"',
+      "copy-old",
+      source,
+      oldSource,
+    ]);
+    await run(go, ["run", "./kernel/cbus/gen"], oldSource);
+    for (const binary of ["kernel", "admin"]) {
       await run(go, [
         "build",
+        "-mod=mod",
         "-p",
         "1",
         "-ldflags",
-        `-s -X main.buildID=${version}+${commit}`,
+        `-s -X main.buildID=0.7.4+${baselineCommit}`,
         "-o",
-        `${release}/bin/kernel`,
-        "./cmd/kernel",
-      ], `${source}/.development/generated`);
-      if (version === "0.8.0") {
-        await run(go, [
-          "build",
-          "-p",
-          "1",
-          "-o",
-          `${release}/bin/admin`,
-          "./cmd/admin",
-        ], `${source}/.development/generated`);
-      } else {await Deno.copyFile(
-          `${kernel}/releases/0.8.0/bin/admin`,
-          `${release}/bin/admin`,
-        );}
-      await Deno.copyFile(
-        `${source}/.development/bin/logd`,
-        `${release}/bin/logd`,
-      );
-      await run("cp", [
-        "-a",
-        `${source}/.development/runtime-bin/.`,
-        `${release}/bin/`,
-      ]);
-      for (const name of ["update.sh", "update.ts", "launch.sh"]) {
-        await Deno.copyFile(
-          `${source}/defaults/kernel-scripts/${name}`,
-          `${release}/scripts/${name}`,
-        );
-      }
-      await run("bash", [
-        "-c",
-        'tar --exclude=node_modules -cf - . | tar -xf - -C "$1"',
-        "copy-definitions",
-        `${release}/runtime/definitions`,
-      ], `${source}/defaults/config/runtime`);
-      // Copy prepared fixtures across filesystems without following their links.
-      await run("cp", [
-        "-a",
-        "--reflink=auto",
-        `${source}/.development/runtime/service-image/.`,
-        `${release}/runtime/images/rootless/`,
-      ]);
-      await run("cp", [
-        "-a",
-        "--reflink=auto",
-        `${source}/.development/runtime/development/.`,
-        `${release}/runtime/images/development/`,
-      ]);
-      try {
-        await Deno.remove(`${release}/runtime/images/rootless/smoke.json`);
-      } catch (error) {
-        if (!(error instanceof Deno.errors.NotFound)) throw error;
-      }
-      await Deno.writeTextFile(
-        `${release}/release.json`,
-        JSON.stringify({
-          version,
-          commit,
-          architecture: Deno.build.arch === "x86_64" ? "amd64" : "arm64",
-        }),
-      );
+        `${baseline}/bin/${binary}`,
+        `./cmd/${binary}`,
+      ], `${oldSource}/.development/generated`);
     }
-    const target = `${kernel}/releases/0.8.2`;
-    for (
-      const [name, text] of Object.entries({
-        "0.8.1/010-first.sh": "echo first >> migrations",
-        "0.8.2/010-second.sh": "echo second >> migrations",
-      })
-    ) {
-      const path = `${target}/scripts/update/${name}`;
-      await Deno.mkdir(path.slice(0, path.lastIndexOf("/")), {
-        recursive: true,
-      });
-      await Deno.writeTextFile(path, text);
-    }
-    const filename = `the8020-kernel-0.8.2-linux-${
-      Deno.build.arch === "x86_64" ? "amd64" : "arm64"
-    }.tar.gz`;
-    await run("tar", [
-      "-czf",
-      `${archives}/${filename}`,
-      "-C",
-      target,
-      "release.json",
-      "bin",
-      "scripts",
-      "runtime",
-      "development-scripts",
+    await Deno.copyFile(
+      `${source}/.development/bin/logd`,
+      `${baseline}/bin/logd`,
+    );
+    await run("cp", [
+      "-a",
+      `${source}/.development/runtime-bin/.`,
+      `${baseline}/bin/`,
     ]);
-    const digest =
-      (await run("sha256sum", [`${archives}/${filename}`])).split(" ")[0];
+    await run("bash", [
+      "-o",
+      "pipefail",
+      "-c",
+      'tar --exclude=node_modules -cf - . | tar -xf - -C "$1"',
+      "copy-runtime",
+      `${baseline}/runtime/definitions`,
+    ], `${oldSource}/defaults/config/runtime`);
+    for (
+      const [prepared, name] of [["service-image", "rootless"], [
+        "development",
+        "development",
+      ]]
+    ) {
+      await run("cp", [
+        "-a",
+        "--reflink=auto",
+        `${source}/.development/runtime/${prepared}/.`,
+        `${baseline}/runtime/images/${name}/`,
+      ]);
+    }
+    await run("bash", [
+      `${oldSource}/defaults/config/runtime/stage-service-runtime.sh`,
+      oldSource,
+      `${baseline}/runtime/images/rootless/rootfs/opt/runtime`,
+    ]);
+    try {
+      await Deno.remove(`${baseline}/runtime/images/rootless/smoke.json`);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+    for (const name of ["update.sh", "update.ts", "launch.sh"]) {
+      await Deno.copyFile(
+        `${source}/defaults/kernel-scripts/${name}`,
+        `${baseline}/scripts/${name}`,
+      );
+    }
     await Deno.writeTextFile(
-      `${archives}/${filename}.sha256`,
-      `${digest}  ${filename}\n`,
+      `${baseline}/release.json`,
+      JSON.stringify({
+        version: "0.7.4",
+        commit: baselineCommit,
+        architecture: Deno.build.arch === "x86_64" ? "amd64" : "arm64",
+      }),
     );
-    await Deno.remove(target, { recursive: true });
-    await Deno.writeTextFile(
-      `${tools}/curl`,
-      `#!/bin/bash
-set -eu
-while (( $# )); do
-  if [[ "$1" == --output ]]; then destination=$2; shift 2; else url=$1; shift; fi
-done
-cp "$FIXTURE_ARCHIVES/\${url##*/}" "$destination"
-`,
-      { mode: 0o755 },
-    );
-    await Deno.symlink("releases/0.8.0", `${kernel}/current`);
+    await Deno.symlink("releases/0.7.4", `${kernel}/current`);
     for (const name of ["bin", "scripts"]) {
       await Deno.symlink(`current/${name}`, `${kernel}/${name}`);
     }
@@ -203,6 +163,51 @@ cp "$FIXTURE_ARCHIVES/\${url##*/}" "$destination"
       "--init-only",
     ]);
     await Deno.writeTextFile(`${root}/users/keep`, "private work");
+    await Deno.mkdir(`${root}/packages/keep`);
+    await Deno.writeTextFile(`${root}/packages/keep/value`, "unchanged");
+    const config = await Deno.readTextFile(`${root}/kernel.toml`);
+    // Copy ordinary source into a local tagged repository; only its transport is replaced.
+    await run("bash", [
+      "-o",
+      "pipefail",
+      "-c",
+      'tar --exclude=.git --exclude=.development --exclude=node_modules --exclude=.github -cf - . | tar -xf - -C "$1"',
+      "copy-source",
+      released,
+    ]);
+    await run("/usr/bin/git", ["init", "--quiet"], released);
+    await run("/usr/bin/git", ["add", "."], released);
+    await run("/usr/bin/git", [
+      "-c",
+      "user.name=Fixture",
+      "-c",
+      "user.email=fixture@invalid",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "--quiet",
+      "-m",
+      "source",
+    ], released);
+    await run("/usr/bin/git", ["tag", "0.8.3"], released);
+    const targetCommit = await run(
+      "/usr/bin/git",
+      ["rev-parse", "HEAD"],
+      released,
+    );
+    await Deno.writeTextFile(
+      `${tools}/git`,
+      `#!/bin/bash
+set -eu
+if [[ "$1" == clone ]]; then
+  destination="${"${!#}"}"
+  /usr/bin/git clone --quiet --branch 0.8.3 "$FIXTURE_SOURCE" "$destination"
+  mkdir -p "$destination/.development"
+  ln -s "$FIXTURE_CACHE" "$destination/.development/cache"
+else exec /usr/bin/git "$@"; fi
+`,
+      { mode: 0o755 },
+    );
     const port = () => {
       const socket = Deno.listen({ hostname: "127.0.0.1", port: 0 });
       const port = (socket.addr as Deno.NetAddr).port;
@@ -231,7 +236,7 @@ cp "$FIXTURE_ARCHIVES/\${url##*/}" "$destination"
         },
       }),
     );
-    async function observe(version: string) {
+    async function observe(version: string, commit: string) {
       const deadline = Date.now() + 60000;
       while (Date.now() < deadline) {
         try {
@@ -247,45 +252,26 @@ cp "$FIXTURE_ARCHIVES/\${url##*/}" "$destination"
             response.result.build_id === `${version}+${commit}` &&
             response.result.runtime_ready === true
           ) return response.result;
-        } catch {
-          /* Control plane is temporarily unavailable during restart. */
-        }
+        } catch { /* Control plane changes during restart. */ }
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
-      throw new Error(
-        `Kernel ${version} did not become ready: ${
-          new TextDecoder().decode(
-            await Deno.readFile(`${kernel}/update.log`).catch(() =>
-              new Uint8Array()
-            ),
-          )
-        }`,
-      );
+      throw new Error(`Kernel ${version} did not become ready`);
     }
     try {
-      const initial = await observe("0.8.0");
-      const result = JSON.parse(
-        await run(`${kernel}/bin/admin`, [
-          "--root",
-          root,
-          "--json",
-          "kernel.update",
-          "0.8.2",
-        ]),
-      );
-      assert(
-        result.success === true && result.result.requested === true,
-        "cbus did not start updater",
-      );
-      const selected = await observe("0.8.2");
-      assert(initial.pid !== selected.pid, "kernel process was not replaced");
+      const initial = await observe("0.7.4", baselineCommit);
+      const result = await run("bash", [
+        `${kernel}/scripts/update.sh`,
+        "0.8.3",
+      ]);
+      console.log(result);
+      const selected = await observe("0.8.3", targetCommit);
+      assert(initial.pid !== selected.pid, "kernel was not replaced");
       assert(
         Number(await Deno.readTextFile(`${kernel}/run/launcher.pid`)) ===
           launcher.pid,
-        "launcher was replaced",
+        "launcher changed",
       );
-      const deadline = Date.now() + 5000;
-      while (Date.now() < deadline) {
+      for (let i = 0; i < 100; i++) {
         const state = JSON.parse(
           await Deno.readTextFile(`${kernel}/update/state.json`),
         );
@@ -295,23 +281,27 @@ cp "$FIXTURE_ARCHIVES/\${url##*/}" "$destination"
       assert(
         JSON.parse(await Deno.readTextFile(`${kernel}/update/state.json`))
           .phase === "complete",
-        "update was not completed",
-      );
-      assert(
-        await Deno.readTextFile(`${root}/migrations`) === "first\nsecond\n",
-        "migration order was incorrect",
+        "update incomplete",
       );
       assert(
         await Deno.readTextFile(`${root}/users/keep`) === "private work",
-        "private work changed",
+        "private data changed",
+      );
+      assert(
+        await Deno.readTextFile(`${root}/packages/keep/value`) === "unchanged",
+        "packages changed",
+      );
+      assert(
+        await Deno.readTextFile(`${root}/kernel.toml`) === config,
+        "configuration changed",
       );
       console.log(
-        "native update passed: selected kernel, ordered migrations, retained launcher and private work",
+        "native source update passed: real 0.7.4, ordinary installer, retained launcher, packages, configuration, and private work",
       );
     } finally {
       try {
         launcher.kill("SIGTERM");
-      } catch { /* Already exited. */ }
+      } catch { /* Already stopped. */ }
       await launcher.status;
       await Promise.all([out, err]);
       for (const chunk of errors) await Deno.stderr.write(chunk);
