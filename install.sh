@@ -51,6 +51,15 @@ if [[ -L "$INSTANCE_ROOT/node/kernel/current" ]]; then
 fi
 cd "$SOURCE_ROOT"
 
+if [[ $(uname -s) == Linux ]] && ! command -v bzip2 >/dev/null 2>&1; then
+  if [[ $EUID != 0 ]] || ! command -v apt-get >/dev/null 2>&1; then
+    echo "bzip2 is required to unpack the portable gVisor runtime; install it and retry" >&2
+    exit 1
+  fi
+  apt-get update
+  apt-get install --yes --no-install-recommends bzip2
+fi
+
 DEVELOPMENT_DIR="$SOURCE_ROOT/.development"
 TOOLCHAIN_DIR="$DEVELOPMENT_DIR/toolchains/go"
 TEMP_DIR="$DEVELOPMENT_DIR/tmp"
@@ -172,7 +181,7 @@ for binary in kernel admin logd; do
   mv -f -- "$NODE_KERNEL/bin/$binary.new" "$NODE_KERNEL/bin/$binary"
 done
 mkdir -p "$NODE_KERNEL/scripts/update"
-for script in update.sh update.ts launch.sh; do
+for script in update.sh update.ts launch.sh refresh-development-scripts.sh; do
   install -m 0555 "$SOURCE_ROOT/defaults/kernel-scripts/$script" "$NODE_KERNEL/scripts/$script"
 done
 cp -a "$SOURCE_ROOT/defaults/kernel-scripts/update/." "$NODE_KERNEL/scripts/update/"

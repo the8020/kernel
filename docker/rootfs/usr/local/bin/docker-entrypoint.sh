@@ -2,18 +2,22 @@
 set -euo pipefail
 
 readonly INSTANCE_ROOT=${THE8020_INSTANCE_ROOT:-/8020}
-readonly KERNEL=/usr/local/bin/kernel
-readonly ADMIN=/usr/local/bin/admin
-readonly LOGD=/usr/local/bin/logd
-readonly RELEASE=/usr/local/share/the8020/release
-readonly RUNTIME_BIN=/usr/local/share/the8020/runtime-bin
-readonly RUNTIME_STATE=/usr/local/share/the8020/runtime-state
+readonly PREFIX=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+readonly KERNEL="$PREFIX/bin/kernel"
+readonly ADMIN="$PREFIX/bin/admin"
+readonly LOGD="$PREFIX/bin/logd"
+readonly RELEASE="$PREFIX/share/the8020/release"
+readonly RUNTIME_BIN="$PREFIX/share/the8020/runtime-bin"
+readonly RUNTIME_STATE="$PREFIX/share/the8020/runtime-state"
 readonly RUNTIME_ROOT="$INSTANCE_ROOT/node/kernel/runtime"
 readonly DENO="$INSTANCE_ROOT/node/kernel/runtime/images/rootless/rootfs/usr/bin/deno"
 readonly BOOTSTRAP_DONE="$INSTANCE_ROOT/node/docker/initial-user.done"
 readonly BOOTSTRAP_PENDING="$INSTANCE_ROOT/node/docker/initial-user.pending"
 
-if (( $# > 0 )); then
+adopt=false
+if [[ $# == 1 && "$1" == --adopt ]]; then
+  adopt=true
+elif (( $# > 0 )); then
   if (( $# != 1 )) || [[ "$1" != "serve" ]]; then
     exec "$@"
   fi
@@ -68,8 +72,8 @@ if [[ ! -L "$INSTANCE_ROOT/node/kernel/current" ]]; then
     rm -rf -- "$RUNTIME_ROOT/$name"
     ln -s "../current/runtime/$name" "$RUNTIME_ROOT/$name"
   done
-  rm -rf -- "$INSTANCE_ROOT/scripts"
-  ln -s "node/kernel/current/development-scripts" "$INSTANCE_ROOT/scripts"
+  bash "$kernel_root/releases/$version/scripts/refresh-development-scripts.sh" \
+    "$INSTANCE_ROOT" "$kernel_root/releases/$version/development-scripts"
   ln -s "releases/$version" "$kernel_root/current"
 fi
 # A retained smoke record may describe a different image's engine.
@@ -81,6 +85,10 @@ initial_password=${THE8020_PASSWORD:-admin}
 # Do not pass initial-user inputs to the kernel or any sandbox process. They are
 # consulted only by this entrypoint while completing the first boot.
 unset THE8020_USERNAME THE8020_PASSWORD || true
+
+if [[ "$adopt" == true ]]; then
+  exec bash "$INSTANCE_ROOT/node/kernel/scripts/launch.sh" "$INSTANCE_ROOT"
+fi
 
 kernel_pid=""
 stop_kernel() {

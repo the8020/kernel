@@ -21,8 +21,10 @@ Parent DOX: [host kernel scripts](../AGENTS.md).
   PATH starts with the instance bin directory. Offline scripts use existing host
   tools and must not depend on an intermediate running kernel.
 - Published scripts are immutable and remain in every later same-major release.
-  Versions needing no migration need no directory. Scripts must safely repeat
-  after interruption; completion is recorded only after successful exit.
+  Versions needing no migration need no directory. The `0.8.7` offline
+  migration refreshes development helpers into a real instance `scripts/`
+  directory, including already-repaired instances, without exposing node storage.
+  Scripts must safely repeat after interruption; completion is recorded only after successful exit.
 - Each script has a five-minute timeout and five-second termination grace. A
   failure halts that phase and retains completed steps for an explicit retry.
 - Data-changing scripts back up the state they change. Package activation uses

@@ -48,9 +48,11 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 - Materialized images, build caches, downloads, smoke records, and temporary
   construction output belong under `node/kernel/runtime/` or source
   `.development/`, never in this tree.
-- Managed kernel releases switch their platform assets and development helpers
-  together through `node/kernel/current`; container images seed this once and
-  preserve the installed release on subsequent starts.
+- Managed kernel releases select private platform assets through
+  `node/kernel/current`. Refresh development helpers into a real instance
+  `scripts/` directory before startup; never symlink sandbox-visible helpers
+  into protected `node/` storage. Container images seed once and preserve the
+  installed release on subsequent starts.
 
 # Work Guidance
 

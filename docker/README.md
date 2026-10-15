@@ -32,38 +32,49 @@ this integration must also publish a compatible `the8020/auth` package tag.
 
 ## Update the kernel in the same container
 
-For an existing `0.7.4` container, run this one-time bootstrap on the Docker
-host. Replace `the8020` with its container name or ID:
+Run this **inside the existing container as root**, including on `0.7.4`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/the8020/kernel/0.8.3/docker/update.sh -o /tmp/the8020-update.sh
-bash /tmp/the8020-update.sh the8020 0.8.3
-docker exec the8020 tail -f /8020/node/kernel/update.log
+curl -fsSL https://raw.githubusercontent.com/the8020/kernel/0.8.6/docker/update.sh -o /tmp/the8020-update.sh
+bash /tmp/the8020-update.sh 0.8.6
+tail -F /8020/node/kernel/update.log
 ```
 
-The bootstrap installs the updater and restarts the same container once, then
-starts the update in the background. It keeps the existing volume and packages.
+The one-time bootstrap uses the existing kernel's graceful restart to adopt the
+launcher while retaining the original child PID. The container stays running;
+no Docker host access, Docker socket, container restart, or new image is needed.
+The selected update then runs in the background. Existing packages stay in place.
 
-Once the updater is installed, use the administrative command:
+Once installed, use the administrative command inside the container:
 
 ```sh
-docker exec the8020 admin --root /8020 kernel.update 0.8.3
+admin --root /8020 kernel.update 0.8.6
 ```
 
-Or run the script directly, including after an offline migration failure:
+Or run the installed script directly, including after an offline migration failure:
 
 ```sh
-docker exec the8020 /8020/node/kernel/scripts/update.sh 0.8.3
+/8020/node/kernel/scripts/update.sh 0.8.6
 ```
 
 Use an exact same-major forward version. The updater fetches that Git tag and
 prepares it locally with the existing installer before stopping the running
 kernel. It requires network access and 6 GiB of free temporary disk space;
-preparation may take several minutes. No new container or CI build is needed.
-Packages keep their versions unless a migration explicitly updates them.
+preparation may take several minutes. Packages keep their versions unless a
+migration explicitly updates them. On older Debian images, the installer adds
+the missing `bzip2` OS prerequisite automatically.
 
 Updates interrupt live work. Repair a failed migration and retry the same
 version; completed steps are retained. On an update-capable dev/prod image,
-`/8020-prod` selects production, with its own installation and log. The one-time
-bootstrap script targets the single-system `/8020` instance. Container
-recreation requires an update-capable image to preserve the selected kernel.
+`THE8020_INSTANCE_ROOT=/8020-prod` selects production, with its own installation
+and log. The one-time bootstrap targets single-system `0.7.4` or newer images.
+Container recreation requires an update-capable image to preserve the selected
+kernel; changes to the old container's entrypoint live in its writable layer.
+
+The bootstrap and updater write progress and failures to
+`node/kernel/update.log`. Bootstrap status probes have a five-second timeout
+and a 90-second handoff deadline. Preparation streams installer output and
+reports elapsed time every ten seconds. Inspect `kernel.status` for the running
+build and application initialization errors; successful kernel replacement does
+not mean application initialization succeeded. The update journal is
+`node/kernel/update/state.json`.

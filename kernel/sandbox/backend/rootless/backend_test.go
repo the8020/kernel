@@ -157,6 +157,37 @@ func TestRootlessBackendBuildsRestrictedOCIAndRunsLifecycle(t *testing.T) {
 	}
 }
 
+func TestRootlessBackendResolvesReleaseImageSymlinks(t *testing.T) {
+	base := testBackend(t)
+	root := t.TempDir()
+	physical := filepath.Join(root, "releases", "0.8.4", "runtime", "images", "rootless", "rootfs")
+	if err := os.MkdirAll(physical, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, target := range map[string]string{
+		"current": "releases/0.8.4", "images": "current/runtime/images",
+	} {
+		if err := os.Symlink(target, filepath.Join(root, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	value, err := New(Config{
+		RunscPath: base.runscPath, RootFS: filepath.Join(root, "images", "rootless", "rootfs"),
+		StateRoot: filepath.Join(root, "state"), RuntimeRoot: filepath.Join(root, "runsc"),
+		InstanceUUID: base.instanceUUID, KernelSocketPath: base.kernelSocketPath, Runner: &fakeRunner{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration, err := value.ociSpec(testSandbox(t), filepath.Join(root, "bundle"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configuration.Root.Path != physical {
+		t.Fatalf("OCI root=%q, want canonical release root %q", configuration.Root.Path, physical)
+	}
+}
+
 func TestRunscArgumentsOnlyOpenMountedHostSockets(t *testing.T) {
 	backend := testBackend(t)
 	arguments := backend.runscArguments(metadata{SandboxID: "sandbox-one"}, "run", "sandbox-one")

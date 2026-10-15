@@ -90,6 +90,10 @@ else printf '%040d\\n' 0; fi
       ]
     ) await Deno.mkdir(`${directory}/${name}`, { recursive: true });
     await Deno.writeTextFile(
+      `${directory}/development-scripts/helper`,
+      version,
+    );
+    await Deno.writeTextFile(
       `${directory}/release.json`,
       JSON.stringify({ version, commit, architecture: arch }),
     );
@@ -117,6 +121,9 @@ touch "$root/kernel.toml"
       `#!/bin/bash
 if [[ "$*" == *kernel.shutdown* ]]; then echo stop >> "$THE8020_INSTANCE_ROOT/stops"; echo '{"success":true}';
 elif [[ "$*" == *kernel.config.get* ]]; then echo '{"success":true,"result":{"setting":{"configured_value":"rootless"}}}';
+elif [[ "$*" == *"runtime eval"* ]]; then
+  if [[ -f "$FIXTURE_ROOT/fail-worker" ]]; then echo '{"success":true,"result":{"state":"FAILED"}}';
+  else echo '{"success":true,"result":{"result":42}}'; fi
 else echo '{"success":true,"result":{"build_id":"${version}+${commit}","runtime_mode":"rootless","runtime_ready":true}}'; fi
 `,
       { mode: 0o755 },
@@ -128,7 +135,14 @@ else echo '{"success":true,"result":{"build_id":"${version}+${commit}","runtime_
         { mode: 0o755 },
       );
     }
-    for (const name of ["update.sh", "update.ts", "launch.sh"]) {
+    for (
+      const name of [
+        "update.sh",
+        "update.ts",
+        "launch.sh",
+        "refresh-development-scripts.sh",
+      ]
+    ) {
       await Deno.copyFile(`${source}/${name}`, `${directory}/scripts/${name}`);
     }
     await Deno.symlink(
@@ -158,11 +172,16 @@ root=
 for argument in "$@"; do
   case "$argument" in --instance-root=*) root=${"${argument#*=}"} ;; esac
  done
+if [[ -f "$FIXTURE_ROOT/wait-build" ]]; then
+  echo 'installer stdout is live'
+  while [[ -f "$FIXTURE_ROOT/wait-build" ]]; do sleep 0.05; done
+fi
 [[ -f "$root/kernel.toml" && -d "$root/packages" && ! -f "$root/packages/keep" ]]
 mkdir -p "$root/node/kernel" "$root/scripts"
 for name in bin scripts runtime; do
   cp -a "$PWD/$name" "$root/node/kernel/"
 done
+cp -a "$PWD/development-scripts/." "$root/scripts/"
 `,
       { mode: 0o755 },
     );
@@ -188,6 +207,7 @@ done
     temp,
     root,
     kernel,
+    env,
     version,
     update: (action: string) =>
       run("bash", [`${kernel}/scripts/update.sh`, action], env),
@@ -195,6 +215,48 @@ done
     cleanup: () => Deno.remove(temp, { recursive: true }),
   };
 }
+
+Deno.test("installer stdout and heartbeat are visible before preparation finishes", async () => {
+  const f = await fixture();
+  await f.version("0.8.1");
+  const gate = `${f.temp}/wait-build`;
+  await Deno.writeTextFile(gate, "wait");
+  const child = new Deno.Command("bash", {
+    args: [`${f.kernel}/scripts/update.sh`, "0.8.1"],
+    env: f.env,
+    stdout: "piped",
+    stderr: "piped",
+    signal: AbortSignal.timeout(20_000),
+  }).spawn();
+  let output = "";
+  const capture = () =>
+    new WritableStream<Uint8Array>({
+      write(chunk) {
+        output += new TextDecoder().decode(chunk);
+      },
+    });
+  const streams = [
+    child.stdout.pipeTo(capture()),
+    child.stderr.pipeTo(capture()),
+  ];
+  async function waitFor(message: string, timeout: number) {
+    const deadline = Date.now() + timeout;
+    while (!output.includes(message) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert(output.includes(message), `Missing ${message}: ${output}`);
+  }
+  try {
+    await waitFor("installer stdout is live", 3000);
+    await waitFor("preparing kernel 0.8.1; still running (", 12_000);
+  } finally {
+    await Deno.remove(gate);
+    const status = await child.status;
+    await Promise.all(streams);
+    await f.cleanup();
+    assert(status.success, output);
+  }
+});
 
 Deno.test("numeric version ordering and migration phases", async () => {
   assert(compareVersions("0.10.0", "0.9.99") > 0);
@@ -295,6 +357,8 @@ Deno.test("skip releases, preserve instance state, switch one pointer, and finis
     result = await f.update("--apply");
     assert(result.code === 0, result.output);
     assert(await Deno.readLink(`${f.kernel}/current`) === "releases/0.10.0");
+    assert(!(await Deno.lstat(`${f.root}/scripts`)).isSymlink);
+    assert(await read(`${f.root}/scripts/helper`) === "0.10.0");
     assert(await read(`${f.root}/trace`) === "a\nb\nc\nd\n");
     result = await f.update("--finish");
     assert(result.code === 0, result.output);
@@ -316,6 +380,27 @@ Deno.test("skip releases, preserve instance state, switch one pointer, and finis
     for (const target of ["0.9.0", "1.0.0", "0.10", "00.10.0"]) {
       assert((await f.update(target)).code !== 0);
     }
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("runtime ready cannot complete an update when ordinary Workers fail", async () => {
+  const f = await fixture();
+  try {
+    await f.version("0.8.1");
+    assert((await f.update("0.8.1")).code === 0);
+    assert((await f.update("--apply")).code === 0);
+    await Deno.writeTextFile(`${f.temp}/fail-worker`, "");
+    const result = await f.update("--finish");
+    assert(
+      result.code !== 0 && result.output.includes("Worker verification failed"),
+      result.output,
+    );
+    assert((await f.state()).phase === "installed");
+    await Deno.remove(`${f.temp}/fail-worker`);
+    assert((await f.update("--finish")).code === 0);
+    assert((await f.state()).phase === "complete");
   } finally {
     await f.cleanup();
   }
@@ -389,5 +474,44 @@ Deno.test("fetch, preparation, and validation errors preserve the active kernel"
     } finally {
       await f.cleanup();
     }
+  }
+});
+
+Deno.test("published 0.8.6 updater runs the helper-layout migration before restart", async () => {
+  const f = await fixture("0.8.6");
+  try {
+    await f.version("0.8.7", {
+      "0.8.7/010-development-scripts.sh": await read(
+        `${source}/update/0.8.7/010-development-scripts.sh`,
+      ),
+    });
+    const old = await run("git", [
+      "-C",
+      source,
+      "show",
+      "0.8.6:defaults/kernel-scripts/update.ts",
+    ]);
+    assert(old.code === 0, old.output);
+    await Deno.writeTextFile(`${f.kernel}/scripts/update.ts`, old.output);
+    assert((await Deno.lstat(`${f.root}/scripts`)).isSymlink);
+    for (const action of ["0.8.7", "--apply", "--finish"]) {
+      const result = await f.update(action);
+      assert(result.code === 0, result.output);
+    }
+    assert(!(await Deno.lstat(`${f.root}/scripts`)).isSymlink);
+    assert(await read(`${f.root}/scripts/helper`) === "0.8.7");
+    await Deno.chmod(`${f.root}/scripts/helper`, 0o644);
+    await Deno.writeTextFile(`${f.root}/scripts/helper`, "stale");
+    const result = await run("bash", [
+      `${f.kernel}/scripts/update/0.8.7/010-development-scripts.sh`,
+    ], {
+      ...f.env,
+      THE8020_UPDATE_RELEASE: `${f.kernel}/current`,
+    });
+    assert(result.code === 0, result.output);
+    assert(await read(`${f.root}/scripts/helper`) === "0.8.7");
+    assert((await f.state()).phase === "complete");
+  } finally {
+    await f.cleanup();
   }
 });

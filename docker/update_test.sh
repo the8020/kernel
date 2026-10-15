@@ -3,53 +3,48 @@ set -euo pipefail
 SOURCE_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 FIXTURE_ROOT=$(mktemp -d)
 trap 'rm -rf -- "$FIXTURE_ROOT"' EXIT
-export FIXTURE_ROOT SOURCE_ROOT
-mkdir "$FIXTURE_ROOT/tools"
-cat > "$FIXTURE_ROOT/tools/git" <<'EOF'
+export THE8020_INSTANCE_ROOT="$FIXTURE_ROOT/instance"
+KERNEL_ROOT="$THE8020_INSTANCE_ROOT/node/kernel"
+for target in '0.8.4; bad' 0.8 1.02.3; do
+  if bash "$SOURCE_ROOT/docker/update.sh" "$target" >/dev/null 2>&1; then exit 1; fi
+done
+[[ ! -e "$THE8020_INSTANCE_ROOT" ]]
+if bash "$SOURCE_ROOT/docker/update.sh" --continue 0.8.4 "$FIXTURE_ROOT" >/dev/null 2>&1; then exit 1; fi
+[[ -d "$FIXTURE_ROOT" ]]
+mkdir -p "$KERNEL_ROOT/releases/0.8.3/scripts"
+ln -s releases/0.8.3 "$KERNEL_ROOT/current"
+ln -s current/scripts "$KERNEL_ROOT/scripts"
+cat > "$KERNEL_ROOT/scripts/update.sh" <<'SCRIPT'
 #!/usr/bin/env bash
-set -eu
-if [[ "$1" == clone ]]; then
-  destination="${!#}"
-  mkdir -p "$destination/defaults" "$destination/docker/rootfs/usr/local/bin"
-  cp -a "$SOURCE_ROOT/defaults/kernel-scripts" "$destination/defaults/"
-  cp "$SOURCE_ROOT/docker/rootfs/usr/local/bin/docker-entrypoint.sh" "$destination/docker/rootfs/usr/local/bin/"
-else printf '%040d\n' 0; fi
-EOF
-cat > "$FIXTURE_ROOT/tools/docker" <<'EOF'
-#!/usr/bin/env bash
-set -eu
-printf '%s\n' "$*" >> "$FIXTURE_ROOT/calls"
-case "$1" in
-  exec)
-    if [[ "$2" == --detach ]]; then
-      [[ -f "$FIXTURE_ROOT/restarted" ]]
-      exit
-    fi
-    shift 2
-    if [[ "$*" == 'test -L /8020/node/kernel/current' ]]; then
-      [[ -f "$FIXTURE_ROOT/managed" ]]
-    elif [[ "$*" == *'docker-entrypoint.sh.new /usr/local/bin/docker-entrypoint.sh' ]]; then
-      touch "$FIXTURE_ROOT/entrypoint-installed"
-    elif [[ "$*" == 'test -f /8020/node/kernel/run/launcher.pid' ]]; then
-      [[ -f "$FIXTURE_ROOT/restarted" ]]
-    fi
-    ;;
-  restart)
-    [[ -f "$FIXTURE_ROOT/entrypoint-installed" ]]
-    touch "$FIXTURE_ROOT/restarted"
-    ;;
-esac
-EOF
-chmod +x "$FIXTURE_ROOT/tools/"*
-export PATH="$FIXTURE_ROOT/tools:$PATH"
-bash "$SOURCE_ROOT/docker/update.sh" existing-container 0.8.3 > "$FIXTURE_ROOT/output"
-grep -Fq 'restart -t 120 existing-container' "$FIXTURE_ROOT/calls"
-grep -Fq 'exec --detach existing-container' "$FIXTURE_ROOT/calls"
-grep -Fq 'update 0.8.3' "$FIXTURE_ROOT/calls"
+set -euo pipefail
+[[ "$#" == 1 && "$1" == 0.8.4 ]]
+[[ -z ${THE8020_PASSWORD+x} && -z ${THE8020_USERNAME+x} ]]
+echo 'managed updater called'
+SCRIPT
+export THE8020_USERNAME=private THE8020_PASSWORD=private
+bash "$SOURCE_ROOT/docker/update.sh" 0.8.4 > "$FIXTURE_ROOT/output"
+for _ in {1..100}; do
+  if grep -Fq 'managed updater called' "$KERNEL_ROOT/update.log" &&
+      grep -Fq 'Update started' "$FIXTURE_ROOT/output"; then break; fi
+  sleep 0.01
+done
 grep -Fq 'Update started' "$FIXTURE_ROOT/output"
-touch "$FIXTURE_ROOT/managed"
-if bash "$SOURCE_ROOT/docker/update.sh" existing-container 0.8.3 > /dev/null 2>&1; then exit 1; fi
-before=$(wc -l < "$FIXTURE_ROOT/calls")
-if bash "$SOURCE_ROOT/docker/update.sh" existing-container '0.8.3; bad' > /dev/null 2>&1; then exit 1; fi
-[[ $(wc -l < "$FIXTURE_ROOT/calls") == "$before" ]]
-echo 'Legacy Docker updater checks passed'
+grep -Fq 'managed updater called' "$KERNEL_ROOT/update.log"
+[[ $(stat -c '%a' "$KERNEL_ROOT/update.log") == 600 ]]
+grep -Fq 'update: requested 0.8.4' "$KERNEL_ROOT/update.log"
+mkdir -p "$KERNEL_ROOT/bin" "$KERNEL_ROOT/run"
+touch "$KERNEL_ROOT/run/launcher.pid"
+cat > "$KERNEL_ROOT/bin/admin" <<'SCRIPT'
+#!/usr/bin/env bash
+echo probe >> "$THE8020_INSTANCE_ROOT/probes"
+exec sleep 60
+SCRIPT
+chmod +x "$KERNEL_ROOT/bin/admin"
+WORK=$(mktemp -d "$KERNEL_ROOT/update/bootstrap.XXXXXX")
+result=0
+timeout --kill-after=1s 7s bash "$SOURCE_ROOT/docker/update.sh" --continue 0.8.4 "$WORK" > "$FIXTURE_ROOT/waiting.log" 2>&1 || result=$?
+[[ "$result" == 124 ]]
+[[ $(wc -l < "$THE8020_INSTANCE_ROOT/probes") -ge 2 ]]
+grep -Fq 'bootstrap: waiting for the launcher and kernel control plane' "$FIXTURE_ROOT/waiting.log"
+grep -Fq 'last probe exit 124; 5s limit' "$FIXTURE_ROOT/waiting.log"
+echo 'Inside-container updater checks passed'

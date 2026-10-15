@@ -58,6 +58,7 @@ async function command(
   cwd?: string,
   env?: Record<string, string>,
   timeout = 300_000,
+  progress?: string,
 ): Promise<string> {
   const child = new Deno.Command(program, {
     args,
@@ -70,24 +71,45 @@ async function command(
   }).spawn();
   const decoder = new TextDecoder(), output: string[] = [];
   let size = 0;
+  const started = Date.now();
+  const heartbeat = progress
+    ? setInterval(() => {
+      console.log(
+        `update: ${progress}; still running (${
+          Math.floor((Date.now() - started) / 1000)
+        }s)`,
+      );
+    }, 10_000)
+    : undefined;
   try {
     for await (const chunk of child.stdout) {
+      if (progress) {
+        await Deno.stdout.write(chunk);
+        continue;
+      }
       size += chunk.length;
       if (size > 16 * 1024 * 1024) {
         throw new Error(`${program} output exceeds 16 MiB`);
       }
       output.push(decoder.decode(chunk, { stream: true }));
     }
+    const result = await child.status;
+    const response = (output.join("") + decoder.decode()).trim();
+    if (!result.success) {
+      throw new Error(
+        `${program} failed (${result.code}): ${response.slice(-4096)}`,
+      );
+    }
+    return response;
   } catch (error) {
     try {
       child.kill("SIGTERM");
     } catch { /* Already exited. */ }
     await child.status;
     throw error;
+  } finally {
+    if (heartbeat !== undefined) clearInterval(heartbeat);
   }
-  const result = await child.status;
-  if (!result.success) throw new Error(`${program} failed (${result.code})`);
-  return (output.join("") + decoder.decode()).trim();
 }
 
 function architecture() {
@@ -270,6 +292,7 @@ async function prepare(root: string, target: string) {
   if (!/^[1-9]\d*$/.test(launcher) || !await exists(`/proc/${launcher}`)) {
     throw new Error("The installed launcher is not running");
   }
+  console.log("update: checking the active kernel and runtime configuration");
   const observed = await status(root);
   const configuration = JSON.parse(
     await command(`${kernel}/bin/admin`, [
@@ -356,6 +379,7 @@ async function prepare(root: string, target: string) {
       THE8020_RELEASE_VERSION: target.split(".").slice(0, 2).join("."),
     },
     1_810_000,
+    `preparing kernel ${target}`,
   );
   const unpack = `${stage}/unpacked`;
   await Deno.mkdir(`${unpack}/runtime`, { recursive: true });
@@ -455,6 +479,11 @@ async function apply(root: string, state: Update) {
   await save(`${kernel}/update/state.json`, state);
   await validateRelease(`${kernel}/releases/${state.target}`, state.target);
   await migrations(root, state, false);
+  await command("bash", [
+    `${kernel}/scripts/refresh-development-scripts.sh`,
+    root,
+    `${kernel}/releases/${state.target}/development-scripts`,
+  ]);
   const selected = await Deno.readLink(`${kernel}/current`);
   if (selected !== `releases/${state.target}`) {
     if (selected !== `releases/${state.from}`) {
@@ -499,6 +528,28 @@ async function finish(root: string, state: Update) {
     throw new Error(
       "The new kernel/runtime is not ready; repair it and retry the same version",
     );
+  }
+  console.log("update: verifying ordinary Worker execution");
+  const execution = JSON.parse(
+    await command(
+      `${kernel}/bin/admin`,
+      [
+        "--root",
+        root,
+        "--json",
+        "runtime",
+        "eval",
+        "export default 42",
+        "--timeout-ms",
+        "15000",
+      ],
+      undefined,
+      undefined,
+      20_000,
+    ),
+  );
+  if (execution.success !== true || execution.result?.result !== 42) {
+    throw new Error(`Worker verification failed: ${JSON.stringify(execution)}`);
   }
   await migrations(root, state, true);
   if (observed.runtime_application_failure) {
