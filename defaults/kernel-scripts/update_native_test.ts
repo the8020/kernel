@@ -173,7 +173,7 @@ Deno.test({
       "-m",
       "source",
     ], released);
-    await run("/usr/bin/git", ["tag", "0.8.5"], released);
+    await run("/usr/bin/git", ["tag", "0.8.6"], released);
     const targetCommit = await run(
       "/usr/bin/git",
       ["rev-parse", "HEAD"],
@@ -185,7 +185,7 @@ Deno.test({
 set -eu
 if [[ "$1" == clone ]]; then
   destination="${"${!#}"}"
-  /usr/bin/git clone --quiet --branch 0.8.5 "$FIXTURE_SOURCE" "$destination"
+  /usr/bin/git clone --quiet --branch 0.8.6 "$FIXTURE_SOURCE" "$destination"
   mkdir -p "$destination/.development"
   ln -s "$FIXTURE_CACHE" "$destination/.development/cache"
 else exec /usr/bin/git "$@"; fi
@@ -263,7 +263,7 @@ else exec /usr/bin/git "$@"; fi
     let driver: number | undefined;
     try {
       const initial = await observe("0.7.4", baselineCommit);
-      const result = await run("bash", [`${source}/docker/update.sh`, "0.8.5"]);
+      const result = await run("bash", [`${source}/docker/update.sh`, "0.8.6"]);
       console.log(result);
       driver = Number(result.match(/PID (\d+)/)?.[1]);
       const deadline = Date.now() + 600000;
@@ -285,8 +285,27 @@ else exec /usr/bin/git "$@"; fi
           .phase === "complete",
         "update incomplete",
       );
-      const selected = await observe("0.8.5", targetCommit);
+      const selected = await observe("0.8.6", targetCommit);
       assert(initial.pid !== selected.pid, "kernel was not replaced");
+      const execution = JSON.parse(
+        await run(`${kernel}/bin/admin`, [
+          "--root",
+          root,
+          "--json",
+          "runtime",
+          "eval",
+          "export default 42",
+          "--timeout-ms",
+          "15000",
+        ]),
+      );
+      assert(
+        execution.success === true && execution.result.result === 42,
+        `Worker execution through the installed image failed: ${
+          JSON.stringify(execution)
+        }`,
+      );
+
       assert(
         Number(await Deno.readTextFile(`${kernel}/run/launcher.pid`)) ===
           initial.pid,
@@ -309,7 +328,7 @@ else exec /usr/bin/git "$@"; fi
           "bootstrap: original kernel has stopped; adopting the launcher",
           "startup: installing the initial platform runtime",
           "bootstrap: kernel control plane is ready; starting update",
-          "update: completed 0.8.5",
+          "update: completed 0.8.6",
         ]
       ) {
         assert(
@@ -334,7 +353,7 @@ else exec /usr/bin/git "$@"; fi
         "configuration changed",
       );
       console.log(
-        "inside-container source update passed: real 0.7.4, retained parent and original child PID, ordinary installer, packages, configuration, and private work",
+        "inside-container source update passed: real 0.7.4, retained parent and original child PID, ordinary installer, real Worker, packages, configuration, and private work",
       );
     } catch (error) {
       try {

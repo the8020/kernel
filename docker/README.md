@@ -35,8 +35,8 @@ this integration must also publish a compatible `the8020/auth` package tag.
 Run this **inside the existing container as root**, including on `0.7.4`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/the8020/kernel/0.8.5/docker/update.sh -o /tmp/the8020-update.sh
-bash /tmp/the8020-update.sh 0.8.5
+curl -fsSL https://raw.githubusercontent.com/the8020/kernel/0.8.6/docker/update.sh -o /tmp/the8020-update.sh
+bash /tmp/the8020-update.sh 0.8.6
 tail -F /8020/node/kernel/update.log
 ```
 
@@ -48,13 +48,13 @@ The selected update then runs in the background. Existing packages stay in place
 Once installed, use the administrative command inside the container:
 
 ```sh
-admin --root /8020 kernel.update 0.8.5
+admin --root /8020 kernel.update 0.8.6
 ```
 
 Or run the installed script directly, including after an offline migration failure:
 
 ```sh
-/8020/node/kernel/scripts/update.sh 0.8.5
+/8020/node/kernel/scripts/update.sh 0.8.6
 ```
 
 Use an exact same-major forward version. The updater fetches that Git tag and

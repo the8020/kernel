@@ -40,7 +40,9 @@ Parent DOX: [kernel defaults](../AGENTS.md).
 - A fully staged request triggers graceful shutdown. An offline failure keeps
   the launcher alive without booting either kernel; retry the same version to
   resume. Never restore old binaries automatically after migrations begin.
-- After startup, verify the target build ID and generic runtime readiness.
+- After startup, verify the target build ID, generic runtime readiness, and an
+  ordinary `runtime.eval` Worker returning its expected value. Bound that job
+  to 15 seconds; leave verification pending if real sandbox execution fails.
   Application initialization failures remain visible separately. Packages change
   only through an explicit after-start migration using package commands.
 - Updates interrupt live jobs, services, sessions, and terminals. Durable user
@@ -76,7 +78,8 @@ Parent DOX: [kernel defaults](../AGENTS.md).
   Only the GitHub source transport is redirected to a local tagged repository.
   It bootstraps the unmanaged container layout through `docker/update.sh`,
   verifies the waiting parent survives and the original child PID becomes the
-  launcher, and checks unchanged packages, configuration, and private work.
+  launcher, executes an ordinary `runtime.eval` Worker through the installed
+  image symlinks, and checks unchanged packages, configuration, and private work.
 
 # Child DOX Index
 

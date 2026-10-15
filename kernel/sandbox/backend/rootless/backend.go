@@ -121,7 +121,11 @@ func New(config Config) (*Backend, error) {
 	if info, err := os.Stat(config.RunscPath); err != nil || !info.Mode().IsRegular() || info.Mode()&0o111 == 0 {
 		return nil, errors.New("executable node-local runsc is required")
 	}
-	if info, err := os.Stat(config.RootFS); err != nil || !info.IsDir() {
+	rootFS, err := filepath.EvalSymlinks(config.RootFS)
+	if err != nil {
+		return nil, fmt.Errorf("resolve portable runtime rootfs: %w", err)
+	}
+	if info, err := os.Stat(rootFS); err != nil || !info.IsDir() {
 		return nil, errors.New("portable runtime rootfs is required")
 	}
 	if config.SupervisorHeartbeatInterval == 0 {
@@ -152,7 +156,7 @@ func New(config Config) (*Backend, error) {
 		}
 	}
 	return &Backend{
-		runscPath: config.RunscPath, rootFS: config.RootFS, stateRoot: config.StateRoot, runtimeRoot: config.RuntimeRoot,
+		runscPath: config.RunscPath, rootFS: rootFS, stateRoot: config.StateRoot, runtimeRoot: config.RuntimeRoot,
 		instanceUUID: config.InstanceUUID, kernelSocketPath: config.KernelSocketPath,
 		supervisorHeartbeatInterval: config.SupervisorHeartbeatInterval, workerStopGrace: config.WorkerStopGrace,
 		startTimeout: config.StartTimeout, runner: config.Runner, logger: config.Logger,

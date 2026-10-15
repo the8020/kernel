@@ -21,6 +21,10 @@ Parent DOX: [kernel/kernel/sandbox/backend DOX](../AGENTS.md).
   host networking with loopback-only supervisor/inspector listeners, an explicit
   bounded mount set, open-only access to explicitly mounted host Unix sockets,
   empty process capabilities, and no new privileges.
+- Resolve the configured image root with `filepath.EvalSymlinks` at backend
+  construction and use that canonical directory in OCI roots. Managed kernel
+  releases link runtime images through `current`; gVisor's safe bind-mount
+  validation rejects an unresolved root path.
 - Only safe IDs and metadata carrying the current kernel instance UUID are
   observed or modified. Instance-owned metadata can be listed without invoking
   `runsc state`, allowing stale startup sandboxes to be force-deleted directly.
@@ -63,6 +67,9 @@ Parent DOX: [kernel/kernel/sandbox/backend DOX](../AGENTS.md).
   Native subprocess tests verify FIFO inode inheritance, bounded control
   diagnostics, context cancellation and cleanup ownership after rollback
   failure.
+- The release-image symlink regression verifies canonical OCI roots. The native
+  update test also executes an ordinary Worker after switching releases so
+  `/etc/resolv.conf` and other real bind mounts are exercised.
 - The opt-in Linux E2E test starts the real supervisor through rootless gVisor,
   verifies its bind-mounted kernel Unix socket, and dispatches a discovered
   command declared in an arbitrarily named flat TOML file through the ordinary

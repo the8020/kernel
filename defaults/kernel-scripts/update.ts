@@ -94,8 +94,13 @@ async function command(
       output.push(decoder.decode(chunk, { stream: true }));
     }
     const result = await child.status;
-    if (!result.success) throw new Error(`${program} failed (${result.code})`);
-    return (output.join("") + decoder.decode()).trim();
+    const response = (output.join("") + decoder.decode()).trim();
+    if (!result.success) {
+      throw new Error(
+        `${program} failed (${result.code}): ${response.slice(-4096)}`,
+      );
+    }
+    return response;
   } catch (error) {
     try {
       child.kill("SIGTERM");
@@ -518,6 +523,28 @@ async function finish(root: string, state: Update) {
     throw new Error(
       "The new kernel/runtime is not ready; repair it and retry the same version",
     );
+  }
+  console.log("update: verifying ordinary Worker execution");
+  const execution = JSON.parse(
+    await command(
+      `${kernel}/bin/admin`,
+      [
+        "--root",
+        root,
+        "--json",
+        "runtime",
+        "eval",
+        "export default 42",
+        "--timeout-ms",
+        "15000",
+      ],
+      undefined,
+      undefined,
+      20_000,
+    ),
+  );
+  if (execution.success !== true || execution.result?.result !== 42) {
+    throw new Error(`Worker verification failed: ${JSON.stringify(execution)}`);
   }
   await migrations(root, state, true);
   if (observed.runtime_application_failure) {

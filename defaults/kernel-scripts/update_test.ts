@@ -117,6 +117,9 @@ touch "$root/kernel.toml"
       `#!/bin/bash
 if [[ "$*" == *kernel.shutdown* ]]; then echo stop >> "$THE8020_INSTANCE_ROOT/stops"; echo '{"success":true}';
 elif [[ "$*" == *kernel.config.get* ]]; then echo '{"success":true,"result":{"setting":{"configured_value":"rootless"}}}';
+elif [[ "$*" == *"runtime eval"* ]]; then
+  if [[ -f "$FIXTURE_ROOT/fail-worker" ]]; then echo '{"success":true,"result":{"state":"FAILED"}}';
+  else echo '{"success":true,"result":{"result":42}}'; fi
 else echo '{"success":true,"result":{"build_id":"${version}+${commit}","runtime_mode":"rootless","runtime_ready":true}}'; fi
 `,
       { mode: 0o755 },
@@ -363,6 +366,27 @@ Deno.test("skip releases, preserve instance state, switch one pointer, and finis
     for (const target of ["0.9.0", "1.0.0", "0.10", "00.10.0"]) {
       assert((await f.update(target)).code !== 0);
     }
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("runtime ready cannot complete an update when ordinary Workers fail", async () => {
+  const f = await fixture();
+  try {
+    await f.version("0.8.1");
+    assert((await f.update("0.8.1")).code === 0);
+    assert((await f.update("--apply")).code === 0);
+    await Deno.writeTextFile(`${f.temp}/fail-worker`, "");
+    const result = await f.update("--finish");
+    assert(
+      result.code !== 0 && result.output.includes("Worker verification failed"),
+      result.output,
+    );
+    assert((await f.state()).phase === "installed");
+    await Deno.remove(`${f.temp}/fail-worker`);
+    assert((await f.update("--finish")).code === 0);
+    assert((await f.state()).phase === "complete");
   } finally {
     await f.cleanup();
   }
