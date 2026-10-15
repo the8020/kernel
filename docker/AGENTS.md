@@ -6,13 +6,16 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 
 # Ownership
 
-- `update.sh` bootstraps an existing single-system Docker container from its
-  host, restarts that same container, and starts the installed updater detached.
+- `update.sh` runs inside an existing single-system Docker container as root,
+  adopts the kernel launcher, and starts the installed updater detached.
 - `rootfs/` is the complete Docker runtime payload, copied to `/` by both the
   kernel and deploy Dockerfiles. Its entrypoint starts the kernel, creates the
   first login user, and waits for the public login service.
 - Dockerfiles own image assembly, release metadata, and build-cache cleanup. The
   generic installer does not produce deployment payloads.
+- Runtime images include `bzip2` for in-container update preparation; the normal
+  installer supplies this OS prerequisite when an older root Debian image
+  lacks it.
 
 # Local Contracts
 
@@ -47,10 +50,14 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   `node/kernel/current`. Publish current last so an interrupted seed repeats.
   Later starts preserve the selected instance release even when the factory
   image differs. Seeding never touches users, packages, database, keys, or IDs.
-- Existing `0.7.4` and newer containers install the host scripts, preserved
-  development helpers, and new entrypoint once, then restart the same container.
-  Their first upgrade calls the script directly; old kernels have no update
-  command. `update.sh` performs the bootstrap; the README owns its invocation.
+- Existing `0.7.4` and newer containers bootstrap entirely inside the container,
+  without host access, a Docker socket, or container restart. Install the host
+  scripts, preserved development helpers, and new entrypoint. An atomic
+  one-time executable handoff uses existing `kernel.restart` to retain the
+  original kernel PID as the launcher, keeping the waiting container parent
+  alive. Restore the native executable before seeding. The entrypoint private
+  `--adopt` mode seeds and execs the launcher without repeating account/login
+  bootstrap. The README owns invocation; old kernels have no update command.
 - `launch.sh` owns the kernel child. An intentional update leaves this launcher
   and the outer entrypoint alive while the kernel stops, migrations run, and
   the target starts; the paired instance and HTTPS proxy remain running.
@@ -83,9 +90,12 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 
 # Verification
 
-- `bash docker/update_test.sh` checks one-time bootstrap ordering, atomic
-  entrypoint installation, detached invocation, and argument validation with
-  process doubles.
+- `bash docker/update_test.sh` checks argument validation, detached managed
+  invocation, credential removal, and private logging. The opt-in native check
+  in `defaults/kernel-scripts/update_native_test.ts` starts actual `0.7.4`,
+  runs the inside-container bootstrap and real source update, and verifies
+  parent/child PID retention, native executable restoration, and unchanged
+  packages, configuration, and private work.
 - With Deno on PATH, `bash docker-entrypoint_test.sh` checks progress, HTTP 200
   readiness, failure diagnostics, the curl dependency, existing-user detection
   with reordered JSON properties, one-time bootstrap and restart bypass after

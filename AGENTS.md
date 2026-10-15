@@ -575,6 +575,7 @@ below.
 - Root-owned paths include `.vscode/`, `go.mod`, `go.sum`, `.go-version`,
   `.gitignore`, `install.sh`, `run.sh`, `release-tag.sh`, release resolver
   tests, `Dockerfile`, `.dockerignore`, `docker-entrypoint_test.sh`,
+  `install-dependencies_test.sh`,
   `install-development-assets.sh`, and root-level project
   documentation.
 
@@ -655,6 +656,8 @@ below.
   HTTP 200 readiness, failure diagnostics, the curl dependency, and structural
   existing-login-user detection, one-time bootstrap, restart bypass after user
   removal, and failed-creation retry with isolated process doubles.
+- `bash install-dependencies_test.sh` verifies automatic installation of the
+  missing bzip2 prerequisite and the missing-package-manager diagnostic.
 
 - `.vscode/` configures the Deno language server and linting for
   `defaults/config/runtime/deno/`, recommends the Go/Deno/TOML/shell development
@@ -691,6 +694,13 @@ below.
   512 MiB runtime memory, and a 30-minute preparation deadline. The updater needs
   6 GiB of free temporary disk space; successful completion removes its build
   source, toolchain, and caches. No prebuilt release archive or CI is required.
+- The installer needs `bzip2` to unpack the portable runtime. On root Debian
+  installations it installs this missing OS prerequisite through apt, including
+  when full runtime host setup is skipped. Application packages are unaffected.
+- Legacy Docker updates bootstrap inside the running container as root. Use
+  the existing PID-preserving kernel restart to adopt the launcher; require no
+  Docker host access, daemon socket, or container restart. Docker owns this
+  one-time adoption and its invocation.
 - `run.sh` may be invoked from any directory. It treats that current directory
   as the instance root and runs `install.sh --skip-verification`, which
   refreshes all three binaries, initializes the default layout when absent, and

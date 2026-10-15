@@ -66,7 +66,7 @@ LABEL org.opencontainers.image.source="https://github.com/the8020/kernel"
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
-        bash ca-certificates curl git \
+        bash bzip2 ca-certificates curl git \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /usr/local/src/the8020/.development/bin/ /usr/local/bin/

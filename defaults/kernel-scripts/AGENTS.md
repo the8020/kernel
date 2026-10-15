@@ -17,7 +17,7 @@ Parent DOX: [kernel defaults](../AGENTS.md).
 
 - Initial scope is explicitly configured Linux rootless instances started by
   `launch.sh`, baseline `0.7.4`. Exact numeric same-major upgrades only; equal
-  versions do nothing. Major upgrades, downgrades, source builds, and
+  versions do nothing. Major upgrades, downgrades, unmanaged source checkouts, and
   coordinated cluster migrations require separate operator handling.
 - Fetch the selected exact Git tag and prepare it on the instance's native
   architecture with its ordinary installer in a separate initialized staging
@@ -69,7 +69,9 @@ Parent DOX: [kernel defaults](../AGENTS.md).
 - The native check compiles the actual released `0.7.4` kernel, stages its
   ordinary runtime sources, and prepares the target through the real installer.
   Only the GitHub source transport is redirected to a local tagged repository.
-  It verifies unchanged packages, configuration, private work, and launcher.
+  It bootstraps the unmanaged container layout through `docker/update.sh`,
+  verifies the waiting parent survives and the original child PID becomes the
+  launcher, and checks unchanged packages, configuration, and private work.
 
 # Child DOX Index
 
