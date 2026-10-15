@@ -33,7 +33,7 @@ func TestNativeSchemaEvolution(t *testing.T) {
 					t.Fatal(err)
 				}
 				writeTestFile(t, filepath.Join(destination, "internal", "next-"+file+".fixture"), string(current))
-				previous, err := gitCommand(ctx, filepath.Join(source, name), nil, "show", "HEAD:internal/"+file)
+				previous, err := gitCommand(ctx, filepath.Join(source, name), nil, "show", "0.7.0:internal/"+file)
 				if err != nil {
 					t.Fatal(err)
 				}

@@ -234,7 +234,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - `TestNativeSchemaEvolution` covers staged cleanup/old-schema codecs, enum
   evolution, minimal column repair, catalog-v2 DB-package upgrade and forward
   recovery, including a lost schema response before the coordinator checkpoint
-  and retry with the original force/approved-plan consent. Its callback
+  and retry with the original force/approved-plan consent. Its catalog-v2
+  baseline uses the immutable DB `0.7.0` tag. Its callback
   transport matches production Content-Length framing. Shared database tests
   qualify SQLite/PostgreSQL, force scope, stale candidate/scope, retained data,
   unique constraints, cancellation and writer exclusion.
