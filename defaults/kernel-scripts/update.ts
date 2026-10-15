@@ -58,6 +58,7 @@ async function command(
   cwd?: string,
   env?: Record<string, string>,
   timeout = 300_000,
+  progress?: string,
 ): Promise<string> {
   const child = new Deno.Command(program, {
     args,
@@ -70,24 +71,40 @@ async function command(
   }).spawn();
   const decoder = new TextDecoder(), output: string[] = [];
   let size = 0;
+  const started = Date.now();
+  const heartbeat = progress
+    ? setInterval(() => {
+      console.log(
+        `update: ${progress}; still running (${
+          Math.floor((Date.now() - started) / 1000)
+        }s)`,
+      );
+    }, 10_000)
+    : undefined;
   try {
     for await (const chunk of child.stdout) {
+      if (progress) {
+        await Deno.stdout.write(chunk);
+        continue;
+      }
       size += chunk.length;
       if (size > 16 * 1024 * 1024) {
         throw new Error(`${program} output exceeds 16 MiB`);
       }
       output.push(decoder.decode(chunk, { stream: true }));
     }
+    const result = await child.status;
+    if (!result.success) throw new Error(`${program} failed (${result.code})`);
+    return (output.join("") + decoder.decode()).trim();
   } catch (error) {
     try {
       child.kill("SIGTERM");
     } catch { /* Already exited. */ }
     await child.status;
     throw error;
+  } finally {
+    if (heartbeat !== undefined) clearInterval(heartbeat);
   }
-  const result = await child.status;
-  if (!result.success) throw new Error(`${program} failed (${result.code})`);
-  return (output.join("") + decoder.decode()).trim();
 }
 
 function architecture() {
@@ -270,6 +287,7 @@ async function prepare(root: string, target: string) {
   if (!/^[1-9]\d*$/.test(launcher) || !await exists(`/proc/${launcher}`)) {
     throw new Error("The installed launcher is not running");
   }
+  console.log("update: checking the active kernel and runtime configuration");
   const observed = await status(root);
   const configuration = JSON.parse(
     await command(`${kernel}/bin/admin`, [
@@ -356,6 +374,7 @@ async function prepare(root: string, target: string) {
       THE8020_RELEASE_VERSION: target.split(".").slice(0, 2).join("."),
     },
     1_810_000,
+    `preparing kernel ${target}`,
   );
   const unpack = `${stage}/unpacked`;
   await Deno.mkdir(`${unpack}/runtime`, { recursive: true });

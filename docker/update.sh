@@ -8,15 +8,29 @@ KERNEL_ROOT="$ROOT/node/kernel"
 if [[ ${1:-} == --continue ]]; then
   TARGET=${2:?missing target}; WORK=${3:?missing bootstrap directory}
   [[ "$WORK" == "$KERNEL_ROOT/update/bootstrap."* && -d "$WORK" ]] || exit 2
-  for _ in {1..900}; do
-    if [[ -L "$KERNEL_ROOT/current" && -f "$KERNEL_ROOT/run/launcher.pid" ]] &&
-        "$KERNEL_ROOT/bin/admin" --root "$ROOT" kernel.status >/dev/null 2>&1; then
-      rm -rf -- "$WORK"
-      exec bash "$KERNEL_ROOT/scripts/update.sh" "$TARGET"
+  echo "bootstrap: waiting for the launcher and kernel control plane (90s limit)"
+  deadline=$((SECONDS + 90))
+  report=$SECONDS
+  while (( SECONDS < deadline )); do
+    phase='waiting for the launcher'
+    if [[ -L "$KERNEL_ROOT/current" && -f "$KERNEL_ROOT/run/launcher.pid" ]]; then
+      result=0
+      timeout --kill-after=1s 5s "$KERNEL_ROOT/bin/admin" --root "$ROOT" kernel.status > "$WORK/status.log" 2>&1 || result=$?
+      if (( result == 0 )); then
+        echo "bootstrap: kernel control plane is ready; starting update to $TARGET"
+        rm -rf -- "$WORK"
+        exec bash "$KERNEL_ROOT/scripts/update.sh" "$TARGET"
+      fi
+      phase="waiting for the kernel control plane (last probe exit $result; 5s limit)"
+    fi
+    if (( SECONDS >= report )); then
+      echo "bootstrap: $phase; $((deadline - SECONDS))s remaining"
+      report=$((SECONDS + 10))
     fi
     sleep 0.1
   done
-  echo 'The kernel did not adopt its launcher; inspect the kernel logs and retry.' >&2
+  echo 'bootstrap: timed out waiting for the launcher/control plane; the update has not started' >&2
+  if [[ -s "$WORK/status.log" ]]; then cat "$WORK/status.log" >&2; fi
   exit 1
 fi
 
@@ -27,7 +41,10 @@ mkdir -p "$KERNEL_ROOT/update"
 chmod 0700 "$KERNEL_ROOT/update"
 touch "$KERNEL_ROOT/update.log"
 chmod 0600 "$KERNEL_ROOT/update.log"
+exec > >(tee -a "$KERNEL_ROOT/update.log") 2>&1
+echo "update: requested $TARGET; log: $KERNEL_ROOT/update.log"
 if [[ -L "$KERNEL_ROOT/current" ]]; then
+  echo 'update: launching the installed updater in the background'
   nohup bash "$KERNEL_ROOT/scripts/update.sh" "$TARGET" </dev/null >> "$KERNEL_ROOT/update.log" 2>&1 &
   printf 'Update started (PID %s). Follow %s/update.log\n' "$!" "$KERNEL_ROOT"
   exit
@@ -49,6 +66,8 @@ WORK=$(mktemp -d "$KERNEL_ROOT/update/bootstrap.XXXXXX")
 REQUESTED=false
 DRIVER=""
 cleanup() {
+  local result=$?
+  if (( result != 0 )); then echo "bootstrap: failed (exit $result)" >&2; fi
   if [[ "$REQUESTED" != true ]]; then
     if [[ -n "$DRIVER" ]]; then kill "$DRIVER" 2>/dev/null || true; wait "$DRIVER" 2>/dev/null || true; fi
     if [[ -f "$WORK/kernel.native" ]]; then
@@ -61,6 +80,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM HUP
+echo "bootstrap: fetching update helpers for $TARGET"
 git clone --depth 1 --single-branch --branch "$TARGET" https://github.com/the8020/kernel.git "$WORK/source"
 [[ $(git -C "$WORK/source" rev-parse HEAD) == "$(git -C "$WORK/source" rev-parse "refs/tags/$TARGET^{commit}")" ]]
 "$DENO" eval --quiet --no-config '
@@ -69,6 +89,7 @@ git clone --depth 1 --single-branch --branch "$TARGET" https://github.com/the802
   if (compareVersions(from,"0.7.4")<0 || from.split(".")[0]!==to.split(".")[0] || compareVersions(to,from)<=0) throw new Error("Use a forward same-major update from 0.7.4 or newer");
 ' "file://$WORK/source/defaults/kernel-scripts/update.ts" "$FROM" "$TARGET"
 mkdir -p "$FACTORY/kernel-scripts" "$FACTORY/development-scripts"
+echo 'bootstrap: installing helpers and preparing the PID-preserving handoff'
 cp -a "$WORK/source/defaults/kernel-scripts/." "$FACTORY/kernel-scripts/"
 cp -a "$ROOT/scripts/." "$FACTORY/development-scripts/"
 install -m 0755 "$WORK/source/docker/rootfs/usr/local/bin/docker-entrypoint.sh" "$ENTRYPOINT.new"
@@ -76,6 +97,8 @@ mv -f -- "$ENTRYPOINT.new" "$ENTRYPOINT"
 install -m 0555 "/proc/$PID/exe" "$WORK/kernel.native"
 {
   printf '#!/usr/bin/env bash\nset -euo pipefail\n'
+  printf 'exec >> %q 2>&1\n' "$KERNEL_ROOT/update.log"
+  printf 'echo %q\n' 'bootstrap: original kernel has stopped; adopting the launcher'
   printf 'install -m 0555 %q %q\n' "$WORK/kernel.native" "$EXECUTABLE.restore"
   printf 'mv -f -- %q %q\n' "$EXECUTABLE.restore" "$EXECUTABLE"
   printf 'export THE8020_INSTANCE_ROOT=%q\n' "$ROOT"
@@ -84,8 +107,10 @@ install -m 0555 "/proc/$PID/exe" "$WORK/kernel.native"
 chmod 0755 "$EXECUTABLE.new"
 # The running executable remains mapped; restart loads this one-time handoff.
 mv -f -- "$EXECUTABLE.new" "$EXECUTABLE"
-nohup bash "$WORK/source/docker/update.sh" --continue "$TARGET" "$WORK" </dev/null >> "$KERNEL_ROOT/update.log" 2>&1 &
+install -m 0700 "${BASH_SOURCE[0]}" "$WORK/driver.sh"
+nohup bash "$WORK/driver.sh" --continue "$TARGET" "$WORK" </dev/null >> "$KERNEL_ROOT/update.log" 2>&1 &
 DRIVER=$!
-"$ADMIN" --root "$ROOT" kernel.restart >/dev/null
+echo 'bootstrap: requesting graceful kernel restart; the container stays running'
+timeout --kill-after=1s 10s "$ADMIN" --root "$ROOT" kernel.restart
 REQUESTED=true
-printf 'Update started (PID %s). Follow %s/update.log\n' "$DRIVER" "$KERNEL_ROOT"
+printf 'Bootstrap started (PID %s); update preparation begins after the handoff. Follow %s/update.log\n' "$DRIVER" "$KERNEL_ROOT"

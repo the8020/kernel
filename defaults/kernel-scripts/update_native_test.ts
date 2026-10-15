@@ -173,7 +173,7 @@ Deno.test({
       "-m",
       "source",
     ], released);
-    await run("/usr/bin/git", ["tag", "0.8.4"], released);
+    await run("/usr/bin/git", ["tag", "0.8.5"], released);
     const targetCommit = await run(
       "/usr/bin/git",
       ["rev-parse", "HEAD"],
@@ -185,7 +185,7 @@ Deno.test({
 set -eu
 if [[ "$1" == clone ]]; then
   destination="${"${!#}"}"
-  /usr/bin/git clone --quiet --branch 0.8.4 "$FIXTURE_SOURCE" "$destination"
+  /usr/bin/git clone --quiet --branch 0.8.5 "$FIXTURE_SOURCE" "$destination"
   mkdir -p "$destination/.development"
   ln -s "$FIXTURE_CACHE" "$destination/.development/cache"
 else exec /usr/bin/git "$@"; fi
@@ -263,7 +263,7 @@ else exec /usr/bin/git "$@"; fi
     let driver: number | undefined;
     try {
       const initial = await observe("0.7.4", baselineCommit);
-      const result = await run("bash", [`${source}/docker/update.sh`, "0.8.4"]);
+      const result = await run("bash", [`${source}/docker/update.sh`, "0.8.5"]);
       console.log(result);
       driver = Number(result.match(/PID (\d+)/)?.[1]);
       const deadline = Date.now() + 600000;
@@ -285,7 +285,7 @@ else exec /usr/bin/git "$@"; fi
           .phase === "complete",
         "update incomplete",
       );
-      const selected = await observe("0.8.4", targetCommit);
+      const selected = await observe("0.8.5", targetCommit);
       assert(initial.pid !== selected.pid, "kernel was not replaced");
       assert(
         Number(await Deno.readTextFile(`${kernel}/run/launcher.pid`)) ===
@@ -302,6 +302,21 @@ else exec /usr/bin/git "$@"; fi
         `${factory}/bin/kernel`,
         `${kernel}/releases/0.7.4/bin/kernel`,
       ]);
+      const updateLog = await Deno.readTextFile(`${kernel}/update.log`);
+      for (
+        const message of [
+          "bootstrap: waiting for the launcher and kernel control plane",
+          "bootstrap: original kernel has stopped; adopting the launcher",
+          "startup: installing the initial platform runtime",
+          "bootstrap: kernel control plane is ready; starting update",
+          "update: completed 0.8.5",
+        ]
+      ) {
+        assert(
+          updateLog.includes(message),
+          `Missing update log phase: ${message}`,
+        );
+      }
       assert(
         (await Deno.stat(`${kernel}/update.log`)).mode! % 512 === 384,
         "update log is not private",

@@ -158,6 +158,10 @@ root=
 for argument in "$@"; do
   case "$argument" in --instance-root=*) root=${"${argument#*=}"} ;; esac
  done
+if [[ -f "$FIXTURE_ROOT/wait-build" ]]; then
+  echo 'installer stdout is live'
+  while [[ -f "$FIXTURE_ROOT/wait-build" ]]; do sleep 0.05; done
+fi
 [[ -f "$root/kernel.toml" && -d "$root/packages" && ! -f "$root/packages/keep" ]]
 mkdir -p "$root/node/kernel" "$root/scripts"
 for name in bin scripts runtime; do
@@ -188,6 +192,7 @@ done
     temp,
     root,
     kernel,
+    env,
     version,
     update: (action: string) =>
       run("bash", [`${kernel}/scripts/update.sh`, action], env),
@@ -195,6 +200,48 @@ done
     cleanup: () => Deno.remove(temp, { recursive: true }),
   };
 }
+
+Deno.test("installer stdout and heartbeat are visible before preparation finishes", async () => {
+  const f = await fixture();
+  await f.version("0.8.1");
+  const gate = `${f.temp}/wait-build`;
+  await Deno.writeTextFile(gate, "wait");
+  const child = new Deno.Command("bash", {
+    args: [`${f.kernel}/scripts/update.sh`, "0.8.1"],
+    env: f.env,
+    stdout: "piped",
+    stderr: "piped",
+    signal: AbortSignal.timeout(20_000),
+  }).spawn();
+  let output = "";
+  const capture = () =>
+    new WritableStream<Uint8Array>({
+      write(chunk) {
+        output += new TextDecoder().decode(chunk);
+      },
+    });
+  const streams = [
+    child.stdout.pipeTo(capture()),
+    child.stderr.pipeTo(capture()),
+  ];
+  async function waitFor(message: string, timeout: number) {
+    const deadline = Date.now() + timeout;
+    while (!output.includes(message) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert(output.includes(message), `Missing ${message}: ${output}`);
+  }
+  try {
+    await waitFor("installer stdout is live", 3000);
+    await waitFor("preparing kernel 0.8.1; still running (", 12_000);
+  } finally {
+    await Deno.remove(gate);
+    const status = await child.status;
+    await Promise.all(streams);
+    await f.cleanup();
+    assert(status.success, output);
+  }
+});
 
 Deno.test("numeric version ordering and migration phases", async () => {
   assert(compareVersions("0.10.0", "0.9.99") > 0);

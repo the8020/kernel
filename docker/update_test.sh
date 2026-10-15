@@ -23,11 +23,28 @@ echo 'managed updater called'
 SCRIPT
 export THE8020_USERNAME=private THE8020_PASSWORD=private
 bash "$SOURCE_ROOT/docker/update.sh" 0.8.4 > "$FIXTURE_ROOT/output"
-grep -Fq 'Update started' "$FIXTURE_ROOT/output"
 for _ in {1..100}; do
-  if grep -Fq 'managed updater called' "$KERNEL_ROOT/update.log"; then break; fi
+  if grep -Fq 'managed updater called' "$KERNEL_ROOT/update.log" &&
+      grep -Fq 'Update started' "$FIXTURE_ROOT/output"; then break; fi
   sleep 0.01
 done
+grep -Fq 'Update started' "$FIXTURE_ROOT/output"
 grep -Fq 'managed updater called' "$KERNEL_ROOT/update.log"
 [[ $(stat -c '%a' "$KERNEL_ROOT/update.log") == 600 ]]
+grep -Fq 'update: requested 0.8.4' "$KERNEL_ROOT/update.log"
+mkdir -p "$KERNEL_ROOT/bin" "$KERNEL_ROOT/run"
+touch "$KERNEL_ROOT/run/launcher.pid"
+cat > "$KERNEL_ROOT/bin/admin" <<'SCRIPT'
+#!/usr/bin/env bash
+echo probe >> "$THE8020_INSTANCE_ROOT/probes"
+exec sleep 60
+SCRIPT
+chmod +x "$KERNEL_ROOT/bin/admin"
+WORK=$(mktemp -d "$KERNEL_ROOT/update/bootstrap.XXXXXX")
+result=0
+timeout --kill-after=1s 7s bash "$SOURCE_ROOT/docker/update.sh" --continue 0.8.4 "$WORK" > "$FIXTURE_ROOT/waiting.log" 2>&1 || result=$?
+[[ "$result" == 124 ]]
+[[ $(wc -l < "$THE8020_INSTANCE_ROOT/probes") -ge 2 ]]
+grep -Fq 'bootstrap: waiting for the launcher and kernel control plane' "$FIXTURE_ROOT/waiting.log"
+grep -Fq 'last probe exit 124; 5s limit' "$FIXTURE_ROOT/waiting.log"
 echo 'Inside-container updater checks passed'

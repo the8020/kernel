@@ -27,6 +27,10 @@ Parent DOX: [kernel defaults](../AGENTS.md).
 - Preparation uses at most two Go processors, a 512 MiB Go memory target, a
   30-minute deadline and at least 6 GiB free temporary disk space. The old kernel
   stays running until compilation and the candidate runtime smoke succeed.
+- Preparation streams installer stdout/stderr to the caller's update log and
+  reports elapsed time every ten seconds. Report active-kernel inspection before
+  querying the control plane. Keep JSON/control-command stdout captured for
+  parsing; preparation output must remain live.
 - `node/kernel/current` atomically selects `releases/<version>`. Existing bin,
   runtime definition/image, and helper paths link through it. Retain current and
   one previous platform payload after success; no application source snapshots.
@@ -55,7 +59,8 @@ Parent DOX: [kernel defaults](../AGENTS.md).
 - `deno fmt --check`, `deno lint --no-config`, and `deno check --no-config`
   cover `update.ts` and `update_test.ts`;
   `deno test --no-config -A update_test.ts` exercises the production updater
-  with isolated release and command fixtures.
+  with isolated release and command fixtures, including installer output and
+  heartbeats visible before preparation completes.
 - Native cbus tests verify detached execution, validation, and missing launcher
   diagnostics. `docker-entrypoint_test.sh` checks one-time seeding and restart
   preservation alongside existing account/readiness behavior.

@@ -58,6 +58,13 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   alive. Restore the native executable before seeding. The entrypoint private
   `--adopt` mode seeds and execs the launcher without repeating account/login
   bootstrap. The README owns invocation; old kernels have no update command.
+- Bootstrap writes foreground output, handoff/seeding, wait progress, and failures
+  to the private instance `node/kernel/update.log`. Start the continuation from a
+  private copy of the invoked helper so newer logging also applies when targeting
+  an older supported tag. Each status probe is bounded to five seconds; the
+  handoff deadline is 90 seconds. Report bootstrap acceptance separately from
+  update preparation. Container adoption redirects launcher startup diagnostics
+  to that log.
 - `launch.sh` owns the kernel child. An intentional update leaves this launcher
   and the outer entrypoint alive while the kernel stops, migrations run, and
   the target starts; the paired instance and HTTPS proxy remain running.
@@ -91,7 +98,8 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 # Verification
 
 - `bash docker/update_test.sh` checks argument validation, detached managed
-  invocation, credential removal, and private logging. The opt-in native check
+  invocation, credential removal, private logging, and progress/retries when a
+  status probe hangs. The opt-in native check
   in `defaults/kernel-scripts/update_native_test.ts` starts actual `0.7.4`,
   runs the inside-container bootstrap and real source update, and verifies
   parent/child PID retention, native executable restoration, and unchanged
