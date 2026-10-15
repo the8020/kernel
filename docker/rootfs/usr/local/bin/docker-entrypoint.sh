@@ -72,8 +72,8 @@ if [[ ! -L "$INSTANCE_ROOT/node/kernel/current" ]]; then
     rm -rf -- "$RUNTIME_ROOT/$name"
     ln -s "../current/runtime/$name" "$RUNTIME_ROOT/$name"
   done
-  rm -rf -- "$INSTANCE_ROOT/scripts"
-  ln -s "node/kernel/current/development-scripts" "$INSTANCE_ROOT/scripts"
+  bash "$kernel_root/releases/$version/scripts/refresh-development-scripts.sh" \
+    "$INSTANCE_ROOT" "$kernel_root/releases/$version/development-scripts"
   ln -s "releases/$version" "$kernel_root/current"
 fi
 # A retained smoke record may describe a different image's engine.

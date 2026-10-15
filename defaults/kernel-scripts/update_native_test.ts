@@ -25,6 +25,7 @@ Deno.test({
       GOMODCACHE: `${source}/.development/cache/go-mod`,
       PATH: `${tools}:${factory}/bin:${Deno.env.get("PATH")}`,
       THE8020_INSTANCE_ROOT: root,
+      THE8020_BOOTSTRAP_SOURCE_ROOT: "",
       THE8020_SANDBOX_RUNTIME_MODE: "rootless",
       FIXTURE_SOURCE: released,
       FIXTURE_CACHE: `${source}/.development/cache`,
@@ -117,6 +118,14 @@ Deno.test({
         `${baseline}/images/${name}/`,
       ]);
     }
+    // Match the image build contract when reusing a previously smoked fixture.
+    await Deno.chmod(`${baseline}/images/rootless/rootfs/runtime-cache`, 0o755);
+    await run("install", [
+      "-m",
+      "0444",
+      `${oldSource}/defaults/config/runtime/protocol/generated.ts`,
+      `${baseline}/images/rootless/rootfs/opt/runtime/protocol.ts`,
+    ]);
     await run("bash", [
       `${oldSource}/defaults/config/runtime/stage-service-runtime.sh`,
       oldSource,
@@ -132,8 +141,13 @@ Deno.test({
       `release_line=0.7\nkernel_tag=0.7.4\nkernel_commit=${baselineCommit}\n`,
     );
     await Deno.symlink(`${factory}/share/the8020/runtime-bin`, `${kernel}/bin`);
+    // The historical kernel needs a physical rootfs before launcher adoption.
     for (const name of ["definitions", "images"]) {
-      await Deno.symlink(`${baseline}/${name}`, `${kernel}/runtime/${name}`);
+      await run("cp", [
+        "-al",
+        `${baseline}/${name}`,
+        `${kernel}/runtime/${name}`,
+      ]);
     }
     await run("cp", [
       "-a",
@@ -149,6 +163,33 @@ Deno.test({
     await Deno.writeTextFile(`${root}/users/keep`, "private work");
     await Deno.mkdir(`${root}/packages/keep`);
     await Deno.writeTextFile(`${root}/packages/keep/value`, "unchanged");
+    const workspace = Deno.env.get("THE8020_BOOTSTRAP_SOURCE_ROOT") ??
+      new URL("../../../", import.meta.url).pathname;
+    const packages = [
+      ...(await Deno.readTextFile(`${source}/defaults/bootstrap-packages.toml`))
+        .matchAll(/^id = "the8020\/(.+)"$/gm),
+    ].map((entry) => entry[1]);
+    const packageCommits = new Map<string, string>();
+    for (const name of packages) {
+      const repository = `${workspace}/${name}`;
+      const resolved = await run("bash", [
+        `${source}/release-tag.sh`,
+        "package",
+        "0.7",
+        repository,
+      ]);
+      const [tag, commit] = resolved.split("\t");
+      await run("/usr/bin/git", [
+        "clone",
+        "--quiet",
+        "--no-hardlinks",
+        "--branch",
+        tag,
+        repository,
+        `${root}/packages/the8020/${name}`,
+      ]);
+      packageCommits.set(name, commit);
+    }
     const config = await Deno.readTextFile(`${root}/kernel.toml`);
     // Copy ordinary source into a local tagged repository; only its transport is replaced.
     await run("bash", [
@@ -173,7 +214,7 @@ Deno.test({
       "-m",
       "source",
     ], released);
-    await run("/usr/bin/git", ["tag", "0.8.6"], released);
+    await run("/usr/bin/git", ["tag", "0.8.7"], released);
     const targetCommit = await run(
       "/usr/bin/git",
       ["rev-parse", "HEAD"],
@@ -185,7 +226,7 @@ Deno.test({
 set -eu
 if [[ "$1" == clone ]]; then
   destination="${"${!#}"}"
-  /usr/bin/git clone --quiet --branch 0.8.6 "$FIXTURE_SOURCE" "$destination"
+  /usr/bin/git clone --quiet --branch 0.8.7 "$FIXTURE_SOURCE" "$destination"
   mkdir -p "$destination/.development"
   ln -s "$FIXTURE_CACHE" "$destination/.development/cache"
 else exec /usr/bin/git "$@"; fi
@@ -203,9 +244,9 @@ else exec /usr/bin/git "$@"; fi
     await run("bash", [
       `${baseline}/definitions/smoke-portable.sh`,
       `${kernel}/bin/runsc`,
-      `${baseline}/images/rootless/rootfs`,
-      `${baseline}/images/rootless/image.json`,
-      `${baseline}/images/rootless/smoke.json`,
+      `${kernel}/runtime/images/rootless/rootfs`,
+      `${kernel}/runtime/images/rootless/image.json`,
+      `${kernel}/runtime/images/rootless/smoke.json`,
       `${kernel}/runtime/tmp`,
     ]);
     using log = await Deno.open(`${testRoot}/container.log`, {
@@ -240,10 +281,12 @@ else exec /usr/bin/git "$@"; fi
       }),
     );
     async function observe(version: string, commit: string) {
-      const deadline = Date.now() + 60000;
+      const deadline = Date.now() + 120000;
+      let last: unknown;
       while (Date.now() < deadline) {
+        let response;
         try {
-          const response = JSON.parse(
+          response = JSON.parse(
             await run(`${factory}/bin/admin`, [
               "--root",
               root,
@@ -251,19 +294,55 @@ else exec /usr/bin/git "$@"; fi
               "kernel.status",
             ]),
           );
-          if (
-            response.result.build_id === `${version}+${commit}` &&
-            response.result.runtime_ready === true
-          ) return response.result;
-        } catch { /* Control plane changes during restart. */ }
+        } catch {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          continue;
+        }
+        last = response.result;
+        if (
+          response.result.runtime_failure &&
+          response.result.runtime_failure !==
+            "runtime initialization is in progress"
+        ) {
+          throw new Error(
+            `Kernel ${version} runtime startup failed: ${response.result.runtime_failure}`,
+          );
+        }
+        const failure = response.result.runtime_application_failure;
+        if (
+          failure && failure !== "application initialization is in progress"
+        ) {
+          throw new Error(
+            `Kernel ${version} application startup failed: ${failure}`,
+          );
+        }
+        if (
+          response.result.build_id === `${version}+${commit}` &&
+          response.result.runtime_ready === true &&
+          response.result.database_initialized === true && !failure
+        ) {
+          for (const path of ["health", "the8020/uui/login/"]) {
+            const page = await fetch(
+              `http://127.0.0.1:${env.THE8020_NETWORK_MAIN_PORT}/${path}`,
+              {
+                signal: AbortSignal.timeout(5000),
+              },
+            );
+            await page.body?.cancel();
+            assert(page.status === 200, `${path}: HTTP ${page.status}`);
+          }
+          return response.result;
+        }
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
-      throw new Error(`Kernel ${version} did not become ready`);
+      throw new Error(
+        `Kernel ${version} did not become ready: ${JSON.stringify(last)}`,
+      );
     }
     let driver: number | undefined;
     try {
       const initial = await observe("0.7.4", baselineCommit);
-      const result = await run("bash", [`${source}/docker/update.sh`, "0.8.6"]);
+      const result = await run("bash", [`${source}/docker/update.sh`, "0.8.7"]);
       console.log(result);
       driver = Number(result.match(/PID (\d+)/)?.[1]);
       const deadline = Date.now() + 600000;
@@ -277,6 +356,13 @@ else exec /usr/bin/git "$@"; fi
           if (state.error) throw new Error(state.error);
         } catch (error) {
           if (!(error instanceof Deno.errors.NotFound)) throw error;
+          try {
+            Deno.kill(driver!, 0);
+          } catch {
+            throw new Error(
+              "Updater exited before writing its journal; inspect update.log",
+            );
+          }
         }
         await new Promise((resolve) => setTimeout(resolve, 500));
       }
@@ -285,8 +371,22 @@ else exec /usr/bin/git "$@"; fi
           .phase === "complete",
         "update incomplete",
       );
-      const selected = await observe("0.8.6", targetCommit);
+      const selected = await observe("0.8.7", targetCommit);
       assert(initial.pid !== selected.pid, "kernel was not replaced");
+      assert(
+        !(await Deno.lstat(`${root}/scripts`)).isSymlink,
+        "development helpers still alias protected node storage",
+      );
+      for (const [name, commit] of packageCommits) {
+        assert(
+          await run(
+            "/usr/bin/git",
+            ["rev-parse", "HEAD"],
+            `${root}/packages/the8020/${name}`,
+          ) === commit,
+          `package version changed: ${name}`,
+        );
+      }
       const execution = JSON.parse(
         await run(`${kernel}/bin/admin`, [
           "--root",
@@ -328,7 +428,7 @@ else exec /usr/bin/git "$@"; fi
           "bootstrap: original kernel has stopped; adopting the launcher",
           "startup: installing the initial platform runtime",
           "bootstrap: kernel control plane is ready; starting update",
-          "update: completed 0.8.6",
+          "update: completed 0.8.7",
         ]
       ) {
         assert(
@@ -353,7 +453,7 @@ else exec /usr/bin/git "$@"; fi
         "configuration changed",
       );
       console.log(
-        "inside-container source update passed: real 0.7.4, retained parent and original child PID, ordinary installer, real Worker, packages, configuration, and private work",
+        "inside-container source update passed: real 0.7.4, retained parent and original child PID, ordinary installer, real Worker, HTTP health/login before and after, unchanged package commits, configuration, and private work",
       );
     } catch (error) {
       try {

@@ -10,6 +10,9 @@ Parent DOX: [kernel defaults](../AGENTS.md).
   its kernel child and keeps the enclosing container alive during updates.
 - The native `kernel.update` command only detaches the installed updater and
   returns its PID and private `node/kernel/update.log` path.
+- `refresh-development-scripts.sh` owns complete, staged replacement of the
+  sandbox-visible instance `scripts/` directory; the source installer and Docker
+  seeding reuse it.
 - Docker owns initial seeding; these scripts never install the bootstrap
   package list.
 
@@ -32,8 +35,11 @@ Parent DOX: [kernel defaults](../AGENTS.md).
   querying the control plane. Keep JSON/control-command stdout captured for
   parsing; preparation output must remain live.
 - `node/kernel/current` atomically selects `releases/<version>`. Existing bin,
-  runtime definition/image, and helper paths link through it. Retain current and
-  one previous platform payload after success; no application source snapshots.
+  runtime definition/image paths link through it. Development helpers are copied
+  into the real instance `scripts/` directory while offline, outside protected
+  node storage; version `0.8.7` refreshes helpers for older updaters, including
+  instances whose helper symlink was already repaired. Retain current and one
+  previous platform payload after success; no application source snapshots.
 - `node/kernel/update/state.json` records from/target versions, phase, completed
   migrations, and the last failure. One advisory update lock serializes work.
   Offline application also holds the existing kernel process lock.
@@ -45,6 +51,11 @@ Parent DOX: [kernel defaults](../AGENTS.md).
   to 15 seconds; leave verification pending if real sandbox execution fails.
   Application initialization failures remain visible separately. Packages change
   only through an explicit after-start migration using package commands.
+- Existing managed instances can repair only the helper layout, without a
+  build, by running `bash refresh-development-scripts.sh <instance-root>
+  <instance-root>/node/kernel/current/development-scripts` and then
+  `kernel.restart`. Stage the complete replacement before moving the old entry;
+  restore that entry if publication fails.
 - Updates interrupt live jobs, services, sessions, and terminals. Durable user
   work, configuration, identities, database, keys, and logs remain in place.
 
@@ -62,7 +73,9 @@ Parent DOX: [kernel defaults](../AGENTS.md).
   cover `update.ts` and `update_test.ts`;
   `deno test --no-config -A update_test.ts` exercises the production updater
   with isolated release and command fixtures, including installer output and
-  heartbeats visible before preparation completes.
+  heartbeats visible before preparation completes. The compatibility fixture
+  reads the published `0.8.6` updater from its Git tag to verify old-updater
+  execution of the new offline migration.
 - Native cbus tests verify detached execution, validation, and missing launcher
   diagnostics. `docker-entrypoint_test.sh` checks one-time seeding and restart
   preservation alongside existing account/readiness behavior.
@@ -71,15 +84,19 @@ Parent DOX: [kernel defaults](../AGENTS.md).
   defaults/kernel-scripts/update_native_test.ts`
   from the repository. The fresh single-node fixture compiles actual kernels and
   verifies real gVisor, cbus, migration, kernel replacement, and
-  launcher/private-data preservation. Bound its CPU, memory, and runtime using
-  the workspace's native-test guidance.
+  launcher/private-data preservation, full application initialization, and HTTP
+  health/login before and after the update. Bound its CPU, memory,
+  and runtime using the workspace's native-test guidance.
 - The native check compiles the actual released `0.7.4` kernel, stages its
   ordinary runtime sources, and prepares the target through the real installer.
   Only the GitHub source transport is redirected to a local tagged repository.
   It bootstraps the unmanaged container layout through `docker/update.sh`,
   verifies the waiting parent survives and the original child PID becomes the
   launcher, executes an ordinary `runtime.eval` Worker through the installed
-  image symlinks, and checks unchanged packages, configuration, and private work.
+  image symlinks, verifies HTTP health/login before and after, and checks
+  unchanged package commits, configuration, and private work. Set the existing
+  `THE8020_BOOTSTRAP_SOURCE_ROOT` to the sibling package workspace when testing
+  from an isolated kernel worktree; the fixture clones compatible `0.7` tags.
 
 # Child DOX Index
 

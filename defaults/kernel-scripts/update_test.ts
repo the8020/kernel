@@ -90,6 +90,10 @@ else printf '%040d\\n' 0; fi
       ]
     ) await Deno.mkdir(`${directory}/${name}`, { recursive: true });
     await Deno.writeTextFile(
+      `${directory}/development-scripts/helper`,
+      version,
+    );
+    await Deno.writeTextFile(
       `${directory}/release.json`,
       JSON.stringify({ version, commit, architecture: arch }),
     );
@@ -131,7 +135,14 @@ else echo '{"success":true,"result":{"build_id":"${version}+${commit}","runtime_
         { mode: 0o755 },
       );
     }
-    for (const name of ["update.sh", "update.ts", "launch.sh"]) {
+    for (
+      const name of [
+        "update.sh",
+        "update.ts",
+        "launch.sh",
+        "refresh-development-scripts.sh",
+      ]
+    ) {
       await Deno.copyFile(`${source}/${name}`, `${directory}/scripts/${name}`);
     }
     await Deno.symlink(
@@ -170,6 +181,7 @@ mkdir -p "$root/node/kernel" "$root/scripts"
 for name in bin scripts runtime; do
   cp -a "$PWD/$name" "$root/node/kernel/"
 done
+cp -a "$PWD/development-scripts/." "$root/scripts/"
 `,
       { mode: 0o755 },
     );
@@ -345,6 +357,8 @@ Deno.test("skip releases, preserve instance state, switch one pointer, and finis
     result = await f.update("--apply");
     assert(result.code === 0, result.output);
     assert(await Deno.readLink(`${f.kernel}/current`) === "releases/0.10.0");
+    assert(!(await Deno.lstat(`${f.root}/scripts`)).isSymlink);
+    assert(await read(`${f.root}/scripts/helper`) === "0.10.0");
     assert(await read(`${f.root}/trace`) === "a\nb\nc\nd\n");
     result = await f.update("--finish");
     assert(result.code === 0, result.output);
@@ -460,5 +474,44 @@ Deno.test("fetch, preparation, and validation errors preserve the active kernel"
     } finally {
       await f.cleanup();
     }
+  }
+});
+
+Deno.test("published 0.8.6 updater runs the helper-layout migration before restart", async () => {
+  const f = await fixture("0.8.6");
+  try {
+    await f.version("0.8.7", {
+      "0.8.7/010-development-scripts.sh": await read(
+        `${source}/update/0.8.7/010-development-scripts.sh`,
+      ),
+    });
+    const old = await run("git", [
+      "-C",
+      source,
+      "show",
+      "0.8.6:defaults/kernel-scripts/update.ts",
+    ]);
+    assert(old.code === 0, old.output);
+    await Deno.writeTextFile(`${f.kernel}/scripts/update.ts`, old.output);
+    assert((await Deno.lstat(`${f.root}/scripts`)).isSymlink);
+    for (const action of ["0.8.7", "--apply", "--finish"]) {
+      const result = await f.update(action);
+      assert(result.code === 0, result.output);
+    }
+    assert(!(await Deno.lstat(`${f.root}/scripts`)).isSymlink);
+    assert(await read(`${f.root}/scripts/helper`) === "0.8.7");
+    await Deno.chmod(`${f.root}/scripts/helper`, 0o644);
+    await Deno.writeTextFile(`${f.root}/scripts/helper`, "stale");
+    const result = await run("bash", [
+      `${f.kernel}/scripts/update/0.8.7/010-development-scripts.sh`,
+    ], {
+      ...f.env,
+      THE8020_UPDATE_RELEASE: `${f.kernel}/current`,
+    });
+    assert(result.code === 0, result.output);
+    assert(await read(`${f.root}/scripts/helper`) === "0.8.7");
+    assert((await f.state()).phase === "complete");
+  } finally {
+    await f.cleanup();
   }
 });

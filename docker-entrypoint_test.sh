@@ -84,8 +84,9 @@ prepare() {
   printf 'new image\n' > "$CASE_ROOT/runtime-state/images/rootless/image.json"
   printf 'release-2\n' > "$CASE_ROOT/runtime-state/id"
   mkdir -p "$CASE_ROOT/runtime-state/kernel-scripts/update" "$CASE_ROOT/runtime-state/development-scripts"
-  cp "$SOURCE_ROOT/defaults/kernel-scripts/"{launch.sh,update.sh,update.ts} "$CASE_ROOT/runtime-state/kernel-scripts/"
+  cp "$SOURCE_ROOT/defaults/kernel-scripts/"{launch.sh,update.sh,update.ts,refresh-development-scripts.sh} "$CASE_ROOT/runtime-state/kernel-scripts/"
   cp "$TEST_ROOT/bin/smoke" "$CASE_ROOT/runtime-state/definitions/smoke-portable.sh"
+  printf 'development helper\n' > "$CASE_ROOT/runtime-state/development-scripts/helper"
   printf 'kernel_tag=0.8.0\nkernel_commit=%040d\n' 0 > "$CASE_ROOT/release"
   touch "$CASE_ROOT/instance/kernel.toml"
   while IFS= read -r line; do
@@ -131,6 +132,8 @@ wait_for '80|20 is ready' "$CASE_ROOT/output"
 [[ ! -f "$CASE_ROOT/user-created" ]]
 [[ -f "$CASE_ROOT/instance/node/docker/initial-user.done" ]]
 [[ -L "$CASE_ROOT/instance/node/kernel/bin" ]]
+[[ -d "$CASE_ROOT/instance/scripts" && ! -L "$CASE_ROOT/instance/scripts" ]]
+grep -Fxq 'development helper' "$CASE_ROOT/instance/scripts/helper"
 grep -Fxq 'private work' "$CASE_ROOT/instance/users/admin/work.txt"
 grep -Fq 'startup: installing the initial platform runtime from the image' "$CASE_ROOT/output"
 grep -Fxq 'new definitions' "$CASE_ROOT/instance/node/kernel/runtime/definitions/mod.ts"
@@ -200,6 +203,8 @@ wait_for '80|20 is ready' "$CASE_ROOT/output"
 [[ ! -f "$CASE_ROOT/users-calls" && ! -f "$CASE_ROOT/user-created" ]]
 ! grep -Fq 'installing the initial platform runtime' "$CASE_ROOT/output"
 [[ -L "$CASE_ROOT/instance/node/kernel/bin" ]]
+[[ -d "$CASE_ROOT/instance/scripts" && ! -L "$CASE_ROOT/instance/scripts" ]]
+grep -Fxq 'development helper' "$CASE_ROOT/instance/scripts/helper"
 grep -Fxq 'private work' "$CASE_ROOT/instance/users/admin/work.txt"
 ! grep -Fq 'waiting for package initialization and user commands' "$CASE_ROOT/output"
 kill -TERM "$entrypoint_pid"

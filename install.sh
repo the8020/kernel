@@ -181,7 +181,7 @@ for binary in kernel admin logd; do
   mv -f -- "$NODE_KERNEL/bin/$binary.new" "$NODE_KERNEL/bin/$binary"
 done
 mkdir -p "$NODE_KERNEL/scripts/update"
-for script in update.sh update.ts launch.sh; do
+for script in update.sh update.ts launch.sh refresh-development-scripts.sh; do
   install -m 0555 "$SOURCE_ROOT/defaults/kernel-scripts/$script" "$NODE_KERNEL/scripts/$script"
 done
 cp -a "$SOURCE_ROOT/defaults/kernel-scripts/update/." "$NODE_KERNEL/scripts/update/"

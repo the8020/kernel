@@ -85,6 +85,37 @@ func TestDevelopmentGuidance(t *testing.T) {
 	}
 }
 
+func TestReleaseHelpersRemainOutsideProtectedNodeStorage(t *testing.T) {
+	root := t.TempDir()
+	installTestDevelopmentAssets(t, root)
+	release := filepath.Join(root, "node", "kernel", "releases", "0.8.6", "development-scripts")
+	if err := os.MkdirAll(filepath.Dir(release), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(root, "scripts"), release); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(release, filepath.Join(root, "scripts")); err != nil {
+		t.Fatal(err)
+	}
+	config := Config{Root: root}
+	if err := validateMountProfile(config, DefaultMountProfile()); err == nil || !strings.Contains(err.Error(), "may not expose node") {
+		t.Fatalf("release alias must remain protected: %v", err)
+	}
+	for range 2 {
+		command := exec.Command("bash", "../../defaults/kernel-scripts/refresh-development-scripts.sh", root, release)
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("refresh release helpers: %v\n%s", err, output)
+		}
+		if err := validateMountProfile(config, DefaultMountProfile()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := applicationMountSource(config, "node/kernel/releases/0.8.6/development-scripts"); err == nil {
+			t.Fatal("refresh weakened protection of node storage")
+		}
+	}
+}
+
 func TestDevelopmentSystemURL(t *testing.T) {
 	platform := newTestPlatform(t)
 	systemURL := "http://127.0.0.1:18080"

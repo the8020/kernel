@@ -479,6 +479,11 @@ async function apply(root: string, state: Update) {
   await save(`${kernel}/update/state.json`, state);
   await validateRelease(`${kernel}/releases/${state.target}`, state.target);
   await migrations(root, state, false);
+  await command("bash", [
+    `${kernel}/scripts/refresh-development-scripts.sh`,
+    root,
+    `${kernel}/releases/${state.target}/development-scripts`,
+  ]);
   const selected = await Deno.readLink(`${kernel}/current`);
   if (selected !== `releases/${state.target}`) {
     if (selected !== `releases/${state.from}`) {

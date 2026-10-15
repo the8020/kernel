@@ -46,8 +46,10 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 - Dockerfiles bundle binaries, runtime definitions/images, host updater scripts,
   and development helpers under `/usr/local/share/the8020/`. Before first
   startup, the entrypoint stages these as `node/kernel/releases/<version>` and
-  links bin, scripts, definitions/images, and helpers through
-  `node/kernel/current`. Publish current last so an interrupted seed repeats.
+  links bin, host scripts, and definitions/images through
+  `node/kernel/current`. Copy development helpers into a real instance
+  `scripts/` directory using the shared refresh script; development mounts
+  must never resolve into protected node storage. Publish current last so an interrupted seed repeats.
   Later starts preserve the selected instance release even when the factory
   image differs. Seeding never touches users, packages, database, keys, or IDs.
 - Existing `0.7.4` and newer containers bootstrap entirely inside the container,

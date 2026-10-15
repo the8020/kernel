@@ -137,8 +137,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   conflicts, a `conflict_worktree` per package. The UUI uses sandbox inspection
   and the platform's native Git adapter to reopen that exact attempt; terminal
   output defaults to readable instructions, with `--json` for integrations.
-- The platform-owned instance `scripts/` tree is mounted read-only and
-  executable at `/workspace/scripts`; `/workspace/scripts/activate` is the
+- The platform-owned instance `scripts/` tree is a real directory, never a
+  symlink into protected `node/` storage. It is mounted read-only and executable
+  at `/workspace/scripts`; `/workspace/scripts/activate` is the
   canonical terminal helper and remains outside the mutable image system root.
   `install-codex.sh` and `install-claude.sh` opt in to the vendors' latest
   native releases, persist them in root's home, and set only unattended
