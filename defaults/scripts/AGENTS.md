@@ -19,6 +19,13 @@ Parent DOX: [kernel/defaults DOX](../AGENTS.md).
 - `activate` prints readable status, conflicting paths, native Git commands and
   the retry command; `--json` retains structured output and `--help` gives
   usage.
+- `activate --preview --schema --package namespace/package` reads the shared
+  metadata-only plan. Repeat `--force table-id.column` with explicit packages
+  for exact incompatible-cell consent, without another prompt. Cleanup/native
+  DDL run first. Only invalid cells in those columns may use legal NULL or an
+  authored target default; valid cells, rows, keys and identities remain.
+  Unsupported repairs stop without whole-column/table loss. Results report
+  committed scope.
 - The UUI program backend invokes `activation-conflicts.ts` through the ordinary
   kernel sandbox shell operation. The browser never accesses the sandbox
   directly. The helper reads bounded JSON on stdin, confines files to the
@@ -48,6 +55,10 @@ Parent DOX: [kernel/defaults DOX](../AGENTS.md).
   Development startup attempts its native allowance exchange after discovery;
   unavailable authentication never prevents sandbox startup. The skill owns
   credential caching, expiry refresh, screen commands, and local session state.
+- `sql` delegates to the independently shipped database skill's
+  `the8020-dev-db/scripts/sql.ts`. The helper is executable on the existing
+  development PATH; the package owns flags and output, while native ingress owns
+  authentication and bounded SQL. It stores no credentials.
 
 # Work Guidance
 

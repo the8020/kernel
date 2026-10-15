@@ -28,6 +28,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   token for that owner and retain target-Worker account/session validation.
   Native provenance follows the existing authenticated peer transport; payloads
   remain bounded, and credentials never enter diagnostics.
+- Development composition supplies the existing database SQL handler's narrow
+  HTTP adapter through `Config.SQL`. Sandbox ingress verifies authority before
+  dispatch; no package command, service Worker, or new credential is required.
 
 - Public API: `Config`, `RegisterHandlers`, `Main`, `Run`, and
   `ErrRestartRequested`.

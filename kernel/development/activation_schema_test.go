@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -45,7 +46,7 @@ import (
 // Use the ordinary native sandbox/group/Worker/job owners. Only registration,
 // heartbeat and empty database-scope callback acknowledgements are fixture
 // transport; evaluator results and activation hooks execute in real Deno Workers.
-func nativeSchemaJobs(t *testing.T, m *Manager) *jobs.Manager {
+func nativeSchemaJobs(t *testing.T, m *Manager, sqlDatabase ...*database.Manager) *jobs.Manager {
 	t.Helper()
 	root := filepath.Join(m.config.Root, "node/schema-runtime")
 	api := filepath.Join(root, "api")
@@ -57,6 +58,10 @@ func nativeSchemaJobs(t *testing.T, m *Manager) *jobs.Manager {
 		t.Fatal(err)
 	}
 	imageRoot := filepath.Join(source, ".development/named-terminal-test/node/kernel/runtime/images/rootless")
+	imageProtocol, err := os.ReadFile(filepath.Join(imageRoot, "rootfs/opt/runtime/protocol.ts"))
+	if err != nil || !strings.Contains(string(imageProtocol), fmt.Sprintf("PROTOCOL_VERSION = %d as const", protocol.ProtocolVersion)) {
+		t.Fatalf("refresh the disposable service image to protocol %d before native schema checks: %v", protocol.ProtocolVersion, err)
+	}
 	imageBytes, err := os.ReadFile(filepath.Join(imageRoot, "image.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -100,11 +105,65 @@ func nativeSchemaJobs(t *testing.T, m *Manager) *jobs.Manager {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if r.URL.Path == "/v1/runtime/database/scope" {
+		if r.URL.Path == "/v1/runtime/operation/execute" {
+			payload, _ := envelope["payload"].(map[string]any)
+			if payload["operation"] != "activation.schema_evolution" {
+				http.Error(w, "unexpected fixture operation", 400)
+				return
+			}
+			envelope["message_type"], envelope["payload"] = "admin_result", map[string]any{"success": true, "result": 2}
+		}
+		if len(sqlDatabase) > 0 && strings.HasPrefix(r.URL.Path, "/v1/runtime/database/") {
+			encoded, _ := json.Marshal(envelope["payload"])
+			var payload struct {
+				database.StatementRequest
+				WorkerID  string                       `json:"worker_id"`
+				ContextID string                       `json:"context_id"`
+				Operation string                       `json:"operation"`
+				Settings  database.TransactionSettings `json:"settings"`
+			}
+			if err := json.Unmarshal(encoded, &payload); err != nil {
+				http.Error(w, err.Error(), 400)
+				return
+			}
+			scope := fmt.Sprint(envelope["sandbox_id"]) + "\x00" + payload.WorkerID + "\x00" + payload.ContextID
+			var value any
+			var failure error
+			db := sqlDatabase[0]
+			switch r.URL.Path {
+			case "/v1/runtime/database/info":
+				value = db.Status()
+			case "/v1/runtime/database/execute":
+				value, failure = db.RunStatement(r.Context(), scope, payload.StatementRequest)
+			case "/v1/runtime/database/scope":
+				db.CloseScope(scope)
+				value = map[string]bool{"closed": true}
+			case "/v1/runtime/database/transaction":
+				if payload.Operation == "database.transaction.begin" {
+					var token string
+					token, failure = db.BeginTransaction(r.Context(), scope, payload.Settings)
+					value = map[string]string{"transaction": token}
+				} else {
+					failure = db.FinishTransaction(r.Context(), scope, payload.Transaction, payload.Operation == "database.transaction.commit")
+					value = map[string]bool{"completed": failure == nil}
+				}
+			}
+			if failure != nil {
+				http.Error(w, failure.Error(), 422)
+				return
+			}
+			envelope["message_type"], envelope["payload"] = "database_result", value
+		} else if r.URL.Path == "/v1/runtime/database/scope" {
 			envelope["message_type"], envelope["payload"] = "database_result", map[string]any{}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(envelope)
+		data, err := json.Marshal(envelope)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+		_, _ = w.Write(data)
 	})}
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(func() { _ = server.Close(); _ = listener.Close() })

@@ -40,8 +40,14 @@ Parent DOX: [kernel/kernel/database DOX](../AGENTS.md).
   tables whose recorded Deno module dependency closure intersects Git's changed
   files. There is no custom TypeScript or dynamic-import parser.
 - `Prepare` applies candidate schema before source visibility and `Complete`
-  either records activation or restores active descriptors. Restart recovery
-  evaluates the package tree actually present on disk.
+  either records activation or restores active descriptors when no committed
+  rewrite exists. Candidate capability validation precedes mutation. Catalog
+  upgrade and pending-candidate creation share the schema transaction; receipts
+  prohibit abort after commit. Recovery uses the retained exact candidate.
+- The SQL-free evaluator reports callable migration presence. The SQL-capable
+  schema job loads the native-confined table export before schema locks and
+  invokes it only for a relevant nonautomatic transition. Candidate DB-package
+  upgrades use the same staged mounts, including receipt inspection/recovery.
 - Removal candidates have empty commits. Preparation retires their recorded
   tables without discovering, mounting, or executing the removed package.
 - The transaction owner passes an explicit activation ID through preparation,

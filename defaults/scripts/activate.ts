@@ -2,6 +2,8 @@ const endpoint = Deno.env.get("DEVELOPMENT_ACTIVATION_ENDPOINT");
 const user = Deno.env.get("DEVELOPMENT_USER_ID");
 const token = Deno.env.get("DEVELOPMENT_ACTIVATION_TOKEN");
 let preview = false;
+let schema_preview = false;
+const force_columns: string[] = [];
 let json = false;
 let description = "";
 let authorName = "";
@@ -12,13 +14,20 @@ for (let index = 0; index < Deno.args.length; index++) {
   const argument = Deno.args[index];
   if (argument === "--help" || argument === "-h") {
     console.log(
-      "Usage: activate --message 'Describe the changes' [--package namespace/package]\n       activate --preview\n\nResolve conflicts in the reported Git worktree, commit the resolution, then rerun the same activation command.\nUse --json for machine-readable output.",
+      "Usage: activate --message 'Describe the changes' [--package namespace/package] [--force table-id.column]\n       activate --preview [--schema] [--package namespace/package]\n\n--force may repeat. Cleanup and native activation run first. Only incompatible cells in exact authorized columns may use NULL or an authored target default. Rows, other cells, keys and identity are retained; unsupported repair stops. Requires --package.\nUse --json for machine-readable output.",
     );
     Deno.exit(0);
   }
   if (argument === "--json") json = true;
   else if (argument === "--preview") preview = true;
-  else if (argument === "--message") description = Deno.args[++index] ?? "";
+  else if (argument === "--schema") schema_preview = true;
+  else if (argument === "--force") {
+    const table = Deno.args[++index];
+    if (!table || table.startsWith("--")) {
+      throw new Error("--force requires an exact table.column");
+    }
+    force_columns.push(table);
+  } else if (argument === "--message") description = Deno.args[++index] ?? "";
   else if (argument === "--package") {
     selected_packages.push(Deno.args[++index] ?? "");
   } else if (argument === "--package-message") {
@@ -43,7 +52,31 @@ if (!endpoint || !user || !token) {
 if (!preview && !description.trim()) {
   throw new Error("an activation description is required");
 }
+if (schema_preview && !preview) throw new Error("--schema requires --preview");
+if (force_columns.length && !selected_packages.length) {
+  throw new Error("--force requires --package");
+}
 const operation = preview ? "preview" : "activate";
+if (force_columns.length) {
+  const capability = await fetch(
+    `${endpoint}/v1/development/sandboxes/${user}/preview`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ selected_packages }),
+    },
+  );
+  if (
+    !capability.ok || (await capability.json()).schema_options_version !== 2
+  ) {
+    throw new Error(
+      "Force requires an updated kernel; no activation was submitted",
+    );
+  }
+}
 const response = await fetch(
   `${endpoint}/v1/development/sandboxes/${user}/${operation}`,
   {
@@ -58,6 +91,8 @@ const response = await fetch(
       package_messages,
       author_name: authorName,
       author_email: authorEmail,
+      schema_preview,
+      force_columns,
     }),
   },
 );
@@ -67,6 +102,23 @@ else {
   const result = JSON.parse(body);
   const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
   if (preview) {
+    if (result.schema_plan) {
+      for (const table of result.schema_plan.tables) {
+        console.log(
+          `${table.table_id}: ${table.route}; ${
+            table.reasons.join("; ") || "automatic"
+          }; ${
+            table.affected_columns.map((c: { name: string; repair: string }) =>
+              `${c.name}: ${
+                c.repair === "unsupported"
+                  ? "no automatic repair"
+                  : `invalid cells may use ${c.repair}`
+              }`
+            ).join("; ")
+          }`,
+        );
+      }
+    }
     for (const item of result.packages ?? []) {
       console.log(
         `${item.package_id}: ${item.changed_files} files, +${item.added_rows} / -${item.removed_rows} lines${
@@ -74,13 +126,32 @@ else {
         }`,
       );
     }
-    if (!result.packages?.length) console.log("No private changes.");
+    if (!result.packages?.length && !result.schema_plan) {
+      console.log("No private changes.");
+    }
   } else if (result.success) {
     console.log(
       result.status === "not-committed"
         ? "No changes to activate."
         : "Activation complete.",
     );
+    for (
+      const [table, receipt] of Object.entries(
+        result.schema_result ?? {},
+      ) as Array<[string, { route: string; columns?: string[] }]>
+    ) {
+      console.log(
+        `  ${table}: ${
+          receipt.route === "repair"
+            ? `incompatible cells repaired in ${
+              receipt.columns?.join(", ") ?? "authorized columns"
+            }`
+            : receipt.route === "cleanup"
+            ? "cleanup and schema applied"
+            : "schema applied"
+        }`,
+      );
+    }
     for (const item of result.packages ?? []) {
       console.log(
         `  ${item.package_id}: ${

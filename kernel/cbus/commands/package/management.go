@@ -3,6 +3,7 @@ package packagecommands
 
 import (
 	"context"
+	"encoding/json"
 
 	"the8020/kernel/cbus/core"
 	workspacepackages "the8020/kernel/packages"
@@ -12,9 +13,11 @@ import (
 // SynchronizationResult is the complete public result for one synchronized
 // package. Detailed Git and service-refresh state remains internal.
 type SynchronizationResult struct {
-	PackageID string `json:"package_id"`
-	Commit    string `json:"commit"`
-	Success   bool   `json:"success"`
+	PackageID    string          `json:"package_id"`
+	Commit       string          `json:"commit"`
+	Success      bool            `json:"success"`
+	SchemaPlan   json.RawMessage `json:"schema_plan,omitempty"`
+	SchemaResult json.RawMessage `json:"schema_result,omitempty"`
 }
 
 func Management(serviceSet *services.Services) (services.PackageManagementService, error) {
@@ -54,9 +57,11 @@ func SynchronizeWithCredential(ctx context.Context, serviceSet *services.Service
 	firstFailure := -1
 	for index, result := range results {
 		summaries = append(summaries, SynchronizationResult{
-			PackageID: result.PackageID,
-			Commit:    result.Commit,
-			Success:   result.Success,
+			PackageID:    result.PackageID,
+			Commit:       result.Commit,
+			Success:      result.Success,
+			SchemaPlan:   result.SchemaPlan,
+			SchemaResult: result.SchemaResult,
 		})
 		if !result.Success && firstFailure < 0 {
 			firstFailure = index

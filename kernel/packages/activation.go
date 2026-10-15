@@ -3,6 +3,7 @@ package packages
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -89,6 +90,7 @@ func NewActivationCoordinator(config ActivationCoordinatorConfig) (*ActivationCo
 }
 
 func (c *ActivationCoordinator) Prepare(ctx context.Context, transactionID string, candidates []deployment.Candidate) error {
+	ctx = deployment.WithCandidates(ctx, candidates)
 	ctx, release, err := c.database.AcquireActivationLock(ctx, transactionID)
 	if err != nil {
 		return err
@@ -98,18 +100,50 @@ func (c *ActivationCoordinator) Prepare(ctx context.Context, transactionID strin
 	if err != nil {
 		return err
 	}
-	run, err := c.begin(ctx, transactionID, candidates)
+	stage := ""
+	err = c.database.QueryRowContext(ctx, `SELECT "stage" FROM `+activationsTable+` WHERE "activationId" = $1`, transactionID).Scan(&stage)
+	var run *activationRun
+	if errors.Is(err, sql.ErrNoRows) {
+		run, err = c.begin(ctx, transactionID, candidates)
+		stage = "staged"
+	} else if err == nil {
+		run, err = c.loadActivation(ctx, transactionID)
+		if err == nil {
+			if len(run.candidates) != len(candidates) {
+				return fmt.Errorf("unfinished activation %s candidate set changed", transactionID)
+			}
+			for _, candidate := range candidates {
+				found := false
+				for _, saved := range run.candidates {
+					if saved.PackageID == candidate.PackageID && saved.Commit == candidate.Commit {
+						found = true
+					}
+				}
+				if !found {
+					return fmt.Errorf("unfinished activation %s candidate changed", transactionID)
+				}
+			}
+		}
+	}
 	if err != nil {
 		return err
 	}
-	run.handlers = handlers
-	if err := c.schema.Prepare(ctx, run.id, candidates); err != nil {
-		rollbackErr := c.rollback(context.WithoutCancel(ctx), run, err)
-		return errors.Join(err, rollbackErr)
+	if stage == "failed" {
+		return errors.New("activation already failed; use a new activation identity")
 	}
-	if err := c.setStage(ctx, run.id, "schema_synchronized", nil); err != nil {
-		rollbackErr := c.rollback(context.WithoutCancel(ctx), run, err)
-		return errors.Join(err, rollbackErr)
+	if stage != "staged" && stage != "schema_synchronized" {
+		return nil
+	}
+	run.handlers = handlers
+	if stage == "staged" {
+		if err := c.schema.Prepare(ctx, run.id, candidates); err != nil {
+			rollbackErr := c.rollback(context.WithoutCancel(ctx), run, err)
+			return errors.Join(err, rollbackErr)
+		}
+		if err := c.setStage(ctx, run.id, "schema_synchronized", nil); err != nil {
+			rollbackErr := c.rollback(context.WithoutCancel(ctx), run, err)
+			return errors.Join(err, rollbackErr)
+		}
 	}
 	if err := c.runHooks(ctx, run, "pre-activate", true); err != nil {
 		rollbackErr := c.rollback(context.WithoutCancel(ctx), run, err)
@@ -122,6 +156,47 @@ func (c *ActivationCoordinator) Prepare(ctx context.Context, transactionID strin
 	// Existing packages retain their published availability. The activation row
 	// owns pending work; shared source remains mutable during publication.
 	return nil
+}
+
+func (c *ActivationCoordinator) Plan(ctx context.Context, candidates []deployment.Candidate) (json.RawMessage, error) {
+	if _, err := c.validate(ctx, candidates); err != nil {
+		return nil, err
+	}
+	planner, ok := c.schema.(deployment.PlanningHook)
+	if !ok {
+		return nil, errors.New("schema preview requires an updated database coordinator")
+	}
+	return planner.Plan(ctx, candidates)
+}
+
+func (c *ActivationCoordinator) SchemaOutcome(ctx context.Context, id string) (json.RawMessage, error) {
+	run, err := c.loadActivation(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	ctx = deployment.WithCandidates(ctx, run.rawCandidates())
+	if owner, ok := c.schema.(deployment.OutcomeHook); ok {
+		return owner.SchemaOutcome(ctx, id)
+	}
+	return nil, nil
+}
+
+func (c *ActivationCoordinator) ForwardRequired(ctx context.Context, id string) (bool, error) {
+	run, err := c.loadActivation(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	ctx = deployment.WithCandidates(ctx, run.rawCandidates())
+	forward, err := deployment.NeedsForward(ctx, c.schema, id)
+	if err != nil || forward {
+		return forward, err
+	}
+	var stage string
+	err = c.database.QueryRowContext(ctx, `SELECT "stage" FROM `+activationsTable+` WHERE "activationId" = $1`, id).Scan(&stage)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return stage == "code_switched" || stage == "post_activated" || stage == "published" || stage == "complete", err
 }
 
 func (c *ActivationCoordinator) Complete(ctx context.Context, transactionID string, activated bool) error {
@@ -149,6 +224,7 @@ func (c *ActivationCoordinator) Complete(ctx context.Context, transactionID stri
 	if err != nil {
 		return err
 	}
+	ctx = deployment.WithCandidates(ctx, run.rawCandidates())
 	if stage == "published" {
 		if !activated {
 			return fmt.Errorf("activation %s is already published; finish activation instead of rolling it back", transactionID)
@@ -287,6 +363,7 @@ func (c *ActivationCoordinator) recoverActivation(ctx context.Context, id string
 	if err != nil {
 		return err
 	}
+	ctx = deployment.WithCandidates(ctx, run.rawCandidates())
 	releaseSources, err := LockSources(ctx, c.packages.packagesRoot, run.packageIDs())
 	if err != nil {
 		return err
@@ -316,6 +393,10 @@ func (c *ActivationCoordinator) recoverActivation(ctx context.Context, id string
 		return err
 	}
 	run.handlers = handlers
+	forward, err := c.ForwardRequired(ctx, run.id)
+	if err != nil {
+		return err
+	}
 	codeSwitched := stage == "code_switched" || stage == "post_activated"
 	if !codeSwitched {
 		switched := make([]activationCandidate, 0, len(run.candidates))
@@ -327,6 +408,56 @@ func (c *ActivationCoordinator) recoverActivation(ctx context.Context, id string
 			if active {
 				switched = append(switched, candidate)
 			}
+		}
+		if forward && len(switched) < len(run.candidates) {
+			if stage == "staged" {
+				if err := c.schema.Prepare(ctx, run.id, candidates); err != nil {
+					c.incomplete(ctx, run, err)
+					return err
+				}
+				if err := c.setStage(ctx, run.id, "schema_synchronized", nil); err != nil {
+					return err
+				}
+				stage = "schema_synchronized"
+			}
+			if stage == "schema_synchronized" {
+				if err := c.runHooks(ctx, run, "pre-activate", true); err != nil {
+					c.incomplete(ctx, run, err)
+					return err
+				}
+				if err := c.setStage(ctx, run.id, "pre_activated", nil); err != nil {
+					return err
+				}
+				stage = "pre_activated"
+			}
+			for _, candidate := range run.candidates {
+				active, err := c.sourceIsCandidate(ctx, candidate)
+				if err != nil {
+					return err
+				}
+				if active {
+					continue
+				}
+				destination := c.packages.packagePath(candidate.PackageID)
+				if candidate.Commit == "" {
+					return errors.New("forward recovery cannot infer a removed candidate")
+				}
+				if _, err := os.Stat(filepath.Join(candidate.Root, ".git")); err == nil {
+					if commit, err := CleanRepositoryHead(ctx, candidate.Root); err != nil || commit != candidate.Commit {
+						return fmt.Errorf("forward candidate changed: %s: %v", candidate.PackageID, err)
+					}
+					if _, err := replacePackageDirectory(destination, candidate.Root); err != nil {
+						return err
+					}
+				} else if errors.Is(err, os.ErrNotExist) {
+					if _, err := c.packages.runGit(ctx, destination, nil, "reset", "--hard", candidate.Commit); err != nil {
+						return err
+					}
+				} else {
+					return err
+				}
+			}
+			switched = run.candidates
 		}
 		if len(switched) > 0 && len(switched) < len(run.candidates) {
 			if err := c.restoreSources(ctx, switched); err != nil {
@@ -665,6 +796,15 @@ func (c *ActivationCoordinator) finishHook(ctx context.Context, activationID, pa
 }
 
 func (c *ActivationCoordinator) rollback(ctx context.Context, run *activationRun, cause error) error {
+	forward, err := c.ForwardRequired(ctx, run.id)
+	if err != nil {
+		return err
+	}
+	if forward {
+		failure := fmt.Errorf("schema/data committed for %s; activation incomplete, resume the same candidate forward: %w", run.id, cause)
+		c.incomplete(ctx, run, failure)
+		return failure
+	}
 	var joined error
 	for _, candidate := range run.candidates {
 		if candidate.previous == "" {
@@ -817,7 +957,33 @@ func (c *ActivationCoordinator) loadActivation(ctx context.Context, id string) (
 			previous:  previous.String, first: first,
 		})
 	}
-	return run, rows.Err()
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	if recovery, ok := c.schema.(deployment.RecoveryHook); ok {
+		candidates, err := recovery.RecoveryCandidates(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		for i := range run.candidates {
+			for _, candidate := range candidates {
+				if candidate.PackageID == run.candidates[i].PackageID && candidate.Commit == run.candidates[i].Commit {
+					if _, err := os.Stat(candidate.Root); err == nil {
+						run.candidates[i].Root = candidate.Root
+					}
+				}
+			}
+		}
+	}
+	return run, nil
+}
+
+func (run *activationRun) rawCandidates() []deployment.Candidate {
+	result := make([]deployment.Candidate, len(run.candidates))
+	for i, candidate := range run.candidates {
+		result[i] = candidate.Candidate
+	}
+	return result
 }
 
 func (s *Store) packagePath(packageID string) string {

@@ -92,7 +92,7 @@ func TestCatalogBootstrapAndAdditiveSynchronization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.State != StateConnected || status.CatalogVersion != 2 || status.Initialized {
+	if status.State != StateConnected || status.CatalogVersion != 3 || status.Initialized {
 		t.Fatalf("catalog status = %#v", status)
 	}
 	descriptor := testDescriptor()
@@ -470,7 +470,7 @@ func TestLogicalReferenceChangeDoesNotRequirePhysicalMigration(t *testing.T) {
 	}
 }
 
-func TestUnsafeAdditionsAndRequiredSQLiteRetirementNeedMigration(t *testing.T) {
+func TestNativeDefaultAdditionAndSQLiteRetirementPreserveData(t *testing.T) {
 	manager := newSchemaDatabase(t, sqliteConfig(filepath.Join(t.TempDir(), "system.db")))
 	t.Cleanup(func() { _ = manager.Close() })
 	ctx := context.Background()
@@ -482,18 +482,25 @@ func TestUnsafeAdditionsAndRequiredSQLiteRetirementNeedMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	withNow := testDescriptor()
+	if _, err := manager.ExecContext(ctx, `INSERT INTO acme__orders__orders (id,total) VALUES (7,123)`); err != nil {
+		t.Fatal(err)
+	}
 	withNow.Columns = append(withNow.Columns, ColumnDescriptor{
 		Name: "processedAt", LogicalType: "datetime", Default: &DefaultDescriptor{Kind: "now"},
 	})
 	results, err := manager.Synchronize(ctx, []EvaluatedTable{evaluatedTable(t, withNow)}, SynchronizationOptions{})
-	if err == nil || results[0].State != "migration_required" {
+	if err != nil || results[0].State != "synchronized" {
 		t.Fatalf("defaultNow addition = %#v, %v", results, err)
 	}
 	withoutTotal := testDescriptor()
 	withoutTotal.Columns = append(withoutTotal.Columns[:2], withoutTotal.Columns[3:]...)
 	results, err = manager.Synchronize(ctx, []EvaluatedTable{evaluatedTable(t, withoutTotal)}, SynchronizationOptions{})
-	if err == nil || results[0].State != "migration_required" {
+	if err != nil || results[0].State != "synchronized" {
 		t.Fatalf("required retirement = %#v, %v", results, err)
+	}
+	var total int
+	if err := manager.QueryRowContext(ctx, `SELECT total FROM acme__orders__orders WHERE id=7`).Scan(&total); err != nil || total != 123 {
+		t.Fatalf("retired value lost: %d %v", total, err)
 	}
 }
 
@@ -544,7 +551,7 @@ func TestRecoveryRemovesCandidateIndexOnActiveColumns(t *testing.T) {
 		t.Fatal(err)
 	}
 	results, err := manager.Synchronize(ctx, []EvaluatedTable{evaluatedTable(t, previous)}, SynchronizationOptions{})
-	if err == nil || results[0].State != "migration_required" {
+	if err != nil || results[0].State != "synchronized" {
 		t.Fatalf("ordinary index removal = %#v, %v", results, err)
 	}
 	results, err = manager.Synchronize(ctx, []EvaluatedTable{evaluatedTable(t, previous)}, SynchronizationOptions{Recovery: true})

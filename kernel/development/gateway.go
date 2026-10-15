@@ -69,6 +69,15 @@ func (g *CommandBusGateway) execute(ctx context.Context, commandName, resultFiel
 	if resultField == "preview" && options.PreviewFile != "" {
 		arguments = append(arguments, "--file", options.PreviewFile)
 	}
+	if options.SchemaPreview {
+		arguments = append(arguments, "--schema")
+	}
+	if len(options.ForceColumns) > 0 {
+		arguments = append(arguments, "--force", strings.Join(options.ForceColumns, ","))
+	}
+	if options.ApprovedPlan != "" {
+		arguments = append(arguments, "--approved-plan", options.ApprovedPlan)
+	}
 	for name, value := range map[string]string{"author-name": options.AuthorName, "author-email": options.AuthorEmail} {
 		if value != "" {
 			arguments = append(arguments, "--"+name, value)

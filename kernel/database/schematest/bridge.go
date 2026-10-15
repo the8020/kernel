@@ -19,7 +19,7 @@ import (
 	"the8020/kernel/database"
 )
 
-func Attach(t testing.TB, manager *database.Manager) {
+func Attach(t testing.TB, manager *database.Manager, observe ...func(database.StatementRequest)) {
 	t.Helper()
 	deno, err := exec.LookPath("deno")
 	if err != nil {
@@ -46,12 +46,26 @@ func Attach(t testing.TB, manager *database.Manager) {
 		var value any
 		var err error
 		switch call.Operation {
+		case "runtime.operation":
+			var input struct {
+				Operation string `json:"operation"`
+			}
+			if err = json.Unmarshal(call.Input, &input); err == nil && input.Operation == "activation.schema_evolution" {
+				value = map[string]any{"success": true, "result": 2}
+			} else {
+				err = errors.New("unexpected test runtime operation")
+			}
 		case "database.info":
 			value = manager.Status()
 		case "database.execute":
 			var input database.StatementRequest
 			if err = json.Unmarshal(call.Input, &input); err == nil {
 				value, err = manager.RunStatement(r.Context(), scope, input)
+				if err == nil {
+					for _, observed := range observe {
+						observed(input)
+					}
+				}
 			}
 		case "database.transaction.begin":
 			var input struct {

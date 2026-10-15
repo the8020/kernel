@@ -85,8 +85,15 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Rollback restores previous ready package records before the schema evaluator
   rereads their still-active source.
 - Removed table/column definitions become retired metadata and retained physical
-  data. Only explicit confirmed trim performs destructive deletion. Incompatible
-  type, nullability, key, index, or constraint changes reject activation.
+  data. The db owner classifies safe changes and runs optional table migrations.
+  Exact table.column force consent permits only incompatible-cell NULL/default
+  repair after ordinary cleanup/native activation and confirmed rollback. Trim
+  remains separate.
+- Committed schema/catalog receipts prohibit source/schema rollback. Retain the
+  candidate and phase; resume pre/post hooks, source switching and indexing
+  forward without replaying committed schema work. Missing candidate source
+  fails explicitly until that same candidate is restored. Ordinary activation
+  preparation does not run a presentation preview or count rows for display.
 - Handler folders are flat: `events/*.toml` requires `event`, `description`, and
   `program`; `hooks/*.toml` requires `hook`, `description`, and `program`. Hooks
   also accept integer `order`, defaulting to zero. Each trigger retains all
@@ -149,11 +156,11 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   executable validator, including diagnostics for invalid programs. Neither path
   reads application metadata; the packages application enriches its own catalog
   and selected inspection inside the Worker.
-- Synchronization stages the existing Git repository, or clones on first install,
-  validates the exact commit, and replaces source by rename. Preserve Git objects,
-  branch names, and history when applying versions. Dirty shared worktrees are
-  preserved and rejected. One failed batch package has explicit durable failure
-  state.
+- Synchronization stages the existing Git repository, or clones on first
+  install, validates the exact commit, and replaces source by rename. Preserve
+  Git objects, branch names, and history when applying versions. Dirty shared
+  worktrees are preserved and rejected. One failed batch package has explicit
+  durable failure state.
 - Activated-source consumers can require a clean installed checkout whose HEAD
   or content fingerprint exactly matches the ready database commit; schema
   evaluation uses this guard while staged activation evaluates its candidate.
@@ -166,14 +173,15 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   password input; omitting it retains `x-access-token` for tokens. Redact both
   the supplied secret and its actual encoded Basic header from failures.
 - Installed versions stay attached to the current branch, using the remote's
-  default branch on first install. Tags and commits select the initial or applied
-  version without detaching; branch tracking does not advance that version.
-  Git owns branch state; the database continues to own the exact active commit.
+  default branch on first install. Tags and commits select the initial or
+  applied version without detaching; branch tracking does not advance that
+  version. Git owns branch state; the database continues to own the exact active
+  commit.
 - Repository fetch updates remote references and tags without changing HEAD,
   worktree files, desired/active versions, or running services; dirty worktrees
   remain fetchable. Pull explicitly fast-forwards a clean attached branch; push
-  publishes it without force. Commit checkout retains the branch. Source-changing
-  operations use the same activation transaction.
+  publishes it without force. Commit checkout retains the branch.
+  Source-changing operations use the same activation transaction.
 - Bounded version listings include exact commit parent IDs. Local repositories
   select their current HEAD and never require or fetch an upstream reference.
 - Kernel repository SQL remains portable across SQLite and PostgreSQL. Bind
@@ -198,9 +206,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   ordering/idempotence, durable phase recovery, PostgreSQL lock ordering,
   retirement/trim behavior, targeted package refresh, and automatic cross-node
   index propagation without application-table scans.
-- Git regressions cover older-version installation with upstream tracking,
-  fetch without activation, attached commit selection, retained local Git history,
-  and fetch/select/push through ordinary repositories.
+- Git regressions cover older-version installation with upstream tracking, fetch
+  without activation, attached commit selection, retained local Git history, and
+  fetch/select/push through ordinary repositories.
 - Declaration regressions include documentation-only and documented TOML
   folders, candidate activation validation, and live handler reindexing.
 - Deletion regressions cover dirty-source rejection, namespace containment,

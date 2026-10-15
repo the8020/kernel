@@ -3,6 +3,7 @@ package deployment
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 )
 
@@ -19,6 +20,54 @@ type SchemaHook interface {
 	Prepare(context.Context, string, []Candidate) error
 	// False aborts the exact preparation, including one that never started.
 	Complete(context.Context, string, bool) error
+}
+
+// Schema policy stays opaque here; source owners bind consent to one candidate.
+type SchemaOptions struct {
+	ForceColumns []string `json:"force_columns,omitempty"`
+	ApprovedPlan string   `json:"approved_plan,omitempty"`
+	Preview      bool     `json:"schema_preview,omitempty"`
+}
+type schemaOptionsKey struct{}
+type candidatesKey struct{}
+
+func WithCandidates(ctx context.Context, candidates []Candidate) context.Context {
+	return context.WithValue(ctx, candidatesKey{}, candidates)
+}
+func Candidates(ctx context.Context) []Candidate {
+	value, _ := ctx.Value(candidatesKey{}).([]Candidate)
+	return value
+}
+
+func WithSchemaOptions(ctx context.Context, options SchemaOptions) context.Context {
+	return context.WithValue(ctx, schemaOptionsKey{}, options)
+}
+func Options(ctx context.Context) SchemaOptions {
+	value, _ := ctx.Value(schemaOptionsKey{}).(SchemaOptions)
+	return value
+}
+
+type PlanningHook interface {
+	Plan(context.Context, []Candidate) (json.RawMessage, error)
+}
+type ForwardHook interface {
+	ForwardRequired(context.Context, string) (bool, error)
+}
+type RecoveryHook interface {
+	RecoveryCandidates(context.Context, string) ([]Candidate, error)
+}
+type OutcomeHook interface {
+	SchemaOutcome(context.Context, string) (json.RawMessage, error)
+}
+
+func NeedsForward(ctx context.Context, hook SchemaHook, id string) (bool, error) {
+	if id == "" {
+		return false, nil
+	}
+	if forward, ok := hook.(ForwardHook); ok {
+		return forward.ForwardRequired(ctx, id)
+	}
+	return false, nil
 }
 
 type unavailableHook struct{ err error }

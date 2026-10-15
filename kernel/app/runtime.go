@@ -18,6 +18,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	databasesql "the8020/kernel/cbus/commands/database/sql"
 	"the8020/kernel/cbus/core"
 	"the8020/kernel/cbus/discovery"
 	platformconsole "the8020/kernel/console"
@@ -666,6 +667,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		RuntimeRoot: paths.RuntimeDevelopment, ImageRoot: filepath.Join(paths.DevelopmentImage, "rootfs"),
 		ImageRecord: filepath.Join(paths.DevelopmentImage, "image.json"), MountProfile: development.DefaultMountProfile(),
 		ActivationGateway: development.NewCommandBusGateway(commandRegistry), RepositoryMu: repositoryMu,
+		SQL:        databasesql.NewHTTP(serviceSet),
 		UserAccess: sandboxUserAccess(authentication, sandboxServices.Load),
 		SystemURL: func() string {
 			return fmt.Sprintf("http://127.0.0.1:%d", activeInt(settingManager, "network.main_port", 8080))

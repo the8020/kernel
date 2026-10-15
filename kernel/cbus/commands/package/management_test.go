@@ -40,7 +40,7 @@ func TestSynchronizeReturnsPackagePublicationResults(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := SynchronizationResult{PackageID: "example/changed", Commit: "1111111111111111111111111111111111111111", Success: true}
-	if results[0] != want {
+	if !reflect.DeepEqual(results[0], want) {
 		t.Fatalf("synchronization result = %#v, want %#v", results[0], want)
 	}
 }

@@ -173,5 +173,5 @@ func activationOptions(request core.Request) (development.ActivationOptions, err
 			return development.ActivationOptions{}, core.NewError(core.CodeInvalidArguments, "metadata must be a JSON object of string values")
 		}
 	}
-	return development.ActivationOptions{Description: commandutil.String(request, "message"), SelectedPackages: commandutil.CSV(request, "packages"), PackageMessages: messages, AuthorName: commandutil.String(request, "author_name"), AuthorEmail: commandutil.String(request, "author_email"), Metadata: metadata}, nil
+	return development.ActivationOptions{Description: commandutil.String(request, "message"), SelectedPackages: commandutil.CSV(request, "packages"), PackageMessages: messages, AuthorName: commandutil.String(request, "author_name"), AuthorEmail: commandutil.String(request, "author_email"), Metadata: metadata, ForceColumns: commandutil.CSV(request, "force_columns"), ApprovedPlan: commandutil.String(request, "approved_plan"), SchemaPreview: commandutil.Bool(request, "schema_preview")}, nil
 }

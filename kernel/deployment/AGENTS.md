@@ -14,7 +14,12 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   remains its installed path. Nonempty commits publish candidate source. Both
   forms use the same preparation, completion, and recovery handshake.
 - `Complete(true)` records the code switch; `Complete(false)` recovers catalog
-  metadata to the still-active package set.
+  metadata only when the schema owner confirms no committed forward-only work.
+- Typed options carry exact force columns and an approved plan. `PlanningHook`
+  is read-only; `ForwardHook`, `RecoveryHook` and `OutcomeHook` expose the
+  schema owner's receipt disposition, retained candidates and user-facing
+  results. Neither preview nor force bypasses native authority or candidate
+  identity.
 - The shared handshake binds both calls to the same explicit `act-` ID.
   Package-scoped source locks cover preparation, source switching and
   completion; independent package sets can progress separately. A late

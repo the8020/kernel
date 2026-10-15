@@ -26,7 +26,7 @@ Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
 
 - [check/AGENTS.md](check/AGENTS.md): Implement the read-only database
   connectivity check.
-- [sql/AGENTS.md](sql/AGENTS.md): Implement the administrative SQL query/execute
-  command.
+- [sql/AGENTS.md](sql/AGENTS.md): Adapt native SQL query/execute and its
+  authenticated development-sandbox HTTP transport.
 - [table/AGENTS.md](table/AGENTS.md): Expose database-first table catalog
   inspection and explicit synchronization.
