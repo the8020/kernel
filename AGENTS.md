@@ -207,6 +207,8 @@ relevant child AGENTS.md
 - `kernel.update <major.minor.patch>` detaches the installed updater and returns
   its PID and log path. The instance launcher owns the later graceful shutdown,
   migration, and restart; an update does not exit the enclosing container.
+- [README.md](README.md) owns development-container update instructions: the
+  one-line command, prerequisites, background progress, and completion checks.
 - Uncaught UUI program exceptions must open the package-configured standard
   Program terminated short-dump program without ending the session; it must
   expose bounded exception, stack, and source context, support copying the dump,
