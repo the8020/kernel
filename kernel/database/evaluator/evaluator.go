@@ -466,8 +466,9 @@ func (e *Evaluator) Complete(ctx context.Context, transactionID string, activate
 			return fmt.Errorf("schema/data committed for %s; activation incomplete, resume the same candidate forward", transactionID)
 		}
 		if err := e.restore(ctx, pending); err != nil {
-			_ = e.database.UpdatePendingDeployment(context.WithoutCancel(ctx), transactionID, "rollback_failed", err)
-			return err
+			failure := fmt.Errorf("rollback of pending deployment %s (stage %s) failed: %w; pending deployment retained, resolve the reported error before retrying", transactionID, pending.Stage, err)
+			_ = e.database.UpdatePendingDeployment(context.WithoutCancel(ctx), transactionID, "rollback_failed", failure)
+			return failure
 		}
 	}
 	return e.database.CompleteDeployment(ctx, transactionID, activated)

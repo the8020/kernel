@@ -96,6 +96,7 @@ func TestNativeActivation(t *testing.T) {
 	writeTestFile(t, filepath.Join(shared, "lower-a.txt"), "linked original\n")
 	writeTestFile(t, filepath.Join(shared, "link-source.txt"), "linked original\n")
 	writeTestFile(t, filepath.Join(shared, "rename-source.txt"), "first\n2\n3\n4\n5\n6\n7\nlast\n")
+	writeTestFile(t, filepath.Join(shared, "inplace.txt"), "original\n")
 	writeTestFile(t, filepath.Join(shared, "nested/keep.txt"), "untouched sibling\n")
 	for _, name := range []string{"delete.txt", "nested/remove.txt"} {
 		writeTestFile(t, filepath.Join(shared, name), "original deletion\n")
@@ -105,7 +106,7 @@ func TestNativeActivation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := gitCommand(ctx, shared, nil, "add", "lower-a.txt", "lower-b.txt", "link-source.txt", "delete.txt", "nested/remove.txt", "rename-source.txt", "nested/keep.txt"); err != nil {
+	if _, err := gitCommand(ctx, shared, nil, "add", "lower-a.txt", "lower-b.txt", "link-source.txt", "delete.txt", "nested/remove.txt", "rename-source.txt", "nested/keep.txt", "inplace.txt"); err != nil {
 		t.Fatal(err)
 	}
 	commitShared("Lower hardlink fixture")
@@ -121,6 +122,7 @@ func TestNativeActivation(t *testing.T) {
 		t.Fatalf("copy-up replaced the Git reference with a hidden lower alias: %v", err)
 	}
 	nativeExec(t, d, sandbox, prefix+"for i in $(seq 1 8); do printf temporary >.label-$i.tmp; mv .label-$i.tmp same.txt; done")
+	nativeExec(t, d, sandbox, prefix+`printf 'first private edit\n' >inplace.txt; inode=$(stat -c %i inplace.txt); printf 'latest in-place edit\n' >inplace.txt; test "$inode" = "$(stat -c %i inplace.txt)"`)
 	for i := 1; i <= 8; i++ {
 		name := fmt.Sprintf("deleted/the8020/dev-core/.label-%d.tmp", i)
 		if _, err := os.Stat(filepath.Join(sparse.storage, name)); !errors.Is(err, os.ErrNotExist) {
@@ -134,6 +136,9 @@ func TestNativeActivation(t *testing.T) {
 				return errors.New("expected one candidate")
 			}
 			candidate := candidates[0]
+			if blob, err := gitCommand(ctx, shared, nil, "show", candidate.Commit+":inplace.txt"); err != nil || blob != "latest in-place edit\n" {
+				return fmt.Errorf("candidate Git blob lost in-place edit: %q: %v", blob, err)
+			}
 			if _, err := os.Stat(filepath.Join(candidate.Root, "rename-source.txt")); !errors.Is(err, os.ErrNotExist) {
 				return fmt.Errorf("candidate retained the renamed source: %v", err)
 			}
@@ -150,6 +155,7 @@ func TestNativeActivation(t *testing.T) {
 				filepath.Join(candidate.Root, "same.txt"):        "resolved label\n",
 				filepath.Join(candidate.Root, "disjoint.txt"):    "shared newer first\n2\n3\n4\n5\n6\n7\nprivate last\n",
 				filepath.Join(candidate.Root, "new.txt"):         "new before capture\n",
+				filepath.Join(candidate.Root, "inplace.txt"):     "latest in-place edit\n",
 				filepath.Join(shared, "rename-source.txt"):       "shared rename first\n2\n3\n4\n5\n6\n7\nlast\n",
 				filepath.Join(candidate.Root, "renamed.txt"):     "shared rename first\n2\n3\n4\n5\n6\n7\nlast\n",
 				filepath.Join(candidate.Root, "nested/keep.txt"): "shared sibling update\n",
@@ -470,8 +476,7 @@ func TestNativeActivation(t *testing.T) {
 		t.Fatalf("next merge used an original the editor never saw: %q", got)
 	}
 	nativeExec(t, d, sandbox, "set -e; cd "+shellQuote(next)+"; printf 'resolved later label\\n' >same.txt; git add same.txt; git -c user.name=Fixture -c user.email=fixture@example.test commit -qm 'Resolve later label'")
-	// Both failures retain this same native resolution and the original capture.
-	// Validation must neither consume later edits nor publish stale candidates.
+	// Confirmed aborts retire each candidate; fresh captures can require a new merge.
 	preparations, rollbacks, completions := 0, 0, 0
 	m.SetSchemaDeployment(nativeActivationHook{
 		prepare: func(ctx context.Context, _ string, candidates []deployment.Candidate) error {
@@ -517,9 +522,8 @@ func TestNativeActivation(t *testing.T) {
 		if failed.Success || failed.Status != "failed" {
 			t.Fatalf("expected validation/source failure %d: %+v", failure, failed)
 		}
-		pending := loadAttempt()
-		if pending.ID != attempt.ID || pending.Phase != "preparing" {
-			t.Fatalf("failure replaced or consumed the native attempt: %+v", pending)
+		if _, err := os.Stat(filepath.Join(m.sandboxRoot(sandbox), "activation/active.json")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("confirmed abort retained an active attempt: %v", err)
 		}
 		if body, err := os.ReadFile(filepath.Join(shared, "same.txt")); err != nil || string(body) != "resolved label\n" {
 			t.Fatalf("failure published candidate source: %q: %v", body, err)
@@ -527,6 +531,17 @@ func TestNativeActivation(t *testing.T) {
 		if got := nativeExec(t, d, sandbox, prefix+"cat same.txt"); got != "private after failed validation\n" {
 			t.Fatalf("failure consumed a later edit: %q", got)
 		}
+		fresh := activate(3)
+		if fresh.Status != "conflicted" || fresh.Resumed {
+			t.Fatalf("fresh candidate did not preserve current private conflict: %+v", fresh)
+		}
+		pending := loadAttempt()
+		if pending.ID == attempt.ID {
+			t.Fatal("confirmed abort reused the rejected capture")
+		}
+		attempt = pending
+		next = pending.Packages[0].Worktree
+		nativeExec(t, d, sandbox, "set -e; cd "+shellQuote(next)+"; printf 'resolved later label\\n' >same.txt; git add same.txt; git -c user.name=Fixture -c user.email=fixture@example.test commit -qm 'Resolve fresh candidate'")
 	}
 	if preparations != 2 || rollbacks != 2 || completions != 0 {
 		t.Fatalf("incorrect failure handshake: prepare=%d rollback=%d complete=%d", preparations, rollbacks, completions)
@@ -535,7 +550,7 @@ func TestNativeActivation(t *testing.T) {
 	sparse.control = &dropReleaseReply{Conn: sparse.control}
 	sparse.controlMu.Unlock()
 	cleanupFailed := activate(3)
-	if cleanupFailed.Success || loadAttempt().Phase != "published" || preparations != 3 || rollbacks != 3 || completions != 1 {
+	if cleanupFailed.Success || loadAttempt().Phase != "published" || preparations != 3 || rollbacks != 2 || completions != 1 {
 		t.Fatalf("release reply failure lost its published attempt: %+v", cleanupFailed)
 	}
 	if err := d.Kill(ctx, sandbox.SandboxID); err != nil {
@@ -550,13 +565,13 @@ func TestNativeActivation(t *testing.T) {
 	}
 	sparse, _ = m.workspaceFor(sandbox.SandboxID)
 	retried := activate(0)
-	if !retried.Success || preparations != 3 || rollbacks != 3 || completions != 2 {
+	if !retried.Success || preparations != 3 || rollbacks != 2 || completions != 2 {
 		t.Fatalf("failed to continue the retained activation: %+v; prepare=%d rollback=%d complete=%d", retried, preparations, rollbacks, completions)
 	}
 	if body, err := os.ReadFile(filepath.Join(shared, "same.txt")); err != nil || string(body) != "resolved later label\n" {
 		t.Fatalf("retry lost resolved content: %q: %v", body, err)
 	}
-	if got := nativeExec(t, d, sandbox, prefix+"cat same.txt untouched.txt"); got != "private after failed validation\nshared during validation\n" {
+	if got := nativeExec(t, d, sandbox, prefix+"cat same.txt untouched.txt"); got != "resolved later label\nshared during validation\n" {
 		t.Fatalf("retry lost later/private or shared work: %q", got)
 	}
 	writeTestFile(t, filepath.Join(shared, "directory-intent/file.txt"), "directory original\n")

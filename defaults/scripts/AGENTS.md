@@ -19,6 +19,8 @@ Parent DOX: [kernel/defaults DOX](../AGENTS.md).
 - `activate` prints readable status, conflicting paths, native Git commands and
   the retry command; `--json` retains structured output and `--help` gives
   usage.
+- A resumed success says captured changes were activated and asks the developer
+  to review remaining workspace changes; JSON preserves native recovery fields.
 - `activate --preview --schema --package namespace/package` reads the shared
   metadata-only plan. Repeat `--force table-id.column` with explicit packages
   for exact incompatible-cell consent, without another prompt. Cleanup/native

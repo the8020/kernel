@@ -133,6 +133,8 @@ else {
     console.log(
       result.status === "not-committed"
         ? "No changes to activate."
+        : result.resumed
+        ? "Captured changes activated. Review remaining workspace changes."
         : "Activation complete.",
     );
     for (

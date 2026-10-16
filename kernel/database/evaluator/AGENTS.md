@@ -55,6 +55,9 @@ Parent DOX: [kernel/kernel/database DOX](../AGENTS.md).
   between calls; independent package sets may progress separately. Database
   schema/catalog mutation retains its owning lock. Ordinary evaluator tests
   cover that boundary.
+- Failed restoration retains `rollback_failed` and reports the deployment ID,
+  prior pending stage, underlying schema error and retry prerequisite. Drift is
+  never permission to clear a journal or bypass catalogue/physical validation.
 
 # Verification
 

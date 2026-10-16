@@ -138,6 +138,9 @@ type ActivationPackageResult struct {
 
 type ActivationResult struct {
 	Error        string                    `json:"error,omitempty"`
+	DeploymentID string                    `json:"deployment_id,omitempty"`
+	Phase        string                    `json:"phase,omitempty"`
+	Resumed      bool                      `json:"resumed,omitempty"`
 	Success      bool                      `json:"success"`
 	Status       string                    `json:"status"`
 	Packages     []ActivationPackageResult `json:"packages"`

@@ -399,7 +399,7 @@ export default table("the8020__dev_core__labels", {id: t.text().primaryKey(), la
 		t.Fatal(err)
 	}
 	prefix := "set -e; cd /workspace/packages/the8020/dev-core; "
-	changed := strings.Replace(tableBefore, `t.text().default("before")`, `t.text().default("after"), extra: t.text().nullable()`, 1)
+	changed := strings.Replace(tableBefore, `t.text().default("before")`, `t.integer().default(0), extra: t.text().nullable()`, 1)
 	nativeExec(t, sparse.RunscDriver, sandbox, prefix+"printf %s "+shellQuote(changed)+" >tables/labels.ts")
 	for _, phase := range []string{"pre", "post"} {
 		program := "probe-" + phase
@@ -418,9 +418,9 @@ export default function () { if (!descriptorOf(labels).columns.some(c => c.name 
 		t.Fatal(err)
 	}
 	nativeExec(t, sparse.RunscDriver, sandbox, "printf alive > /tmp/schema-generation")
-	output := nativeExec(t, sparse.RunscDriver, sandbox, "activate --json --message 'Rejected default change'; status=$?; test \"$status\" = 3")
+	output := nativeExec(t, sparse.RunscDriver, sandbox, "activate --json --message 'Rejected column conversion'; status=$?; test \"$status\" = 3")
 	var rejected ActivationResult
-	if err := json.Unmarshal([]byte(output), &rejected); err != nil || rejected.Success || !strings.Contains(preparationFailure, "changing column label requires a migration") {
+	if err := json.Unmarshal([]byte(output), &rejected); err != nil || rejected.Success || !strings.Contains(preparationFailure, "label: text to integer is unsupported on sqlite") {
 		t.Fatalf("expected real incompatible-schema rejection: %+v; %v; %s", rejected, err, preparationFailure)
 	}
 	if head, err := gitOutput(shared, "rev-parse", "HEAD"); err != nil || head != before {
@@ -433,13 +433,11 @@ export default function () { if (!descriptorOf(labels).columns.some(c => c.name 
 		t.Fatalf("schema rejection lost the private edit: %q", got)
 	}
 	var attempt activationAttempt
-	if err := readJSON(filepath.Join(m.sandboxRoot(sandbox), "activation/active.json"), &attempt); err != nil || len(attempt.Packages) != 1 {
-		t.Fatalf("schema rejection lost its native attempt: %+v: %v", attempt, err)
+	if _, err := os.Stat(filepath.Join(m.sandboxRoot(sandbox), "activation/active.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("confirmed schema rollback retained its native attempt: %v", err)
 	}
-	// Fix the retained candidate with ordinary Git. The additive column is
-	// supported; changing an existing default requires a migration and is not.
-	fixed := strings.Replace(changed, `default("after")`, `default("before")`, 1)
-	nativeExec(t, sparse.RunscDriver, sandbox, "set -e; cd "+shellQuote(attempt.Packages[0].Worktree)+"; printf %s "+shellQuote(fixed)+" >tables/labels.ts; git add tables/labels.ts; git -c user.name=Fixture -c user.email=fixture@example.test commit -m 'Keep original default'")
+	fixed := strings.Replace(changed, `t.integer().default(0)`, `t.text().default("before")`, 1)
+	nativeExec(t, sparse.RunscDriver, sandbox, prefix+"printf %s "+shellQuote(fixed)+" >tables/labels.ts")
 	output = nativeExec(t, sparse.RunscDriver, sandbox, "activate --json --message 'Real schema and hooks'; status=$?; test \"$status\" = 3")
 	var interrupted ActivationResult
 	if err := json.Unmarshal([]byte(output), &interrupted); err != nil || interrupted.Success || interrupted.Status != "committed-finalization-failed" || interruptCompletion {
@@ -817,7 +815,12 @@ func nativeActivationRecovery(t *testing.T, m *Manager, d *workspace, sandbox Sa
 				return errors.New("injected lost preparation result")
 			}
 			return nil
-		}, complete: hook.Complete})
+		}, complete: func(ctx context.Context, id string, activated bool) error {
+			if preparation && !activated {
+				return errors.New("injected unavailable rollback")
+			}
+			return hook.Complete(ctx, id, activated)
+		}})
 		if !preparation {
 			if err := os.WriteFile(fault, []byte(when+"\n"), 0600); err != nil {
 				t.Fatal(err)
@@ -877,8 +880,12 @@ func nativeActivationRecovery(t *testing.T, m *Manager, d *workspace, sandbox Sa
 			if err := db.QueryRowContext(ctx, `SELECT "activeCommit" FROM "the8020__packages__packages" WHERE "packageId" = $1`, item.PackageID).Scan(&active); err != nil || active != item.ResultingHead {
 				t.Fatalf("recovery catalog differs from source: %s: %v", active, err)
 			}
-			if body, err := os.ReadFile(filepath.Join(m.config.PackagesRoot, item.PackageID, files[item.PackageID])); err != nil || string(body) != candidate {
-				t.Fatalf("recovery published later work: %q: %v", body, err)
+			want := candidate
+			if preparation && item.PackageID == "the8020/dev-core" {
+				want = later // Confirmed uncommitted rollback permits a fresh capture.
+			}
+			if body, err := os.ReadFile(filepath.Join(m.config.PackagesRoot, item.PackageID, files[item.PackageID])); err != nil || string(body) != want {
+				t.Fatalf("recovery source = %q, want %q: %v", body, want, err)
 			}
 		}
 		if got := nativeExec(t, d.RunscDriver, sandbox, "cat /workspace/packages/the8020/dev-core/same.txt /tmp/schema-generation"); got != later+"alive" {

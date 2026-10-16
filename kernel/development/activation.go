@@ -1365,6 +1365,74 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 	journal := filepath.Join(directory, "active.json")
 	var attempt activationAttempt
 	err = readJSON(journal, &attempt)
+	resumed := err == nil
+	defer func() {
+		result.DeploymentID, result.Phase, result.Resumed = attempt.TransactionID, attempt.Phase, resumed
+	}()
+	hook := m.schemaDeployment()
+	if hook == nil {
+		return result, errors.New("schema coordinator is required")
+	}
+	if err == nil && options.SchemaPreview && attempt.Phase != "captured" {
+		return result, errors.New("resume the pending activation before previewing another candidate")
+	}
+	var releaseSources func()
+	defer func() {
+		if releaseSources != nil {
+			releaseSources()
+		}
+	}()
+	if err == nil && attempt.Phase == "preparing" {
+		packageIDs := make([]string, 0, len(attempt.Packages))
+		for _, item := range attempt.Packages {
+			packageIDs = append(packageIDs, item.PackageID)
+		}
+		releaseSources, err = workspacepackages.LockSources(ctx, m.config.PackagesRoot, packageIDs)
+		if err != nil {
+			return result, err
+		}
+
+		forward, inspectionErr := deployment.NeedsForward(ctx, hook, attempt.TransactionID)
+		if inspectionErr != nil {
+			return result, fmt.Errorf("inspect pending deployment %s before recovery: %w", attempt.TransactionID, inspectionErr)
+		}
+		if forward {
+			allSwitched := true
+			for _, item := range attempt.Packages {
+				head, err := m.sharedHead(item.PackageID)
+				if err != nil {
+					return result, err
+				}
+				allSwitched = allSwitched && head == item.Published
+			}
+			if allSwitched {
+				attempt.Phase = "published"
+			} else {
+				if err := hook.Prepare(ctx, attempt.TransactionID, attempt.Candidates); err != nil {
+					result.Status = "schema-committed-activation-incomplete"
+					return result, err
+				}
+				attempt.Phase = "prepared"
+			}
+		} else {
+			if err := hook.Complete(ctx, attempt.TransactionID, false); err != nil {
+				return result, fmt.Errorf("recover pending deployment %s (activation phase %s): %w; recovery must finish before loading new workspace changes", attempt.TransactionID, attempt.Phase, err)
+			}
+			if err := os.Remove(journal); err != nil {
+				return result, err
+			}
+			attempt = activationAttempt{}
+			resumed = false
+			releaseSources()
+			releaseSources = nil
+			err = os.ErrNotExist
+		}
+		if forward {
+			if err := saveAttempt(journal, &attempt); err != nil {
+				return result, err
+			}
+		}
+	}
 	if errors.Is(err, os.ErrNotExist) {
 		attempt.ID, err = randomHex(12)
 		if err != nil {
@@ -1476,48 +1544,9 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 	for _, item := range attempt.Packages {
 		packageIDs = append(packageIDs, item.PackageID)
 	}
-	releaseSources, err := workspacepackages.LockSources(ctx, m.config.PackagesRoot, packageIDs)
-	if err != nil {
-		return result, err
-	}
-	defer releaseSources()
-	hook := m.schemaDeployment()
-	if hook == nil {
-		return result, errors.New("schema coordinator is required")
-	}
-	if options.SchemaPreview && attempt.Phase != "captured" {
-		return result, errors.New("resume the pending activation before previewing another candidate")
-	}
-	if attempt.Phase == "preparing" {
-		forward, err := deployment.NeedsForward(ctx, hook, attempt.TransactionID)
+	if releaseSources == nil {
+		releaseSources, err = workspacepackages.LockSources(ctx, m.config.PackagesRoot, packageIDs)
 		if err != nil {
-			return result, err
-		}
-		if forward {
-			allSwitched := true
-			for _, item := range attempt.Packages {
-				head, err := m.sharedHead(item.PackageID)
-				if err != nil {
-					return result, err
-				}
-				allSwitched = allSwitched && head == item.Published
-			}
-			if allSwitched {
-				attempt.Phase = "published"
-			} else {
-				if err := hook.Prepare(ctx, attempt.TransactionID, attempt.Candidates); err != nil {
-					result.Status = "schema-committed-activation-incomplete"
-					return result, err
-				}
-				attempt.Phase = "prepared"
-			}
-		} else {
-			if err := hook.Complete(ctx, attempt.TransactionID, false); err != nil {
-				return result, err
-			}
-			attempt.Phase, attempt.TransactionID = "captured", ""
-		}
-		if err := saveAttempt(journal, &attempt); err != nil {
 			return result, err
 		}
 	}
@@ -1717,12 +1746,17 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 		if err := hook.Prepare(ctx, attempt.TransactionID, candidates); err != nil {
 			forward, inspectionErr := deployment.NeedsForward(context.WithoutCancel(ctx), hook, attempt.TransactionID)
 			if inspectionErr == nil && !forward {
-				attempt.Phase, attempt.TransactionID = "captured", ""
-				if saveErr := saveAttempt(journal, &attempt); saveErr != nil {
-					return result, errors.Join(err, saveErr)
+				if rollbackErr := hook.Complete(context.WithoutCancel(ctx), attempt.TransactionID, false); rollbackErr != nil {
+					return result, fmt.Errorf("prepare schema and hooks: %w", errors.Join(err, fmt.Errorf("rollback pending deployment %s failed: %w; deployment retained for recovery", attempt.TransactionID, rollbackErr)))
 				}
-			} else {
+				if removeErr := os.Remove(journal); removeErr != nil {
+					return result, errors.Join(err, removeErr)
+				}
+				attempt.Phase, attempt.TransactionID = "", ""
+			} else if forward {
 				result.Status = "schema-committed-activation-incomplete"
+			} else {
+				return result, errors.Join(err, fmt.Errorf("inspect pending deployment %s before recovery: %w", attempt.TransactionID, inspectionErr))
 			}
 			return result, fmt.Errorf("prepare schema and hooks: %w", err)
 		}
@@ -1735,7 +1769,20 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 		prepared := true
 		defer func() {
 			if prepared {
-				returnErr = errors.Join(returnErr, hook.Complete(context.WithoutCancel(ctx), attempt.TransactionID, false))
+				attempt.Phase = "preparing"
+				if err := saveAttempt(journal, &attempt); err != nil {
+					returnErr = errors.Join(returnErr, err)
+					return
+				}
+				if err := hook.Complete(context.WithoutCancel(ctx), attempt.TransactionID, false); err != nil {
+					returnErr = errors.Join(returnErr, fmt.Errorf("rollback pending deployment %s failed: %w; deployment retained for recovery", attempt.TransactionID, err))
+					return
+				}
+				if err := os.Remove(journal); err != nil {
+					returnErr = errors.Join(returnErr, err)
+					return
+				}
+				attempt.Phase, attempt.TransactionID = "", ""
 			}
 		}()
 		sort.Slice(attempt.Packages, func(i, j int) bool { return attempt.Packages[i].PackageID < attempt.Packages[j].PackageID })

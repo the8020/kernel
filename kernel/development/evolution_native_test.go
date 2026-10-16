@@ -268,6 +268,7 @@ program="the8020/dev-core/gate"
 	if err == nil || interrupted.Success || !strings.Contains(err.Error(), "fixture lost schema response after commit") {
 		t.Fatalf("lost schema response: %+v %v", interrupted, err)
 	}
+	nativeExec(t, sparse.RunscDriver, sandbox, "printf 'later private edit\\n' >/workspace/packages/the8020/dev-core/after-commit.txt")
 	var stage string
 	if err := db.QueryRowContext(ctx, `SELECT stage FROM the8020__packages__activations WHERE "activationId"=$1`, activationID).Scan(&stage); err != nil || stage != "staged" {
 		t.Fatalf("lost response passed schema checkpoint: %s %v", stage, err)
@@ -298,6 +299,12 @@ program="the8020/dev-core/gate"
 	}
 	if err := db.QueryRowContext(ctx, `SELECT legacy FROM the8020__dev_core__evolution WHERE id=9`).Scan(&legacy); err != nil || legacy != "other" {
 		t.Fatalf("unrelated retired cell changed %s %v", legacy, err)
+	}
+	if _, err := os.Stat(filepath.Join(shared, "after-commit.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("committed-receipt recovery recaptured later source: %v", err)
+	}
+	if got := nativeExec(t, sparse.RunscDriver, sandbox, "cat /workspace/packages/the8020/dev-core/after-commit.txt"); got != "later private edit\n" {
+		t.Fatalf("committed recovery lost later private source: %q", got)
 	}
 	journal := filepath.Join(m.sandboxRoot(sandbox), "activation/active.json")
 	if _, err := os.Stat(journal); !os.IsNotExist(err) {

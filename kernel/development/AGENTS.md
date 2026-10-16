@@ -148,10 +148,24 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   conflicts, a `conflict_worktree` per package. The UUI uses sandbox inspection
   and the platform's native Git adapter to reopen that exact attempt; terminal
   output defaults to readable instructions, with `--json` for integrations.
+- Results expose `deployment_id`, activation `phase`, and `resumed` when an
+  existing journal is used. Unresolved conflicts and committed publication
+  recovery use their retained captures; later private edits remain pending.
+  Failed rollback identifies the older deployment and explains that new
+  workspace changes have not been loaded.
+- Absence of committed receipts does not confirm rollback. Keep the deployment
+  ID until `Complete(false)` succeeds. Before aborting a prepared candidate,
+  persist the recoverable `preparing` phase. A confirmed uncommitted abort
+  retires the active journal; the next candidate captures current workspace
+  bytes, including when an activation first finishes an older failed rollback.
+  Release the old source locks before acquiring a fresh selection. Failed
+  receipt inspection or rollback retains the attempt and reports uncertainty.
+  Private source, original captures and native resolution worktrees remain
+  intact; an aborted capture is never acknowledged as published source.
 - The platform-owned instance `scripts/` tree is a real directory, never a
   symlink into protected `node/` storage. It is mounted read-only and executable
-  at `/workspace/scripts`; `/workspace/scripts/activate` is the
-  canonical terminal helper and remains outside the mutable image system root.
+  at `/workspace/scripts`; `/workspace/scripts/activate` is the canonical
+  terminal helper and remains outside the mutable image system root.
   `install-codex.sh` and `install-claude.sh` opt in to the vendors' latest
   native releases, persist them in root's home, and set only unattended
   full-access permissions. Installers register `/usr/local/bin` symlinks so
@@ -227,6 +241,13 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   sparse conflicts, concurrent/later edits, interrupted publication, schema and
   hook recovery, package creation/removal, and retained PTYs. Test fault
   injection belongs at test transports and executables, never in shipped code.
+- `TestNativeFailedRollbackRetainsActivation` covers failed preparation and
+  pre-publication aborts, retained deployment identity, helper diagnostics and
+  fresh same-inode edits after confirmed recovery.
+  `TestNativeFreshActivationAfterRollback` compares sandbox, capture, candidate
+  Git, staged evaluator and published bytes after both in-place writes and
+  atomic replacement following clean rollback; a companion edit stays fresh.
+  `TestNativeActivation` also covers fresh conflict resolution after aborts.
 - The native schema fixture uses one-second Worker idle and sandbox keepalive
   timeouts, runs ordinary idle-sandbox maintenance, and joins it before runtime
   teardown. Recovery candidates must not retain one sandbox each until the
@@ -235,10 +256,11 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   evolution, minimal column repair, catalog-v2 DB-package upgrade and forward
   recovery, including a lost schema response before the coordinator checkpoint
   and retry with the original force/approved-plan consent. Its catalog-v2
-  baseline uses the immutable DB `0.7.0` tag. Its callback
-  transport matches production Content-Length framing. Shared database tests
-  qualify SQLite/PostgreSQL, force scope, stale candidate/scope, retained data,
-  unique constraints, cancellation and writer exclusion.
+  baseline uses the immutable DB `0.7.0` tag. Later private source remains
+  unpublished during committed-receipt recovery. Its callback transport matches
+  production Content-Length framing. Shared database tests qualify
+  SQLite/PostgreSQL, force scope, stale candidate/scope, retained data, unique
+  constraints, cancellation and writer exclusion.
 - Run heavy native and browser fixtures in a separate environment with explicit
   CPU, memory, and runtime limits. Keep checks on shared development instances
   small and sequential; stop if responsiveness degrades.
