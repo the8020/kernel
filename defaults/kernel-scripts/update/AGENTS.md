@@ -21,10 +21,19 @@ Parent DOX: [host kernel scripts](../AGENTS.md).
   PATH starts with the instance bin directory. Offline scripts use existing host
   tools and must not depend on an intermediate running kernel.
 - Published scripts are immutable and remain in every later same-major release.
-  Versions needing no migration need no directory. The `0.8.7` offline
-  migration refreshes development helpers into a real instance `scripts/`
-  directory, including already-repaired instances, without exposing node storage.
-  Scripts must safely repeat after interruption; completion is recorded only after successful exit.
+  Versions needing no migration need no directory. The `0.8.7` offline migration
+  refreshes development helpers into a real instance `scripts/` directory,
+  including already-repaired instances, without exposing node storage. Scripts
+  must safely repeat after interruption; completion is recorded only after
+  successful exit.
+- `0.9.1` converts installations with the bundled Caddy launcher through the
+  deploy `0.9.0` migration bundle, pinned by SHA-256 for amd64/arm64. Offline
+  preparation validates legacy inputs and backs up node settings before
+  disabling native TLS. After startup, deploy updates its required packages and
+  installs the replacement launcher. One container restart stops Caddy and
+  imports its final certificate state before native listeners take its ports.
+  Both members of a dev/prod pair must finish their update before this restart.
+  Ordinary instances without bundled Caddy skip this deployment migration.
 - Each script has a five-minute timeout and five-second termination grace. A
   failure halts that phase and retains completed steps for an explicit retry.
 - Data-changing scripts back up the state they change. Package activation uses
@@ -38,6 +47,9 @@ Parent DOX: [host kernel scripts](../AGENTS.md).
 # Verification
 
 - Add a focused updater fixture for each migration, including repeat execution.
+- The deploy owner verifies `https/update.sh`, its reader, and restart import;
+  native acceptance uses released kernels and the actual legacy Caddy wrapper on
+  local instances, without Docker.
 
 # Child DOX Index
 

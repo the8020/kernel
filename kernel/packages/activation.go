@@ -549,6 +549,11 @@ func (c *ActivationCoordinator) sourceIsCandidate(ctx context.Context, candidate
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return false, err
 	}
+	if candidate.previous == "" {
+		if removed, err := removeEmptyPackagePlaceholder(path); err != nil || removed {
+			return false, err
+		}
+	}
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) && candidate.previous == "" {
 		return false, nil
 	} else if err != nil {

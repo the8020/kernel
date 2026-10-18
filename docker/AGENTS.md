@@ -14,8 +14,8 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 - Dockerfiles own image assembly, release metadata, and build-cache cleanup. The
   generic installer does not produce deployment payloads.
 - Runtime images include `bzip2` for in-container update preparation; the normal
-  installer supplies this OS prerequisite when an older root Debian image
-  lacks it.
+  installer supplies this OS prerequisite when an older root Debian image lacks
+  it.
 
 # Local Contracts
 
@@ -46,32 +46,38 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 - Dockerfiles bundle binaries, runtime definitions/images, host updater scripts,
   and development helpers under `/usr/local/share/the8020/`. Before first
   startup, the entrypoint stages these as `node/kernel/releases/<version>` and
-  links bin, host scripts, and definitions/images through
-  `node/kernel/current`. Copy development helpers into a real instance
-  `scripts/` directory using the shared refresh script; development mounts
-  must never resolve into protected node storage. Publish current last so an interrupted seed repeats.
-  Later starts preserve the selected instance release even when the factory
-  image differs. Seeding never touches users, packages, database, keys, or IDs.
+  links bin, host scripts, and definitions/images through `node/kernel/current`.
+  Copy development helpers into a real instance `scripts/` directory using the
+  shared refresh script; development mounts must never resolve into protected
+  node storage. Publish current last so an interrupted seed repeats. Later
+  starts preserve the selected instance release even when the factory image
+  differs. Seeding never touches users, packages, database, keys, or IDs.
 - Existing `0.7.4` and newer containers bootstrap entirely inside the container,
   without host access, a Docker socket, or container restart. Install the host
-  scripts, preserved development helpers, and new entrypoint. An atomic
-  one-time executable handoff uses existing `kernel.restart` to retain the
-  original kernel PID as the launcher, keeping the waiting container parent
-  alive. Restore the native executable before seeding. The entrypoint private
-  `--adopt` mode seeds and execs the launcher without repeating account/login
-  bootstrap. The README owns invocation; old kernels have no update command.
-- Bootstrap writes foreground output, handoff/seeding, wait progress, and failures
-  to the private instance `node/kernel/update.log`. Start the continuation from a
-  private copy of the invoked helper so newer logging also applies when targeting
-  an older supported tag. Each status probe is bounded to five seconds; the
-  handoff deadline is 90 seconds. Report bootstrap acceptance separately from
-  update preparation. Container adoption redirects launcher startup diagnostics
-  to that log.
+  scripts, preserved development helpers, and new entrypoint. An atomic one-time
+  executable handoff uses existing `kernel.restart` to retain the original
+  kernel PID as the launcher, keeping the waiting container parent alive.
+  Restore the native executable before seeding. The entrypoint private `--adopt`
+  mode seeds and execs the launcher without repeating account/login bootstrap.
+  The README owns invocation; old kernels have no update command.
+- Bootstrap writes foreground output, handoff/seeding, wait progress, and
+  failures to the private instance `node/kernel/update.log`. Start the
+  continuation from a private copy of the invoked helper so newer logging also
+  applies when targeting an older supported tag. Each status probe is bounded to
+  five seconds; the handoff deadline is 90 seconds. Report bootstrap acceptance
+  separately from update preparation. Container adoption redirects launcher
+  startup diagnostics to that log.
 - `launch.sh` owns the kernel child. An intentional update leaves this launcher
-  and the outer entrypoint alive while the kernel stops, migrations run, and
-  the target starts; the paired instance remains running.
-- The instance bin directory includes kernel/admin/logd and one common runsc
-  for services, jobs and development. Keep `.development/bin/` free of a second
+  and the outer entrypoint alive while the kernel stops, migrations run, and the
+  target starts; the paired instance remains running.
+- Converting the former bundled Caddy deployment in `0.9.1` requires one
+  container restart after preparation. Its old outer supervisor cannot survive
+  Caddy exiting. The versioned deploy-owned migration installs the native HTTPS
+  wrapper; stopping/restarting the container retires the old processes. For a
+  pair, update both instance roots first. Later native kernel updates retain the
+  ordinary enclosing launcher.
+- The instance bin directory includes kernel/admin/logd and one common runsc for
+  services, jobs and development. Keep `.development/bin/` free of a second
   runsc; the image's factory bin payload seeds the instance installation.
 - Invoke the portable smoke helper from the instance's installed runtime
   definitions. Keep all startup credentials in process memory and preserve
@@ -101,9 +107,9 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 
 - `bash docker/update_test.sh` checks argument validation, detached managed
   invocation, credential removal, private logging, and progress/retries when a
-  status probe hangs. The opt-in native check
-  in `defaults/kernel-scripts/update_native_test.ts` starts actual `0.7.4`,
-  runs the inside-container bootstrap and real source update, and verifies
+  status probe hangs. The opt-in native check in
+  `defaults/kernel-scripts/update_native_test.ts` starts actual `0.7.4`, runs
+  the inside-container bootstrap and real source update, and verifies
   parent/child PID retention, native executable restoration, and unchanged
   packages, configuration, and private work.
 - With Deno on PATH, `bash docker-entrypoint_test.sh` checks progress, HTTP 200
@@ -114,8 +120,9 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   seeding, interrupted-seed recovery, fresh smoke on restart, retention of a
   selected newer release despite changed factory assets, and private-work
   preservation. Missing bootstrap assets fail before kernel startup.
-- Build both the version-selected deploy image and the local tagged-checkout
-  kernel image; exercise first-user bootstrap on a fresh instance.
+- Install and test a fresh native node, including the entrypoint's first-user
+  path when bootstrap changes. Docker image builds and container runs are not
+  release checks.
 
 # Child DOX Index
 

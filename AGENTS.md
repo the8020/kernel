@@ -163,10 +163,10 @@ relevant child AGENTS.md
   kernel major and may use the requested minor or an older one; the highest
   compatible minor and patch win. The exact selected package tag and active
   commit are retained in the database package index. Bootstrap keeps the remote
-  default branch attached at that selected commit, retaining its upstream without
-  advancing the version. Missing compatible tags
-  fail installation. Docker runs require an unconfined outer seccomp profile and
-  complete the pinned runsc smoke before kernel startup. The entrypoint performs
+  default branch attached at that selected commit, retaining its upstream
+  without advancing the version. Missing compatible tags fail installation.
+  Docker runs require an unconfined outer seccomp profile and complete the
+  pinned runsc smoke before kernel startup. The entrypoint performs
   initial-account bootstrap once per persistent instance volume and creates the
   first enabled login user when none exists, defaulting to username `admin` and
   password `admin`; `THE8020_USERNAME` and `THE8020_PASSWORD` independently
@@ -207,6 +207,10 @@ relevant child AGENTS.md
 - `kernel.update <major.minor.patch>` detaches the installed updater and returns
   its PID and log path. The instance launcher owns the later graceful shutdown,
   migration, and restart; an update does not exit the enclosing container.
+- The one-time `0.9.1` conversion of bundled Caddy installations prepares the
+  replacement through a versioned deployment migration, followed by one
+  operator-initiated container restart. Preserve certificate state, update the
+  required HTTPS packages, and transfer Caddy's ports to native listeners.
 - [README.md](README.md) owns development-container update instructions: the
   one-line command, prerequisites, background progress, and completion checks.
 - Uncaught UUI program exceptions must open the package-configured standard
@@ -570,16 +574,15 @@ below.
   templates and the canonical generic runtime definition, source, image tooling,
   and pinned versions under `defaults/config/runtime/`.
 - [docker/AGENTS.md](docker/AGENTS.md): container runtime assets, startup, and
-  Docker build qualification.
+  deployment guidance.
 - [kernel/AGENTS.md](kernel/AGENTS.md): the Go kernel architecture, authored
   source, declarative definitions, tests, and package-level DOX tree.
 
 - Root-owned paths include `.vscode/`, `go.mod`, `go.sum`, `.go-version`,
   `.gitignore`, `install.sh`, `run.sh`, `release-tag.sh`, release resolver
   tests, `Dockerfile`, `.dockerignore`, `docker-entrypoint_test.sh`,
-  `install-dependencies_test.sh`,
-  `install-development-assets.sh`, and root-level project
-  documentation.
+  `install-dependencies_test.sh`, `install-development-assets.sh`, and
+  root-level project documentation.
 
 # 80|20
 
@@ -638,10 +641,10 @@ below.
 ## Development Workflow
 
 - Verify the final release contents, including documentation added to discovery
-  folders, before tagging. Fresh-start verification must exercise the Docker
-  entrypoint's first-user path; a browser flow that creates its own test user
-  does not verify that path. Report Docker build/run coverage separately from
-  native runtime tests when Docker is unavailable.
+  folders, before tagging. Install and test a fresh native node in
+  `/root/8020/test<N>`; Docker image build/run checks are not required.
+  Bootstrap changes must exercise the entrypoint's first-user path natively; a
+  browser flow that creates its own test user does not verify that path.
 - `build.sh` generates protocol/command glue and compiles ordinary production
   sources plus the common native runsc module. Never extract implementations
   from test files, apply project-source compiler overlays, or retain replaced
@@ -691,18 +694,22 @@ below.
   source builds identify as `development`.
 - The installed updater fetches an exact kernel Git tag and runs its ordinary
   installer in a separate initialized staging instance. No bootstrap packages
-  are installed there and no application package changes occur. Build and smoke
-  checks complete before the old kernel is stopped. Limit Go to two processors,
-  512 MiB runtime memory, and a 30-minute preparation deadline. The updater needs
-  6 GiB of free temporary disk space; successful completion removes its build
-  source, toolchain, and caches. No prebuilt release archive or CI is required.
+  are installed there. Application changes require explicit versioned
+  migrations. Build and smoke checks complete before the old kernel is stopped.
+  Limit Go to two processors, 512 MiB runtime memory, and a 30-minute
+  preparation deadline. The updater needs 6 GiB of free temporary disk space;
+  successful completion removes its build source, toolchain, and caches. Kernel
+  preparation requires no prebuilt archive or CI; the bundled-Caddy conversion
+  uses deploy's pinned migration artifact.
 - The installer needs `bzip2` to unpack the portable runtime. On root Debian
   installations it installs this missing OS prerequisite through apt, including
   when full runtime host setup is skipped. Application packages are unaffected.
-- Legacy Docker updates bootstrap inside the running container as root. Use
-  the existing PID-preserving kernel restart to adopt the launcher; require no
-  Docker host access, daemon socket, or container restart. Docker owns this
-  one-time adoption and its invocation.
+- Legacy Docker updates bootstrap inside the running container as root. Use the
+  existing PID-preserving kernel restart to adopt the launcher; require no
+  Docker host access or daemon socket. Launcher adoption needs no container
+  restart; retiring the old bundled Caddy supervisor requires the documented
+  one-time restart after conversion is prepared. Docker owns adoption and its
+  invocation.
 - `run.sh` may be invoked from any directory. It treats that current directory
   as the instance root and runs `install.sh --skip-verification`, which
   refreshes all three binaries, initializes the default layout when absent, and

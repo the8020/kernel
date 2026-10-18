@@ -94,6 +94,11 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   forward without replaying committed schema work. Missing candidate source
   fails explicitly until that same candidate is restored. Ordinary activation
   preparation does not run a presentation preview or count rows for display.
+- First-install recovery treats an empty sandbox mount-target directory as an
+  uninstalled package, using the same placeholder removal as synchronization. A
+  nonempty unexpected directory remains an explicit source conflict and is never
+  discarded. Resume the retained candidate without replaying committed schema
+  work.
 - Handler folders are flat: `events/*.toml` requires `event`, `description`, and
   `program`; `hooks/*.toml` requires `hook`, `description`, and `program`. Hooks
   also accept integer `order`, defaulting to zero. Each trigger retains all

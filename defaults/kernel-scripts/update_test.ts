@@ -67,6 +67,11 @@ else printf '%040d\\n' 0; fi
 `,
     { mode: 0o755 },
   );
+  await Deno.writeTextFile(
+    `${tools}/df`,
+    "#!/bin/sh\nprintf 'Avail\\n8589934592\\n'\n",
+    { mode: 0o755 },
+  );
   const env = {
     FIXTURE_VERSIONS: versions,
     FIXTURE_ROOT: temp,
@@ -124,7 +129,14 @@ elif [[ "$*" == *kernel.config.get* ]]; then echo '{"success":true,"result":{"se
 elif [[ "$*" == *"runtime eval"* ]]; then
   if [[ -f "$FIXTURE_ROOT/fail-worker" ]]; then echo '{"success":true,"result":{"state":"FAILED"}}';
   else echo '{"success":true,"result":{"result":42}}'; fi
-else echo '{"success":true,"result":{"build_id":"${version}+${commit}","runtime_mode":"rootless","runtime_ready":true}}'; fi
+else
+  application=''
+  if [[ -f "$FIXTURE_ROOT/pending-application" ]]; then
+    application='application initialization is in progress'
+    echo probe >> "$FIXTURE_ROOT/application-probed"
+  fi
+  echo '{"success":true,"result":{"build_id":"${version}+${commit}","runtime_mode":"rootless","runtime_ready":true,"runtime_application_failure":"'"$application"'"}}'
+fi
 `,
       { mode: 0o755 },
     );
@@ -512,6 +524,51 @@ Deno.test("published 0.8.6 updater runs the helper-layout migration before resta
     assert(await read(`${f.root}/scripts/helper`) === "0.8.7");
     assert((await f.state()).phase === "complete");
   } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("after-start migrations wait for application startup to finish", async () => {
+  const f = await fixture();
+  let finishing: Promise<{ code: number; output: string }> | undefined;
+  try {
+    await f.version("0.9.1", {
+      "0.9.1/after-start/010-check.sh":
+        'echo ready > "$THE8020_INSTANCE_ROOT/after-start"\n',
+    });
+    for (const action of ["0.9.1", "--apply"]) {
+      const result = await f.update(action);
+      assert(result.code === 0, result.output);
+    }
+    await Deno.writeTextFile(`${f.temp}/pending-application`, "");
+    finishing = f.update("--finish");
+    let probed = false;
+    for (let attempt = 0; attempt < 300; attempt++) {
+      try {
+        if (
+          (await read(`${f.temp}/application-probed`)).trim().split("\n")
+            .length >= 2
+        ) {
+          probed = true;
+          break;
+        }
+      } catch { /* First status probe is still pending. */ }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert(probed);
+    let ran = false;
+    try {
+      await Deno.stat(`${f.root}/after-start`);
+      ran = true;
+    } catch { /* Not started. */ }
+    assert(!ran, "migration ran before application initialization completed");
+    await Deno.remove(`${f.temp}/pending-application`);
+    const result = await finishing;
+    assert(result.code === 0, result.output);
+    assert((await read(`${f.root}/after-start`)).trim() === "ready");
+  } finally {
+    await Deno.remove(`${f.temp}/pending-application`).catch(() => {});
+    if (finishing) await finishing;
     await f.cleanup();
   }
 });

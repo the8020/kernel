@@ -135,3 +135,52 @@ func TestCommittedSchemaRecoveryKeepsCandidateAndDoesNotReplay(t *testing.T) {
 		})
 	}
 }
+
+func TestFirstActivationRecoveryAcceptsOnlyEmptyMountPlaceholder(t *testing.T) {
+	root, store, db := activationStore(t)
+	candidate := writeActivationPackage(t, t.TempDir(), "acme/orders", true)
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runTestGit(t, git, candidate, "init", "-q")
+	runTestGit(t, git, candidate, "add", ".")
+	runTestGit(t, git, candidate, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-q", "-m", "candidate")
+	commit := runTestGit(t, git, candidate, "rev-parse", "HEAD")
+	events := []string{}
+	runner := &activationJobRecorder{events: &events, failures: map[string]int{"acme/orders/pre-activate:acme/orders": 1}, calls: map[string]int{}}
+	schema := &committedSchema{}
+	config := ActivationCoordinatorConfig{Database: db, Packages: store, Schema: schema, Jobs: runner}
+	owner, err := NewActivationCoordinator(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.Prepare(t.Context(), "act-firstempty", []deployment.Candidate{{PackageID: "acme/orders", Root: candidate, Commit: commit}}); err == nil {
+		t.Fatal("pre-hook failure disappeared")
+	}
+	destination := filepath.Join(root, "packages/acme/orders")
+	writeFile(t, filepath.Join(destination, "private-work"), "keep")
+	owner, err = NewActivationCoordinator(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.Recover(t.Context()); err == nil {
+		t.Fatal("recovery discarded unexpected source")
+	}
+	if raw, err := os.ReadFile(filepath.Join(destination, "private-work")); err != nil || string(raw) != "keep" {
+		t.Fatal("private work changed", err)
+	}
+	if err := os.Remove(filepath.Join(destination, "private-work")); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.Recover(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if schema.prepares != 1 || schema.aborts != 0 {
+		t.Fatalf("replayed committed schema: %+v", schema)
+	}
+	if runTestGit(t, git, destination, "rev-parse", "HEAD") != commit {
+		t.Fatal("candidate was not installed")
+	}
+	assertActivationState(t, db, "complete")
+}

@@ -13,23 +13,24 @@ Parent DOX: [kernel defaults](../AGENTS.md).
 - `refresh-development-scripts.sh` owns complete, staged replacement of the
   sandbox-visible instance `scripts/` directory; the source installer and Docker
   seeding reuse it.
-- Docker owns initial seeding; these scripts never install the bootstrap
-  package list.
+- Docker owns initial seeding; these scripts never install the bootstrap package
+  list.
 
 # Local Contracts
 
 - Initial scope is explicitly configured Linux rootless instances started by
   `launch.sh`, baseline `0.7.4`. Exact numeric same-major upgrades only; equal
-  versions do nothing. Major upgrades, downgrades, unmanaged source checkouts, and
-  coordinated cluster migrations require separate operator handling.
+  versions do nothing. Major upgrades, downgrades, unmanaged source checkouts,
+  and coordinated cluster migrations require separate operator handling.
 - Fetch the selected exact Git tag and prepare it on the instance's native
   architecture with its ordinary installer in a separate initialized staging
-  instance. Preinitialization suppresses bootstrap packages. Move only bin,
-  host scripts, runtime definitions/images, and development helpers into the
-  release; never move staging identities, keys, users, database, or packages.
+  instance. Preinitialization suppresses bootstrap packages. Move only bin, host
+  scripts, runtime definitions/images, and development helpers into the release;
+  never move staging identities, keys, users, database, or packages.
 - Preparation uses at most two Go processors, a 512 MiB Go memory target, a
-  30-minute deadline and at least 6 GiB free temporary disk space. The old kernel
-  stays running until compilation and the candidate runtime smoke succeed.
+  30-minute deadline and at least 6 GiB free temporary disk space. The old
+  kernel stays running until compilation and the candidate runtime smoke
+  succeed.
 - Preparation streams installer stdout/stderr to the caller's update log and
   reports elapsed time every ten seconds. Report active-kernel inspection before
   querying the control plane. Keep JSON/control-command stdout captured for
@@ -47,15 +48,24 @@ Parent DOX: [kernel defaults](../AGENTS.md).
   the launcher alive without booting either kernel; retry the same version to
   resume. Never restore old binaries automatically after migrations begin.
 - After startup, verify the target build ID, generic runtime readiness, and an
-  ordinary `runtime.eval` Worker returning its expected value. Bound that job
-  to 15 seconds; leave verification pending if real sandbox execution fails.
+  ordinary `runtime.eval` Worker returning its expected value. Bound that job to
+  15 seconds; leave verification pending if real sandbox execution fails.
   Application initialization failures remain visible separately. Packages change
   only through an explicit after-start migration using package commands.
-- Existing managed instances can repair only the helper layout, without a
-  build, by running `bash refresh-development-scripts.sh <instance-root>
-  <instance-root>/node/kernel/current/development-scripts` and then
-  `kernel.restart`. Stage the complete replacement before moving the old entry;
-  restore that entry if publication fails.
+- Wait until the application initialization attempt has finished before running
+  after-start migrations. Generic Worker readiness alone is insufficient while
+  native package management is still being published. A completed application
+  failure remains repairable; it does not independently gate these migrations.
+- The `0.9.1` bundled-Caddy conversion explicitly updates required HTTPS
+  packages through native package recovery commands. Its deploy-owned migration
+  preserves the running proxy until a single container restart; the replacement
+  launcher then imports legacy certificates and claims the existing ports.
+- Existing managed instances can repair only the helper layout, without a build,
+  by running
+  `bash refresh-development-scripts.sh <instance-root>
+  <instance-root>/node/kernel/current/development-scripts`
+  and then `kernel.restart`. Stage the complete replacement before moving the
+  old entry; restore that entry if publication fails.
 - Updates interrupt live jobs, services, sessions, and terminals. Durable user
   work, configuration, identities, database, keys, and logs remain in place.
 - Launcher shutdown waits for its kernel child to exit. Repeated shutdown
@@ -81,16 +91,16 @@ Parent DOX: [kernel defaults](../AGENTS.md).
   execution of the new offline migration.
 - Native cbus tests verify detached execution, validation, and missing launcher
   diagnostics. `docker-entrypoint_test.sh` checks one-time seeding and restart
-  preservation alongside existing account/readiness behavior, including
-  complete child draining under repeated shutdown signals.
+  preservation alongside existing account/readiness behavior, including complete
+  child draining under repeated shutdown signals.
 - With prepared images in `.development/runtime/`, run
   `THE8020_NATIVE_UPDATE_ROOT=/root/8020/test<N> deno test --no-config -A
   defaults/kernel-scripts/update_native_test.ts`
   from the repository. The fresh single-node fixture compiles actual kernels and
   verifies real gVisor, cbus, migration, kernel replacement, and
   launcher/private-data preservation, full application initialization, and HTTP
-  health/login before and after the update. Bound its CPU, memory,
-  and runtime using the workspace's native-test guidance.
+  health/login before and after the update. Bound its CPU, memory, and runtime
+  using the workspace's native-test guidance.
 - The native check compiles the actual released `0.7.4` kernel, stages its
   ordinary runtime sources, and prepares the target through the real installer.
   Only the GitHub source transport is redirected to a local tagged repository.

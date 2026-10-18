@@ -514,7 +514,11 @@ async function finish(root: string, state: Update) {
   for (let attempt = 0; attempt < 300; attempt++) {
     observed = await status(root);
     if (observed.build_id !== `${state.target}+${release.commit}`) break;
-    if (observed.runtime_ready === true) break;
+    if (
+      observed.runtime_ready === true &&
+      observed.runtime_application_failure !==
+        "application initialization is in progress"
+    ) break;
     if (
       observed.runtime_failure &&
       observed.runtime_failure !== "runtime initialization is in progress"
@@ -523,7 +527,9 @@ async function finish(root: string, state: Update) {
   }
   if (
     observed.build_id !== `${state.target}+${release.commit}` ||
-    observed.runtime_ready !== true
+    observed.runtime_ready !== true ||
+    observed.runtime_application_failure ===
+      "application initialization is in progress"
   ) {
     throw new Error(
       "The new kernel/runtime is not ready; repair it and retry the same version",
