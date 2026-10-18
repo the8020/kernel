@@ -36,10 +36,11 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Node-local `network.https_port` takes effect on restart. Shared enablement,
   policy, and certificate changes use prepare/commit without restarting work.
 - Zero `network.https_port` keeps native TLS closed for external termination or
-  migration. `network.additional_http_port` optionally serves the same router
-  at a second node-local port after restart, preserving public Docker mappings.
+  migration. `network.additional_http_port` optionally serves the same router at
+  a second node-local port after restart, preserving public Docker mappings.
 - Supply the existing node capacity provider with the public network manager's
-  HTTPS status so local and remote node diagnostics expose publication revisions.
+  HTTPS status so local and remote node diagnostics expose publication
+  revisions.
 
 - `sandbox_access.go` connects authenticated native sandbox ingress to the
   ordinary users authenticate program and service router. Allowance issuance
@@ -316,6 +317,11 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   accepted state, and healthy fragments publish independently. Pending repair
   batches only the remaining owners. The first startup/recovery reindex fills
   the whole local index; startup does not repeat a completed bootstrap pass.
+- The same pass runs ordered `index-packages` providers before ordered
+  `index-services` providers in one ordinary `hooks/index-packages` invocation.
+  Both receive shared package drafts and immutable scope. Both chains
+  participate in provider-version invalidation and the existing pending/retry
+  state; static job declarations and scheduling remain entirely in Deno.
 - Restore inherited workload state before schema jobs or package commands can
   start. Startup recovery must never classify a new job's normal sandbox
   deletion as an inherited runtime failure.

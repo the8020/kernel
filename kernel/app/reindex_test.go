@@ -552,7 +552,7 @@ func TestServiceIndexPublicationIsIndependentOfRuntimeStartup(t *testing.T) {
 	calls := 0
 	runner := indexJobFunc(func(_ context.Context, id, entry string, options jobs.Options) (jobs.Record, error) {
 		calls++
-		if id != "hooks/index-services" || entry != packages.HookDispatcherEntrypoint || len(options.Arguments) != 3 {
+		if id != "hooks/index-packages" || entry != packages.HookDispatcherEntrypoint || len(options.Arguments) != 3 {
 			t.Fatalf("not one ordinary hook invocation: %s %s %#v", id, entry, options)
 		}
 		fragments := map[string]any{}
@@ -670,5 +670,80 @@ func TestCanceledServicePublicationRetainsEveryUnprocessedOwnerForRetry(t *testi
 	}
 	if err := indexer.RetryPending(context.Background()); err != nil || len(indexer.pending) != 0 || calls != 1 {
 		t.Fatalf("pending=%v calls=%d error=%v", indexer.pending, calls, err)
+	}
+}
+
+func TestPackageIndexHooksSharePublicationScopeAndProviderInvalidation(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	source := &runtimePackageIndex{entries: map[string]packages.PackageIndex{}}
+	for _, id := range []string{"acme/jobs", "acme/services", "acme/app"} {
+		source.entries[id] = packages.PackageIndex{PackageID: id, State: "ready", ActiveCommit: "first"}
+		if err := os.MkdirAll(filepath.Join(root, id), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, provider := range []struct{ pkg, hook string }{{"jobs", "index-packages"}, {"services", "index-services"}} {
+		for name, content := range map[string]string{
+			"hooks/index.toml":            fmt.Sprintf("hook = %q\ndescription = \"Index\"\nprogram = \"acme/%s/index\"\n", provider.hook, provider.pkg),
+			"programs/index/program.toml": "entrypoint = \"program.ts\"\n",
+			"programs/index/program.ts":   "export default () => {};",
+		} {
+			path := filepath.Join(root, "acme", provider.pkg, name)
+			if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	store, err := packages.New(packages.Config{WorkspaceRoot: root, PackagesRoot: root, IndexStore: source})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var scopes []serviceIndexScope
+	var chains [][]packages.HookReference
+	indexer := &runtimeIndexer{
+		handlers: store, commands: &commandIndexerStub{}, packages: store, services: webservices.NewIndex(),
+		jobs: indexJobFunc(func(_ context.Context, id, entry string, options jobs.Options) (jobs.Record, error) {
+			if id != "hooks/index-packages" || entry != packages.HookDispatcherEntrypoint {
+				t.Fatalf("wrong dispatch: %s %s", id, entry)
+			}
+			chains = append(chains, options.Arguments[0].([]packages.HookReference))
+			scopes = append(scopes, options.Arguments[1].(serviceIndexScope))
+			return jobs.Record{State: "SUCCEEDED", Result: options.Arguments[2]}, nil
+		}),
+	}
+	if _, err := indexer.Reindex(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(scopes) != 1 || len(scopes[0].Packages) != 3 || len(chains[0]) != 2 ||
+		!strings.Contains(chains[0][0].Entrypoint, "/acme/jobs/") || !strings.Contains(chains[0][1].Entrypoint, "/acme/services/") {
+		t.Fatalf("providers did not share one pass: chains=%v scopes=%v", chains, scopes)
+	}
+	if _, err := indexer.Reindex(ctx, []string{"acme/app"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := scopes[len(scopes)-1].Packages; len(got) != 1 || got[0].PackageID != "acme/app" {
+		t.Fatalf("targeted scope=%v", got)
+	}
+	changed := source.entries["acme/jobs"]
+	changed.ActiveCommit = "second"
+	source.entries["acme/jobs"] = changed
+	if _, err := indexer.Reindex(ctx, []string{"acme/jobs"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := scopes[len(scopes)-1].Packages; len(got) != 3 {
+		t.Fatalf("changed application provider did not reindex every owner: %v", got)
+	}
+	retired := source.entries["acme/app"]
+	retired.State = "retired"
+	source.entries["acme/app"] = retired
+	if _, err := indexer.Reindex(ctx, []string{"acme/app"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := scopes[len(scopes)-1].Packages; len(got) != 1 || got[0].Active {
+		t.Fatalf("retired package was not delivered to application indexer: %v", got)
 	}
 }

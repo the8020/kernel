@@ -115,10 +115,14 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   unselected fragments, and refreshes cached cross-package program references
   when their target changes. Invalid input leaves both indexes unchanged. Event
   lookup is memory-only and bounded to 2,048 listeners globally.
-- Hooks accept `pre-activate`, `post-activate`, or `index-services`.
-  `PackageHooks` selects one package's phase and `Hooks` selects an ordered
-  trigger chain across packages; both consume only the published memory index.
-  Activation phases use a validated candidate index before live publication.
+- Hooks accept `pre-activate`, `post-activate`, `index-packages`, or
+  `index-services`. `PackageHooks` selects one package's phase and `Hooks`
+  selects an ordered trigger chain across packages; both consume only the
+  published memory index. Activation phases use a validated candidate index
+  before live publication.
+- `index-packages` extends the existing publication pass for application-owned
+  indexes. Packages own declaration parsing, storage, and policy; the kernel
+  supplies selected package/commit scope and ordinary hook execution only.
   Program references resolve against all candidates before ready installed
   packages. Read-only candidate mounts override only roots that differ from
   installed package paths; bootstrap uses the existing shared mount without

@@ -28,6 +28,7 @@ type fakeSandboxes struct {
 	listCalls  int
 	inspectIDs []string
 	resolveIDs []string
+	inspectErr error
 }
 
 func (f *fakeSandboxes) ResolveSandbox(id string) (model.SandboxSpec, error) {
@@ -52,6 +53,9 @@ func (f *fakeSandboxes) List() ([]manager.Inspection, error) {
 }
 func (f *fakeSandboxes) Inspect(_ context.Context, id string) (manager.Inspection, error) {
 	f.inspectIDs = append(f.inspectIDs, id)
+	if f.inspectErr != nil {
+		return manager.Inspection{}, f.inspectErr
+	}
 	for _, item := range f.items {
 		if item.Spec.SandboxID == id {
 			if item.Status.ObservedState == "" {
@@ -60,7 +64,7 @@ func (f *fakeSandboxes) Inspect(_ context.Context, id string) (manager.Inspectio
 			return item, nil
 		}
 	}
-	return manager.Inspection{}, context.Canceled
+	return manager.Inspection{}, os.ErrNotExist
 }
 
 type fakeControl struct {
@@ -339,6 +343,11 @@ func TestWorkerInvocationTargetsOneExactLocalWorker(t *testing.T) {
 		t.Fatalf("structured function error=%#v", result)
 	}
 	control.invoke = supervisor.WorkerInvocationResult{}
+	control.invokeErr = errors.New("supervisor connection reset")
+	result = manager.InvokeWorker(context.Background(), input)
+	if result.Error == nil || result.Error.Code != "unavailable" {
+		t.Fatalf("transport failure must not imply a missing Worker: %#v", result)
+	}
 	control.invokeErr = context.DeadlineExceeded
 	result = manager.InvokeWorker(context.Background(), input)
 	if result.Error == nil || result.Error.Code != "timeout" {
@@ -349,7 +358,8 @@ func TestWorkerInvocationTargetsOneExactLocalWorker(t *testing.T) {
 func TestWorkerInvocationRejectsMismatchedExactTarget(t *testing.T) {
 	spec := model.SandboxSpec{SandboxID: "sbx-aaaaaaaaaa", WorkloadType: model.WorkloadService}
 	control := &fakeControl{}
-	manager, _ := New(&fakeSandboxes{items: []manager.Inspection{{Spec: spec}}}, control, 0, 64, "sqlite")
+	sandboxes := &fakeSandboxes{items: []manager.Inspection{{Spec: spec}}}
+	manager, _ := New(sandboxes, control, 0, 64, "sqlite")
 	manager.SetNodeRouter(&fakeNodeRouter{local: "nod-aaaaaaaaaa"})
 	base := nodes.WorkerInvocationRequest{NodeID: "nod-aaaaaaaaaa", SandboxID: "sbx-aaaaaaaaaa", WorkerID: "wrk-aaaaaaaaaa", Function: "example.inspect", Input: nil, User: execution.SystemUser()}
 
@@ -380,6 +390,10 @@ func TestWorkerInvocationRejectsMismatchedExactTarget(t *testing.T) {
 	}
 	if control.invokedID != "" {
 		t.Fatalf("mismatched target reached supervisor: %#v", control)
+	}
+	sandboxes.inspectErr = errors.New("sandbox catalog read failed")
+	if result := manager.InvokeLocalWorker(context.Background(), base); result.Error == nil || result.Error.Code != "unavailable" {
+		t.Fatalf("catalog failure must not imply missing execution: %#v", result)
 	}
 }
 

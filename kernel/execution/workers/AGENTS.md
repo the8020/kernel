@@ -38,6 +38,10 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
   Workers, carries an optional persistent-execution target for supervisor
   binding validation, forwards cross-node only to the exact authenticated node,
   and returns bounded structured target/function/timeout/application errors.
+- `target_not_found` requires a confirmed missing sandbox or a supervisor's
+  missing-target result. Catalog/transport failures and unavailable runtimes
+  return `unavailable`; timeout remains distinct. Application cleanup may rely
+  on this distinction without treating an outage as execution loss.
 - Local and forwarded invocation apply the shared node request validator before
   lookup or forwarding. A malformed parent is rejected; a valid parent reaches
   supervisor control so reused Workers receive distinct child contexts.

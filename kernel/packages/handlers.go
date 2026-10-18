@@ -63,8 +63,8 @@ func readHandler(root, path, kind string) (HandlerDefinition, string, int, error
 		}
 		handler, trigger = declaration.HandlerDefinition, declaration.Hook
 		order = declaration.Order
-		if trigger != "pre-activate" && trigger != "post-activate" && trigger != "index-services" {
-			return handler, "", 0, errors.New("handler hook must be pre-activate, post-activate, or index-services")
+		if trigger != "pre-activate" && trigger != "post-activate" && trigger != "index-services" && trigger != "index-packages" {
+			return handler, "", 0, errors.New("handler hook must be pre-activate, post-activate, index-packages, or index-services")
 		}
 	}
 	if strings.TrimSpace(handler.Description) == "" {

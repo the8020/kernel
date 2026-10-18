@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -333,10 +334,13 @@ func (m *Manager) InvokeLocalWorker(ctx context.Context, input nodes.WorkerInvoc
 	}
 	inspection, err := m.sandboxes.Inspect(ctx, input.SandboxID)
 	if err != nil {
-		return invocationFailure("target_not_found", fmt.Sprintf("sandbox %q is unavailable", input.SandboxID))
+		if errors.Is(err, os.ErrNotExist) {
+			return invocationFailure("target_not_found", fmt.Sprintf("sandbox %q does not exist", input.SandboxID))
+		}
+		return invocationFailure("unavailable", err.Error())
 	}
 	if err := requireWorkerRuntime(inspection); err != nil {
-		return invocationFailure("target_not_found", err.Error())
+		return invocationFailure("unavailable", err.Error())
 	}
 	if inspection.Spec.SandboxID != input.SandboxID {
 		return invocationFailure("target_mismatch", "sandbox identity does not match target")
@@ -349,7 +353,7 @@ func (m *Manager) InvokeLocalWorker(ctx context.Context, input nodes.WorkerInvoc
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
 			return invocationFailure("timeout", "Worker invocation timed out")
 		}
-		return invocationFailure("target_not_found", err.Error())
+		return invocationFailure("unavailable", err.Error())
 	}
 	if result.OK {
 		encoded, encodeErr := json.Marshal(result.Output)

@@ -98,7 +98,9 @@ func (i *runtimeIndexer) indexServices(ctx context.Context, packageIDs []string,
 		diagnostics = append(diagnostics, failure.Error())
 	}
 refresh:
-	chain := i.packages.Hooks("index-services")
+	// Application-owned indexes participate in the same publication, retry, and
+	// provider-invalidation path as runtime service fragments.
+	chain := append(i.packages.Hooks("index-packages"), i.packages.Hooks("index-services")...)
 	encoded, err := json.Marshal(chain)
 	if err != nil {
 		return nil, nil, err
@@ -340,12 +342,12 @@ func (i *runtimeIndexer) runServiceIndex(ctx context.Context, scope serviceIndex
 	for _, selected := range scope.Packages {
 		drafts[selected.PackageID] = map[string]any{"services": []webservices.Specification{}}
 	}
-	record, err := i.packages.RunHookChain(ctx, i.jobs, "hooks", "index-services", chain, scope, map[string]any{"packages": drafts}, nil)
+	record, err := i.packages.RunHookChain(ctx, i.jobs, "hooks", "index-packages", chain, scope, map[string]any{"packages": drafts}, nil)
 	if err != nil {
 		return nil, err
 	}
 	if record.State != "SUCCEEDED" && record.State != "IDLE" {
-		return nil, fmt.Errorf("index-services job %s: %s", record.State, record.Failure)
+		return nil, fmt.Errorf("package indexing job %s: %s", record.State, record.Failure)
 	}
 	encoded, err := json.Marshal(record.Result)
 	if err != nil {

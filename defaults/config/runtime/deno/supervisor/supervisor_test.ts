@@ -1279,7 +1279,7 @@ Deno.test("exact Worker control invokes only explicitly registered functions", a
     "../examples/service_control.ts",
     import.meta.url,
   ).href;
-  await supervisor.startWorker({
+  const controlWorker = await supervisor.startWorker({
     metadata: controlMetadata,
     permissions: { read: [examples] },
   });
@@ -1352,6 +1352,18 @@ Deno.test("exact Worker control invokes only explicitly registered functions", a
       message: "Worker function default is not registered",
     },
   });
+  const stopping = controlWorker.stop();
+  const draining = await supervisor.invokeWorker(
+    controlMetadata.workerId,
+    "example.echo",
+    null,
+    new AbortController().signal,
+    undefined,
+    { userId: "user:system", username: "system" },
+    testInvocation(),
+  );
+  assertEquals(draining.error?.code, "unavailable");
+  await stopping;
   await supervisor.drain();
 });
 

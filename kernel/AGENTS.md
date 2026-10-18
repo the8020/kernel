@@ -82,6 +82,9 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   publishes one fragment per owning package in memory; request paths never read
   service TOML or application tables. `kernel.reindex` is the common boot,
   activation, edit, and cross-node publication path.
+- Application-owned `index-packages` hooks share that publication pass and its
+  selected package scope with `index-services`. Static job TOML, schedules,
+  claims, and history remain in the jobs application.
 - Setting TOML is authoritative for keys, types, node/global storage, defaults,
   environment inputs, validation, and runtime/restart metadata.
 - One sandbox is one gVisor sandbox with exactly one workload type—service or

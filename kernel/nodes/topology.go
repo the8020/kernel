@@ -241,7 +241,7 @@ func (m *Manager) InvokeWorker(ctx context.Context, input WorkerInvocationReques
 	}
 	node, err := m.Inspect(input.NodeID)
 	if err != nil || !node.Enabled {
-		return workerInvocationFailure("target_not_found", fmt.Sprintf("target node %q is unavailable", input.NodeID))
+		return workerInvocationFailure("unavailable", fmt.Sprintf("target node %q is unavailable", input.NodeID))
 	}
 	target := "https://" + net.JoinHostPort(node.RecipientAddress, strconv.Itoa(node.RecipientPort)) + workerInvokePath
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(string(body)))

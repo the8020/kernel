@@ -388,24 +388,24 @@ relevant child AGENTS.md
   `kernel.events.emit <event> --data <json>`. Activation hooks use flat
   `hooks/*.toml` with required `hook`, `description`, and `program` fields;
   optional integer `order` defaults to zero and ties use declaration identity.
-  Synchronous hooks support ordered chains, including `index-services`. One
-  chain runs as one ordinary system job whose Deno dispatcher imports and awaits
-  all handlers in the same Worker with shared mutable state. Normal sandbox
-  mounts, permissions, grouping, and release-aware reuse apply; never copy
-  packages or allocate separate execution machinery for each handler. One
-  `kernel.reindex` entry point indexes commands, events, hooks, and services at
-  boot, activation, and published source changes. Optional package IDs replace
-  only selected package declarations; omission rebuilds the complete index.
-  Executable source lives in ordinary programs. The complete `index-services`
-  chain runs for each selected owning package even when handlers reside
-  elsewhere. Scope is immutable; successful validated fragments publish
-  atomically and remove omitted services, while failures preserve the previous
-  fragment. Boot, activation, configuration edits, and cross-node invalidation
-  share this path. Application failure must not block local command/job startup.
-  `All` job schedules use independent node records; `Any` claims use short
-  database transactions assigning the winning node ID. Direct targets are
-  ignored by other nodes. Go owns events and sandbox execution, never job
-  calendars.
+  Synchronous hooks support ordered chains, including application-owned
+  `index-packages` and service-owned `index-services`. One chain runs as one
+  ordinary system job whose Deno dispatcher imports and awaits all handlers in
+  the same Worker with shared mutable state. Normal sandbox mounts, permissions,
+  grouping, and release-aware reuse apply; never copy packages or allocate
+  separate execution machinery for each handler. One `kernel.reindex` entry
+  point indexes commands, events, hooks, and services at boot, activation, and
+  published source changes. Optional package IDs replace only selected package
+  declarations; omission rebuilds the complete index. Executable source lives in
+  ordinary programs. The complete `index-services` chain runs for each selected
+  owning package even when handlers reside elsewhere. Scope is immutable;
+  successful validated fragments publish atomically and remove omitted services,
+  while failures preserve the previous fragment. Boot, activation, configuration
+  edits, and cross-node invalidation share this path. Application failure must
+  not block local command/job startup. `All` job schedules use independent node
+  records; `Any` claims use short database transactions assigning the winning
+  node ID. Direct targets are ignored by other nodes. Go owns events and sandbox
+  execution, never job calendars.
 - Node-local service records are recoverable runtime artifacts, never a global
   startup gate. Only current record shapes are accepted; unreadable or obsolete
   records move out of the live registry for diagnosis, and one service's decode,

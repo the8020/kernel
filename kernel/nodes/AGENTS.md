@@ -57,6 +57,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   persistent-execution target, dispatches directly to the registered local
   invoker, and returns structured opaque results without scanning nodes,
   sandboxes, or Workers.
+- Missing or disabled topology entries return `unavailable` for Worker calls;
+  only the target's authoritative inspection can confirm execution loss.
 - `WorkerInvocationRequest.Validate` owns canonical `nod-`/`sbx-`/`wrk-`,
   optional `ctx-`/`pex-`, function-name and principal validation. Both sending
   and receiving node transports, callbacks, and local Worker dispatch use it

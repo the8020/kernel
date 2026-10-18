@@ -365,12 +365,21 @@ export class Supervisor {
     invocation: InvocationMetadata,
   ): Promise<WorkerInvocationResult> {
     const worker = this.#workers.get(workerId);
-    if (worker === undefined || worker.closed || worker.draining) {
+    if (worker === undefined || worker.closed) {
       return {
         ok: false,
         error: {
           code: "target_not_found",
           message: `Worker ${workerId} is unavailable`,
+        },
+      };
+    }
+    if (worker.draining) {
+      return {
+        ok: false,
+        error: {
+          code: "unavailable",
+          message: `Worker ${workerId} is draining`,
         },
       };
     }

@@ -455,6 +455,11 @@ func TestWorkerInvocationRejectsMalformedIdentityAtBothNodeBoundaries(t *testing
 	invoker := &recordingWorkerInvoker{}
 	m.SetWorkerInvoker(invoker)
 	base := WorkerInvocationRequest{NodeID: m.localID, SandboxID: "sbx-aaaaaaaaaa", WorkerID: "wrk-aaaaaaaaaa", Function: "example.inspect", User: execution.SystemUser()}
+	remote := base
+	remote.NodeID = "nod-bbbbbbbbbb"
+	if result := m.InvokeWorker(context.Background(), remote); result.Error == nil || result.Error.Code != "unavailable" {
+		t.Fatalf("unavailable node must not imply a missing execution: %#v", result)
+	}
 	for name, mutate := range map[string]func(*WorkerInvocationRequest){
 		"node":       func(r *WorkerInvocationRequest) { r.NodeID = "node-a" },
 		"sandbox":    func(r *WorkerInvocationRequest) { r.SandboxID = "wrk-aaaaaaaaaa" },

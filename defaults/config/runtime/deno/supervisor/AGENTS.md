@@ -131,6 +131,9 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 
 - Invalid authentication/protocol/identity is rejected. Capacity failure returns
   a service `503`; an unhandled supervisor failure exits for kernel detection.
+- Exact Worker control reports absent/closed Workers as `target_not_found` and
+  draining Workers as `unavailable`, preserving the distinction between lost
+  execution and temporarily rejected control.
 
 # Concurrency
 
