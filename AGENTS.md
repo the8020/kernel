@@ -420,8 +420,9 @@ relevant child AGENTS.md
   version position reserves incompatible upgrades. Do not add compatibility
   adapters, deprecated aliases, or duplicate state for older kernels. The
   [host updater](defaults/kernel-scripts/AGENTS.md) owns staging, migration,
-  explicit retry, and restart; packages update separately unless a migration
-  explicitly invokes their owning commands.
+  explicit retry, and restart. After startup and migrations, it invokes
+  `kernel.packages.recommended` from the installed kernel; package failures keep
+  completion pending for explicit retry. Local work and newer versions survive.
 - Service configuration discovery belongs to Deno indexing at boot, activation,
   edits, or explicit reindex. Kernel reconciliation consumes the memory index.
   The maintenance timer touches only services with live runtime capacity or
@@ -686,7 +687,8 @@ below.
   builds, formats, lints, type-checks, or tests application packages and never
   runs a UUI build or browser E2E. `THE8020_RELEASE_VERSION=<major.minor>` is an
   installer-only release input: it disables sibling-source snapshots and stages
-  every bootstrap package from its compatible resolved Git tag.
+  every bootstrap package from its configured version tag, or its newest
+  compatible Git tag when no version is configured.
 - Installation also ships kernel/admin/logd beside runsc and host scripts under
   `node/kernel/scripts/`. Managed release instances use the updater; the source
   installer refuses to overwrite their active release. Clean exact tags stamp
@@ -694,13 +696,14 @@ below.
   source builds identify as `development`.
 - The installed updater fetches an exact kernel Git tag and runs its ordinary
   installer in a separate initialized staging instance. No bootstrap packages
-  are installed there. Application changes require explicit versioned
-  migrations. Build and smoke checks complete before the old kernel is stopped.
-  Limit Go to two processors, 512 MiB runtime memory, and a 30-minute
-  preparation deadline. The updater needs 6 GiB of free temporary disk space;
-  successful completion removes its build source, toolchain, and caches. Kernel
-  preparation requires no prebuilt archive or CI; the bundled-Caddy conversion
-  uses deploy's pinned migration artifact.
+  are installed there. The installed `scripts/bootstrap-packages.toml` also
+  supplies ordered package recommendations to the native command after startup.
+  Build and smoke checks complete before the old kernel is stopped. Limit Go to
+  two processors, 512 MiB runtime memory, and a 30-minute preparation deadline.
+  The updater needs 6 GiB of free temporary disk space; successful completion
+  removes its build source, toolchain, and caches. Kernel preparation requires
+  no prebuilt archive or CI; the bundled-Caddy conversion uses deploy's pinned
+  migration artifact.
 - The installer needs `bzip2` to unpack the portable runtime. On root Debian
   installations it installs this missing OS prerequisite through apt, including
   when full runtime host setup is skipped. Application packages are unaffected.

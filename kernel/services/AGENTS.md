@@ -44,6 +44,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Extend only when a generated handler has a current typed dependency.
 - Package management includes `DeletePackage` for the confirmed CBus/private
   operation; package activation owns removal and recovery.
+- `InstallRecommendedPackages` exposes the installed kernel's ordered package
+  recommendations to its native recovery command; the package store owns
+  selection, source protection, and activation.
 - Signing is available before database/runtime startup and exposes no private
   key material. User/session policy is not a kernel dependency.
 - The sandbox handler contract exposes live lifecycle operations separately from

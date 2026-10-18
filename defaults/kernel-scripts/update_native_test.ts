@@ -166,10 +166,11 @@ Deno.test({
     const workspace = Deno.env.get("THE8020_BOOTSTRAP_SOURCE_ROOT") ??
       new URL("../../../", import.meta.url).pathname;
     const packages = [
-      ...(await Deno.readTextFile(`${source}/defaults/bootstrap-packages.toml`))
+      ...(await Deno.readTextFile(
+        `${oldSource}/defaults/bootstrap-packages.toml`,
+      ))
         .matchAll(/^id = "the8020\/(.+)"$/gm),
     ].map((entry) => entry[1]);
-    const packageCommits = new Map<string, string>();
     for (const name of packages) {
       const repository = `${workspace}/${name}`;
       const resolved = await run("bash", [
@@ -178,7 +179,7 @@ Deno.test({
         "0.7",
         repository,
       ]);
-      const [tag, commit] = resolved.split("\t");
+      const [tag] = resolved.split("\t");
       await run("/usr/bin/git", [
         "clone",
         "--quiet",
@@ -188,7 +189,14 @@ Deno.test({
         repository,
         `${root}/packages/the8020/${name}`,
       ]);
-      packageCommits.set(name, commit);
+      await run("/usr/bin/git", [
+        "-C",
+        `${root}/packages/the8020/${name}`,
+        "remote",
+        "set-url",
+        "origin",
+        `https://github.com/the8020/${name}.git`,
+      ]);
     }
     const config = await Deno.readTextFile(`${root}/kernel.toml`);
     // Copy ordinary source into a local tagged repository; only its transport is replaced.
@@ -214,7 +222,7 @@ Deno.test({
       "-m",
       "source",
     ], released);
-    await run("/usr/bin/git", ["tag", "0.8.7"], released);
+    await run("/usr/bin/git", ["tag", "0.9.2"], released);
     const targetCommit = await run(
       "/usr/bin/git",
       ["rev-parse", "HEAD"],
@@ -224,9 +232,9 @@ Deno.test({
       `${tools}/git`,
       `#!/bin/bash
 set -eu
-if [[ "$1" == clone ]]; then
+if [[ "$1" == clone && "$*" == *https://github.com/the8020/kernel.git* ]]; then
   destination="${"${!#}"}"
-  /usr/bin/git clone --quiet --branch 0.8.7 "$FIXTURE_SOURCE" "$destination"
+  /usr/bin/git clone --quiet --branch 0.9.2 "$FIXTURE_SOURCE" "$destination"
   mkdir -p "$destination/.development"
   ln -s "$FIXTURE_CACHE" "$destination/.development/cache"
 else exec /usr/bin/git "$@"; fi
@@ -342,7 +350,7 @@ else exec /usr/bin/git "$@"; fi
     let driver: number | undefined;
     try {
       const initial = await observe("0.7.4", baselineCommit);
-      const result = await run("bash", [`${source}/docker/update.sh`, "0.8.7"]);
+      const result = await run("bash", [`${source}/docker/update.sh`, "0.9.2"]);
       console.log(result);
       driver = Number(result.match(/PID (\d+)/)?.[1]);
       const deadline = Date.now() + 600000;
@@ -371,20 +379,29 @@ else exec /usr/bin/git "$@"; fi
           .phase === "complete",
         "update incomplete",
       );
-      const selected = await observe("0.8.7", targetCommit);
+      const selected = await observe("0.9.2", targetCommit);
       assert(initial.pid !== selected.pid, "kernel was not replaced");
       assert(
         !(await Deno.lstat(`${root}/scripts`)).isSymlink,
         "development helpers still alias protected node storage",
       );
-      for (const [name, commit] of packageCommits) {
+      const recommendations = await Deno.readTextFile(
+        `${source}/defaults/bootstrap-packages.toml`,
+      );
+      for (const entry of recommendations.split("[[packages]]").slice(1)) {
+        const name = entry.match(/^id = "the8020\/(.+)"$/m)![1];
+        const version = entry.match(/^version = "(.+)"$/m)?.[1] ?? "HEAD";
+        const commit = await run("/usr/bin/git", [
+          "rev-parse",
+          `${version}^{commit}`,
+        ], `${workspace}/${name}`);
         assert(
           await run(
             "/usr/bin/git",
             ["rev-parse", "HEAD"],
             `${root}/packages/the8020/${name}`,
           ) === commit,
-          `package version changed: ${name}`,
+          `recommended package was not applied: ${name}`,
         );
       }
       const execution = JSON.parse(
@@ -428,7 +445,8 @@ else exec /usr/bin/git "$@"; fi
           "bootstrap: original kernel has stopped; adopting the launcher",
           "startup: installing the initial platform runtime",
           "bootstrap: kernel control plane is ready; starting update",
-          "update: completed 0.8.7",
+          "update: installing recommended packages",
+          "update: completed 0.9.2",
         ]
       ) {
         assert(
@@ -453,7 +471,7 @@ else exec /usr/bin/git "$@"; fi
         "configuration changed",
       );
       console.log(
-        "inside-container source update passed: real 0.7.4, retained parent and original child PID, ordinary installer, real Worker, HTTP health/login before and after, unchanged package commits, configuration, and private work",
+        "inside-container source update passed: real 0.7.4, retained parent and original child PID, ordinary installer, real Worker, HTTP health/login before and after, recommended package versions, unchanged configuration and private work",
       );
     } catch (error) {
       try {

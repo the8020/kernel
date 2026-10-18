@@ -1,65 +1,83 @@
 schema = 1
 
-[[packages]]
-id = "the8020/admin-core"
-source = "https://github.com/the8020/admin-core.git"
-
-[[packages]]
-id = "the8020/admin-db"
-source = "https://github.com/the8020/admin-db.git"
-
-[[packages]]
-id = "the8020/auth"
-source = "https://github.com/the8020/auth.git"
+# Installation order: schema and shared owners precede their consumers.
 
 [[packages]]
 id = "the8020/db"
 source = "https://github.com/the8020/db.git"
-
-[[packages]]
-id = "the8020/demo"
-source = "https://github.com/the8020/demo.git"
-
-[[packages]]
-id = "the8020/deployments"
-source = "https://github.com/the8020/deployments.git"
-
-[[packages]]
-id = "the8020/dev-core"
-source = "https://github.com/the8020/dev-core.git"
-
-[[packages]]
-id = "the8020/dev-skills"
-source = "https://github.com/the8020/dev-skills.git"
-
-[[packages]]
-id = "the8020/https"
-source = "https://github.com/the8020/https.git"
-
-[[packages]]
-id = "the8020/jobs"
-source = "https://github.com/the8020/jobs.git"
-
-[[packages]]
-id = "the8020/packages"
-source = "https://github.com/the8020/packages.git"
-
-[[packages]]
-id = "the8020/secrets"
-source = "https://github.com/the8020/secrets.git"
-
-[[packages]]
-id = "the8020/services"
-source = "https://github.com/the8020/services.git"
+version = "0.9.1"
 
 [[packages]]
 id = "the8020/system"
 source = "https://github.com/the8020/system.git"
+version = "0.7.2"
+
+[[packages]]
+id = "the8020/services"
+source = "https://github.com/the8020/services.git"
+version = "0.7.3"
+
+[[packages]]
+id = "the8020/auth"
+source = "https://github.com/the8020/auth.git"
+version = "0.7.2"
+
+[[packages]]
+id = "the8020/packages"
+source = "https://github.com/the8020/packages.git"
+version = "0.9.0"
+
+[[packages]]
+id = "the8020/secrets"
+source = "https://github.com/the8020/secrets.git"
+version = "0.9.0"
+
+[[packages]]
+id = "the8020/jobs"
+source = "https://github.com/the8020/jobs.git"
+version = "0.9.0"
 
 [[packages]]
 id = "the8020/users"
 source = "https://github.com/the8020/users.git"
+version = "0.9.0"
 
 [[packages]]
 id = "the8020/uui"
 source = "https://github.com/the8020/uui.git"
+version = "0.9.0"
+
+[[packages]]
+id = "the8020/https"
+source = "https://github.com/the8020/https.git"
+version = "0.9.0"
+
+[[packages]]
+id = "the8020/admin-core"
+source = "https://github.com/the8020/admin-core.git"
+version = "0.8.2"
+
+[[packages]]
+id = "the8020/admin-db"
+source = "https://github.com/the8020/admin-db.git"
+version = "0.7.2"
+
+[[packages]]
+id = "the8020/deployments"
+source = "https://github.com/the8020/deployments.git"
+version = "0.9.0"
+
+[[packages]]
+id = "the8020/dev-core"
+source = "https://github.com/the8020/dev-core.git"
+version = "0.9.0"
+
+[[packages]]
+id = "the8020/dev-skills"
+source = "https://github.com/the8020/dev-skills.git"
+version = "0.9.0"
+
+[[packages]]
+id = "the8020/demo"
+source = "https://github.com/the8020/demo.git"
+version = "0.8.1"

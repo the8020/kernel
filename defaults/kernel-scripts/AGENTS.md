@@ -13,7 +13,8 @@ Parent DOX: [kernel defaults](../AGENTS.md).
 - `refresh-development-scripts.sh` owns complete, staged replacement of the
   sandbox-visible instance `scripts/` directory; the source installer and Docker
   seeding reuse it.
-- Docker owns initial seeding; these scripts never install the bootstrap package
+- Docker owns initial seeding. After installing a new kernel, the updater
+  invokes `kernel.packages.recommended` against that kernel's shipped package
   list.
 
 # Local Contracts
@@ -50,8 +51,14 @@ Parent DOX: [kernel defaults](../AGENTS.md).
 - After startup, verify the target build ID, generic runtime readiness, and an
   ordinary `runtime.eval` Worker returning its expected value. Bound that job to
   15 seconds; leave verification pending if real sandbox execution fails.
-  Application initialization failures remain visible separately. Packages change
-  only through an explicit after-start migration using package commands.
+  Application initialization failures remain visible separately. After-start
+  migrations precede `kernel.packages.recommended`; completion requires that
+  command to succeed. A failure leaves the installed phase pending for explicit
+  same-version retry. Completed migrations are not repeated; recommendations are
+  idempotent and preserve local edits/commits, custom sources, and newer
+  versions, reporting those skips. Existing activation validation can reject
+  unpublished shared edits while changing another package; retain the pending
+  update until those edits are published or moved out of the shared checkout.
 - Wait until the application initialization attempt has finished before running
   after-start migrations. Generic Worker readiness alone is insufficient while
   native package management is still being published. A completed application
@@ -85,10 +92,10 @@ Parent DOX: [kernel defaults](../AGENTS.md).
 - `deno fmt --check`, `deno lint --no-config`, and `deno check --no-config`
   cover `update.ts` and `update_test.ts`;
   `deno test --no-config -A update_test.ts` exercises the production updater
-  with isolated release and command fixtures, including installer output and
-  heartbeats visible before preparation completes. The compatibility fixture
-  reads the published `0.8.6` updater from its Git tag to verify old-updater
-  execution of the new offline migration.
+  with isolated release and command fixtures, including installer output,
+  heartbeats, and recommended-package failure/retry after application startup.
+  The compatibility fixture reads the published `0.8.6` updater from its Git tag
+  to verify old-updater execution of the new offline migration.
 - Native cbus tests verify detached execution, validation, and missing launcher
   diagnostics. `docker-entrypoint_test.sh` checks one-time seeding and restart
   preservation alongside existing account/readiness behavior, including complete
@@ -99,8 +106,8 @@ Parent DOX: [kernel defaults](../AGENTS.md).
   from the repository. The fresh single-node fixture compiles actual kernels and
   verifies real gVisor, cbus, migration, kernel replacement, and
   launcher/private-data preservation, full application initialization, and HTTP
-  health/login before and after the update. Bound its CPU, memory, and runtime
-  using the workspace's native-test guidance.
+  health/login before and after the update, and recommended package versions.
+  Bound its CPU, memory, and runtime using the workspace's native-test guidance.
 - The native check compiles the actual released `0.7.4` kernel, stages its
   ordinary runtime sources, and prepares the target through the real installer.
   Only the GitHub source transport is redirected to a local tagged repository.
@@ -108,9 +115,10 @@ Parent DOX: [kernel defaults](../AGENTS.md).
   verifies the waiting parent survives and the original child PID becomes the
   launcher, executes an ordinary `runtime.eval` Worker through the installed
   image symlinks, verifies HTTP health/login before and after, and checks
-  unchanged package commits, configuration, and private work. Set the existing
-  `THE8020_BOOTSTRAP_SOURCE_ROOT` to the sibling package workspace when testing
-  from an isolated kernel worktree; the fixture clones compatible `0.7` tags.
+  recommended package versions, unchanged configuration, and private work. Set
+  the existing `THE8020_BOOTSTRAP_SOURCE_ROOT` to the sibling package workspace
+  when testing from an isolated kernel worktree; the fixture clones compatible
+  `0.7` tags.
 
 # Child DOX Index
 

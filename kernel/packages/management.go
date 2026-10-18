@@ -98,6 +98,7 @@ type PackageSynchronization struct {
 	Error          string          `json:"error,omitempty"`
 	SchemaPlan     json.RawMessage `json:"schema_plan,omitempty"`
 	SchemaResult   json.RawMessage `json:"schema_result,omitempty"`
+	skipped        string
 }
 
 type LocalPackage struct {
@@ -333,7 +334,7 @@ func (s *Store) synchronizePackages(ctx context.Context, packageIDs []string, to
 	sort.Strings(ids)
 	results := make([]PackageSynchronization, 0, len(ids))
 	for _, packageID := range ids {
-		result, err := s.synchronizePackage(ctx, packageID, token, username)
+		result, err := s.synchronizePackage(ctx, packageID, token, username, nil)
 		if err != nil {
 			result.PackageID, result.Error, result.Success = packageID, redactGitCredential(err.Error(), token, username), false
 		} else {
@@ -347,7 +348,7 @@ func (s *Store) synchronizePackages(ctx context.Context, packageIDs []string, to
 	return results, nil
 }
 
-func (s *Store) synchronizePackage(ctx context.Context, packageID, transientToken, username string) (PackageSynchronization, error) {
+func (s *Store) synchronizePackage(ctx context.Context, packageID, transientToken, username string, recommendation *recommendedPackage) (PackageSynchronization, error) {
 	unlock, err := s.lockPackage(ctx, packageID)
 	if err != nil {
 		return PackageSynchronization{}, err
@@ -357,10 +358,23 @@ func (s *Store) synchronizePackage(ctx context.Context, packageID, transientToke
 	if err != nil {
 		return PackageSynchronization{}, err
 	}
-	if !exists {
+	if !exists && recommendation == nil {
 		return PackageSynchronization{}, os.ErrNotExist
 	}
 	result := PackageSynchronization{PackageID: packageID, Source: entry.Source, Requested: entry.selector(), Local: entry.Local}
+	if recommendation != nil {
+		if exists && (entry.Local || entry.Source != recommendation.Source) {
+			result.skipped = "local package or custom source"
+			return result, nil
+		}
+		identity, _ := ParsePackageID(packageID)
+		entry.Author, entry.Repository = identity.Namespace, identity.Repository
+		entry.Source, entry.Tag, entry.Commit = recommendation.Source, recommendation.Version, ""
+		if err := validatePackageIndex(&entry); err != nil {
+			return result, err
+		}
+		result.Source, result.Requested = entry.Source, entry.selector()
+	}
 	destination, exists, err := s.packageDestination(packageID)
 	if err != nil {
 		return result, err
@@ -377,6 +391,10 @@ func (s *Store) synchronizePackage(ctx context.Context, packageID, transientToke
 	if exists {
 		result.PreviousCommit, err = s.cleanRepositoryHead(ctx, destination)
 		if err != nil {
+			if recommendation != nil && errors.Is(err, errDirtyRepository) {
+				result.skipped = "uncommitted changes"
+				return result, nil
+			}
 			return result, err
 		}
 	}
@@ -444,11 +462,26 @@ func (s *Store) synchronizePackage(ctx context.Context, packageID, transientToke
 	if err != nil {
 		return result, err
 	}
+	if recommendation != nil && exists {
+		result.skipped, err = s.recommendationSkip(ctx, stage, result.PreviousCommit, commit, recommendation.Version)
+		if err != nil || result.skipped != "" {
+			return result, err
+		}
+		if commit == result.PreviousCommit && entry.State == "ready" && entry.ActiveCommit == commit {
+			result.Commit = commit
+			return result, nil
+		}
+	}
 	if err := s.checkoutPackageVersion(ctx, stage, "origin", commit); err != nil {
 		return result, err
 	}
 	if err := validateStagedPackage(stage); err != nil {
 		return result, err
+	}
+	if recommendation != nil {
+		if err := s.index.Put(ctx, entry); err != nil {
+			return result, err
+		}
 	}
 	result.Commit = commit
 	if deployment.Options(ctx).Preview {
@@ -835,6 +868,8 @@ func CleanRepositoryHead(ctx context.Context, path string) (string, error) {
 	})
 }
 
+var errDirtyRepository = errors.New("installed package has uncommitted changes")
+
 func verifyCleanRepositoryHead(path string, run func(...string) (string, error)) (string, error) {
 	if info, err := os.Stat(filepath.Join(path, ".git")); err != nil || !info.IsDir() {
 		return "", errors.New("installed package is not a Git repository")
@@ -844,7 +879,7 @@ func verifyCleanRepositoryHead(path string, run func(...string) (string, error))
 		return "", fmt.Errorf("inspect installed package: %w", err)
 	}
 	if status != "" {
-		return "", errors.New("installed package has uncommitted changes")
+		return "", errDirtyRepository
 	}
 	head, err := run("rev-parse", "--verify", "HEAD^{commit}")
 	if err != nil {

@@ -47,11 +47,12 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   imports, stale caches, and failures in old work remain accepted shared-source
   tradeoffs.
 - The database package record is the sole desired/active package source of truth
-  after first initialization. Bootstrap TOML is only the fresh-database source
-  list; ordinary boots trust database state and never rescan all definitions.
-  Release-staged repositories carry their resolved requested tag in local Git
-  metadata; bootstrap verifies that it names the evaluated commit, then records
-  the tag as desired identity and the exact commit as active identity.
+  after first initialization. Bootstrap TOML supplies fresh-database sources and
+  explicit recommendations; ordinary boots trust database state and never
+  reapply recommendations or rescan all definitions. Release-staged repositories
+  carry their resolved requested tag in local Git metadata; bootstrap verifies
+  that it names the evaluated commit, then records the tag as desired identity
+  and the exact commit as active identity.
 - A fresh database stages every bootstrap package and performs one batched
   evaluation and synchronization before publishing the package set. Normal
   activation evaluates only candidate package tables in one batch.
@@ -166,6 +167,18 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   Git objects, branch names, and history when applying versions. Dirty shared
   worktrees are preserved and rejected. One failed batch package has explicit
   durable failure state.
+- `InstallRecommendedPackages` reads the current kernel's
+  `scripts/bootstrap-packages.toml`, validates the entire bounded schema-1 list,
+  and processes declaration order through the ordinary source lock and
+  synchronization/activation transaction. Optional numeric `version` selects a
+  tag; omission selects the remote default branch. Install missing packages;
+  advance existing checkouts only by fast-forward and never downgrade a numeric
+  installed version. Preserve dirty work, local commits, local packages, and
+  custom sources before changing desired state. Return per-package outcomes and
+  stop at the first failure; explicit retries retain earlier successes. Existing
+  activation validation still requires unchanged packages to match their
+  published commits; unpublished shared edits can block another package's
+  activation even when their own recommendation is skipped.
 - Activated-source consumers can require a clean installed checkout whose HEAD
   or content fingerprint exactly matches the ready database commit; schema
   evaluation uses this guard while staged activation evaluates its candidate.
@@ -214,6 +227,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Git regressions cover older-version installation with upstream tracking, fetch
   without activation, attached commit selection, retained local Git history, and
   fetch/select/push through ordinary repositories.
+- Recommendation regressions cover missing packages, version/default-branch
+  advancement, idempotence, downgrade/local-work protection, configuration
+  validation before mutation, schema failures, and ordered retries.
 - Declaration regressions include documentation-only and documented TOML
   folders, candidate activation validation, and live handler reindexing.
 - Deletion regressions cover dirty-source rejection, namespace containment,

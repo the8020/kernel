@@ -185,6 +185,7 @@ for script in update.sh update.ts launch.sh refresh-development-scripts.sh; do
   install -m 0555 "$SOURCE_ROOT/defaults/kernel-scripts/$script" "$NODE_KERNEL/scripts/$script"
 done
 cp -a "$SOURCE_ROOT/defaults/kernel-scripts/update/." "$NODE_KERNEL/scripts/update/"
+install -m 0444 "$SOURCE_ROOT/defaults/bootstrap-packages.toml" "$NODE_KERNEL/scripts/bootstrap-packages.toml"
 
 # Refresh the platform-owned development helpers.
 bash "$SOURCE_ROOT/install-development-assets.sh" "$INSTANCE_ROOT"
@@ -194,7 +195,7 @@ bash "$SOURCE_ROOT/install-development-assets.sh" "$INSTANCE_ROOT"
 # thereafter. Local source roots are a development/test input only.
 if [[ "$NEW_LAYOUT" == true ]]; then
   BOOTSTRAP_SOURCE_ROOT=${THE8020_BOOTSTRAP_SOURCE_ROOT:-"$(dirname "$SOURCE_ROOT")"}
-  while IFS=$'\t' read -r package_id package_source; do
+  while IFS=$'\t' read -r package_id package_source package_version; do
     [[ -n "$package_id" && -n "$package_source" ]] || continue
     if [[ ! "$package_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
       echo "invalid bootstrap package ID: $package_id" >&2
@@ -217,9 +218,20 @@ if [[ "$NEW_LAYOUT" == true ]]; then
     if [[ -n "$local_source" && -f "$local_source/package.toml" ]]; then
       cp -a "$local_source/." "$package_stage/"
       rm -rf -- "$package_stage/.git" "$package_stage/.development" "$package_stage/node_modules"
-    elif [[ -n "$RELEASE_VERSION" ]]; then
-      resolution=$("$SOURCE_ROOT/release-tag.sh" package "$RELEASE_VERSION" "$package_source")
-      IFS=$'\t' read -r package_tag package_commit <<< "$resolution"
+    elif [[ -n "$RELEASE_VERSION" || -n "$package_version" ]]; then
+      if [[ -n "$package_version" ]]; then
+        [[ "$package_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+          echo "invalid bootstrap package version: $package_id@$package_version" >&2
+          exit 1
+        }
+        resolution=$(git ls-remote --tags "$package_source" "refs/tags/$package_version" "refs/tags/$package_version^{}")
+        package_tag=$package_version
+        package_commit=$(awk '{value=$1} END {print value}' <<< "$resolution")
+        [[ "$package_commit" =~ ^[0-9a-f]{40,64}$ ]] || { echo "missing bootstrap package tag: $package_id@$package_tag" >&2; exit 1; }
+      else
+        resolution=$("$SOURCE_ROOT/release-tag.sh" package "$RELEASE_VERSION" "$package_source")
+        IFS=$'\t' read -r package_tag package_commit <<< "$resolution"
+      fi
       git clone --quiet --no-checkout -- "$package_source" "$package_stage"
       git -C "$package_stage" reset --quiet --hard "$package_tag^{commit}"
       installed_commit=$(git -C "$package_stage" rev-parse --verify 'HEAD^{commit}')
@@ -254,10 +266,11 @@ if [[ "$NEW_LAYOUT" == true ]]; then
     fi
     mv -- "$package_stage" "$destination"
   done < <(awk -F '"' '
-    /^\[\[packages\]\]$/ { if (id != "") print id "\t" source; id=""; source=""; next }
+    /^\[\[packages\]\]$/ { if (id != "") print id "\t" source "\t" version; id=""; source=""; version=""; next }
     /^id[[:space:]]*=/ { id=$2; next }
     /^source[[:space:]]*=/ { source=$2; next }
-    END { if (id != "") print id "\t" source }
+    /^version[[:space:]]*=/ { version=$2; next }
+    END { if (id != "") print id "\t" source "\t" version }
   ' "$SOURCE_ROOT/defaults/bootstrap-packages.toml")
 fi
 

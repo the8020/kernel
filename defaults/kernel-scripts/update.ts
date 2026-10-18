@@ -229,7 +229,14 @@ async function validateRelease(path: string, target: string) {
   ) {
     throw new Error("Kernel binary does not match release metadata");
   }
-  for (const file of ["update.sh", "update.ts", "launch.sh"]) {
+  for (
+    const file of [
+      "update.sh",
+      "update.ts",
+      "launch.sh",
+      "bootstrap-packages.toml",
+    ]
+  ) {
     if (!(await Deno.stat(`${path}/scripts/${file}`)).isFile) {
       throw new Error(`Missing updater: ${file}`);
     }
@@ -558,6 +565,15 @@ async function finish(root: string, state: Update) {
     throw new Error(`Worker verification failed: ${JSON.stringify(execution)}`);
   }
   await migrations(root, state, true);
+  console.log("update: installing recommended packages");
+  await command(
+    `${kernel}/bin/admin`,
+    ["--root", root, "kernel.packages.recommended"],
+    undefined,
+    undefined,
+    330_000,
+    "installing recommended packages",
+  );
   if (observed.runtime_application_failure) {
     console.log(
       `update: application initialization needs attention: ${observed.runtime_application_failure}`,

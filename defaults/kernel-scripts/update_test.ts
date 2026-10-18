@@ -126,6 +126,11 @@ touch "$root/kernel.toml"
       `#!/bin/bash
 if [[ "$*" == *kernel.shutdown* ]]; then echo stop >> "$THE8020_INSTANCE_ROOT/stops"; echo '{"success":true}';
 elif [[ "$*" == *kernel.config.get* ]]; then echo '{"success":true,"result":{"setting":{"configured_value":"rootless"}}}';
+elif [[ "$*" == *kernel.packages.recommended* ]]; then
+  echo recommended >> "$FIXTURE_ROOT/recommendations"
+  [[ ! -f "$FIXTURE_ROOT/pending-application" ]] || exit 4
+  [[ ! -f "$FIXTURE_ROOT/fail-recommendations" ]] || exit 3
+  echo '{"success":true,"result":{"packages":[]}}'
 elif [[ "$*" == *"runtime eval"* ]]; then
   if [[ -f "$FIXTURE_ROOT/fail-worker" ]]; then echo '{"success":true,"result":{"state":"FAILED"}}';
   else echo '{"success":true,"result":{"result":42}}'; fi
@@ -157,6 +162,10 @@ fi
     ) {
       await Deno.copyFile(`${source}/${name}`, `${directory}/scripts/${name}`);
     }
+    await Deno.writeTextFile(
+      `${directory}/scripts/bootstrap-packages.toml`,
+      "schema = 1\n",
+    );
     await Deno.symlink(
       Deno.execPath(),
       `${directory}/runtime/images/rootless/rootfs/usr/bin/deno`,
@@ -569,6 +578,40 @@ Deno.test("after-start migrations wait for application startup to finish", async
   } finally {
     await Deno.remove(`${f.temp}/pending-application`).catch(() => {});
     if (finishing) await finishing;
+    await f.cleanup();
+  }
+});
+
+Deno.test("recommended package failure keeps update pending and retries after startup", async () => {
+  const f = await fixture("0.9.1");
+  try {
+    await f.version("0.9.2", {
+      "0.9.2/after-start/010-once.sh":
+        'echo once >> "$THE8020_INSTANCE_ROOT/migrated"\n',
+    });
+    for (const action of ["0.9.2", "--apply"]) {
+      const result = await f.update(action);
+      assert(result.code === 0, result.output);
+    }
+    await Deno.writeTextFile(`${f.temp}/fail-recommendations`, "");
+    const failed = await f.update("--finish");
+    assert(failed.code !== 0, failed.output);
+    assert((await f.state()).phase === "installed");
+    assert((await read(`${f.temp}/recommendations`)).trim() === "recommended");
+    await Deno.remove(`${f.temp}/fail-recommendations`);
+    const retried = await f.update("--finish");
+    assert(retried.code === 0, retried.output);
+    assert((await f.state()).phase === "complete");
+    assert((await read(`${f.root}/migrated`)).trim() === "once");
+    assert(
+      (await read(`${f.temp}/recommendations`)).trim().split("\n").length === 2,
+    );
+    const repeated = await f.update("--finish");
+    assert(repeated.code === 0, repeated.output);
+    assert(
+      (await read(`${f.temp}/recommendations`)).trim().split("\n").length === 2,
+    );
+  } finally {
     await f.cleanup();
   }
 });

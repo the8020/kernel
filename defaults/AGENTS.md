@@ -6,10 +6,12 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 
 # Ownership
 
-- `bootstrap-packages.toml` owns the small initial package source list used only
-  when a database has no initialized package set. It includes
-  `the8020/dev-skills` so fresh deployments install the shipped agent guidance
-  through the ordinary package release path.
+- `bootstrap-packages.toml` owns the ordered initial and recommended package
+  source list, shipped at `node/kernel/scripts/bootstrap-packages.toml`. Entries
+  declare `id`, `source`, and an optional numeric `version` Git tag. Shared
+  owners precede consumers; this file supplies ordering without a dependency
+  graph. It includes `the8020/dev-skills` so fresh deployments install the
+  shipped agent guidance through the ordinary package release path.
 - `config/runtime/` owns platform-maintained runtime versions, protocol source,
   Deno supervisor/Worker source, generic SDKs, and service/development image
   construction.
@@ -18,8 +20,9 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   opt-in installers install the latest native Codex or Claude Code release into
   the persistent sandbox home and configure each tool's no-prompt, full-access
   mode plus shared development guidance discovery.
-- `kernel-scripts/` owns host-side kernel update, launch, and versioned migration
-  scripts installed under `node/kernel/scripts/`, outside development mounts.
+- `kernel-scripts/` owns host-side kernel update, launch, and versioned
+  migration scripts installed under `node/kernel/scripts/`, outside development
+  mounts.
 - Defaults contain no node identity, credentials, users, shared settings,
   operational state, package source, or materialized images.
 
@@ -42,12 +45,16 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 - On a fresh fixed-layout instance, installation stages every bootstrap package
   under `packages/`. Local development sources become clean deterministic Git
   snapshots; remote sources retain their repository history. Release builds
-  ignore local siblings and resolve each source to the newest compatible tag:
-  the major must match the kernel, the package minor may be older but not newer,
-  and the highest available minor and patch win.
+  ignore local siblings and select explicit version tags. Unversioned entries
+  resolve to the newest compatible tag: the major must match the kernel, the
+  package minor may be older but not newer, and the highest minor and patch win.
 - First kernel boot publishes those staged packages only after one batched table
   evaluation/synchronization and activation-hook run. Existing databases and
   ordinary restarts never reapply the bootstrap list or rescan all tables.
+- `kernel.packages.recommended` explicitly applies the installed list through
+  native package synchronization. Kernel updates invoke it after startup;
+  unversioned recommendations follow the remote default branch. Existing local
+  work, custom sources, and newer versions are preserved.
 - Materialized images, build caches, downloads, smoke records, and temporary
   construction output belong under `node/kernel/runtime/` or source
   `.development/`, never in this tree.

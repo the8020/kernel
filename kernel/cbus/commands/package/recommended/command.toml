@@ -1,0 +1,15 @@
+version = 1
+id = "kernel.packages.recommended"
+path = ["kernel.packages.recommended"]
+summary = "Install or update the kernel's recommended packages"
+description = "Reads node/kernel/scripts/bootstrap-packages.toml from the installed kernel. Processes entries in order, installs missing packages, and advances older versions by fast-forward only. Unversioned entries follow the remote default branch. Preserves local commits, uncommitted edits, custom sources, and newer versions. Reports installed, updated, unchanged, skipped, or failed packages; stops on failure."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/package/recommended/recommended.go"
+symbol = "New"
+[[result]]
+name = "packages"
+type = "array"
+[[examples]]
+command = "kernel.packages.recommended"
