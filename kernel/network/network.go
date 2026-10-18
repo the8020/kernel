@@ -3,6 +3,7 @@ package network
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -10,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"the8020/kernel/settings"
@@ -24,11 +26,16 @@ type running struct {
 	port     int
 }
 
-// Manager owns exactly one active main HTTP listener.
+// Manager owns the main HTTP listener and optional additional HTTP/TLS listeners.
 type Manager struct {
-	mu     sync.RWMutex
-	active *running
-	router *routeTable
+	mu         sync.RWMutex
+	active     *running
+	additional *running
+	secure     *running
+	closed     bool
+	tlsUpdate  sync.Mutex
+	tlsConfig  atomic.Pointer[tls.Config]
+	router     *routeTable
 }
 
 type routeTable struct {
@@ -38,6 +45,7 @@ type routeTable struct {
 	rootAlias       string
 	available       bool
 	unavailable     string
+	https           *HTTPS
 }
 
 // New binds and starts the initial listener.
@@ -133,10 +141,17 @@ func (m *Manager) UnregisterRoute(prefix string) {
 func (r *routeTable) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	r.mu.RLock()
 	available, unavailable := r.available, r.unavailable
+	https := r.https
 	r.mu.RUnlock()
 	if !available {
 		http.Error(writer, unavailable, http.StatusServiceUnavailable)
 		return
+	}
+	if https != nil {
+		request = https.admit(writer, request)
+		if request == nil {
+			return
+		}
 	}
 	if request.URL.Path == "/health" {
 		writer.WriteHeader(http.StatusOK)
@@ -197,39 +212,74 @@ func (m *Manager) Prepare(_ context.Context, values settings.Values) (settings.P
 		return nil, fmt.Errorf("network.main_port is not an integer")
 	}
 	port := int(raw)
+	if port < 1 || port > 65535 {
+		return nil, fmt.Errorf("%w: invalid port %d", ErrPortUnavailable, port)
+	}
+	return m.prepareHTTP(port, &m.active)
+}
+
+// PrepareAdditionalHTTP publishes another port on the same router; zero disables it.
+func (m *Manager) PrepareAdditionalHTTP(port int) (settings.Prepared, error) {
+	return m.prepareHTTP(port, &m.additional)
+}
+
+func (m *Manager) prepareHTTP(port int, slot **running) (settings.Prepared, error) {
 	m.mu.RLock()
-	current := m.active
-	same := current != nil && current.port == port
+	current, closed := *slot, m.closed
+	same := current == nil && port == 0 || current != nil && current.port == port
 	m.mu.RUnlock()
+	if closed {
+		return nil, errors.New("HTTP listeners are closed")
+	}
 	if same {
 		return noopPrepared{}, nil
 	}
-	candidate, err := prepareListener(port, m.router)
-	if err != nil {
-		return nil, err
+	var candidate *running
+	if port != 0 {
+		var err error
+		candidate, err = prepareListener(port, m.router)
+		if err != nil {
+			return nil, err
+		}
 	}
-	return &prepared{manager: m, candidate: candidate}, nil
+	return &prepared{manager: m, slot: slot, candidate: candidate}, nil
 }
 
 type prepared struct {
 	manager   *Manager
+	slot      **running
 	candidate *running
 	once      sync.Once
 }
 
 func (p *prepared) Commit() {
 	p.once.Do(func() {
-		serve(p.candidate)
 		p.manager.mu.Lock()
-		old := p.manager.active
-		p.manager.active = p.candidate
+		if p.manager.closed {
+			p.manager.mu.Unlock()
+			if p.candidate != nil {
+				_ = p.candidate.listener.Close()
+			}
+			return
+		}
+		old := *p.slot
+		*p.slot = p.candidate
+		if p.candidate != nil {
+			serve(p.candidate)
+		}
 		p.manager.mu.Unlock()
 		if old != nil {
 			shutdown(old)
 		}
 	})
 }
-func (p *prepared) Discard() { p.once.Do(func() { _ = p.candidate.listener.Close() }) }
+func (p *prepared) Discard() {
+	p.once.Do(func() {
+		if p.candidate != nil {
+			_ = p.candidate.listener.Close()
+		}
+	})
+}
 
 type noopPrepared struct{}
 
@@ -245,11 +295,28 @@ func shutdown(value *running) {
 
 // Close gracefully releases the active listener.
 func (m *Manager) Close() {
+	m.router.mu.RLock()
+	https := m.router.https
+	m.router.mu.RUnlock()
+	if https != nil {
+		https.Close()
+	}
+	m.tlsUpdate.Lock()
 	m.mu.Lock()
-	active := m.active
+	active, additional, secure := m.active, m.additional, m.secure
 	m.active = nil
+	m.additional = nil
+	m.secure = nil
+	m.closed = true
 	m.mu.Unlock()
+	m.tlsUpdate.Unlock()
+	if secure != nil {
+		shutdown(secure)
+	}
 	if active != nil {
 		shutdown(active)
+	}
+	if additional != nil {
+		shutdown(additional)
 	}
 }

@@ -62,16 +62,25 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   execution principal and preserves credentials as ordinary unverified request
   data. Authenticated dispatch accepts platform tokens or HTTP Basic before cold
   reconciliation, capacity, persistent binding, or Worker dispatch. Explicit
-  `the8020-authorization` takes precedence over Basic, then the indexed cookie,
-  including when invalid. Basic uses the composition-supplied users password
-  verifier; malformed/duplicate credentials fail closed. Basic failures return
-  401 with `WWW-Authenticate: Basic`; missing credentials retain declared
-  reject/redirect behavior, with a Basic challenge on 401. Rejected selected
-  cookies are cleared. Client-forged internal headers are stripped.
+  `the8020-authorization` takes precedence over explicit Basic, then a client
+  certificate, then the indexed cookie, including when invalid. Unsupported,
+  empty, or malformed explicit Authorization never falls back. Basic uses the
+  composition-supplied users password verifier; malformed/duplicate credentials
+  fail closed. Basic failures return 401 with `WWW-Authenticate: Basic`; missing
+  credentials retain declared reject/redirect behavior, with a Basic challenge
+  on 401. Rejected selected cookies are cleared. Client-forged internal headers
+  are stripped.
 - Accepted Basic credentials carry the same completed package approval as native
   transports. Strip the password header before application dispatch; preserve it
   only until authenticated node forwarding reaches its destination. No session
   or token is created for Basic requests.
+- Certificate requests use TLS or private peer/terminator context, never an
+  untrusted header. Native certificate usage/validity precedes the ordinary
+  users fingerprint lookup on every request. Approval uses the same
+  completed-policy metadata as Basic, without creating a token or session.
+  Forward the certificate evidence through the authenticated peer path for
+  remote dispatch; the target rechecks current enrollment. Public services
+  retain their configured identity.
 - HTTP and WebSocket request contexts are fresh `ctx-` IDs. Public internal
   context and parent-context headers are stripped even with mixed casing; only
   explicit trusted kernel-call forwarding carries a parent execution context.

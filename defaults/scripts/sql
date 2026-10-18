@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+set -euo pipefail
+exec deno run --allow-env=DEVELOPMENT_ACTIVATION_ENDPOINT,DEVELOPMENT_ACTIVATION_TOKEN,DEVELOPMENT_USER_ID --allow-net /workspace/skills/builtin/the8020-dev-db/scripts/sql.ts "$@"

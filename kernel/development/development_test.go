@@ -302,6 +302,11 @@ func registerTestActivationCommands(t *testing.T, registry *core.Registry, manag
 			return value
 		}
 		options := ActivationOptions{Description: option("message"), AuthorName: option("author_name"), AuthorEmail: option("author_email")}
+		options.SchemaPreview, _ = request.Arguments["schema"].(bool)
+		options.ApprovedPlan = option("approved_plan")
+		if force := option("force"); force != "" {
+			options.ForceColumns = strings.Split(force, ",")
+		}
 		if selected := option("packages"); selected != "" {
 			options.SelectedPackages = strings.Split(selected, ",")
 		}
@@ -351,6 +356,9 @@ func testActivationCommands() []core.Command {
 		{Name: "author_name", Type: "string", Option: "author-name"},
 		{Name: "author_email", Type: "string", Option: "author-email"},
 		{Name: "metadata", Type: "string", Option: "metadata"},
+		{Name: "schema", Type: "boolean", Option: "schema"},
+		{Name: "force", Type: "string", Option: "force"},
+		{Name: "approved_plan", Type: "string", Option: "approved-plan"},
 	}
 	runParameters := append([]core.Parameter(nil), parameters...)
 	runParameters[1].Required = true

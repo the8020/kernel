@@ -2,7 +2,10 @@
 // package-level Git activation.
 package development
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type State string
 
@@ -84,6 +87,9 @@ type ActivationOptions struct {
 	AuthorName       string            `json:"author_name,omitempty"`
 	AuthorEmail      string            `json:"author_email,omitempty"`
 	Metadata         map[string]string `json:"metadata,omitempty"`
+	ForceColumns     []string          `json:"force_columns,omitempty"`
+	ApprovedPlan     string            `json:"approved_plan,omitempty"`
+	SchemaPreview    bool              `json:"schema_preview,omitempty"`
 }
 
 type ActivationFile struct {
@@ -114,7 +120,9 @@ type ActivationPackagePreview struct {
 }
 
 type ActivationPreview struct {
-	Packages []ActivationPackagePreview `json:"packages"`
+	Packages             []ActivationPackagePreview `json:"packages"`
+	SchemaPlan           json.RawMessage            `json:"schema_plan,omitempty"`
+	SchemaOptionsVersion int                        `json:"schema_options_version"`
 }
 
 type ActivationPackageResult struct {
@@ -129,10 +137,12 @@ type ActivationPackageResult struct {
 }
 
 type ActivationResult struct {
-	Error    string                    `json:"error,omitempty"`
-	Success  bool                      `json:"success"`
-	Status   string                    `json:"status"`
-	Packages []ActivationPackageResult `json:"packages"`
+	Error        string                    `json:"error,omitempty"`
+	Success      bool                      `json:"success"`
+	Status       string                    `json:"status"`
+	Packages     []ActivationPackageResult `json:"packages"`
+	SchemaPlan   json.RawMessage           `json:"schema_plan,omitempty"`
+	SchemaResult json.RawMessage           `json:"schema_result,omitempty"`
 }
 
 type ShellResult struct {

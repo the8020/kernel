@@ -420,7 +420,19 @@ func (s *Store) mutatePackageRepository(ctx context.Context, packageID string, m
 	if err != nil {
 		return RepositoryMutation{}, fmt.Errorf("create package mutation stage: %w", err)
 	}
-	defer os.RemoveAll(stageRoot)
+	hook := s.schemaDeployment()
+	var transactionID string
+	sourceSwitched := false
+	defer func() {
+		if sourceSwitched || hook == nil || transactionID == "" {
+			_ = os.RemoveAll(stageRoot)
+			return
+		}
+		forward, err := deployment.NeedsForward(context.WithoutCancel(ctx), hook, transactionID)
+		if err == nil && !forward {
+			_ = os.RemoveAll(stageRoot)
+		}
+	}()
 	stage := filepath.Join(stageRoot, "repository")
 	if err := copyRepository(repository.Path, stage); err != nil {
 		return RepositoryMutation{}, fmt.Errorf("stage package repository: %w", err)
@@ -434,9 +446,7 @@ func (s *Store) mutatePackageRepository(ctx context.Context, packageID string, m
 	}
 	changed := previousHead != updated.Head
 	prepared := false
-	sourceSwitched := false
-	hook := s.schemaDeployment()
-	transactionID, err := activationID()
+	transactionID, err = activationID()
 	if err != nil {
 		return RepositoryMutation{}, err
 	}

@@ -461,7 +461,7 @@ func TestCandidateValidationRejectsInvalidProgramBeforeActivation(t *testing.T) 
 
 func TestSecureMetadataIsValidatedAndForwardedSeparately(t *testing.T) {
 	root := t.TempDir()
-	secrets := "\n[[secrets]]\nname = \"password\"\nrequired = true\nprompt = \"Password: \"\nconfirmation_prompt = \"Confirm: \"\nstdin_option = \"password-stdin\"\n"
+	secrets := "\n[[secrets]]\nname = \"password\"\nrequired = true\nprompt = \"Password: \"\nconfirmation_prompt = \"Confirm: \"\nstdin_option = \"password-stdin\"\nfile_option = \"password-file\"\n"
 	writeCommandPackage(t, root, "the8020/users", "add.toml", "users.add", "add", secrets)
 	packages := &fakePackages{root: root, entries: []workspacepackages.PackageIndex{{PackageID: "the8020/users", State: "ready", ActiveCommit: "commit"}}}
 	programs := &fakePrograms{}
@@ -471,6 +471,9 @@ func TestSecureMetadataIsValidatedAndForwardedSeparately(t *testing.T) {
 		t.Fatal(err)
 	}
 	command := registry.Catalog().Commands[0]
+	if command.Secrets[0].FileOption != "password-file" {
+		t.Fatal("file option missing from catalog")
+	}
 	missing := registry.Execute(context.Background(), core.Request{ProtocolVersion: core.ProtocolVersion, CommandID: command.ID, Argv: []string{"alice"}})
 	if missing.Error == nil || missing.Error.Code != core.CodeInvalidArguments {
 		t.Fatalf("missing secret = %#v", missing)

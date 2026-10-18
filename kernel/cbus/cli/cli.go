@@ -7,8 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
+	"syscall"
+	"unicode/utf8"
 
 	"the8020/kernel/cbus/core"
 )
@@ -216,17 +219,22 @@ func prepareArguments(command core.Command, tokens []string, resolveSecret Secre
 		if secret.Name == "" {
 			return nil, nil, errors.New("command catalog contains an unnamed secure input")
 		}
-		if secret.StdinOption != "" {
-			if _, exists := byOption[secret.StdinOption]; exists {
-				return nil, nil, fmt.Errorf("command catalog repeats secure option --%s", secret.StdinOption)
+		for _, option := range []string{secret.StdinOption, secret.FileOption} {
+			if option == "" {
+				continue
 			}
-			byOption[secret.StdinOption] = secret
+			if _, exists := byOption[option]; exists {
+				return nil, nil, fmt.Errorf("command catalog repeats secure option --%s", option)
+			}
+			byOption[option] = secret
 		}
 	}
 	argv := make([]string, 0, len(tokens))
 	fromStdin := map[string]bool{}
+	files := map[string]string{}
 	parseOptions := true
-	for _, token := range tokens {
+	for index := 0; index < len(tokens); index++ {
+		token := tokens[index]
 		if parseOptions && token == "--" {
 			parseOptions = false
 			argv = append(argv, token)
@@ -234,15 +242,29 @@ func prepareArguments(command core.Command, tokens []string, resolveSecret Secre
 		}
 		if parseOptions && strings.HasPrefix(token, "--") {
 			nameValue := strings.TrimPrefix(token, "--")
-			name, _, hasValue := strings.Cut(nameValue, "=")
+			name, value, hasValue := strings.Cut(nameValue, "=")
 			if secret, ok := byOption[name]; ok {
-				if hasValue {
-					return nil, nil, fmt.Errorf("option --%s does not accept a value", name)
+				if _, exists := files[secret.Name]; exists || fromStdin[secret.Name] {
+					return nil, nil, fmt.Errorf("secure input %q may only be specified once", secret.Name)
 				}
-				if fromStdin[secret.Name] {
-					return nil, nil, fmt.Errorf("option --%s may only be specified once", name)
+				if name == secret.FileOption {
+					if !hasValue {
+						index++
+						if index >= len(tokens) || strings.HasPrefix(tokens[index], "--") {
+							return nil, nil, fmt.Errorf("option --%s requires a file path", name)
+						}
+						value = tokens[index]
+					}
+					if value == "" {
+						return nil, nil, fmt.Errorf("option --%s requires a file path", name)
+					}
+					files[secret.Name] = value
+				} else {
+					if hasValue {
+						return nil, nil, fmt.Errorf("option --%s does not accept a value", name)
+					}
+					fromStdin[secret.Name] = true
 				}
-				fromStdin[secret.Name] = true
 				continue
 			}
 		}
@@ -250,6 +272,14 @@ func prepareArguments(command core.Command, tokens []string, resolveSecret Secre
 	}
 	values := map[string]string{}
 	for _, secret := range metadata {
+		if path, exists := files[secret.Name]; exists {
+			value, err := readSecretFile(path)
+			if err != nil {
+				return nil, nil, fmt.Errorf("secure input %q: %w", secret.Name, err)
+			}
+			values[secret.Name] = value
+			continue
+		}
 		if !secret.Required && !fromStdin[secret.Name] {
 			continue
 		}
@@ -263,6 +293,36 @@ func prepareArguments(command core.Command, tokens []string, resolveSecret Secre
 		values[secret.Name] = value
 	}
 	return argv, values, nil
+}
+
+func readSecretFile(path string) (string, error) {
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", errors.New("expected a regular file")
+	}
+	const limit = 256 * 1024
+	if info.Size() > limit {
+		return "", errors.New("secure file exceeds 256 KiB")
+	}
+	value, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil {
+		return "", err
+	}
+	if len(value) > limit {
+		return "", errors.New("secure file exceeds 256 KiB")
+	}
+	if !utf8.Valid(value) {
+		return "", errors.New("secure file must contain UTF-8 text")
+	}
+	return string(value), nil
 }
 
 // Help renders metadata from the current catalog plus local console commands.
@@ -355,10 +415,13 @@ func commandHelp(command core.Command) string {
 				fmt.Fprintf(&builder, " [%s]", usage)
 			}
 		}
-		for _, secret := range secureInputs {
-			if secret.StdinOption != "" {
-				fmt.Fprintf(&builder, " [--%s]", secret.StdinOption)
-			}
+	}
+	for _, secret := range secureInputs {
+		if secret.StdinOption != "" {
+			fmt.Fprintf(&builder, " [--%s]", secret.StdinOption)
+		}
+		if secret.FileOption != "" {
+			fmt.Fprintf(&builder, " [--%s <file>]", secret.FileOption)
 		}
 	}
 	fmt.Fprintf(&builder, "\n\n%s\n\n%s", command.Summary, command.Description)

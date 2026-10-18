@@ -95,6 +95,16 @@ type schemaSource struct {
 func (e *Evaluator) RunSchema(ctx context.Context, request database.SchemaRequest) (json.RawMessage, error) {
 	release := e.database.Status().PackageSetHash
 	var mounts []model.Mount
+	if candidates := deployment.Candidates(ctx); len(candidates) > 0 {
+		commits := map[string]string{}
+		for _, candidate := range candidates {
+			commits[candidate.PackageID] = candidate.Commit
+			if candidate.Commit != "" {
+				mounts = append(mounts, model.Mount{Source: candidate.Root, Target: packageMountRoot + "/" + candidate.PackageID, ReadOnly: true, OwnerScope: "the8020/db", Purpose: "workspace", Persistence: "deployment"})
+			}
+		}
+		release += ":" + database.PackageSetHash(commits)
+	}
 	if staged, ok := ctx.Value(schemaSourceContextKey{}).(schemaSource); ok {
 		release, mounts = staged.release, staged.mounts
 	}
@@ -392,27 +402,35 @@ func (e *Evaluator) Prepare(ctx context.Context, transactionID string, candidate
 		if _, err := workspacepackages.ParsePackageID(candidate.PackageID); err != nil || !filepath.IsAbs(candidate.Root) {
 			return fmt.Errorf("invalid schema candidate %s", candidate.PackageID)
 		}
-		databaseCandidates[index] = database.DeploymentCandidate{PackageID: candidate.PackageID, CandidateCommit: candidate.Commit}
+		databaseCandidates[index] = database.DeploymentCandidate{PackageID: candidate.PackageID, CandidateCommit: candidate.Commit, Root: candidate.Root}
 	}
-	pending, err := e.database.BeginDeployment(ctx, transactionID, databaseCandidates)
+	items, retired, mounts, err := e.incrementalItems(ctx, candidates)
 	if err != nil {
 		return err
 	}
-	items, retired, mounts, err := e.incrementalItems(ctx, candidates)
-	schemaContext := context.WithValue(ctx, schemaSourceContextKey{}, schemaSource{release: pending.CandidatePackageSetHash, mounts: mounts})
+	schemaContext := context.WithValue(ctx, schemaSourceContextKey{}, schemaSource{release: transactionID, mounts: mounts})
+	if err == nil {
+		err = e.database.RequireEvolution(schemaContext)
+	}
+	if err != nil {
+		return err
+	}
+	pending, err := e.database.BeginDeployment(schemaContext, transactionID, databaseCandidates)
+	if err != nil {
+		return err
+	}
+	_, err = e.database.InitializeCatalog(schemaContext)
+	schemaContext = context.WithValue(ctx, schemaSourceContextKey{}, schemaSource{release: pending.CandidatePackageSetHash, mounts: mounts})
 	if err == nil {
 		err = e.database.UpdatePendingDeployment(ctx, transactionID, "evaluating", nil)
 	}
-	for offset := 0; err == nil && offset < len(items); offset += maximumBatch {
-		end := min(offset+maximumBatch, len(items))
-		var tables []database.EvaluatedTable
-		tables, err = e.evaluateBatch(ctx, items[offset:end], pending.CandidatePackageSetHash, mounts)
+	if err == nil {
+		definitions, evalErr := e.evaluateItems(ctx, items, pending.CandidatePackageSetHash, mounts)
+		err = evalErr
 		if err == nil {
-			_, err = e.database.Synchronize(schemaContext, tables, database.SynchronizationOptions{SkipReferenceValidation: true})
+			options := deployment.Options(ctx)
+			_, err = e.database.Synchronize(schemaContext, definitions.Tables, database.SynchronizationOptions{SkipReferenceValidation: true, ActivationID: transactionID, ForceColumns: options.ForceColumns, ApprovedPlan: options.ApprovedPlan, RetireTables: retired})
 		}
-	}
-	if err == nil && len(retired) > 0 {
-		_, err = e.database.Synchronize(schemaContext, nil, database.SynchronizationOptions{RetireTables: retired})
 	}
 	if err == nil {
 		err = e.database.ValidateCatalogReferences(schemaContext)
@@ -444,12 +462,66 @@ func (e *Evaluator) Complete(ctx context.Context, transactionID string, activate
 		return err
 	}
 	if !activated {
+		if len(pending.Rewrites) > 0 {
+			return fmt.Errorf("schema/data committed for %s; activation incomplete, resume the same candidate forward", transactionID)
+		}
 		if err := e.restore(ctx, pending); err != nil {
 			_ = e.database.UpdatePendingDeployment(context.WithoutCancel(ctx), transactionID, "rollback_failed", err)
 			return err
 		}
 	}
 	return e.database.CompleteDeployment(ctx, transactionID, activated)
+}
+
+func (e *Evaluator) ForwardRequired(ctx context.Context, id string) (bool, error) {
+	encoded, err := e.database.SchemaRewrites(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	var receipts map[string]database.RewriteReceipt
+	if err := json.Unmarshal(encoded, &receipts); err != nil {
+		return false, err
+	}
+	return len(receipts) > 0, nil
+}
+
+func (e *Evaluator) SchemaOutcome(ctx context.Context, id string) (json.RawMessage, error) {
+	return e.database.SchemaOutcome(ctx, id)
+}
+
+func (e *Evaluator) RecoveryCandidates(ctx context.Context, id string) ([]deployment.Candidate, error) {
+	pending, exists, err := e.database.PendingDeploymentFor(ctx, id)
+	if err != nil || !exists {
+		return nil, err
+	}
+	result := make([]deployment.Candidate, 0, len(pending.Candidates))
+	for _, candidate := range pending.Candidates {
+		if candidate.Root != "" {
+			result = append(result, deployment.Candidate{PackageID: candidate.PackageID, Root: candidate.Root, Commit: candidate.CandidateCommit})
+		}
+	}
+	return result, nil
+}
+
+func (e *Evaluator) Plan(ctx context.Context, candidates []deployment.Candidate) (json.RawMessage, error) {
+	items, _, mounts, err := e.incrementalItems(ctx, candidates)
+	if err != nil {
+		return nil, err
+	}
+	commits := map[string]string{}
+	for _, candidate := range candidates {
+		commits[candidate.PackageID] = candidate.Commit
+	}
+	version := database.PackageSetHash(commits)
+	staged := context.WithValue(ctx, schemaSourceContextKey{}, schemaSource{release: version, mounts: mounts})
+	if err := e.database.RequireEvolution(staged); err != nil {
+		return nil, err
+	}
+	definitions, err := e.evaluateItems(ctx, items, version, mounts)
+	if err != nil {
+		return nil, err
+	}
+	return e.database.PlanSchema(staged, definitions.Tables)
 }
 
 func (e *Evaluator) restore(ctx context.Context, pending database.PendingDeployment) error {

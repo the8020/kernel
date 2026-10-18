@@ -22,9 +22,17 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 
 # Local Contracts
 
-- `kernel.packages.synchronize(ids, gitToken?, gitUsername?)` accepts a
+- `kernel.packages.synchronize(ids, gitToken?, gitUsername?, schema?)` accepts a
   transient token or Basic password; omitted username retains `x-access-token`.
   Neither credential is persisted in desired package state or Git configuration.
+- `schema` carries exact `force_columns`, `approved_plan` and `schema_preview`.
+  Destructive/preview calls first require the native schema-option capability;
+  DB capability and all policy are validated at the schema owner before source
+  or schema mutation. Development activation transports the same fields and
+  returns shared plans/results. The generic runtime interprets no migration SQL.
+- Exported `requireSchemaEvolution()` checks native capability version 2. The db
+  schema job calls it before any SQL, so an older coordinator cannot commit
+  cleanup/DDL without the matching receipt/publication recovery contract.
 
 - Package version rows include exact Git parent commit IDs; ancestry-based
   interpretation belongs to application packages.

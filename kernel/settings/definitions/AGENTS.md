@@ -9,7 +9,7 @@ Parent DOX: [kernel/kernel/settings DOX](../AGENTS.md).
 - Own keys, types, required node/global storage, defaults, environment
   variables, constraints, runtime/restart metadata, and descriptions for 80|20
   settings.
-- `network/` owns node-local main/SSH ports and the global root alias;
+- `network/` owns node-local main/SSH/HTTPS ports and the global root alias;
   `logging/` owns unified kernel/Deno persistence; `sandbox/` owns backend,
   network, resources, history, startup/shutdown, PID/tmpfs resources, and
   debugging; `runtime/` owns generic supervisor timing, node count/storage
@@ -34,6 +34,11 @@ Parent DOX: [kernel/kernel/settings DOX](../AGENTS.md).
 - Keys and environment variables are unique; every setting environment variable
   starts with `THE8020_`, and values must pass generated-catalog validation.
 - Files are data, not executable hooks.
+- `network.https_port` defaults to 8443 and requires restart; deployment images
+  may provision their own port; zero disables native TLS on this node.
+  `network.additional_http_port` defaults to zero (disabled) and requires
+  restart. Deployment images use it to retain their public HTTP mappings while
+  keeping internal main-port connections. Certificate policy remains package-owned.
 - `runtime.sandbox.keep_alive` is a node-local, restart-required integer in
   milliseconds, default `120000`; zero disables empty-sandbox retention. It
   applies to service and job/module sandboxes through the sandbox manager.

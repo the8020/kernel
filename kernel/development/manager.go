@@ -38,6 +38,7 @@ type Config struct {
 	ImageRecord       string
 	MountProfile      []MountDefinition
 	ActivationGateway ActivationGateway
+	SQL               http.Handler
 	UserAccess        func(http.ResponseWriter, *http.Request, string, string)
 	SystemURL         func() string
 	Driver            SandboxDriver
@@ -937,6 +938,14 @@ func (m *Manager) serveSandbox(response http.ResponseWriter, request *http.Reque
 	}
 	if request.Header.Get("Authorization") != "Bearer "+sandbox.Token {
 		http.Error(response, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if operation == "sql" {
+		if m.config.SQL == nil {
+			http.Error(response, "native SQL unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		m.config.SQL.ServeHTTP(response, request)
 		return
 	}
 	if operation == "token" || operation == "request" {

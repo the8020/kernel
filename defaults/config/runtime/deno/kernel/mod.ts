@@ -103,6 +103,27 @@ export interface PackageSynchronization {
   commit: string;
   success: boolean;
   error?: string;
+  schema_plan?: Record<string, unknown>;
+  schema_result?: Record<
+    string,
+    { hash: string; route: string; columns: string[] }
+  >;
+}
+
+export interface SchemaActivationOptions {
+  force_columns?: string[];
+  approved_plan?: string;
+  schema_preview?: boolean;
+}
+
+export async function requireSchemaEvolution(): Promise<void> {
+  const version = await executeRuntimeOperation(
+    "activation.schema_evolution",
+    {},
+  );
+  if (version !== 2) {
+    throw new Error("Schema evolution requires an updated kernel");
+  }
 }
 
 export interface SetPackageIndexInput {
@@ -772,16 +793,22 @@ export const kernel = Object.freeze({
       },
     }),
     activate: Object.freeze({
-      preview(
+      async preview(
         input: Record<string, unknown>,
       ): Promise<Record<string, unknown>> {
+        if (input.schema_preview) await requireSchemaEvolution();
         return runtimeOperationField(
           "development.activate.preview",
           input,
           "preview",
         );
       },
-      run(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+      async run(
+        input: Record<string, unknown>,
+      ): Promise<Record<string, unknown>> {
+        if (input.force_columns || input.approved_plan) {
+          await requireSchemaEvolution();
+        }
         return runtimeOperationField(
           "development.activate.run",
           input,
@@ -967,7 +994,12 @@ export const kernel = Object.freeze({
       packageIds: string[] = [],
       gitToken?: string,
       gitUsername?: string,
+      schema: SchemaActivationOptions = {},
     ): Promise<PackageSynchronization[]> {
+      if (
+        schema.force_columns?.length || schema.approved_plan ||
+        schema.schema_preview
+      ) await requireSchemaEvolution();
       const result = await executeRuntimeOperation<
         { packages: PackageSynchronization[] }
       >(
@@ -976,6 +1008,9 @@ export const kernel = Object.freeze({
           packages: packageIds.length === 0 ? undefined : packageIds.join(","),
           git_token: gitToken,
           git_username: gitUsername,
+          force_columns: schema.force_columns?.join(","),
+          approved_plan: schema.approved_plan,
+          schema_preview: schema.schema_preview,
         }),
       );
       return result.packages;

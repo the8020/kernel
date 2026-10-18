@@ -21,6 +21,25 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - HTTP Basic uses the same users authentication program as native password
   transports, with request cancellation and secure inputs. Composition supplies
   this verifier to the shared service boundary; no password policy lives here.
+- Client certificate admission invokes that same users program with a verified
+  fingerprint; its username result must form a valid kernel principal. No
+  certificate enrollment, account cache, or application table access lives here.
+- `https.go` consumes `the8020/https/snapshot`, resolves immutable keys through
+  the existing private secrets program, and prepares native listener/state
+  publication. Issuance and challenge callbacks invoke ordinary bounded system
+  programs. No certificate, account, issuance, or scheduling policy lives here.
+- HTTPS is an explicit phase for `the8020/https` inside the existing reindex
+  owner. Failed publication stays pending; unrelated packages finish, previous
+  TLS state stays live, and the normal monitor retries. Startup retains that
+  phase until native ingress is attached; snapshot initialization can then use
+  the ready ordinary runtime and topology. Retiring the package closes HTTPS.
+- Node-local `network.https_port` takes effect on restart. Shared enablement,
+  policy, and certificate changes use prepare/commit without restarting work.
+- Zero `network.https_port` keeps native TLS closed for external termination or
+  migration. `network.additional_http_port` optionally serves the same router
+  at a second node-local port after restart, preserving public Docker mappings.
+- Supply the existing node capacity provider with the public network manager's
+  HTTPS status so local and remote node diagnostics expose publication revisions.
 
 - `sandbox_access.go` connects authenticated native sandbox ingress to the
   ordinary users authenticate program and service router. Allowance issuance
@@ -28,6 +47,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   token for that owner and retain target-Worker account/session validation.
   Native provenance follows the existing authenticated peer transport; payloads
   remain bounded, and credentials never enter diagnostics.
+- Development composition supplies the existing database SQL handler's narrow
+  HTTP adapter through `Config.SQL`. Sandbox ingress verifies authority before
+  dispatch; no package command, service Worker, or new credential is required.
 
 - Public API: `Config`, `RegisterHandlers`, `Main`, `Run`, and
   `ErrRestartRequested`.
@@ -331,6 +353,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - `secrets_test.go` verifies native Git credential resolution through the owning
   package program with ordinary execution policy and rejection of invalid
   results.
+- `https_test.go` verifies ordinary program/key resolution, native publication,
+  invalid replacement preservation, challenge routing, retirement, diagnostics,
+  and retry through the shared reindex pending set.
 
 # Child DOX Index
 

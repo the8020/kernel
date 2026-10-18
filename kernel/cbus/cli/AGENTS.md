@@ -24,9 +24,12 @@ Parent DOX: [kernel/kernel/cbus DOX](../AGENTS.md).
   including options and `--`, is forwarded unchanged. Kernel command argv is
   parsed by the server-side core adapter.
 - Lookup and help use only each command's canonical visible path.
-- Metadata-declared secure input is removed only through its explicit stdin
-  option or obtained through the client resolver. It is transported separately
-  and never placed in argv or history.
+- Metadata-declared secure input uses explicit stdin/file options or the client
+  resolver. It is transported separately and never placed in argv or history.
+- Metadata-declared `file_option` accepts `--option path` or `--option=path` in
+  both clients. Read a regular UTF-8 text file of at most 256 KiB without changing
+  its bytes; reject repeated/mixed sources for one secret and strip the option
+  and path from dispatched argv. Open without blocking on special files.
 - `help` is local; its global view lists catalog commands plus the local `help`
   and interactive `exit` commands as normal command rows, and both local
   commands have detailed help topics.
@@ -63,6 +66,8 @@ Parent DOX: [kernel/kernel/cbus DOX](../AGENTS.md).
   local and structured command errors, compact setting and flat resource
   summaries, empty collections, detailed rendering order, exact large-integer
   rendering, and quoted input.
+- Secure-file tests cover multiline fidelity, separate transport, explicit
+  usage help, missing/repeated options, non-files, and size limits.
 
 # Child DOX Index
 

@@ -33,8 +33,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   and `INITIALIZATION_FAILED`. Catalog failure blocks the service plane but
   never the command socket or raw SQL recovery path.
 - The db package owns `_8020_catalog`, `_8020_tables`, `_8020_columns`,
-  `_8020_dependencies`, and `_8020_pending_deployment`. Their SQL is absent from
-  the kernel. Every other table comes from activated package descriptors.
+  `_8020_dependencies`, `_8020_pending_deployment`, and `_8020_schema_rewrites`.
+  Their SQL is absent from the kernel. Every other table comes from activated
+  package descriptors.
 - A fresh database synchronizes all installed definitions in bounded batches
   before becoming initialized. An initialized ordinary boot validates only the
   small catalog contract and pending deployment state; full definition and drift
@@ -43,8 +44,11 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   Invalid existing catalogs fail validation instead of being silently repaired.
 - Canonical table IDs are also physical names. Synchronization creates missing
   structures and safe additions, retires removals without deleting data, and
-  returns `migration_required` for unsupported changes. Only confirmed `Trim`
-  deletes selected retired objects. Raw administrative DDL remains available.
+  returns `migration_required` for unsupported changes. The db owner implements
+  enum evolution, table-file migrations and exact incompatible-cell repair;
+  native transport carries candidate/consent without interpreting schema policy.
+  Confirmed `Trim` separately deletes retired objects. Raw repair stays
+  available.
 - Catalog list and table inspection never evaluate activated TypeScript.
   Per-table comparison and definition scans are explicit deeper operations so
   routine administration remains fast.
@@ -52,8 +56,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   limited to 256 independent pending deployments of at most 256 packages each.
   Overlapping package sets reject; completion updates only the matching
   deployment's package state. Candidate schema precedes source replacement, and
-  recovery aligns catalog state with active source. Ordinary database tests
-  cover these production contracts.
+  recovery follows committed receipts forward with the same candidate; absent
+  receipts permit restoring active descriptors. Ordinary database tests cover
+  these production contracts.
 - Empty candidate commits remove packages from the catalog commit set. Their
   table/column metadata is retired through ordinary synchronization, preserving
   physical tables and data until explicit trim.

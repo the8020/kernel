@@ -39,6 +39,9 @@ func TestDevelopmentGuidance(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "scripts", "retired.sh")); !os.IsNotExist(err) {
 		t.Fatal("retired installed helpers survived replacement")
 	}
+	if info, err := os.Stat(filepath.Join(root, "scripts", "sql")); err != nil || info.Mode().Perm()&0111 == 0 {
+		t.Fatalf("installed SQL helper is not executable: %v", err)
+	}
 
 	config := Config{Root: root}
 	if err := validateMountProfile(config, DefaultMountProfile()); err != nil {

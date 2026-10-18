@@ -47,6 +47,19 @@ func (a *packageAuthentication) AuthenticateUser(username string) (execution.Use
 	return a.run(a.context, "user", username, nil)
 }
 
+func (a *packageAuthentication) AuthenticateCertificate(ctx context.Context, fingerprint string) (execution.User, error) {
+	result, err := a.programs.RunWithOptions(ctx, authenticationProgram, "", []any{"certificate", fingerprint}, nil,
+		programs.Options{User: execution.SystemUser(), Timeout: 30 * time.Second})
+	if err != nil {
+		return execution.User{}, errors.New("authentication unavailable")
+	}
+	username, ok := result.Value.(string)
+	if !ok {
+		return execution.User{}, errors.New("authentication failed")
+	}
+	return execution.UserForUsername(username)
+}
+
 func (a *packageAuthentication) AuthenticateToken(ctx context.Context, token string) (execution.User, error) {
 	claims, err := a.signing.VerifyToken(token)
 	if err != nil {

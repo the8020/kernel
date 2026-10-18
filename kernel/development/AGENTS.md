@@ -12,6 +12,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   `node/kernel/runtime/development/`, mount-profile resolution, the
   authenticated activation endpoint, and publication into shared package
   repositories.
+- The private sandbox ingress also authenticates the native SQL adapter supplied
+  by composition. SQL semantics and bounds remain with the database owner.
 - Do not own service/job sandboxes, remote repository administration, package
   manifests, cross-package validation, activation history, or graphical
   programs.
@@ -108,6 +110,15 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   reports every changed Git package with file and added/removed-row counts;
   changes remain visible but blocked when the shared worktree is not clean and
   activation-ready.
+- `--preview --schema` stages/evaluates candidates without callbacks or data
+  mutation. `schema_options_version` advertises native option transport, so the
+  helper rejects old kernels before submitting force while retaining pending
+  activation recovery. The db owner also validates its capability before writes.
+- Force requires explicit package selection and exact table.column scope. The
+  shared coordinator tries cleanup/native DDL before bounded cell repair and
+  returns receipts. Committed schema failures retain the journal/candidate for
+  forward recovery, never restore incompatible old source or silently repeat
+  repair.
 - Preview uses `added`, `modified`, and `deleted` consistently for package and
   file changes. File/directory moves appear as deletions and additions, matching
   the selected-file diff. This presentation does not disable Git's merge rename
@@ -161,6 +172,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   transferable within the host network; Unix peer identity is not claimed.
   Composition issues an ordinary users allowance and dispatches generic service
   requests with native transport provenance; no UUI events enter this package.
+- Its `sql` operation requires the same loaded owner's sandbox token and
+  delegates to `Config.SQL` without activation or a user-selected command. This
+  is native administrative access to the shared database, independent of
+  application authentication and schema readiness; credentials stay private.
 - `/workspace/skills/custom` is a writable persistent mount backed by
   `users/<user-id>/dev-sandbox/skills/`. It survives restart, activation, and
   source reset; factory reset removes it with the rest of that user's sandbox.
@@ -215,12 +230,22 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   timeouts, runs ordinary idle-sandbox maintenance, and joins it before runtime
   teardown. Recovery candidates must not retain one sandbox each until the
   complete fixture exits.
+- `TestNativeSchemaEvolution` covers staged cleanup/old-schema codecs, enum
+  evolution, minimal column repair, catalog-v2 DB-package upgrade and forward
+  recovery, including a lost schema response before the coordinator checkpoint
+  and retry with the original force/approved-plan consent. Its callback
+  transport matches production Content-Length framing. Shared database tests
+  qualify SQLite/PostgreSQL, force scope, stale candidate/scope, retained data,
+  unique constraints, cancellation and writer exclusion.
 - Run heavy native and browser fixtures in a separate environment with explicit
   CPU, memory, and runtime limits. Keep checks on shared development instances
   small and sequential; stop if responsiveness degrades.
 - Unit tests cover identity collisions, user isolation, lifecycle and idle
   admission, independent shutdown, bounded diagnostics, authorized-key
   confinement, reset boundaries, mount policy, and helper guidance.
+- `TestSandboxSQLRequiresItsOwnersToken` covers SQL ingress authentication,
+  foreign-owner rejection, and independence from the activation gateway. The
+  native SQL owner's tests cover the database and shipped CLI path.
 - `TestRootlessDevelopmentE2E` covers native SSH/PTY, APT/dpkg persistence,
   helper activation, source/factory reset and root identity. Set
   `THE8020_DEVELOPMENT_E2E=1`; rootful qualification requires its separate

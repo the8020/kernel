@@ -23,6 +23,8 @@ func New(serviceSet *services.Services) core.Handler {
 		}
 		if network := serviceSet.PlatformSnapshot().Network; network != nil {
 			result["main_port"] = network.Port()
+			result["https_port"] = network.TLSPort()
+			result["https"] = network.HTTPSStatus()
 		}
 		shutdown := serviceSet.Lifecycle.Snapshot()
 		result["shutdown_requested"] = shutdown.Requested

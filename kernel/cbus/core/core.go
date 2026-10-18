@@ -76,6 +76,7 @@ type SecretInput struct {
 	Prompt             string `toml:"prompt" json:"prompt"`
 	ConfirmationPrompt string `toml:"confirmation_prompt" json:"confirmation_prompt,omitempty"`
 	StdinOption        string `toml:"stdin_option" json:"stdin_option,omitempty"`
+	FileOption         string `toml:"file_option" json:"file_option,omitempty"`
 }
 
 type CommandOrigin struct {

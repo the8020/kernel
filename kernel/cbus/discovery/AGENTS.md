@@ -33,6 +33,8 @@ Parent DOX: [kernel/kernel/cbus DOX](../AGENTS.md).
   fragments.
 - Package fragments are validated independently. A broken fragment is omitted
   without hiding valid packages.
+- Secure `stdin_option` and `file_option` names share one validated option
+  namespace; duplicates invalidate the package fragment.
 - The transaction owner inspects declarations outside the catalog lock and
   rejects stale publication snapshots. Ordinary discovery tests cover concurrent
   refresh.

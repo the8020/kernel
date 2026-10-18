@@ -404,11 +404,14 @@ func readManifest(path string) (commandManifest, error) {
 		if secret.Required && secret.Prompt == "" {
 			return commandManifest{}, fmt.Errorf("required secure input %q needs a prompt", secret.Name)
 		}
-		if secret.StdinOption != "" {
-			if !commandSegmentPattern.MatchString(secret.StdinOption) || seenOptions[secret.StdinOption] {
-				return commandManifest{}, fmt.Errorf("invalid or duplicate secure stdin option %q", secret.StdinOption)
+		for _, option := range []string{secret.StdinOption, secret.FileOption} {
+			if option == "" {
+				continue
 			}
-			seenOptions[secret.StdinOption] = true
+			if !commandSegmentPattern.MatchString(option) || seenOptions[option] {
+				return commandManifest{}, fmt.Errorf("invalid or duplicate secure input option %q", option)
+			}
+			seenOptions[option] = true
 		}
 	}
 	for _, example := range manifest.Examples {

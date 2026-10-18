@@ -61,12 +61,15 @@ type EvaluatedTable struct {
 	SourcePackage  string          `json:"source_package"`
 	SourceCommit   string          `json:"source_commit"`
 	Dependencies   []string        `json:"dependencies"`
+	HasMigrate     bool            `json:"has_migrate,omitempty"`
 }
 
 type SynchronizationResult struct {
 	TableID string `json:"table_id"`
 	State   string `json:"state"`
 	Error   string `json:"error,omitempty"`
+	Route   string `json:"route,omitempty"`
+	Rows    int64  `json:"rows,omitempty"`
 }
 
 type DefinitionSet struct {
@@ -86,6 +89,7 @@ type DeploymentCandidate struct {
 	PackageID       string `json:"package_id"`
 	PreviousCommit  string `json:"previous_commit,omitempty"`
 	CandidateCommit string `json:"candidate_commit"`
+	Root            string `json:"candidate_root,omitempty"`
 }
 
 type PendingDeployment struct {
@@ -99,6 +103,14 @@ type PendingDeployment struct {
 	Error                   string
 	StartedAt               string
 	UpdatedAt               string
+	Rewrites                map[string]RewriteReceipt
+}
+
+type RewriteReceipt struct {
+	Hash    string   `json:"hash"`
+	Route   string   `json:"route"`
+	Rows    int64    `json:"rows"`
+	Columns []string `json:"columns"`
 }
 
 type TableSummary struct {
@@ -181,6 +193,9 @@ type SynchronizationOptions struct {
 	RetireMissingPackages   []string
 	RetireTables            []string
 	PackageCommits          map[string]string
+	ActivationID            string
+	ForceColumns            []string
+	ApprovedPlan            string
 }
 
 type DefinitionEvaluator func(context.Context, []string) (DefinitionSet, error)
@@ -526,6 +541,34 @@ func (m *Manager) CompletedTableIDs(ctx context.Context, commits map[string]stri
 func (m *Manager) Synchronize(ctx context.Context, tables []EvaluatedTable, options SynchronizationOptions) ([]SynchronizationResult, error) {
 	var result []SynchronizationResult
 	err := m.schemaCall(ctx, "synchronize", map[string]any{"tables": tables, "options": options}, &result)
+	return result, err
+}
+
+func (m *Manager) PlanSchema(ctx context.Context, tables []EvaluatedTable) (json.RawMessage, error) {
+	var result json.RawMessage
+	err := m.schemaCall(ctx, "plan", map[string]any{"tables": tables}, &result)
+	return result, err
+}
+
+func (m *Manager) RequireEvolution(ctx context.Context) error {
+	var version int
+	if err := m.schemaCall(ctx, "evolutionCapability", nil, &version); err != nil {
+		return err
+	}
+	if version != 2 {
+		return errors.New("database package does not support the schema evolution contract")
+	}
+	return nil
+}
+
+func (m *Manager) SchemaRewrites(ctx context.Context, id string) (json.RawMessage, error) {
+	var result json.RawMessage
+	err := m.schemaCall(ctx, "rewrites", map[string]any{"id": id}, &result)
+	return result, err
+}
+func (m *Manager) SchemaOutcome(ctx context.Context, id string) (json.RawMessage, error) {
+	var result json.RawMessage
+	err := m.schemaCall(ctx, "rewrites", map[string]any{"id": id, "outcome": true}, &result)
 	return result, err
 }
 func (m *Manager) FinalizeFullSynchronization(ctx context.Context, ids []string, commits map[string]string) error {

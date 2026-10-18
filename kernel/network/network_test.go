@@ -14,6 +14,65 @@ import (
 
 const testRootAlias = "the8020/uui/shell/"
 
+func TestAdditionalHTTPUsesSameRouterAndLifecycle(t *testing.T) {
+	main, additional := freePort(t), freePort(t)
+	manager, err := New(main, testRootAlias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(manager.Close)
+	if err := manager.RegisterRoute("/extra", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("OK")) })); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := manager.PrepareAdditionalHTTP(additional)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared.Commit()
+	getOK(t, main, "/extra")
+	getOK(t, additional, "/extra")
+	if _, err := manager.Prepare(context.Background(), settings.Values{"network.main_port": int64(additional)}); err == nil {
+		t.Fatal("additional listener collision accepted")
+	}
+	candidatePort := freePort(t)
+	candidate, err := manager.PrepareAdditionalHTTP(candidatePort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate.Discard()
+	listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(candidatePort)))
+	if err != nil {
+		t.Fatal("discard retained the candidate port:", err)
+	}
+	_ = listener.Close()
+	getOK(t, additional, "/extra")
+	replacementPort := freePort(t)
+	replacement, err := manager.Prepare(context.Background(), settings.Values{"network.main_port": int64(replacementPort)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement.Commit()
+	getOK(t, replacementPort, "/extra")
+	getOK(t, additional, "/extra")
+	stop, err := manager.PrepareAdditionalHTTP(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop.Discard()
+	getOK(t, additional, "/extra")
+	manager.Close()
+	for _, port := range []int{replacementPort, additional} {
+		listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+		if err != nil {
+			t.Fatal("close retained port:", err)
+		}
+		_ = listener.Close()
+	}
+	if _, err := manager.PrepareAdditionalHTTP(additional); err == nil {
+		t.Fatal("closed manager accepted a listener")
+	}
+}
+
 func freePort(t *testing.T) int {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

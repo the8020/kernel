@@ -29,21 +29,24 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   rootless gVisor is the automatic reduced fallback.
 - The kernel additionally owns development-image/sandbox lifecycle, durable
   per-user sandbox storage, sandbox-scoped activation ingress, database-backed
-  package persistence, Git source/version and
-  working-tree inspection, authenticated pull/push/checkout, and package
-  synchronization, plus the generic authenticated local console broker and
-  backend PTY exec boundary. It owns the SSH listener and protocol adapter while
-  authentication, development, and sandbox packages retain their domain
-  behavior. Deno programs own application routes, handlers, UUI screen/program
-  behavior, browser assets, and authored TypeScript table definitions; future
-  phases add schema versions, broader identities/roles, workflow, connections,
-  certificates, and other application behavior.
-- Application query behavior, broader remote administration, public TLS
-  termination, checkpoint/restore, and the final virtual filesystem remain
-  outside the current kernel scope; db owns schema interpretation and
-  synchronization while the kernel supplies bounded SQL and transaction
-  authority. Initial application-server topology, capacity advertisement,
-  allocation-index partitioning, and service forwarding are kernel-owned.
+  package persistence, Git source/version and working-tree inspection,
+  authenticated pull/push/checkout, and package synchronization, plus the
+  generic authenticated local console broker and backend PTY exec boundary. It
+  owns the SSH listener and protocol adapter while authentication, development,
+  and sandbox packages retain their domain behavior. Deno programs own
+  application routes, handlers, UUI screen/program behavior, browser assets, and
+  authored TypeScript table definitions; future phases add schema versions,
+  broader identities/roles, workflow, connections, certificates, and other
+  application behavior.
+- Application query behavior, broader remote administration, checkpoint/restore,
+  and the final virtual filesystem remain outside the current kernel scope; db
+  owns schema interpretation and synchronization while the kernel supplies
+  bounded SQL and transaction authority. Initial application-server topology,
+  capacity advertisement, allocation-index partitioning, and service forwarding
+  are kernel-owned.
+- Public TLS listeners and cryptographic client-certificate evidence are native
+  network/auth mechanisms. Certificate management policy and account enrollment
+  remain package-owned.
 
 # Local Contracts
 
@@ -280,7 +283,7 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   activation.
 - [development/AGENTS.md](development/AGENTS.md): the per-user development
   sandbox, private workspace durability, package Git activation, lifecycle, and
-  native verification.
+  authenticated tool ingress and native verification.
 - [events/AGENTS.md](events/AGENTS.md): asynchronous local package events,
   cached listeners, bounded dispatch, and minute-aligned notification.
 - [execution/AGENTS.md](execution/AGENTS.md): generic sandboxes, warm capacity,
@@ -294,8 +297,8 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   descriptor ownership, logging policy, and query delegation.
 - [logd/AGENTS.md](logd/AGENTS.md): standalone logging daemon entrypoint and
   inherited kernel control/raw descriptors.
-- [network/AGENTS.md](network/AGENTS.md): proof HTTP listener and port
-  replacement.
+- [network/AGENTS.md](network/AGENTS.md): native HTTP/HTTPS listeners, TLS
+  configuration publication, and port replacement.
 - [nodes/AGENTS.md](nodes/AGENTS.md): shared node topology, capacity
   advertisement, allocation-index partitioning, and authenticated HTTP/WebSocket
   forwarding.

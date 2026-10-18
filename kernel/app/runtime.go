@@ -18,6 +18,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	databasesql "the8020/kernel/cbus/commands/database/sql"
 	"the8020/kernel/cbus/core"
 	"the8020/kernel/cbus/discovery"
 	platformconsole "the8020/kernel/console"
@@ -546,6 +547,8 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	runtimeServices.ListPrograms = packageStore.ListPrograms
 	serviceIndex := webservices.NewIndex()
 	indexer := &runtimeIndexer{handlers: packageStore, commands: commandIndexer, packages: packageStore, jobs: jobManager, services: serviceIndex}
+	https := newHTTPSPublication(ctx, programRunner, int(activeInt(settingManager, "network.https_port", 8443)))
+	indexer.https = https.publish
 	indexer.background, indexer.cancel = context.WithCancel(ctx)
 	cleanup.indexer = indexer
 	var sharedState *runtimeSharedState
@@ -666,6 +669,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		RuntimeRoot: paths.RuntimeDevelopment, ImageRoot: filepath.Join(paths.DevelopmentImage, "rootfs"),
 		ImageRecord: filepath.Join(paths.DevelopmentImage, "image.json"), MountProfile: development.DefaultMountProfile(),
 		ActivationGateway: development.NewCommandBusGateway(commandRegistry), RepositoryMu: repositoryMu,
+		SQL:        databasesql.NewHTTP(serviceSet),
 		UserAccess: sandboxUserAccess(authentication, sandboxServices.Load),
 		SystemURL: func() string {
 			return fmt.Sprintf("http://127.0.0.1:%d", activeInt(settingManager, "network.main_port", 8080))
@@ -694,6 +698,13 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		return runtimeServices, closeRuntime
 	}
 	cleanup.publicNetwork = publicNetwork
+	additionalHTTP, err := publicNetwork.PrepareAdditionalHTTP(int(activeInt(settingManager, "network.additional_http_port", 0)))
+	if err != nil {
+		runtimeServices.Failure = err.Error()
+		return runtimeServices, closeRuntime
+	}
+	additionalHTTP.Commit()
+	https.attach(publicNetwork)
 	if err := settingManager.RegisterApplier([]string{"network.main_port"}, publicNetwork); err != nil {
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
@@ -755,11 +766,12 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		AuthenticatePassword: func(ctx context.Context, username, password string) (execution.User, error) {
 			return authentication.run(ctx, "password", username, map[string]string{"password": password})
 		},
-		NodeID:       instanceUUID,
-		Signing:      serviceSet.Signing,
-		Nodes:        nodeManager,
-		MatchImports: workerManager.MatchingImports,
-		Database:     systemDatabase,
+		AuthenticateCertificate: authentication.AuthenticateCertificate,
+		NodeID:                  instanceUUID,
+		Signing:                 serviceSet.Signing,
+		Nodes:                   nodeManager,
+		MatchImports:            workerManager.MatchingImports,
+		Database:                systemDatabase,
 	})
 	if err != nil {
 		runtimeServices.Failure = err.Error()
@@ -785,7 +797,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
 	}
-	nodeManager.SetCapacityProvider(&runtimeNodeCapacityProvider{sandboxes: sandboxManager, workers: workerManager, services: serviceManager})
+	nodeManager.SetCapacityProvider(&runtimeNodeCapacityProvider{sandboxes: sandboxManager, workers: workerManager, services: serviceManager, network: publicNetwork})
 	if err := nodeManager.Start(webServiceManager); err != nil {
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
@@ -817,6 +829,7 @@ type runtimeNodeCapacityProvider struct {
 	sandboxes *manager.Manager
 	workers   *workers.Manager
 	services  *executionservices.Manager
+	network   *mainnetwork.Manager
 }
 
 func (p *runtimeNodeCapacityProvider) NodeCapacity(ctx context.Context) (nodes.Capacity, error) {
@@ -836,6 +849,10 @@ func (p *runtimeNodeCapacityProvider) NodeCapacity(ctx context.Context) (nodes.C
 		TemporaryStorageBudgetBytes: sandboxes.Limits.TemporaryStorageBytes, TemporaryStorageReservedBytes: sandboxes.TemporaryStorageBytes,
 		MaximumSandboxes: sandboxes.Limits.MaximumSandboxes, SandboxCount: sandboxes.SandboxCount,
 		MaximumWorkers: sandboxes.Limits.MaximumWorkers, WorkerCount: len(workerRecords), UpdatedAt: time.Now().UTC(),
+	}
+	if p.network != nil {
+		status := p.network.HTTPSStatus()
+		capacity.HTTPS = &status
 	}
 	capacity.TemporaryStorageAvailableBytes = remainingInt64(capacity.TemporaryStorageBudgetBytes, capacity.TemporaryStorageReservedBytes)
 	capacity.AvailableSandboxes = remainingInt(capacity.MaximumSandboxes, capacity.SandboxCount)

@@ -21,6 +21,9 @@ Parent DOX: [database DOX](../AGENTS.md).
   extract or patch implementation source.
 - Keep tests sequential and close the HTTP listener, child process, and database
   scopes.
+- The optional successful-statement observer qualifies metadata-only preview,
+  required backend copies and cancellation after authored cleanup. The fixture
+  supplies the same read-only native schema-version contract as the coordinator.
 
 # Verification
 

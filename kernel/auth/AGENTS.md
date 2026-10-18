@@ -107,6 +107,12 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   signing. Raw signatures alone never qualify as HTTP authentication.
 - Native peers use the derived key through the existing recipient transport;
   node forwarding preserves the end-user platform header and cookie.
+- `certificate.go` carries client-certificate evidence from completed TLS or an
+  authenticated terminator/peer in private request context. Public headers alone
+  grant nothing. It checks validity, client/signing usage, CA status, and
+  unknown critical extensions before returning the SHA-256 DER fingerprint.
+  Enrollment and account checks run through users on each request, including
+  resumed TLS.
 
 # Work Guidance
 

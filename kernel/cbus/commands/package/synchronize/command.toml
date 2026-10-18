@@ -31,6 +31,24 @@ description = "HTTP Basic username; defaults to x-access-token when omitted."
 [[result]]
 name = "packages"
 type = "array"
+[[parameters]]
+name = "force_columns"
+type = "string"
+option = "force"
+required = false
+description = "Exact comma-separated table.column scopes. Requires one explicit package. Cleanup/native DDL run first; force may repair only invalid cells using legal NULL or an authored target default. No table reset."
+[[parameters]]
+name = "schema_preview"
+type = "boolean"
+option = "schema"
+required = false
+description = "Preview the selected candidate schema without callbacks or publication. Requires one explicit package."
+[[parameters]]
+name = "approved_plan"
+type = "string"
+option = "approved-plan"
+required = false
+description = "Bind destructive confirmation to the observed candidate plan and row impact."
 [[examples]]
 command = "kernel.packages.synchronize --packages the8020/uui,the8020/admin-core"
 [[examples]]

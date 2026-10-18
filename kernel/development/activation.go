@@ -400,6 +400,8 @@ func packageSelection(ctx context.Context, d *workspace, selection []string) ([]
 
 type activationAttempt struct {
 	ID, Phase, TransactionID string
+	CommitTime               time.Time
+	Candidates               []deployment.Candidate
 	Packages                 []activationPackage
 	Moves                    map[string]string
 	Namespaces               []capturedPath
@@ -447,6 +449,38 @@ func (m *Manager) recoverSwitch(ctx context.Context, journal string, attempt *ac
 		}
 	}
 	if len(switched) == len(attempt.Packages) {
+		attempt.Phase = "published"
+		return saveAttempt(journal, attempt)
+	}
+	forward, err := deployment.NeedsForward(ctx, hook, attempt.TransactionID)
+	if err != nil {
+		return err
+	}
+	if forward {
+		for _, item := range attempt.Packages {
+			head, err := m.sharedHead(item.PackageID)
+			if err != nil {
+				return err
+			}
+			if head == item.Published {
+				continue
+			}
+			root := filepath.Join(m.config.PackagesRoot, item.PackageID)
+			switch {
+			case item.Published == "":
+				if err := renameSource(root, root+".previous"); err != nil {
+					return err
+				}
+			case item.Previous == "":
+				if err := renameSource(item.Staged, root); err != nil {
+					return err
+				}
+			default:
+				if _, err := gitCommand(ctx, root, nil, "reset", "--hard", item.Published); err != nil {
+					return err
+				}
+			}
+		}
 		attempt.Phase = "published"
 		return saveAttempt(journal, attempt)
 	}
@@ -649,12 +683,19 @@ func (m *Manager) capturePackage(ctx context.Context, d *workspace, sandbox Sand
 }
 
 func (m *Manager) Preview(ctx context.Context, user string, options ActivationOptions) (ActivationPreview, error) {
+	if options.SchemaPreview {
+		if strings.TrimSpace(options.Description) == "" {
+			options.Description = "Schema preview"
+		}
+		result, err := m.Activate(ctx, user, options)
+		return ActivationPreview{Packages: []ActivationPackagePreview{}, SchemaPlan: result.SchemaPlan, SchemaOptionsVersion: 2}, err
+	}
 	if err := validatePreviewFile(options); err != nil {
 		return ActivationPreview{}, err
 	}
 	unlock := m.lockUser(user)
 	defer unlock()
-	result := ActivationPreview{Packages: []ActivationPackagePreview{}}
+	result := ActivationPreview{Packages: []ActivationPackagePreview{}, SchemaOptionsVersion: 2}
 	sandbox, err := m.loadSandbox(user)
 	if err != nil {
 		return result, err
@@ -1278,6 +1319,10 @@ func validationView(ctx context.Context, shared, gitRoot, previous, candidate, t
 }
 
 func (m *Manager) Activate(ctx context.Context, userID string, options ActivationOptions) (result ActivationResult, returnErr error) {
+	if len(options.ForceColumns) > 0 && len(options.SelectedPackages) == 0 {
+		return result, errors.New("--force requires an explicit package selection")
+	}
+	ctx = deployment.WithSchemaOptions(ctx, deployment.SchemaOptions{ForceColumns: options.ForceColumns, ApprovedPlan: options.ApprovedPlan})
 	unlock := m.lockUser(userID)
 	defer unlock()
 	sandbox, err := m.loadSandbox(userID)
@@ -1326,6 +1371,7 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 			return result, err
 		}
 		attempt.Phase = "captured"
+		attempt.CommitTime = time.Now().UTC()
 		ordered, state, err := packageSelection(ctx, d, options.SelectedPackages)
 		if err != nil {
 			return result, err
@@ -1439,11 +1485,38 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 	if hook == nil {
 		return result, errors.New("schema coordinator is required")
 	}
+	if options.SchemaPreview && attempt.Phase != "captured" {
+		return result, errors.New("resume the pending activation before previewing another candidate")
+	}
 	if attempt.Phase == "preparing" {
-		if err := hook.Complete(ctx, attempt.TransactionID, false); err != nil {
+		forward, err := deployment.NeedsForward(ctx, hook, attempt.TransactionID)
+		if err != nil {
 			return result, err
 		}
-		attempt.Phase, attempt.TransactionID = "captured", ""
+		if forward {
+			allSwitched := true
+			for _, item := range attempt.Packages {
+				head, err := m.sharedHead(item.PackageID)
+				if err != nil {
+					return result, err
+				}
+				allSwitched = allSwitched && head == item.Published
+			}
+			if allSwitched {
+				attempt.Phase = "published"
+			} else {
+				if err := hook.Prepare(ctx, attempt.TransactionID, attempt.Candidates); err != nil {
+					result.Status = "schema-committed-activation-incomplete"
+					return result, err
+				}
+				attempt.Phase = "prepared"
+			}
+		} else {
+			if err := hook.Complete(ctx, attempt.TransactionID, false); err != nil {
+				return result, err
+			}
+			attempt.Phase, attempt.TransactionID = "captured", ""
+		}
 		if err := saveAttempt(journal, &attempt); err != nil {
 			return result, err
 		}
@@ -1453,7 +1526,7 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 			return result, err
 		}
 	}
-	if attempt.Phase != "captured" && attempt.Phase != "published" {
+	if attempt.Phase != "captured" && attempt.Phase != "published" && attempt.Phase != "prepared" {
 		return result, fmt.Errorf("unsupported activation recovery phase %q", attempt.Phase)
 	}
 	if attempt.Phase == "captured" {
@@ -1462,7 +1535,16 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 		if err != nil {
 			return result, err
 		}
-		defer os.RemoveAll(stage)
+		defer func() {
+			if attempt.Phase == "captured" || attempt.Phase == "published" {
+				_ = os.RemoveAll(stage)
+				return
+			}
+			forward, err := deployment.NeedsForward(context.WithoutCancel(ctx), hook, attempt.TransactionID)
+			if err == nil && !forward {
+				_ = os.RemoveAll(stage)
+			}
+		}()
 		for index := range attempt.Packages {
 			item := &attempt.Packages[index]
 			head, err := m.sharedHead(item.PackageID)
@@ -1585,7 +1667,12 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 					commitArgs = append(commitArgs, "-p", item.Parent)
 				}
 			}
-			item.Published, err = gitOutputContext(ctx, target, gitIdentity(author, email), commitArgs...)
+			environment := gitIdentity(author, email)
+			if !attempt.CommitTime.IsZero() {
+				stamp := attempt.CommitTime.Format(time.RFC3339)
+				environment = append(environment, "GIT_AUTHOR_DATE="+stamp, "GIT_COMMITTER_DATE="+stamp)
+			}
+			item.Published, err = gitOutputContext(ctx, target, environment, commitArgs...)
 			if err != nil {
 				return result, err
 			}
@@ -1609,6 +1696,16 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 			}
 			candidates = append(candidates, deployment.Candidate{PackageID: item.PackageID, Root: view, Commit: item.Published})
 		}
+		if options.SchemaPreview {
+			planner, ok := hook.(deployment.PlanningHook)
+			if !ok {
+				return result, errors.New("schema preview requires an updated coordinator")
+			}
+			result.SchemaPlan, err = planner.Plan(ctx, candidates)
+			result.Success, result.Status = err == nil, "preview"
+			return result, err
+		}
+		attempt.Candidates = candidates
 		attempt.TransactionID, err = identity.New("act")
 		if err != nil {
 			return result, err
@@ -1618,8 +1715,23 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 			return result, err
 		}
 		if err := hook.Prepare(ctx, attempt.TransactionID, candidates); err != nil {
+			forward, inspectionErr := deployment.NeedsForward(context.WithoutCancel(ctx), hook, attempt.TransactionID)
+			if inspectionErr == nil && !forward {
+				attempt.Phase, attempt.TransactionID = "captured", ""
+				if saveErr := saveAttempt(journal, &attempt); saveErr != nil {
+					return result, errors.Join(err, saveErr)
+				}
+			} else {
+				result.Status = "schema-committed-activation-incomplete"
+			}
 			return result, fmt.Errorf("prepare schema and hooks: %w", err)
 		}
+		attempt.Phase = "prepared"
+		if err := saveAttempt(journal, &attempt); err != nil {
+			return result, err
+		}
+	}
+	if attempt.Phase == "prepared" {
 		prepared := true
 		defer func() {
 			if prepared {
@@ -1658,6 +1770,12 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 		prepared = false
 		attempt.Phase = "published"
 		if err := saveAttempt(journal, &attempt); err != nil {
+			return result, err
+		}
+	}
+	if outcome, ok := hook.(deployment.OutcomeHook); ok {
+		result.SchemaResult, err = outcome.SchemaOutcome(ctx, attempt.TransactionID)
+		if err != nil {
 			return result, err
 		}
 	}

@@ -50,7 +50,9 @@ Parent DOX: [kernel/kernel/sandbox DOX](../AGENTS.md).
   the live sandbox record.
 - Supervisor startup readiness probes immediately, then every 10 milliseconds
   by default until ready or the existing startup deadline expires. This interval
-  applies only to startup readiness, independently of health monitoring.
+  applies only to startup readiness, independently of health monitoring. Each
+  probe has a one-second deadline so a stalled connection cannot consume all
+  startup retries.
 - Successfully archived records are physically absent from live listing;
   cleanup-pending terminal records remain live and inspectable until explicit
   retry succeeds. History listing is a separately requested bounded index query;

@@ -3,6 +3,7 @@ package packages
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -85,16 +86,18 @@ type PackageVersions struct {
 }
 
 type PackageSynchronization struct {
-	PackageID      string `json:"package_id"`
-	Source         string `json:"source,omitempty"`
-	Requested      string `json:"requested"`
-	PreviousCommit string `json:"previous_commit,omitempty"`
-	Commit         string `json:"commit,omitempty"`
-	Changed        bool   `json:"changed"`
-	Cloned         bool   `json:"cloned"`
-	Local          bool   `json:"local"`
-	Success        bool   `json:"success"`
-	Error          string `json:"error,omitempty"`
+	PackageID      string          `json:"package_id"`
+	Source         string          `json:"source,omitempty"`
+	Requested      string          `json:"requested"`
+	PreviousCommit string          `json:"previous_commit,omitempty"`
+	Commit         string          `json:"commit,omitempty"`
+	Changed        bool            `json:"changed"`
+	Cloned         bool            `json:"cloned"`
+	Local          bool            `json:"local"`
+	Success        bool            `json:"success"`
+	Error          string          `json:"error,omitempty"`
+	SchemaPlan     json.RawMessage `json:"schema_plan,omitempty"`
+	SchemaResult   json.RawMessage `json:"schema_result,omitempty"`
 }
 
 type LocalPackage struct {
@@ -301,6 +304,10 @@ func (s *Store) SynchronizePackagesWithCredential(ctx context.Context, packageID
 }
 
 func (s *Store) synchronizePackages(ctx context.Context, packageIDs []string, token, username string) ([]PackageSynchronization, error) {
+	options := deployment.Options(ctx)
+	if (len(options.ForceColumns) > 0 || options.Preview || options.ApprovedPlan != "") && len(packageIDs) != 1 {
+		return nil, errors.New("schema preview or force requires one explicit installed package; table rewrites within it share the same plan")
+	}
 	if len(packageIDs) == 0 {
 		entries, err := s.ListPackageIndexes()
 		if err != nil {
@@ -389,7 +396,19 @@ func (s *Store) synchronizePackage(ctx context.Context, packageID, transientToke
 	if err != nil {
 		return result, fmt.Errorf("create package staging directory: %w", err)
 	}
-	defer os.RemoveAll(stageRoot)
+	hook := s.schemaDeployment()
+	var transactionID string
+	sourceSwitched := false
+	defer func() {
+		if sourceSwitched || hook == nil || transactionID == "" {
+			_ = os.RemoveAll(stageRoot)
+			return
+		}
+		forward, err := deployment.NeedsForward(context.WithoutCancel(ctx), hook, transactionID)
+		if err == nil && !forward {
+			_ = os.RemoveAll(stageRoot)
+		}
+	}()
 	stage := filepath.Join(stageRoot, "repository")
 	authentication, err := s.repositoryAuthenticationWithCredential(packageID, entry.Source, transientToken, username)
 	if err != nil {
@@ -432,24 +451,39 @@ func (s *Store) synchronizePackage(ctx context.Context, packageID, transientToke
 		return result, err
 	}
 	result.Commit = commit
-	if exists && result.PreviousCommit == result.Commit && entry.State == "ready" && entry.ActiveCommit == result.Commit {
+	if deployment.Options(ctx).Preview {
+		if hook == nil {
+			return result, errors.New("schema coordinator is unavailable")
+		}
+		planner, ok := hook.(deployment.PlanningHook)
+		if !ok {
+			return result, errors.New("schema preview requires an updated coordinator")
+		}
+		result.SchemaPlan, err = planner.Plan(ctx, []deployment.Candidate{{PackageID: packageID, Root: stage, Commit: commit}})
+		return result, err
+	}
+	if exists && result.PreviousCommit == result.Commit && entry.State == "ready" && entry.ActiveCommit == result.Commit && len(deployment.Options(ctx).ForceColumns) == 0 && deployment.Options(ctx).ApprovedPlan == "" {
 		if _, err := replacePackageDirectory(destination, stage); err != nil {
 			return result, err
 		}
 		return result, finalizePackageDirectory(destination)
 	}
-	hook := s.schemaDeployment()
-	transactionID, err := activationID()
+	transactionID, err = activationID()
 	if err != nil {
 		return result, err
 	}
 	preparedSchema := false
-	sourceSwitched := false
 	if hook != nil {
 		if err := hook.Prepare(ctx, transactionID, []deployment.Candidate{{PackageID: packageID, Root: stage, Commit: commit}}); err != nil {
 			return result, fmt.Errorf("prepare package database schema: %w", err)
 		}
 		preparedSchema = true
+		if outcome, ok := hook.(deployment.OutcomeHook); ok {
+			result.SchemaResult, err = outcome.SchemaOutcome(ctx, transactionID)
+			if err != nil {
+				return result, err
+			}
+		}
 		defer func() {
 			if preparedSchema && !sourceSwitched {
 				_ = hook.Complete(context.Background(), transactionID, false)

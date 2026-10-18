@@ -4,6 +4,8 @@ package nodes
 
 import (
 	"context"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +24,7 @@ import (
 	"the8020/kernel/database"
 	"the8020/kernel/execution"
 	"the8020/kernel/identity"
+	"the8020/kernel/network"
 )
 
 type forwardingPathKey struct{}
@@ -48,23 +51,24 @@ type ServiceCapacity struct {
 }
 
 type Capacity struct {
-	NodeID                         string            `json:"node_id"`
-	Accepting                      bool              `json:"accepting"`
-	TemporaryStorageBudgetBytes    int64             `json:"temporary_storage_budget_bytes"`
-	TemporaryStorageReservedBytes  int64             `json:"temporary_storage_reserved_bytes"`
-	TemporaryStorageAvailableBytes int64             `json:"temporary_storage_available_bytes"`
-	MaximumSandboxes               int               `json:"maximum_sandboxes"`
-	SandboxCount                   int               `json:"sandbox_count"`
-	AvailableSandboxes             int               `json:"available_sandboxes"`
-	MaximumWorkers                 int               `json:"maximum_workers"`
-	WorkerCount                    int               `json:"worker_count"`
-	AvailableWorkers               int               `json:"available_workers"`
-	RunningServiceSandboxes        int               `json:"running_service_sandboxes"`
-	HealthyServiceSandboxes        int               `json:"healthy_service_sandboxes"`
-	ExecutionSlots                 int               `json:"execution_slots"`
-	OccupiedExecutionSlots         int               `json:"occupied_execution_slots"`
-	Services                       []ServiceCapacity `json:"services,omitempty"`
-	UpdatedAt                      time.Time         `json:"updated_at"`
+	NodeID                         string               `json:"node_id"`
+	Accepting                      bool                 `json:"accepting"`
+	TemporaryStorageBudgetBytes    int64                `json:"temporary_storage_budget_bytes"`
+	TemporaryStorageReservedBytes  int64                `json:"temporary_storage_reserved_bytes"`
+	TemporaryStorageAvailableBytes int64                `json:"temporary_storage_available_bytes"`
+	MaximumSandboxes               int                  `json:"maximum_sandboxes"`
+	SandboxCount                   int                  `json:"sandbox_count"`
+	AvailableSandboxes             int                  `json:"available_sandboxes"`
+	MaximumWorkers                 int                  `json:"maximum_workers"`
+	WorkerCount                    int                  `json:"worker_count"`
+	AvailableWorkers               int                  `json:"available_workers"`
+	RunningServiceSandboxes        int                  `json:"running_service_sandboxes"`
+	HealthyServiceSandboxes        int                  `json:"healthy_service_sandboxes"`
+	ExecutionSlots                 int                  `json:"execution_slots"`
+	OccupiedExecutionSlots         int                  `json:"occupied_execution_slots"`
+	Services                       []ServiceCapacity    `json:"services,omitempty"`
+	UpdatedAt                      time.Time            `json:"updated_at"`
+	HTTPS                          *network.HTTPSStatus `json:"https,omitempty"`
 }
 
 type CapacityProvider interface {
@@ -388,8 +392,19 @@ func (m *Manager) Proxy(nodeID string, writer http.ResponseWriter, request *http
 		Director: func(forwarded *http.Request) {
 			forwarded.URL.Scheme = target.Scheme
 			forwarded.URL.Host = target.Host
-			forwarded.Host = target.Host
-			forwarded.Header.Del("Authorization")
+			forwarded.Host = request.Host
+			forwarded.Header.Set("X-Forwarded-Proto", "http")
+			if auth.SecureTransport(request) {
+				forwarded.Header.Set("X-Forwarded-Proto", "https")
+			}
+			for name := range forwarded.Header {
+				if strings.EqualFold(name, "the8020-internal-client-certificate") {
+					delete(forwarded.Header, name)
+				}
+			}
+			if certificate := auth.ClientCertificate(request); certificate != nil {
+				forwarded.Header.Set("the8020-internal-client-certificate", base64.StdEncoding.EncodeToString(certificate.Raw))
+			}
 			forwarded.Header.Del("the8020-internal-local-authentication")
 			if auth.LocalTransport(request.Context()) {
 				forwarded.Header.Set("the8020-internal-local-authentication", "true")
@@ -641,9 +656,26 @@ func (m *Manager) authorize(next http.Handler) http.Handler {
 			http.Error(writer, "node authentication required", http.StatusUnauthorized)
 			return
 		}
-		request.Header.Del("Authorization")
 		// Recipient encryption does not change the public request's HTTPS status.
 		request.TLS = nil
+		if encoded := request.Header.Get("the8020-internal-client-certificate"); encoded != "" {
+			if len(encoded) > 90000 {
+				http.Error(writer, "invalid forwarded certificate", http.StatusBadRequest)
+				return
+			}
+			der, err := base64.StdEncoding.Strict().DecodeString(encoded)
+			if err != nil || len(der) > 65536 {
+				http.Error(writer, "invalid forwarded certificate", http.StatusBadRequest)
+				return
+			}
+			certificate, err := x509.ParseCertificate(der)
+			if err != nil {
+				http.Error(writer, "invalid forwarded certificate", http.StatusBadRequest)
+				return
+			}
+			request = request.WithContext(auth.WithClientCertificate(request.Context(), certificate))
+		}
+		request.Header.Del("the8020-internal-client-certificate")
 		if request.Header.Get("the8020-internal-local-authentication") == "true" {
 			request = request.WithContext(auth.WithLocalTransport(request.Context()))
 		}
