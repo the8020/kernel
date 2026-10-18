@@ -1,0 +1,10 @@
+key = "network.additional_http_port"
+type = "integer"
+storage = "node"
+default = 0
+environment = "THE8020_NETWORK_ADDITIONAL_HTTP_PORT"
+minimum = 0
+maximum = 65535
+runtime_mutable = false
+restart_required = true
+description = "Additional HTTP listener on the same router. Zero disables it."

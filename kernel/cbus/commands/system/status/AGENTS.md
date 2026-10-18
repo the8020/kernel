@@ -16,6 +16,9 @@ Parent DOX: [kernel/kernel/cbus/commands/system DOX](../AGENTS.md).
 
 - Public API: handler constructor `New(*services.Services) core.Handler`.
 - Result field names remain aligned with `command.toml`.
+- `https_port` and `https` read native listener and publication state, including
+  desired/applied revisions and failure. They perform no package or database
+  calls and reveal no certificate keys.
 - `logging` is the logging owner's cached bounded snapshot: writer/process and
   storage state, active files, current policy and pending convergence, restart
   count, writer incarnation, byte/record budgets and loss/error counts. It

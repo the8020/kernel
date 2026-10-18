@@ -58,6 +58,9 @@ Parent DOX: [kernel defaults](../AGENTS.md).
   restore that entry if publication fails.
 - Updates interrupt live jobs, services, sessions, and terminals. Durable user
   work, configuration, identities, database, keys, and logs remain in place.
+- Launcher shutdown waits for its kernel child to exit. Repeated shutdown
+  signals cannot interrupt that wait or allow replacement startup to race the
+  old kernel's instance lock.
 
 # Work Guidance
 
@@ -78,7 +81,8 @@ Parent DOX: [kernel defaults](../AGENTS.md).
   execution of the new offline migration.
 - Native cbus tests verify detached execution, validation, and missing launcher
   diagnostics. `docker-entrypoint_test.sh` checks one-time seeding and restart
-  preservation alongside existing account/readiness behavior.
+  preservation alongside existing account/readiness behavior, including
+  complete child draining under repeated shutdown signals.
 - With prepared images in `.development/runtime/`, run
   `THE8020_NATIVE_UPDATE_ROOT=/root/8020/test<N> deno test --no-config -A
   defaults/kernel-scripts/update_native_test.ts`

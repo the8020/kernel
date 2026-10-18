@@ -27,6 +27,12 @@ type = "string"
 name = "main_port"
 type = "integer"
 [[result]]
+name = "https_port"
+type = "integer"
+[[result]]
+name = "https"
+type = "object"
+[[result]]
 name = "logging"
 type = "object"
 [[result]]

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -270,6 +272,52 @@ func TestMetadataDeclaredSecretInput(t *testing.T) {
 	output.Reset()
 	if code := runner.Run(context.Background(), []string{"user", "add", "admin", "ordinary-password"}, false, &output); code != 0 || strings.Join(executor.request.Argv, "|") != "admin|ordinary-password" {
 		t.Fatalf("ordinary password run code=%d output=%q", code, output.String())
+	}
+}
+
+func TestSecureFilesPreserveMultilineInputAndStayOutOfArguments(t *testing.T) {
+	command := core.Command{ID: "upload", Path: []string{"upload"}, Usage: "<name>",
+		Secrets: []core.SecretInput{{Name: "key", Required: true, StdinOption: "key-stdin", FileOption: "key-file"}}}
+	path := filepath.Join(t.TempDir(), "private key.pem")
+	secret := "-----BEGIN PRIVATE KEY-----\nTEST MATERIAL\n-----END PRIVATE KEY-----\n"
+	if err := os.WriteFile(path, []byte(secret), 0600); err != nil {
+		t.Fatal(err)
+	}
+	executor := &fakeExecutor{}
+	runner := New([]core.Command{command}, executor)
+	for _, args := range [][]string{{"upload", "name", "--key-file", path}, {"upload", "--key-file=" + path, "name"}} {
+		var output bytes.Buffer
+		if code := runner.Run(context.Background(), args, false, &output); code != 0 {
+			t.Fatalf("file input failed: %s", output.String())
+		}
+		if executor.request.Secrets["key"] != secret || strings.Join(executor.request.Argv, "|") != "name" || strings.Contains(output.String(), "TEST MATERIAL") {
+			t.Fatal("secure file was changed, exposed, or included in arguments")
+		}
+	}
+	if !strings.Contains(runner.Help(command.Path), "--key-file <file>") {
+		t.Fatal("file option missing from help with explicit usage")
+	}
+	for _, args := range [][]string{
+		{"--key-file"}, {"--key-file="}, {"--key-file", "--key-stdin"},
+		{"--key-file", path, "--key-stdin"}, {"--key-stdin", "--key-file", path},
+		{"--key-file", path, "--key-file", path}, {"--key-file", path + ".missing"},
+		{"--key-file", filepath.Dir(path)},
+	} {
+		if _, _, err := prepareArguments(command, args, nil); err == nil {
+			t.Fatalf("invalid file options accepted: %v", args)
+		}
+	}
+	if err := os.WriteFile(path, make([]byte, 256*1024+1), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := prepareArguments(command, []string{"--key-file", path}, nil); err == nil {
+		t.Fatal("oversized secure file accepted")
+	}
+	if err := os.WriteFile(path, []byte{0xff}, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := prepareArguments(command, []string{"--key-file", path}, nil); err == nil {
+		t.Fatal("invalid UTF-8 silently changed during transport")
 	}
 }
 

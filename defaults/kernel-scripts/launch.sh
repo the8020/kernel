@@ -8,6 +8,8 @@ mkdir -p "$KERNEL_ROOT/run"
 printf '%s\n' "$$" > "$KERNEL_ROOT/run/launcher.pid"
 kernel_pid=""
 cleanup() {
+  # A process-group shutdown may also arrive through the waiting entrypoint.
+  trap '' INT TERM HUP
   if [[ -n "$kernel_pid" ]]; then
     kill -TERM "$kernel_pid" 2>/dev/null || true
     wait "$kernel_pid" 2>/dev/null || true

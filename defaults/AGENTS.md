@@ -30,6 +30,9 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   builds require a compatible auth package tag through normal resolution.
 - Bootstrap includes `the8020/deployments` for system connections, deployment
   administration, and automatic development Git serving.
+- Bootstrap includes `the8020/https` for shared HTTPS configuration, automatic
+  server certificates, and administration. Fresh schemas precede publication;
+  release builds require the corresponding compatible package tag.
 
 - `install.sh`, not kernel startup, refreshes runtime definitions into
   `node/kernel/runtime/definitions/`. Its `install-development-assets.sh` step

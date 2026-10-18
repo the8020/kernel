@@ -21,6 +21,7 @@ import (
 	"the8020/kernel/auth"
 	"the8020/kernel/database"
 	"the8020/kernel/execution"
+	"the8020/kernel/network"
 )
 
 func testNodeSigner(t *testing.T) *auth.Signer {
@@ -169,7 +170,7 @@ func TestForwardingRecipientRequiresSharedAuthentication(t *testing.T) {
 	}
 	if err := manager.Start(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Test-Local-Authentication", strconv.FormatBool(auth.LocalTransport(request.Context())))
-		if request.Header.Get("the8020-authorization") != "Bearer end-user-token" || request.Header.Get("Cookie") != "the8020_auth=end-user-cookie" || request.Header.Get("Authorization") != "" {
+		if request.Header.Get("the8020-authorization") != "Bearer end-user-token" || request.Header.Get("Cookie") != "the8020_auth=end-user-cookie" || request.Header.Get("Authorization") != "Basic YWxpY2U6cGFzc3dvcmQ=" {
 			http.Error(writer, "credential boundary changed", 400)
 			return
 		}
@@ -204,6 +205,7 @@ func TestForwardingRecipientRequiresSharedAuthentication(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "http://the8020/service", nil)
 	request.Header.Set("the8020-authorization", "Bearer end-user-token")
 	request.Header.Set("Cookie", "the8020_auth=end-user-cookie")
+	request.SetBasicAuth("alice", "password")
 	request.Header.Set("the8020-internal-local-authentication", "true")
 	if err := peer.Proxy("nod-aaaaaaaaaa", recorder, request); err != nil {
 		t.Fatal(err)
@@ -244,6 +246,63 @@ func TestForwardingRecipientRequiresSharedAuthentication(t *testing.T) {
 	var message string
 	if err := websocket.Message.Receive(socket, &message); err != nil || message != "forwarded-websocket" {
 		t.Fatalf("WebSocket credential forwarding: message=%q err=%v", message, err)
+	}
+}
+
+func TestForwardingPreservesClientCertificateOnlyThroughNativePeer(t *testing.T) {
+	db := newTestNodeDatabase(t, t.TempDir())
+	owner, err := New(db, "nod-aaaaaaaaaa", testNodeSigner(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = owner.Close() })
+	port := freePort(t)
+	if _, err := owner.Set(t.Context(), Node{ID: owner.localID, URL: "https://public.example", RecipientAddress: "127.0.0.1", RecipientPort: port, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.Start(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host != "public.example" || r.Header.Get("the8020-internal-client-certificate") != "" {
+			t.Error("public hostname or private header boundary lost")
+		}
+		if certificate := auth.ClientCertificate(r); certificate != nil {
+			fingerprint, err := auth.ClientCertificateFingerprint(certificate)
+			if err != nil {
+				t.Error(err)
+			}
+			w.Header().Set("Test-Certificate", fingerprint)
+		}
+		w.Header().Set("Test-Secure", strconv.FormatBool(auth.SecureTransport(r)))
+		w.WriteHeader(http.StatusNoContent)
+	})); err != nil {
+		t.Fatal(err)
+	}
+	peer, err := New(db, "nod-bbbbbbbbbb", testNodeSigner(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = peer.Close() })
+	request := httptest.NewRequest("GET", "http://public.example/service", nil)
+	request.Header.Set("the8020-internal-client-certificate", "forged")
+	response := httptest.NewRecorder()
+	if err := peer.Proxy(owner.localID, response, request); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusNoContent || response.Header().Get("Test-Certificate") != "" || response.Header().Get("Test-Secure") != "false" {
+		t.Fatal("public headers forged evidence")
+	}
+	certificate, err := peer.signing.ForwardingTLSConfig().GetCertificate(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request = request.WithContext(auth.WithClientCertificate(request.Context(), certificate.Leaf))
+	request.Header.Set("X-Forwarded-Proto", "https")
+	response = httptest.NewRecorder()
+	if err := peer.Proxy(owner.localID, response, request); err != nil {
+		t.Fatal(err)
+	}
+	want, _ := auth.ClientCertificateFingerprint(certificate.Leaf)
+	if response.Code != http.StatusNoContent || response.Header().Get("Test-Certificate") != want || response.Header().Get("Test-Secure") != "true" {
+		t.Fatal("native peer lost original certificate or scheme")
 	}
 }
 
@@ -313,7 +372,8 @@ func TestAvailableForwardingUsesAdvertisedCapacity(t *testing.T) {
 	if _, err := owner.Set(context.Background(), configured); err != nil {
 		t.Fatal(err)
 	}
-	owner.SetCapacityProvider(staticCapacityProvider{capacity: Capacity{Accepting: true, AvailableWorkers: 8, AvailableSandboxes: 2, UpdatedAt: time.Now().UTC()}})
+	https := network.HTTPSStatus{DesiredRevision: 12, AppliedRevision: 11, Ready: true, Error: "certificate publication pending"}
+	owner.SetCapacityProvider(staticCapacityProvider{capacity: Capacity{Accepting: true, AvailableWorkers: 8, AvailableSandboxes: 2, UpdatedAt: time.Now().UTC(), HTTPS: &https}})
 	if err := owner.Start(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		path, _ := request.Context().Value(forwardingPathKey{}).([]string)
 		if strings.Join(path, ",") != "nod-bbbbbbbbbb" {
@@ -345,6 +405,9 @@ func TestAvailableForwardingUsesAdvertisedCapacity(t *testing.T) {
 	statuses := peer.Statuses(context.Background())
 	if len(statuses) != 2 || !statuses[0].Reachable || statuses[0].Capacity == nil || statuses[0].Capacity.NodeID != "nod-aaaaaaaaaa" {
 		t.Fatalf("statuses=%#v", statuses)
+	}
+	if statuses[0].Capacity.HTTPS == nil || *statuses[0].Capacity.HTTPS != https {
+		t.Fatalf("HTTPS publication status was not preserved: %#v", statuses[0].Capacity.HTTPS)
 	}
 }
 

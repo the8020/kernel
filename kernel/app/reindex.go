@@ -32,6 +32,7 @@ type runtimeIndexer struct {
 	jobs           packages.JobRunner
 	services       *webservices.Index
 	runtime        targetedServiceReconciler
+	https          func(context.Context, bool) error
 	chainRevision  string
 	pending        map[string]bool
 	running        map[string]*serviceIndexRun
@@ -51,7 +52,7 @@ type serviceIndexRun struct {
 type indexPublicationError struct{ failures []error }
 
 func (e *indexPublicationError) Error() string {
-	return "service index updates were not applied: " + errors.Join(e.failures...).Error()
+	return "package index updates were not applied: " + errors.Join(e.failures...).Error()
 }
 
 func (e *indexPublicationError) Unwrap() []error { return e.failures }
@@ -182,6 +183,12 @@ refresh:
 		}
 		fragments, batchErr := i.runServiceIndex(ctx, scope, chain)
 		for _, selected := range scope.Packages {
+			if selected.PackageID == "the8020/https" && i.https != nil {
+				if err := i.https(ctx, selected.Active); err != nil {
+					fail(selected.PackageID, fmt.Errorf("publish HTTPS: %w", err))
+					continue
+				}
+			}
 			if batchErr != nil {
 				fail(selected.PackageID, batchErr)
 				continue

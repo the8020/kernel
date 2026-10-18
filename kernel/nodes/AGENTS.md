@@ -41,12 +41,13 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   HTTP/1.1, including service forwarding, capacity, exact Worker calls, logs,
   and terminal cleanup. Public node URLs keep their declared scheme. There is no
   plaintext or bearer-token fallback.
-- End-user `the8020-authorization` and system-scoped authentication cookies
-  survive every forwarding hop unchanged. Strip ordinary `Authorization` before
-  service routing, verify the current native peer certificate on every request,
-  then remove recipient TLS metadata so internal encryption does not change the
-  public request's HTTPS status. TLS protects streamed requests, responses and
-  WebSocket frames without buffering bodies or adding application replay.
+- End-user `the8020-authorization`, Basic `Authorization`, and system-scoped
+  authentication cookies survive every forwarding hop unchanged. Preserve the
+  original Host and public scheme. Verify the current native peer certificate on
+  every request, then remove recipient TLS metadata so internal encryption does
+  not change the public request's HTTPS status. TLS protects streamed requests,
+  responses and WebSocket frames without buffering bodies or adding application
+  replay.
 - Node forwarding preserves client encoding preferences and encoded response
   bytes/headers. Its owned HTTP transport disables automatic gzip negotiation
   and decompression, so forwarding adds no compressor or decoder between the
@@ -64,6 +65,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   and Worker limits/counts, service sandboxes and health, and available versus
   occupied execution slots. Capacity queries are bounded and happen for
   administration or spillover, never on successful local dispatch.
+- Capacity also carries the native HTTPS desired/applied revision and failure
+  snapshot. Node administration reuses this authenticated transport to show
+  publication lag and unreachable nodes; it creates no acknowledgement barrier.
 - Global service-allocation indexes are partitioned round-robin over sorted
   enabled node IDs. An unconfigured local node is the single-node default; an
   explicitly disabled local node owns no indexes.
@@ -75,6 +79,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   regenerates `the8020-internal-local-authentication` from private context and
   authenticated recipients restore it to context before removing the header.
   Public requests cannot promote leaked local tokens to remote credentials.
+- Forwarding regenerates `the8020-internal-client-certificate` from TLS/private
+  certificate evidence. Only the mutually authenticated recipient restores this
+  bounded DER value to private context and removes its header. Certificate
+  enrollment/account approval remains at the receiving shared service boundary.
 - Spillover excludes nodes already present in the forwarding path, queries
   remaining peers concurrently, ignores unreachable/non-accepting peers, and
   prefers the greatest advertised Worker then sandbox headroom.

@@ -309,4 +309,33 @@ if PATH=/nonexistent "$BASH" "$CASE_ROOT/entrypoint.sh" > "$CASE_ROOT/output" 2>
 fi
 grep -Fq 'curl is required for container startup' "$CASE_ROOT/output"
 
-echo 'Docker entrypoint checks passed: initial platform seeding, interrupted-seed recovery, retained instance runtime, fresh smoke, one-time account bootstrap, failed-bootstrap retries, HTTP readiness, and diagnostics.'
+# Group shutdown and the entrypoint can both signal the launcher during draining.
+prepare draining
+cat > "$TEST_ROOT/bin/kernel" <<'EOF'
+#!/usr/bin/env bash
+trap 'trap "" TERM; touch "$CASE_ROOT/stopping"; sleep 1; touch "$CASE_ROOT/stopped"; exit 0' TERM
+echo "$$" > "$CASE_ROOT/kernel.pid"
+while true; do sleep 0.05; done
+EOF
+printf '%s\n' 200 > "$CASE_ROOT/http-status"
+bash "$CASE_ROOT/entrypoint.sh" > "$CASE_ROOT/output" 2>&1 &
+entrypoint_pid=$!
+wait_for '80|20 is ready' "$CASE_ROOT/output"
+launcher=$(cat "$CASE_ROOT/instance/node/kernel/run/launcher.pid")
+kill -TERM "$entrypoint_pid"
+for _ in {1..200}; do
+  [[ ! -f "$CASE_ROOT/stopping" ]] || break
+  sleep 0.01
+done
+[[ -f "$CASE_ROOT/stopping" ]]
+kill -TERM "$launcher"
+wait "$entrypoint_pid" 2>/dev/null || true
+entrypoint_pid=""
+if [[ ! -f "$CASE_ROOT/stopped" ]]; then
+  kill -KILL "$(cat "$CASE_ROOT/kernel.pid")" 2>/dev/null || true
+  echo 'launcher returned before its draining kernel stopped' >&2
+  exit 1
+fi
+[[ ! -f "$CASE_ROOT/instance/node/kernel/run/launcher.pid" ]]
+
+echo 'Docker entrypoint checks passed: initial platform seeding, interrupted-seed recovery, retained instance runtime, fresh smoke, one-time account bootstrap, failed-bootstrap retries, HTTP readiness, diagnostics, and complete draining under repeated shutdown signals.'

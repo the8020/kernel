@@ -24,6 +24,8 @@ Parent DOX: [kernel/kernel/cbus DOX](../AGENTS.md).
   converted in the core adapter before typed handlers run.
 - Each command has one canonical visible name/path; aliases are not part of the
   protocol.
+- Package secure-input metadata may declare `file_option`; the shared CLI reads
+  that local file and sends only its contents in the secure map.
 - Unknown secure inputs and missing required secure inputs fail before dispatch.
   Unexpected errors become safe internal errors and are logged with request ID,
   never secure values.

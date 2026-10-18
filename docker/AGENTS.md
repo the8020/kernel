@@ -69,7 +69,7 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   to that log.
 - `launch.sh` owns the kernel child. An intentional update leaves this launcher
   and the outer entrypoint alive while the kernel stops, migrations run, and
-  the target starts; the paired instance and HTTPS proxy remain running.
+  the target starts; the paired instance remains running.
 - The instance bin directory includes kernel/admin/logd and one common runsc
   for services, jobs and development. Keep `.development/bin/` free of a second
   runsc; the image's factory bin payload seeds the instance installation.
