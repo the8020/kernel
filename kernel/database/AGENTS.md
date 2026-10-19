@@ -29,6 +29,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   share the native publication key and skip acquisition only when the native
   request already owns it; installed activation does not retain a schema
   transaction while awaiting package hooks.
+- PostgreSQL describes statements on each execution instead of caching prepared
+  result shapes across calls. This preserves parameter typing and permits schema
+  changes from any node without stale `SELECT *` plans or retries, at the cost
+  of a description round trip per parameterized execution/query.
 - Readiness distinguishes `UNAVAILABLE`, `CONNECTED`, `INITIALIZING`, `READY`,
   and `INITIALIZATION_FAILED`. Catalog failure blocks the service plane but
   never the command socket or raw SQL recovery path.
@@ -119,8 +123,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   outcome visibility, logical references, exact values, deadline-bound
   transaction acquisition and cleanup, application/kernel pool isolation,
   concurrent runtime read load, pool pressure, and configurable result bounds.
-- PostgreSQL JSON parameters and short conditional claims have an optional live
-  regression test. Set `THE8020_TEST_POSTGRES_LOCATION` and, if needed,
+- PostgreSQL JSON parameters, short conditional claims, and reads on warmed
+  connections after another pool changes the schema have optional live
+  regression tests. Schema-change coverage includes transaction commit. Set
+  `THE8020_TEST_POSTGRES_LOCATION` and, if needed,
   `THE8020_TEST_POSTGRES_USERNAME` to a disposable PostgreSQL database; the test
   creates and removes its own uniquely named table. SQLite tests also verify
   short lock waits and restoration of pooled connection settings.

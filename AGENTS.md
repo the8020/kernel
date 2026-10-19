@@ -678,9 +678,9 @@ below.
   the generic protocol, builds `kernel`, `admin`, the dedicated `logd`, and the
   common `runsc` through `build.sh`, initializes the selected instance layout
   when absent, atomically refreshes platform-owned
-  `node/kernel/runtime/definitions/`, read-only development helper scripts, and
-  materializes verified service and development images under
-  `node/kernel/runtime/images/`. Complete generic image-input digests make
+  `node/kernel/runtime/definitions/`, read-only development helpers and their
+  runtime SDK payload, and materializes verified service and development images
+  under `node/kernel/runtime/images/`. Complete generic image-input digests make
   unchanged installs fast; required OS packages install inside the isolated
   image build as defined by the runtime DOX. The default verification gate runs
   Go and generic runtime checks only. `--skip-runtime-host` prevents full-mode

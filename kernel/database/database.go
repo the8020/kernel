@@ -191,6 +191,8 @@ func New(config Config) *Manager {
 			return manager
 		}
 		connection.User, connection.Password = config.Username, config.Password
+		// Schema changes can be published by another node while pooled connections live.
+		connection.DefaultQueryExecMode = pgx.QueryExecModeDescribeExec
 		manager.db = stdlib.OpenDB(*connection)
 	default:
 		manager.openErr = fmt.Errorf("unsupported database backend %q", config.Backend)

@@ -104,7 +104,7 @@ func Attach(t testing.TB, manager *database.Manager, observe ...func(database.St
 		}
 		scope := fmt.Sprintf("schema-test:%d", sequence.Add(1))
 		defer manager.CloseScope(scope)
-		command := exec.CommandContext(ctx, deno, "run", "--quiet", "--node-modules-dir=none", "--import-map=deno.local.json", "--allow-read", "--allow-net="+server.Listener.Addr().String(), "internal/schema_bridge_test.ts", server.URL, manager.Backend(), scope)
+		command := exec.CommandContext(ctx, deno, "run", "--quiet", "--node-modules-dir=none", "--allow-read", "--allow-net="+server.Listener.Addr().String(), "internal/schema_bridge_test.ts", server.URL, manager.Backend(), scope)
 		command.Dir, command.Stdin = root, bytes.NewReader(encoded)
 		var stderr bytes.Buffer
 		command.Stderr = &stderr

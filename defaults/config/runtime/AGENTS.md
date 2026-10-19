@@ -90,6 +90,10 @@ Parent DOX: [kernel/defaults DOX](../../AGENTS.md).
   and extension, for example `/p/the8020/db/mod.ts`. Never add package-specific
   runtime mappings. Use native npm cache resolution without an image-local
   `node_modules` tree or application lockfile writes.
+- `development/deno.json` supplies the sandbox Deno workspace, including all
+  package configs and the same platform aliases as the Worker runtime. The
+  development-assets installer reuses the production source stager and generated
+  protocol for the read-only SDK.
 - Service and job supervisors may run only the pinned Deno binary for module
   validation; nested application Workers do not inherit subprocess permission.
 - The node-private runtime callback directory is bind-mounted at `/run/the8020`;

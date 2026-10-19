@@ -16,9 +16,9 @@ Parent DOX: [database DOX](../AGENTS.md).
 
 - Run the normal sibling `db/internal/schema.ts` source, with an isolated
   loopback callback and execution-scoped native transactions.
-- Require Deno on PATH and the sibling db source checkout; skip these
-  cross-language tests explicitly when either prerequisite is absent. Never
-  extract or patch implementation source.
+- Require Deno on PATH and the sibling db source checkout in the shared Deno
+  workspace; skip these cross-language tests explicitly when either prerequisite
+  is absent. Never extract or patch implementation source.
 - Keep tests sequential and close the HTTP listener, child process, and database
   scopes.
 - The optional successful-statement observer qualifies metadata-only preview,

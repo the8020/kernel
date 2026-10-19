@@ -171,6 +171,13 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   full-access permissions. Installers register `/usr/local/bin` symlinks so
   browser and SSH shells can invoke both tools immediately even when their PATH
   overrides omit root's native user-binary directory.
+- Installation stages the service runtime sources and generated protocol in
+  `scripts/runtime`. Development mounts that payload read-only at `/opt/runtime`
+  and `scripts/deno.json` at `/workspace/deno.json`, including for retained
+  system roots on their next start. The workspace includes `packages/*/*` and
+  supplies platform imports; member configs retain package dependencies and
+  tasks. Ordinary Deno checks use the real SDK without a Worker bridge or
+  import-map overrides.
 - The activated `packages/the8020/dev-skills` package is mounted read-only at
   `/workspace/skills/builtin`; its `workspace.md` also supplies
   `/workspace/AGENTS.md` and `/workspace/CLAUDE.md`. Skills update through
@@ -267,6 +274,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Unit tests cover identity collisions, user isolation, lifecycle and idle
   admission, independent shutdown, bounded diagnostics, authorized-key
   confinement, reset boundaries, mount policy, and helper guidance.
+- `TestNativeDevelopmentDeno` verifies workspace and package Deno checks,
+  cross-package imports, SDK type-error detection, and read-only SDK/config
+  mounts through the real sandbox. It uses `THE8020_DEVELOPMENT_E2E=1`.
 - `TestSandboxSQLRequiresItsOwnersToken` covers SQL ingress authentication,
   foreign-owner rejection, and independence from the activation gateway. The
   native SQL owner's tests cover the database and shipped CLI path.
@@ -285,7 +295,7 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
   ```sh
   THE8020_JOB_DEFAULT_MAXIMUM_PARALLEL_WORKERS=8 \
-  deno run -A --import-map=deno.local.json browser_e2e.ts \
+  deno run -A browser_e2e.ts \
     --source-root=/workspace/8020/kernel \
     --package-workspace=/workspace/8020 \
     --runtime-root=/workspace/8020/kernel/.development/named-terminal-test \

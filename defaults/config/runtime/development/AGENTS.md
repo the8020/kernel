@@ -17,6 +17,11 @@ Parent DOX: [kernel/defaults/config/runtime DOX](../AGENTS.md).
 
 # Local Contracts
 
+- `deno.json` is installed separately at `/workspace/deno.json` as a read-only
+  workspace config. It includes `packages/*/*`, supplies platform aliases to the
+  mounted runtime SDK, and lets packages own their dependencies and tasks. Deno
+  maintains its ordinary shared lockfile in the writable workspace.
+
 - The image contains Git, pinned Deno, Bash, common Unix tools, `procps` (including
   `ps` for developer tools such as Codex), `clear`, the
   common `ncurses-base` terminal definitions including `xterm` and

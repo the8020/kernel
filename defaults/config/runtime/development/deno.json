@@ -1,0 +1,24 @@
+{
+  "workspace": [
+    "./packages/*/*"
+  ],
+  "nodeModulesDir": "none",
+  "compilerOptions": {
+    "strict": true,
+    "noImplicitOverride": true,
+    "noUncheckedIndexedAccess": true,
+    "useUnknownInCatchVariables": true,
+    "lib": [
+      "deno.ns",
+      "dom",
+      "dom.iterable",
+      "esnext"
+    ]
+  },
+  "imports": {
+    "@the8020/context": "file:///opt/runtime/context/mod.ts",
+    "@the8020/kernel": "file:///opt/runtime/kernel/mod.ts",
+    "@the8020/protocol": "file:///opt/runtime/protocol.ts",
+    "/p/": "file:///workspace/packages/"
+  }
+}

@@ -8,12 +8,14 @@ import (
 	"strings"
 )
 
-// DefaultMountProfile returns the package, agent-guidance, helper, and temporary mount
+// DefaultMountProfile returns the package, runtime, guidance, helper, and temporary mount
 // profile. Tests and embedders may provide a profile directly.
 func DefaultMountProfile() []MountDefinition {
 	return []MountDefinition{
 		{ID: "packages", Target: "/workspace/packages", Behavior: MountSandboxSource, Writable: true},
 		{ID: "scripts", Source: "scripts", Target: "/workspace/scripts", Behavior: MountReadOnly, Executable: true},
+		{ID: "runtime", Source: "scripts/runtime", Target: "/opt/runtime", Behavior: MountReadOnly},
+		{ID: "deno-config", Source: "scripts/deno.json", Target: "/workspace/deno.json", Behavior: MountReadOnly},
 		{ID: "builtin-skills", Source: "packages/the8020/dev-skills", Target: "/workspace/skills/builtin", Behavior: MountReadOnly},
 		{ID: "custom-skills", Source: "users/<user-id>/dev-sandbox/skills", Target: "/workspace/skills/custom", Behavior: MountPersistent, Writable: true},
 		{ID: "agents", Source: "packages/the8020/dev-skills/workspace.md", Target: "/workspace/AGENTS.md", Behavior: MountReadOnly},
@@ -106,7 +108,7 @@ func safeSandboxMountTarget(value string) bool {
 			return false
 		}
 	}
-	return value == "/tmp" || strings.HasPrefix(value, "/tmp/") || value == "/workspace" || strings.HasPrefix(value, "/workspace/")
+	return value == "/opt/runtime" || value == "/tmp" || strings.HasPrefix(value, "/tmp/") || value == "/workspace" || strings.HasPrefix(value, "/workspace/")
 }
 
 func validPersistentSource(value string) bool {
