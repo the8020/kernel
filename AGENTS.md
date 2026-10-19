@@ -582,7 +582,8 @@ below.
 - Root-owned paths include `.vscode/`, `go.mod`, `go.sum`, `.go-version`,
   `.gitignore`, `install.sh`, `run.sh`, `release-tag.sh`, release resolver
   tests, `Dockerfile`, `.dockerignore`, `docker-entrypoint_test.sh`,
-  `install-dependencies_test.sh`, `install-development-assets.sh`, and
+  `install-dependencies_test.sh`, `check-cpu_test.sh`,
+  `install-development-assets.sh`, and
   root-level project documentation.
 
 # 80|20
@@ -663,7 +664,10 @@ below.
   existing-login-user detection, one-time bootstrap, restart bypass after user
   removal, and failed-creation retry with isolated process doubles.
 - `bash install-dependencies_test.sh` verifies automatic installation of the
-  missing bzip2 prerequisite and the missing-package-manager diagnostic.
+  missing bzip2 prerequisite, the missing-package-manager diagnostic, and the
+  x86-64-v2 refusal outside Docker builds.
+- `bash check-cpu_test.sh` verifies the x86-64-v2 refusal, the x86-64-v3
+  warning, other architectures, and the `THE8020_CPU_CHECK=skip` override.
 
 - `.vscode/` configures the Deno language server and linting for
   `defaults/config/runtime/deno/`, recommends the Go/Deno/TOML/shell development

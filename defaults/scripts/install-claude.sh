@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Claude Code is a Bun binary; without AVX2 it spins inside the sandbox
+# instead of failing.
+if [[ $(uname -m) == x86_64 ]] && ! grep -qw avx2 /proc/cpuinfo; then
+  echo "Claude Code requires an x86-64-v3 CPU (AVX2); ask the operator to set the VM CPU type to host or x86-64-v3" >&2
+  exit 1
+fi
+
 "$(dirname -- "${BASH_SOURCE[0]}")/setup-agent-skills.sh"
 
 printf '\nInstalling the latest Claude Code...\n\n'

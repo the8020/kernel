@@ -13,6 +13,7 @@ readonly RUNTIME_ROOT="$INSTANCE_ROOT/node/kernel/runtime"
 readonly DENO="$INSTANCE_ROOT/node/kernel/runtime/images/rootless/rootfs/usr/bin/deno"
 readonly BOOTSTRAP_DONE="$INSTANCE_ROOT/node/docker/initial-user.done"
 readonly BOOTSTRAP_PENDING="$INSTANCE_ROOT/node/docker/initial-user.pending"
+readonly CPU_CHECK="$PREFIX/bin/the8020-check-cpu"
 
 adopt=false
 if [[ $# == 1 && "$1" == --adopt ]]; then
@@ -35,6 +36,8 @@ if [[ ! -L "$INSTANCE_ROOT/node/kernel/current" && ! -x "$RUNTIME_BIN/runsc" ]];
   echo "the image's bundled sandbox runtime is missing" >&2
   exit 1
 fi
+# The image may be built elsewhere; only the host running it can be checked.
+"$CPU_CHECK" || exit 1
 
 # Seed once. The instance owns subsequent releases, including container restarts.
 if [[ ! -L "$INSTANCE_ROOT/node/kernel/current" ]]; then

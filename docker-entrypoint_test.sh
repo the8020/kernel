@@ -61,6 +61,13 @@ if [[ "$CASE_MODE" == failed ]]; then
 fi
 printf '%s' "$status"
 EOF
+cat > "$TEST_ROOT/bin/cpu-check" <<'EOF'
+#!/usr/bin/env bash
+if [[ -f "$CASE_ROOT/unsupported-cpu" ]]; then
+  echo 'the host CPU does not provide x86-64-v2' >&2
+  exit 1
+fi
+EOF
 chmod +x "$TEST_ROOT/bin/"*
 cp "$TEST_ROOT/bin/kernel" "$TEST_ROOT/bin/logd"
 export PATH="$TEST_ROOT/bin:$PATH" THE8020_NETWORK_MAIN_PORT=18080
@@ -99,6 +106,7 @@ prepare() {
       readonly\ RUNTIME_BIN=*) printf 'readonly RUNTIME_BIN=%q\n' "$CASE_ROOT/runtime-bin" ;;
       readonly\ RUNTIME_STATE=*) printf 'readonly RUNTIME_STATE=%q\n' "$CASE_ROOT/runtime-state" ;;
       readonly\ PORTABLE_SMOKE=*) printf 'readonly PORTABLE_SMOKE=%q\n' "$TEST_ROOT/bin/smoke" ;;
+      readonly\ CPU_CHECK=*) printf 'readonly CPU_CHECK=%q\n' "$TEST_ROOT/bin/cpu-check" ;;
       *) printf '%s\n' "$line" ;;
     esac
   done < "$SOURCE_ROOT/docker/rootfs/usr/local/bin/docker-entrypoint.sh" > "$CASE_ROOT/entrypoint.sh"
@@ -301,6 +309,15 @@ fi
 grep -Fq 'kernel update scripts are missing' "$CASE_ROOT/output"
 grep -Fxq 'old definitions' "$CASE_ROOT/instance/node/kernel/runtime/definitions/mod.ts"
 [[ ! -e "$CASE_ROOT/instance/node/kernel/runtime/.image-runtime-state" ]]
+
+prepare unsupported-cpu
+touch "$CASE_ROOT/unsupported-cpu"
+if bash "$CASE_ROOT/entrypoint.sh" > "$CASE_ROOT/output" 2>&1; then
+  echo 'entrypoint started on a host below x86-64-v2' >&2
+  exit 1
+fi
+grep -Fq 'does not provide x86-64-v2' "$CASE_ROOT/output"
+[[ ! -e "$CASE_ROOT/instance/node/kernel/current" && ! -e "$CASE_ROOT/kernel.pid" ]]
 
 prepare missing-curl
 if PATH=/nonexistent "$BASH" "$CASE_ROOT/entrypoint.sh" > "$CASE_ROOT/output" 2>&1; then

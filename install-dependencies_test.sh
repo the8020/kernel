@@ -27,4 +27,20 @@ if [[ $EUID == 0 ]]; then
 fi
 [[ "$result" == 1 ]]
 grep -Fq 'bzip2 is required' "$FIXTURE_ROOT/output"
+
+# A host below x86-64-v2 is refused before any download, except while building
+# a Docker image, whose entrypoint checks the host that runs it.
+printf 'flags\t\t: fpu sse sse2 cx16 lahf_lm\n' > "$FIXTURE_ROOT/cpuinfo"
+for outer in false true; do
+  result=0
+  THE8020_CPU_ARCHITECTURE=x86_64 THE8020_CPUINFO="$FIXTURE_ROOT/cpuinfo" THE8020_OUTER_CONTAINER_BUILD=$outer \
+    PATH="$FIXTURE_ROOT/tools" /bin/bash "$SOURCE_ROOT/install.sh" \
+    --instance-root="$FIXTURE_ROOT/instance" --skip-runtime-host > "$FIXTURE_ROOT/output" 2>&1 || result=$?
+  [[ "$result" == 1 ]]
+  if [[ "$outer" == false ]]; then
+    grep -Fq 'does not provide x86-64-v2' "$FIXTURE_ROOT/output"
+  else
+    ! grep -Fq 'x86-64-v2' "$FIXTURE_ROOT/output"
+  fi
+done
 echo 'Installer dependency checks passed'

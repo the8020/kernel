@@ -40,6 +40,11 @@ if ! git --version >/dev/null 2>&1; then
   echo "git is installed but cannot be executed" >&2
   exit 1
 fi
+# A Docker build runs on the build host; the container entrypoint checks the
+# host that runs the image.
+if [[ ${THE8020_OUTER_CONTAINER_BUILD:-false} != true ]]; then
+  "$BASH" "$SOURCE_ROOT/docker/rootfs/usr/local/bin/the8020-check-cpu" || exit 1
+fi
 if [[ ! -d "$INSTANCE_ROOT" ]]; then
   echo "instance root does not exist: $INSTANCE_ROOT" >&2
   exit 1

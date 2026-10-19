@@ -98,6 +98,11 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 - Runtime containers need the documented unconfined outer seccomp profile for
   nested rootless gVisor. Docker builds use the existing enclosing build
   sandbox.
+- x86_64 hosts need x86-64-v2; without it gVisor sandboxes can spin instead of
+  failing. `the8020-check-cpu` refuses such hosts at every container start and
+  in `install.sh` (skipped inside Docker builds, which run on the build host),
+  and reports missing x86-64-v3 (AVX2), which Bun-based tools such as Claude
+  Code need. `THE8020_CPU_CHECK=skip` overrides the refusal.
 
 # Work Guidance
 
