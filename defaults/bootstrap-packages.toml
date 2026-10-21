@@ -20,12 +20,12 @@ version = "0.7.4"
 [[packages]]
 id = "the8020/auth"
 source = "https://github.com/the8020/auth.git"
-version = "0.7.4"
+version = "0.8.0"
 
 [[packages]]
 id = "the8020/packages"
 source = "https://github.com/the8020/packages.git"
-version = "0.9.1"
+version = "0.9.2"
 
 [[packages]]
 id = "the8020/secrets"
@@ -35,42 +35,42 @@ version = "0.9.1"
 [[packages]]
 id = "the8020/jobs"
 source = "https://github.com/the8020/jobs.git"
-version = "0.9.3"
+version = "0.9.4"
 
 [[packages]]
 id = "the8020/users"
 source = "https://github.com/the8020/users.git"
-version = "0.9.2"
+version = "0.9.3"
 
 [[packages]]
 id = "the8020/uui"
 source = "https://github.com/the8020/uui.git"
-version = "0.9.5"
+version = "0.9.6"
 
 [[packages]]
 id = "the8020/https"
 source = "https://github.com/the8020/https.git"
-version = "0.9.2"
+version = "0.9.3"
 
 [[packages]]
 id = "the8020/admin-core"
 source = "https://github.com/the8020/admin-core.git"
-version = "0.8.5"
+version = "0.8.6"
 
 [[packages]]
 id = "the8020/admin-db"
 source = "https://github.com/the8020/admin-db.git"
-version = "0.7.4"
+version = "0.7.5"
 
 [[packages]]
 id = "the8020/deployments"
 source = "https://github.com/the8020/deployments.git"
-version = "0.9.2"
+version = "0.9.3"
 
 [[packages]]
 id = "the8020/dev-core"
 source = "https://github.com/the8020/dev-core.git"
-version = "0.9.2"
+version = "0.9.3"
 
 [[packages]]
 id = "the8020/dev-skills"
@@ -80,4 +80,4 @@ version = "0.9.1"
 [[packages]]
 id = "the8020/demo"
 source = "https://github.com/the8020/demo.git"
-version = "0.8.2"
+version = "0.8.3"
