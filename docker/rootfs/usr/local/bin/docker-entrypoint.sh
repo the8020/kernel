@@ -187,9 +187,13 @@ if [[ ! -f "$BOOTSTRAP_DONE" ]]; then
       echo "created initial 80|20 user: $initial_username" >&2
     fi
     echo "startup: assigning administrator permissions to $initial_username" >&2
-    "$ADMIN" --root "$INSTANCE_ROOT" auth.roles.create '**' --if-missing >/dev/null
-    "$ADMIN" --root "$INSTANCE_ROOT" auth.roles.grant '**' '*' '*' >/dev/null
-    "$ADMIN" --root "$INSTANCE_ROOT" auth.users.assign "$initial_username" '**' >/dev/null
+    # The users package declares the administrator role; packages released
+    # before it fall back to the bootstrap role `**`.
+    if ! "$ADMIN" --root "$INSTANCE_ROOT" auth.users.assign "$initial_username" the8020.users.administrator >/dev/null 2>&1; then
+      "$ADMIN" --root "$INSTANCE_ROOT" auth.roles.create '**' --if-missing >/dev/null
+      "$ADMIN" --root "$INSTANCE_ROOT" auth.roles.grant '**' '*' '*' >/dev/null
+      "$ADMIN" --root "$INSTANCE_ROOT" auth.users.assign "$initial_username" '**' >/dev/null
+    fi
   else
     echo "initial user bootstrap skipped because an enabled login user already exists" >&2
   fi

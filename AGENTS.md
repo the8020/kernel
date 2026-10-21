@@ -126,9 +126,11 @@ Default section order:
   and owns no application library aliases, bundles, type checking, or document
   generation during startup or validation.
 
-- Fresh Docker bootstrap grants the initial user role `**` with permission
-  `"*" = "*"` using `auth.roles.create --if-missing`, `auth.roles.grant`, and
-  `auth.users.assign`. No authorization policy enters Go or the supervisor. The
+- Fresh Docker bootstrap assigns the initial user the managed role
+  `the8020.users.administrator` (`"*" = "*"`, declared by `the8020/users`), and
+  falls back to role `**` with the same permission through
+  `auth.roles.create --if-missing`, `auth.roles.grant`, and `auth.users.assign`
+  when the installed users package predates that role. No authorization policy enters Go or the supervisor. The
   private `node/docker/initial-user.pending` marker retains the target username
   through interrupted account/grant steps; completion removes it and writes
   `initial-user.done`. Retries preserve an already-created account and repeat

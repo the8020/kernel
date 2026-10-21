@@ -23,11 +23,13 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   All runtime links, bootstrap markers, and administrative calls follow that
   root so multiple instances can reuse the same container startup script.
 
-- Fresh Docker bootstrap grants the initial user role `**` with permission
-  `"*" = "*"` using `auth.roles.create --if-missing`, `auth.roles.grant`, and
-  `auth.users.assign`. No authorization policy enters Go or the supervisor. The
-  private `node/docker/initial-user.pending` marker retains the target username
-  through interrupted account/grant steps; completion removes it and writes
+- Fresh Docker bootstrap assigns the initial user the users package's managed
+  role `the8020.users.administrator`. When that assignment fails (users releases
+  before the role), it falls back to role `**` with permission `"*" = "*"` using
+  `auth.roles.create --if-missing`, `auth.roles.grant`, and `auth.users.assign`.
+  No authorization policy enters Go or the supervisor. The private
+  `node/docker/initial-user.pending` marker retains the target username through
+  interrupted account/grant steps; completion removes it and writes
   `initial-user.done`. Retries preserve an already-created account and repeat
   idempotent role grants. Existing completed volumes are not regranted.
 
