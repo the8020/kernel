@@ -20,7 +20,7 @@ version = "0.7.5"
 [[packages]]
 id = "the8020/auth"
 source = "https://github.com/the8020/auth.git"
-version = "0.8.1"
+version = "0.8.2"
 
 [[packages]]
 id = "the8020/packages"
@@ -45,7 +45,7 @@ version = "0.9.4"
 [[packages]]
 id = "the8020/uui"
 source = "https://github.com/the8020/uui.git"
-version = "0.9.7"
+version = "0.9.9"
 
 [[packages]]
 id = "the8020/https"
