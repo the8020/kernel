@@ -80,8 +80,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   acquire local package records automatically when no desired record exists.
 - `DeletePackage` rejects uncommitted work and unsafe package/namespace paths,
   stages installed source in the existing `.previous` activation backup, and
-  removes that backup after publication. Uninstalled desired packages can also
-  be deleted. Retained activation history and physical table data are preserved;
+  removes that backup after publication. Uninstalled desired packages, including
+  empty mount placeholders, can also be deleted using the same safe placeholder
+  cleanup as synchronization. Nonempty uninitialized/corrupt source still blocks
+  deletion. Retained activation history and physical table data are preserved;
   reinstalling a retired package needs no manual index edit.
 - Rollback restores previous ready package records before the schema evaluator
   rereads their still-active source.
@@ -208,7 +210,7 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   validates it before returning. `absent` means no package directory; `empty`
   means an empty uninstalled mount placeholder. Nonempty uninitialized source,
   invalid Git metadata and missing initial commits retain distinct diagnostic
-  statuses; filesystem/permission errors are never absence. Mutation guards
+  statuses; filesystem/permission errors are never absence. Git mutation guards
   still require an initialized repository.
 - Successful synchronization preparation immediately registers abort cleanup,
   including failures reading the schema outcome before source publication.
@@ -251,9 +253,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   validation before mutation, schema failures, and ordered retries.
 - Declaration regressions include documentation-only and documented TOML
   folders, candidate activation validation, and live handler reindexing.
-- Deletion regressions cover dirty-source rejection, namespace containment,
-  interrupted publication/recovery, removed programs/handlers, cross-node
-  observation after source removal, recreation, and source-only registration.
+- Deletion regressions cover absent/empty uninstalled source, nonempty/corrupt
+  and dirty-source rejection, namespace containment, interrupted
+  publication/recovery, removed programs/handlers, cross-node observation after
+  source removal, recreation, and source-only registration.
 - Hook regressions distinguish installed bootstrap sources without extra mounts
   from staged candidates requiring read-only overrides.
 

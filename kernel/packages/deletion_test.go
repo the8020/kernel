@@ -141,7 +141,7 @@ func TestRemovalRollbackRestoresReadySourceBeforeSchemaReads(t *testing.T) {
 func TestDeleteUninstalledPackageAndRejectNamespaceSymlink(t *testing.T) {
 	root, store, db := activationStore(t)
 	ctx := context.Background()
-	for _, namespace := range []string{"missing", "escape"} {
+	for _, namespace := range []string{"missing", "empty", "nonempty", "corrupt", "escape"} {
 		if _, err := store.SetPackageIndex(ctx, PackageIndex{Author: namespace, Repository: "example", Local: true}); err != nil {
 			t.Fatal(err)
 		}
@@ -166,8 +166,36 @@ func TestDeleteUninstalledPackageAndRejectNamespaceSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 	store.SetSchemaDeployment(coordinator)
-	if err := store.DeletePackage(ctx, "missing/example"); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "packages", "empty", "example"), 0o755); err != nil {
 		t.Fatal(err)
+	}
+	for _, namespace := range []string{"nonempty", "corrupt"} {
+		path := filepath.Join(root, "packages", namespace, "example")
+		writeFile(t, filepath.Join(path, "keep"), "keep this work")
+		if namespace == "corrupt" {
+			writeFile(t, filepath.Join(path, ".git"), "invalid metadata")
+		}
+		if err := store.DeletePackage(ctx, namespace+"/example"); err == nil {
+			t.Fatalf("deleted %s source", namespace)
+		}
+		if data, err := os.ReadFile(filepath.Join(path, "keep")); err != nil || string(data) != "keep this work" {
+			t.Fatalf("lost %s source: %q %v", namespace, data, err)
+		}
+	}
+	if len(trace) != 0 {
+		t.Fatalf("unsafe deletion entered activation: %v", trace)
+	}
+	for _, namespace := range []string{"missing", "empty"} {
+		packageID := namespace + "/example"
+		if err := store.DeletePackage(ctx, packageID); err != nil {
+			t.Fatalf("delete %s: %v", packageID, err)
+		}
+		if _, indexed, err := store.index.Get(ctx, packageID); err != nil || indexed {
+			t.Fatalf("package remains indexed: %s %v", packageID, err)
+		}
+		if _, err := os.Lstat(filepath.Join(root, "packages", namespace, "example")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("uninstalled source remains: %s %v", packageID, err)
+		}
 	}
 }
 

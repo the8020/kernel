@@ -28,6 +28,15 @@ func (s *Store) DeletePackage(ctx context.Context, packageID string) error {
 		return err
 	}
 	if exists {
+		removed, removeErr := removeEmptyPackagePlaceholder(path)
+		if removeErr != nil {
+			return removeErr
+		}
+		if removed {
+			exists = false
+		}
+	}
+	if exists {
 		if _, err := s.cleanRepositoryHead(ctx, path); err != nil {
 			return err
 		}
