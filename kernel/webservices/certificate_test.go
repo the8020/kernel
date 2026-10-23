@@ -1,10 +1,10 @@
 package webservices
 
 import (
-	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"errors"
+	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"the8020/kernel/auth"
-	"the8020/kernel/execution"
 )
 
 func TestCertificateAuthenticationUsesSharedBoundaryOnEveryRequest(t *testing.T) {
@@ -25,14 +24,6 @@ func TestCertificateAuthenticationUsesSharedBoundaryOnEveryRequest(t *testing.T)
 	m.authenticator = "/p/the8020/users/mod.ts"
 	certificate := &x509.Certificate{Raw: []byte("client certificate"), NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour)}
 	fingerprint, _ := auth.ClientCertificateFingerprint(certificate)
-	calls, enrolled := 0, true
-	m.authenticateCertificate = func(_ context.Context, got string) (execution.User, error) {
-		calls++
-		if !enrolled || got != fingerprint {
-			return execution.User{}, errors.New("denied")
-		}
-		return execution.UserForUsername("alice")
-	}
 	if _, err := m.Reconcile(t.Context(), "the8020/demo/protected"); err != nil {
 		t.Fatal(err)
 	}
@@ -44,24 +35,28 @@ func TestCertificateAuthenticationUsesSharedBoundaryOnEveryRequest(t *testing.T)
 	}
 	accepted := httptest.NewRecorder()
 	m.ServeHTTP(accepted, request())
-	if accepted.Code != http.StatusOK || calls != 1 {
-		t.Fatalf("certificate admission: %d, calls=%d", accepted.Code, calls)
+	if accepted.Code != http.StatusOK {
+		t.Fatalf("certificate admission: %d", accepted.Code)
 	}
 	forwarded := <-pools.dispatched
-	if forwarded.header.Get("the8020-internal-user-id") != "user:alice" {
-		t.Fatal("certificate principal lost")
+	var setup authenticationSetup
+	encoded, err := base64.StdEncoding.DecodeString(forwarded.header.Get("the8020-internal-authentication"))
+	if err != nil || json.Unmarshal(encoded, &setup) != nil || setup.Approved || setup.Principal != "" || setup.Input.(map[string]any)["fingerprint"] != fingerprint || setup.Module != m.authenticator {
+		t.Fatal("certificate must reach target hook without an approved identity")
 	}
-	enrolled = false
-	denied := httptest.NewRecorder()
-	m.ServeHTTP(denied, request())
-	if denied.Code != http.StatusUnauthorized || calls != 2 {
-		t.Fatal("removed certificate reused approval or fell back to cookie")
+	// Every request supplies fresh evidence; no native approval is reused.
+	for i := 0; i < 2; i++ {
+		response := httptest.NewRecorder()
+		m.ServeHTTP(response, request())
+		if response.Code != http.StatusOK || (<-pools.dispatched).header.Get("the8020-internal-authentication") != forwarded.header.Get("the8020-internal-authentication") {
+			t.Fatal("certificate evidence changed")
+		}
 	}
 	explicit := request()
 	explicit.Header.Set(auth.TokenHeader, "Bearer valid-jwt")
 	response := httptest.NewRecorder()
 	m.ServeHTTP(response, explicit)
-	if response.Code != http.StatusOK || calls != 2 {
+	if response.Code != http.StatusOK {
 		t.Fatal("explicit token did not take precedence")
 	}
 	<-pools.dispatched
@@ -70,14 +65,14 @@ func TestCertificateAuthenticationUsesSharedBoundaryOnEveryRequest(t *testing.T)
 		explicit.Header.Set("Authorization", authorization)
 		response = httptest.NewRecorder()
 		m.ServeHTTP(response, explicit)
-		if response.Code != http.StatusUnauthorized || calls != 2 {
+		if response.Code != http.StatusUnauthorized {
 			t.Fatal("malformed explicit credentials fell back to certificate or cookie")
 		}
 	}
 	certificate.NotAfter = time.Now().Add(-time.Hour)
 	response = httptest.NewRecorder()
 	m.ServeHTTP(response, request())
-	if response.Code != http.StatusUnauthorized || calls != 2 {
+	if response.Code != http.StatusUnauthorized {
 		t.Fatal("expired certificate reached users or fell back to cookie")
 	}
 	forged := request()
@@ -87,7 +82,7 @@ func TestCertificateAuthenticationUsesSharedBoundaryOnEveryRequest(t *testing.T)
 	forged.Header.Set("the8020-internal-client-certificate", "forged")
 	response = httptest.NewRecorder()
 	m.ServeHTTP(response, forged)
-	if response.Code != http.StatusUnauthorized || calls != 2 {
+	if response.Code != http.StatusUnauthorized {
 		t.Fatal("public header authenticated")
 	}
 }

@@ -66,6 +66,7 @@ export function kernelCallbackRequest(
           ...identity,
         },
       };
+    case "execution.authenticate":
     case "execution.completePersistent":
     case "execution.retainPersistent":
       throw new Error("persistent completion belongs to the local supervisor");

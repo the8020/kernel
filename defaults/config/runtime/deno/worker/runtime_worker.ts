@@ -382,6 +382,7 @@ export class RuntimeWorker {
           payload.operation !== "database.transaction.commit" &&
           payload.operation !== "database.transaction.rollback" &&
           payload.operation !== "worker.invoke" &&
+          payload.operation !== "execution.authenticate" &&
           payload.operation !== "execution.retainPersistent" &&
           payload.operation !== "execution.completePersistent") ||
         payload.arguments === null || typeof payload.arguments !== "object"

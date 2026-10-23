@@ -132,6 +132,12 @@ func (m *Manager) Start(ctx context.Context, sandboxID string, request superviso
 	}
 	worker, err := m.control.StartWorker(ctx, inspection.Spec, request)
 	if err != nil {
+		if !supervisor.IsRequestRejected(err) {
+			// A lost startup reply can leave a live Worker without an owner.
+			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			err = errors.Join(err, m.control.StopWorker(cleanup, inspection.Spec, request.Metadata.WorkerID, true))
+			cancel()
+		}
 		release(nil)
 		return Record{}, err
 	}

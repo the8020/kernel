@@ -83,6 +83,14 @@ func TestJWTGateRejectsBeforeColdExecutionAndUsesHeaderPrecedence(t *testing.T) 
 				}
 			}
 			header := "Bearer " + valid
+			authenticator := manager.authenticator
+			manager.authenticator = ""
+			unavailable := httptest.NewRecorder()
+			manager.ServeHTTP(unavailable, request("", &header))
+			if unavailable.Code != http.StatusServiceUnavailable || unavailable.Header().Get("Cache-Control") != "no-store" || unavailable.Header().Get("WWW-Authenticate") != "" {
+				t.Fatal("missing token policy must be unavailable without a cached challenge")
+			}
+			manager.authenticator = authenticator
 			response := httptest.NewRecorder()
 			manager.ServeHTTP(response, request("invalid", &header))
 			if response.Code != http.StatusOK {
@@ -102,7 +110,7 @@ func TestJWTGateRejectsBeforeColdExecutionAndUsesHeaderPrecedence(t *testing.T) 
 				t.Fatal(err)
 			}
 			var metadata authenticationSetup
-			if err := json.Unmarshal(encodedMetadata, &metadata); err != nil || metadata.Claims["session"].(map[string]any)["handle"] != "next-format" {
+			if err := json.Unmarshal(encodedMetadata, &metadata); err != nil || metadata.Input.(map[string]any)["claims"].(map[string]any)["session"].(map[string]any)["handle"] != "next-format" {
 				t.Fatalf("opaque session claims lost before package authentication: %v", err)
 			}
 			if !websocket {

@@ -1232,8 +1232,9 @@ Deno.test("supervisor converts only trusted internal authentication metadata", a
         "the8020-internal-authentication": btoa(
           JSON.stringify({
             module:
-              "data:application/typescript,export function authenticate() {}",
-            claims: { sub: "user:admin" },
+              "data:application/typescript,export function authenticate() { return {userId: 'user:admin', username: 'admin'}; }",
+            input: { sub: "user:admin" },
+            principal: "user:admin",
             unauthenticated: { action: "reject", status: 401 },
           }),
         ),
@@ -2043,6 +2044,154 @@ Deno.test("service HTTP and WebSocket ingress validate contexts and preserve log
         true,
       );
     }
+  } finally {
+    await supervisor.drain();
+  }
+});
+
+Deno.test("target Worker policy isolates credentials, native principals, and persistent bindings", async () => {
+  const calls: Array<{ command: unknown; username: string | undefined }> = [];
+  const sink = new TestLogSink();
+  let cancelStarted!: () => void;
+  const cancelling = new Promise<void>((resolve) => cancelStarted = resolve);
+  const supervisor = new Supervisor({
+    nodeId: "nod-0000000001",
+    sandboxId: "sbx-0000000002",
+    workloadType: "service",
+    token,
+    supervisorVersion: "test",
+    logSink: sink,
+    kernelCall: async (call, signal) => {
+      if (call.operation === "admin.execute") {
+        calls.push({
+          command: call.arguments.commandId,
+          username: call.user?.username,
+        });
+        return { success: true, result: {} };
+      }
+      if (
+        call.operation === "database.execute" &&
+        JSON.stringify(call.arguments).includes("cancelled")
+      ) {
+        cancelStarted();
+        await new Promise((_resolve, reject) =>
+          signal!.addEventListener(
+            "abort",
+            () => reject(new Error("cancelled")),
+            { once: true },
+          )
+        );
+      }
+      return { columns: [], rows: [] };
+    },
+  });
+  const definition = metadata("wrk-0000000002");
+  definition.entrypoint =
+    new URL("../worker/testdata/authentication_scope.ts", import.meta.url).href;
+  definition.service = {
+    serviceId: "service-a",
+    generation: 1,
+    canonicalBasePath: "/",
+    executionMode: "persistent",
+  };
+  const worker = await supervisor.startWorker({
+    metadata: definition,
+    permissions: {
+      read: [new URL("../worker/testdata", import.meta.url).pathname],
+    },
+  });
+  supervisor.configureService("service-a", [worker.metadata.workerId], 8);
+  const request = (
+    username: string,
+    execution = newId("pex"),
+    followup = false,
+    input = {},
+    signal?: AbortSignal,
+  ) =>
+    supervisor.handler(
+      new Request("http://runtime/v1/services/service-a/dispatch", {
+        method: "POST",
+        signal,
+        headers: {
+          authorization: `Bearer ${token}`,
+          "the8020-internal-context-id": newId("ctx"),
+          "the8020-internal-persistent-execution-id": execution,
+          "the8020-internal-persistent-keep-alive-ms": "10000",
+          ...(followup
+            ? {
+              "the8020-internal-persistent-existing": "true",
+              "the8020-internal-target-worker-id": worker.metadata.workerId,
+            }
+            : {}),
+          "the8020-internal-authentication": btoa(
+            JSON.stringify({
+              module: definition.entrypoint,
+              input: { username, ...input },
+              secrets: { password: "private-fixture-password" },
+              unauthenticated: { action: "reject", status: 401 },
+            }),
+          ),
+        },
+      }),
+    );
+  try {
+    const execution = newId("pex");
+    const first = await request("alice", execution);
+    if (first.status !== 200) throw new Error(await first.text());
+    assertEquals(first.status, 200);
+    assertEquals((await first.json()).username, "alice");
+    const wrong = await request("other", execution, true);
+    assertEquals(wrong.status, 409);
+    await wrong.body?.cancel();
+    const same = await request("alice", execution, true);
+    assertEquals(same.status, 200);
+    await same.body?.cancel();
+    const names = ["alice", "other", "third"];
+    const results = await Promise.all(names.map(async (name) => {
+      const response = await request(name);
+      assertEquals(response.status, 200);
+      return (await response.json()).username;
+    }));
+    assertEquals(results, names);
+    const before = calls.length;
+    for (
+      const [input, status] of [[{ deny: true }, 401], [
+        { fail: true },
+        503,
+      ]] as const
+    ) {
+      const rejected = await request("alice", newId("pex"), false, input);
+      assertEquals(rejected.status, status);
+      if (status === 503) {
+        assertEquals(rejected.headers.get("cache-control"), "no-store");
+        assertEquals(rejected.headers.get("www-authenticate"), null);
+      }
+      await rejected.body?.cancel();
+    }
+    const controller = new AbortController();
+    const cancelled = request(
+      "cancelled",
+      newId("pex"),
+      false,
+      {},
+      controller.signal,
+    );
+    await cancelling;
+    controller.abort();
+    const response = await cancelled;
+    assertEquals(response.status, 503);
+    await response.body?.cancel();
+    assertEquals(calls.length, before);
+    assertEquals(calls.map((call) => call.username), [
+      "alice",
+      "alice",
+      ...names,
+    ]);
+    assertEquals(supervisor.workers().length, 1);
+    assertEquals(
+      JSON.stringify(sink.records).includes("private-fixture-password"),
+      false,
+    );
   } finally {
     await supervisor.drain();
   }

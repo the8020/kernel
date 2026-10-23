@@ -68,7 +68,10 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   inside the existing Worker and ordinary bridge request scope before HTTP
   handlers or WebSocket acceptance. The generic runtime has no users-package
   path or SQL. Public requests omit this metadata and bypass imports,
-  verification, and policy. Successful approval alone publishes
+  verification, and policy. The hook returns a canonical user or rejection
+  Response. Its scope permits only database operations and confines/redacts its
+  secure inputs. Hook failures return non-cacheable, unchallenged 503. Approval
+  confirms the principal with the supervisor before publishing
   `auth.authenticated`; streaming bodies and WebSocket callbacks restore that
   approved request context. Context getters do not perform I/O. Never introduce
   a second auth Worker, service, or sandbox.

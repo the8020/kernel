@@ -314,6 +314,7 @@ export type KernelOperation =
   | "database.transaction.commit"
   | "database.transaction.rollback"
   | "worker.invoke"
+  | "execution.authenticate"
   | "execution.retainPersistent"
   | "execution.completePersistent";
 

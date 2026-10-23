@@ -65,7 +65,9 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
   imports can construct the correct SQL compiler without a kernel callback. It
   also applies `ExecutionMetadata.Valid` to the canonical Worker ID, execution
   user, and workload-compatible service/module/program origin before lookup or
-  contacting the supervisor.
+  contacting the supervisor. An uncertain start failure stops that exact Worker
+  with an independent five-second cleanup context and joins cleanup errors;
+  definite supervisor rejection never stops an existing Worker.
 - Node-wide and sandbox-local admission failures have distinct typed sentinels;
   service placement may spill a sandbox-local rejection into another compatible
   sandbox, while creating another local sandbox cannot evade node exhaustion.

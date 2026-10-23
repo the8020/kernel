@@ -71,6 +71,7 @@ export interface WorkerStatus {
 
 interface PersistentBinding {
   workerId: string;
+  admissionContextId?: string;
   userId: string;
   keepAliveMilliseconds: number;
   expiresAt: number;
@@ -277,6 +278,20 @@ export class Supervisor {
         }).catch(() => {});
       },
       kernelCall: async (call, signal) => {
+        if (call.operation === "execution.authenticate") {
+          const user = canonicalExecutionUser(call.user);
+          if (signal?.aborted) return false;
+          if (call.persistentExecutionId === undefined) return true;
+          const binding = this.#servicePools.get(metadata.workloadId)?.bindings
+            .get(call.persistentExecutionId);
+          if (binding?.workerId !== metadata.workerId) return false;
+          if (binding.admissionContextId !== undefined) {
+            if (binding.admissionContextId !== call.contextId) return false;
+            binding.userId = user.userId;
+            delete binding.admissionContextId;
+          }
+          return binding.userId === user.userId;
+        }
         if (call.operation === "execution.retainPersistent") {
           const binding = call.persistentExecutionId === undefined
             ? undefined
@@ -660,7 +675,9 @@ export class Supervisor {
         }
         if (
           targetWorkerId !== null && existing.workerId !== targetWorkerId ||
-          existing.userId !== requestUser(headers, worker.metadata).userId
+          existing.admissionContextId !== undefined ||
+          !requiresAuthentication(headers) &&
+            existing.userId !== requestUser(headers, worker.metadata).userId
         ) {
           throw new PersistentExecutionLostError();
         }
@@ -715,7 +732,14 @@ export class Supervisor {
       if (worker === undefined) return undefined;
       const binding: PersistentBinding = {
         workerId: worker.metadata.workerId,
-        userId: requestUser(headers, worker.metadata).userId,
+        userId: requiresAuthentication(headers)
+          ? ""
+          : requestUser(headers, worker.metadata).userId,
+        admissionContextId: requiresAuthentication(headers)
+          ? canonicalInvocation({
+            contextId: headers.get("the8020-internal-context-id"),
+          }).contextId
+          : undefined,
         keepAliveMilliseconds,
         expiresAt: this.options.now() + keepAliveMilliseconds,
         connections: 0,
@@ -1401,6 +1425,12 @@ export class Supervisor {
             headers: { "the8020-internal-service-response": "true" },
           });
         }
+        if (request.signal.aborted) {
+          return new Response(null, {
+            status: 503,
+            headers: { "cache-control": "no-store" },
+          });
+        }
         if (error instanceof ServiceUnavailableError) {
           return Response.json(
             { error: "service_unavailable", message: error.message },
@@ -1852,6 +1882,13 @@ async function analyzeModules(
   } finally {
     await Deno.remove(aggregator).catch(() => undefined);
   }
+}
+
+function requiresAuthentication(headers: Headers): boolean {
+  const raw = headers.get("the8020-internal-authentication");
+  return raw !== null &&
+    JSON.parse(new TextDecoder().decode(Uint8Array.fromBase64(raw)))
+        .approved !== true;
 }
 
 function requestUser(

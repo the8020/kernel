@@ -27,7 +27,6 @@ import (
 	"the8020/kernel/debugging"
 	"the8020/kernel/development"
 	"the8020/kernel/events"
-	"the8020/kernel/execution"
 	"the8020/kernel/execution/adminrun"
 	"the8020/kernel/execution/coordinator"
 	"the8020/kernel/execution/jobs"
@@ -763,15 +762,12 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		Logger:            logger,
 		Authentication:    serviceSet.Signing,
 		Authenticator:     authenticationModule,
-		AuthenticatePassword: func(ctx context.Context, username, password string) (execution.User, error) {
-			return authentication.run(ctx, "password", username, map[string]string{"password": password})
-		},
-		AuthenticateCertificate: authentication.AuthenticateCertificate,
-		NodeID:                  instanceUUID,
-		Signing:                 serviceSet.Signing,
-		Nodes:                   nodeManager,
-		MatchImports:            workerManager.MatchingImports,
-		Database:                systemDatabase,
+
+		NodeID:       instanceUUID,
+		Signing:      serviceSet.Signing,
+		Nodes:        nodeManager,
+		MatchImports: workerManager.MatchingImports,
+		Database:     systemDatabase,
 	})
 	if err != nil {
 		runtimeServices.Failure = err.Error()

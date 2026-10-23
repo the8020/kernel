@@ -1230,14 +1230,6 @@ func TestAuthenticatedBoundaryRejectsOrRedirectsBeforeDispatchAndAttachesTrusted
 	authentication := &fakeAuthentication{}
 	manager.authentication = authentication
 	manager.authenticator = "/p/the8020/users/mod.ts"
-	passwordCalls := 0
-	manager.authenticatePassword = func(_ context.Context, username, password string) (execution.User, error) {
-		passwordCalls++
-		if username != "alice" || password != "páss:word" {
-			return execution.User{}, errors.New("denied")
-		}
-		return execution.UserForUsername(username)
-	}
 	if _, err := manager.Reconcile(context.Background(), "the8020/demo/protected"); err != nil {
 		t.Fatal(err)
 	}
@@ -1288,7 +1280,7 @@ func TestAuthenticatedBoundaryRejectsOrRedirectsBeforeDispatchAndAttachesTrusted
 			t.Errorf("forwarded %s = %q, want %q", name, got, want)
 		}
 	}
-	if cookie := forwarded.header.Get("Cookie"); cookie != "other=preserved; the8020_auth_sys-aaaaaaaaaa=valid-jwt" {
+	if cookie := forwarded.header.Get("Cookie"); cookie != "other=preserved" {
 		t.Fatalf("forwarded cookies = %q", cookie)
 	}
 	if forwarded.header.Get("the8020-internal-authentication") == "" {
@@ -1297,6 +1289,7 @@ func TestAuthenticatedBoundaryRejectsOrRedirectsBeforeDispatchAndAttachesTrusted
 	var approved authenticationSetup
 	decodeSetup := func(header http.Header) {
 		t.Helper()
+		approved = authenticationSetup{}
 		encoded, err := base64.StdEncoding.DecodeString(header.Get("the8020-internal-authentication"))
 		if err != nil || json.Unmarshal(encoded, &approved) != nil {
 			t.Fatal("invalid authentication metadata")
@@ -1313,7 +1306,7 @@ func TestAuthenticatedBoundaryRejectsOrRedirectsBeforeDispatchAndAttachesTrusted
 	}
 	forwarded = <-pools.dispatched
 	decodeSetup(forwarded.header)
-	if !approved.Approved || approved.Claims["sub"] != nativeUser.ID || forwarded.header.Get("the8020-internal-user-id") != nativeUser.ID {
+	if !approved.Approved || approved.Principal != nativeUser.ID || forwarded.header.Get("the8020-internal-user-id") != nativeUser.ID {
 		t.Fatal("native principal lost")
 	}
 	forged := httptest.NewRequest(http.MethodPost, "/the8020/demo/protected/open", nil)
@@ -1334,7 +1327,7 @@ func TestAuthenticatedBoundaryRejectsOrRedirectsBeforeDispatchAndAttachesTrusted
 	}
 
 	for _, headers := range [][]string{
-		{"Basic !!!"}, {"Basic " + base64.StdEncoding.EncodeToString([]byte("alice:wrong"))},
+		{"Basic !!!"},
 		{"Basic " + base64.StdEncoding.EncodeToString([]byte("alice:\xff"))},
 		{"Basic " + strings.Repeat("a", 8192)}, {"Basic YWxpY2U6cGFzcw==", "Basic YWxpY2U6cGFzcw=="},
 	} {
@@ -1346,26 +1339,23 @@ func TestAuthenticatedBoundaryRejectsOrRedirectsBeforeDispatchAndAttachesTrusted
 			t.Fatal("invalid Basic credentials were not challenged before dispatch")
 		}
 	}
-	if passwordCalls != 1 {
-		t.Fatal("malformed Basic credentials reached password verification")
-	}
 	basicRequest := httptest.NewRequest(http.MethodPost, "/the8020/demo/protected/value", nil)
 	basicRequest.SetBasicAuth("alice", "páss:word")
 	basicRequest.AddCookie(&http.Cookie{Name: "the8020_auth_sys-aaaaaaaaaa", Value: "invalid-cookie"})
 	basicResponse := httptest.NewRecorder()
 	manager.ServeHTTP(basicResponse, basicRequest)
-	if basicResponse.Code != http.StatusOK || passwordCalls != 2 {
+	if basicResponse.Code != http.StatusOK {
 		t.Fatal("Basic authentication did not override the cookie")
 	}
 	forwarded = <-pools.dispatched
 	decodeSetup(forwarded.header)
-	if !approved.Approved || approved.Claims["sub"] != "user:alice" || forwarded.header.Get("Authorization") != "" || forwarded.header.Get("the8020-internal-user-id") != "user:alice" {
+	if approved.Approved || approved.Module != manager.authenticator || approved.Input.(map[string]any)["username"] != "alice" || approved.Secrets["password"] != "páss:word" || forwarded.header.Get("Authorization") != "" || forwarded.header.Get("the8020-internal-user-id") == "user:alice" {
 		t.Fatal("Basic principal or credential confinement failed")
 	}
 	basicRequest.Header.Set(platformauth.TokenHeader, "Bearer invalid-jwt")
 	basicResponse = httptest.NewRecorder()
 	manager.ServeHTTP(basicResponse, basicRequest)
-	if basicResponse.Code != 307 || passwordCalls != 2 {
+	if basicResponse.Code != 307 {
 		t.Fatal("explicit token did not take precedence over Basic")
 	}
 
@@ -1525,7 +1515,7 @@ func TestSessionServiceEstablishesHTTPRouteThenReconnectsWebSocketToExactSandbox
 		t.Fatalf("upgrade status=%d proxies=%#v", response.Code, pools.websockets)
 	}
 	proxied := pools.websockets[0]
-	if proxied.poolID != initial.poolID || proxied.path != "/connect" || proxied.query != "" || proxied.header.Get("the8020-internal-authentication") == "" || proxied.header.Get("the8020-internal-username") != "admin" || proxied.header.Get("the8020-internal-persistent-execution-id") == "" || proxied.header.Get("Cookie") != "the8020_auth_sys-aaaaaaaaaa=valid-jwt" {
+	if proxied.poolID != initial.poolID || proxied.path != "/connect" || proxied.query != "" || proxied.header.Get("the8020-internal-authentication") == "" || proxied.header.Get("the8020-internal-username") != "admin" || proxied.header.Get("the8020-internal-persistent-execution-id") == "" || proxied.header.Get("Cookie") != "" {
 		t.Fatalf("proxied persistent request = %#v", proxied)
 	}
 

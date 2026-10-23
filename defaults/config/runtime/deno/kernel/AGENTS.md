@@ -118,9 +118,12 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   execution and its Worker resources on the selected node. `WorkerResources`
   reports heap-used bytes, accumulated thread CPU microseconds, and sample time.
   These are diagnostics and never admission controls.
-- `kernel.execution.secret()` reads one required value from only the active job;
-  `optionalSecret()` returns `undefined` when absent. No service or concurrent
-  job can observe it.
+- `kernel.execution.secret()` reads a required execution-local secure input;
+  `optionalSecret()` returns `undefined` when absent. Jobs and trusted service
+  authentication hooks have separate scopes; application handlers and concurrent
+  requests cannot observe hook passwords. Hook scopes permit only database
+  calls. The private bridge confirms the approved request user with the
+  supervisor; `execution.authenticate` never crosses the native callback socket.
 - Named-secret APIs belong to `/p/the8020/secrets/mod.ts`, which owns SQL and
   transparent encryption/decryption. The SDK exports no named-secret operations.
 - `kernel.packages` provides typed index list/inspect/set, source inspection,

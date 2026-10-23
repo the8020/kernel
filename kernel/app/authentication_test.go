@@ -81,23 +81,3 @@ func TestNativeAuthenticationUsesOrdinarySystemProgram(t *testing.T) {
 		t.Fatal("console must send verified claims through ordinary secure inputs")
 	}
 }
-
-func TestCertificateAuthenticationUsesUsersPrincipal(t *testing.T) {
-	jobs := &authenticationJobs{result: "alice"}
-	runner, err := programs.New(jobs, jobs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	adapter := &packageAuthentication{programs: runner}
-	user, err := adapter.AuthenticateCertificate(t.Context(), "certificate-fingerprint")
-	if err != nil || user.Username != "alice" || jobs.options.User != execution.SystemUser() ||
-		!reflect.DeepEqual(jobs.options.Arguments, []any{"certificate", "certificate-fingerprint"}) || jobs.options.Secrets != nil {
-		t.Fatal("certificate authentication bypassed ordinary users program")
-	}
-	for _, result := range []any{nil, true, "", "user:alice", "../../alice"} {
-		jobs.result = result
-		if _, err := adapter.AuthenticateCertificate(t.Context(), "certificate-fingerprint"); err == nil {
-			t.Fatal("invalid principal accepted")
-		}
-	}
-}

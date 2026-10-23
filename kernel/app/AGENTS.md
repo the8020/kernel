@@ -18,12 +18,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 # Local Contracts
 
-- HTTP Basic uses the same users authentication program as native password
-  transports, with request cancellation and secure inputs. Composition supplies
-  this verifier to the shared service boundary; no password policy lives here.
-- Client certificate admission invokes that same users program with a verified
-  fingerprint; its username result must form a valid kernel principal. No
-  certificate enrollment, account cache, or application table access lives here.
+- HTTP Basic, certificate, and token policy run directly through the composed
+  users hook in the target service Worker. Composition supplies no HTTP program
+  verifier. Native password/token transports retain their ordinary program and
+  secure inputs. No account cache or application table access lives here.
 - `https.go` consumes `the8020/https/snapshot`, resolves immutable keys through
   the existing private secrets program, and prepares native listener/state
   publication. Issuance and challenge callbacks invoke ordinary bounded system

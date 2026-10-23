@@ -16,7 +16,7 @@ const authenticationModule = "/p/the8020/users/mod.ts"
 const authenticationProgram = "the8020/users/authenticate"
 
 // Native transports delegate application eligibility to an ordinary package
-// program, including HTTP Basic. HTTP token hooks run in the target Worker.
+// program. HTTP service authentication runs directly in the target Worker.
 type packageAuthentication struct {
 	context  context.Context
 	programs *programs.Runner
@@ -45,19 +45,6 @@ func (a *packageAuthentication) AuthenticatePassword(username string, password [
 
 func (a *packageAuthentication) AuthenticateUser(username string) (execution.User, error) {
 	return a.run(a.context, "user", username, nil)
-}
-
-func (a *packageAuthentication) AuthenticateCertificate(ctx context.Context, fingerprint string) (execution.User, error) {
-	result, err := a.programs.RunWithOptions(ctx, authenticationProgram, "", []any{"certificate", fingerprint}, nil,
-		programs.Options{User: execution.SystemUser(), Timeout: 30 * time.Second})
-	if err != nil {
-		return execution.User{}, errors.New("authentication unavailable")
-	}
-	username, ok := result.Value.(string)
-	if !ok {
-		return execution.User{}, errors.New("authentication failed")
-	}
-	return execution.UserForUsername(username)
 }
 
 func (a *packageAuthentication) AuthenticateToken(ctx context.Context, token string) (execution.User, error) {

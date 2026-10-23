@@ -1,8 +1,10 @@
 import type { KernelBridge } from "../kernel/bridge.ts";
-import type { ServiceRequestMetadata } from "./contracts.ts";
+import {
+  canonicalExecutionUser,
+  type ServiceRequestMetadata,
+} from "./contracts.ts";
 
-// The composition-selected package owns authentication policy. This adapter
-// supplies its ordinary request scope and publishes identity only on approval.
+// Only the composition-selected hook sees credentials; the handler gets its approved scope.
 export async function authenticateRequest(
   request: Request,
   metadata: ServiceRequestMetadata,
@@ -15,37 +17,56 @@ export async function authenticateRequest(
     auth: { authenticated: false },
   };
   if (authentication === undefined) return { meta };
-  if (authentication.claims.sub !== meta.user.userId) {
-    throw new TypeError("verified token does not match execution principal");
-  }
-  const response = authentication.approved === true
-    ? undefined
-    : await bridge.withRequest(meta, async () => {
-      const hook = await import(authentication.module);
-      if (typeof hook.authenticate !== "function") {
-        throw new TypeError("authentication module must export authenticate");
-      }
-      return await hook.authenticate(
-        request,
-        Object.freeze({ ...authentication.claims }),
-        authentication.unauthenticated,
+  try {
+    let user = meta.user;
+    if (authentication.approved !== true) {
+      const result = await bridge.withRequest(
+        { ...meta, authentication },
+        async () => {
+          const hook = await import(authentication.module);
+          return await hook.authenticate(
+            request,
+            authentication.input,
+            authentication.unauthenticated,
+          );
+        },
+        signal,
       );
-    }, signal);
-  if (response instanceof Response) return { meta, response };
-  if (response !== undefined) {
-    throw new TypeError(
-      "authentication must return a rejection Response or undefined",
-    );
-  }
-  return {
-    meta: {
+      if (result instanceof Response) return { meta, response: result };
+      user = canonicalExecutionUser(result);
+    }
+    if (
+      authentication.principal !== undefined &&
+      authentication.principal !== user.userId
+    ) {
+      throw new TypeError("authentication principal mismatch");
+    }
+    const approved: ServiceRequestMetadata = {
       ...meta,
-      auth: {
-        authenticated: true,
-        realm: "user",
-        userId: meta.user.userId,
-        username: meta.user.username,
-      },
-    },
-  };
+      user,
+      auth: { authenticated: true, realm: "user", ...user },
+    };
+    signal.throwIfAborted();
+    if (
+      authentication.approved !== true &&
+      !await bridge.authenticate(approved, signal)
+    ) {
+      return {
+        meta,
+        response: new Response("Persistent execution lost", {
+          status: 409,
+          headers: { "cache-control": "no-store" },
+        }),
+      };
+    }
+    return { meta: approved };
+  } catch {
+    return {
+      meta,
+      response: new Response("Authentication unavailable", {
+        status: 503,
+        headers: { "cache-control": "no-store" },
+      }),
+    };
+  }
 }

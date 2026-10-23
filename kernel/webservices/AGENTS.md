@@ -57,38 +57,31 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Stateless requests choose least-loaded local sandboxes and Workers. Session
   follow-ups target the recorded Worker; initial session work reserves one
   logical execution slot through the generic supervisor contract.
-- Public dispatch never reads or verifies platform credentials, evaluates an
-  account/session, or supplies an authentication hook. It uses the configured
-  execution principal and preserves credentials as ordinary unverified request
-  data. Authenticated dispatch accepts platform tokens or HTTP Basic before cold
-  reconciliation, capacity, persistent binding, or Worker dispatch. Explicit
-  `the8020-authorization` takes precedence over explicit Basic, then a client
-  certificate, then the indexed cookie, including when invalid. Unsupported,
-  empty, or malformed explicit Authorization never falls back. Basic uses the
-  composition-supplied users password verifier; malformed/duplicate credentials
-  fail closed. Basic failures return 401 with `WWW-Authenticate: Basic`; missing
-  credentials retain declared reject/redirect behavior, with a Basic challenge
-  on 401. Rejected selected cookies are cleared. Client-forged internal headers
-  are stripped.
-- Accepted Basic credentials carry the same completed package approval as native
-  transports. Strip the password header before application dispatch; preserve it
-  only until authenticated node forwarding reaches its destination. No session
-  or token is created for Basic requests.
-- Certificate requests use TLS or private peer/terminator context, never an
-  untrusted header. Native certificate usage/validity precedes the ordinary
-  users fingerprint lookup on every request. Approval uses the same
-  completed-policy metadata as Basic, without creating a token or session.
-  Forward the certificate evidence through the authenticated peer path for
-  remote dispatch; the target rechecks current enrollment. Public services
-  retain their configured identity.
+- Public dispatch never reads or verifies platform credentials or supplies a
+  policy hook; it preserves request data and the configured execution principal.
+  Protected requests select explicit platform header, explicit Authorization,
+  native certificate, then indexed cookie, without falling back from an invalid
+  explicit credential. Go validates token signature/time/transport and TLS
+  possession/usage/validity, never account policy or certificate enrollment.
+- Basic and certificate requests pass private hook input to the existing target
+  Worker without running a program. Passwords use the hook's execution-local
+  secret map; Basic creates no session. The username/fingerprint is unapproved
+  until users resolves it. Tokens carry a principal constraint plus verified
+  claims. Native transport approval remains a private in-process capability.
+- Strip Authorization, the platform header and this system's authentication
+  cookie before Worker dispatch, preserving unrelated cookies. Original
+  credentials and certificate evidence survive only authenticated node forwarding
+  until the destination performs its own policy. Malformed Basic remains 401
+  with a challenge; unavailable policy is non-cacheable 503 without a challenge.
+  Missing credentials retain declared reject/redirect behavior.
 - HTTP and WebSocket request contexts are fresh `ctx-` IDs. Public internal
   context and parent-context headers are stripped even with mixed casing; only
   explicit trusted kernel-call forwarding carries a parent execution context.
 - Successful token verification carries claims, the composition-selected package
   hook, and the existing unauthenticated response policy as trusted request
   metadata. It never marks application authentication complete. The target
-  Worker approves user/session policy before handler/upgrade; kernel routing and
-  callbacks retain the signed principal. Go never queries the users package
+  Worker approves policy and confirms the final principal before handler/upgrade;
+  persistent bindings and native callbacks use that approved principal. Go never queries the users package
   tables.
 - In-process `RequestOptions.AuthenticatedUser` carries a principal already
   approved by a native transport's package authentication. A private Go context

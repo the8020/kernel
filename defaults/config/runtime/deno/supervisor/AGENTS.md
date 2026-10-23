@@ -59,11 +59,15 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 - Persistent initial requests reserve an exact Worker binding with its original
   principal and keepalive. A duplicate initial `pex-*` ID returns `409`,
   including under the same principal, and never adopts or replaces the existing
-  binding. Follow-ups require the explicit existing-binding flag, exact Worker
-  target, live binding and principal; a missing, completed, expired,
-  wrong-service, or wrong-Worker target returns `409` before handler/upgrade.
-  Never recreate a binding for an existing route. Admission rechecks binding
-  identity after any asynchronous capacity wait.
+  binding. Hook-based initial admission reserves an unapproved binding for its
+  exact context until the target Worker resolves a canonical user; rejection or
+  cancellation releases it. The local `execution.authenticate` bridge call binds
+  that user, or compares an existing binding, before handler/upgrade. Follow-ups
+  require the explicit existing-binding flag, exact Worker, live binding and
+  approved principal; a missing, completed, expired, wrong-service, or
+  wrong-Worker target returns `409` before handler/upgrade. Never recreate a
+  binding for an existing route. Admission rechecks binding identity after any
+  asynchronous capacity wait.
 - Reconfiguring a pool updates its existing admission state. Removing Workers
   from its eligible set prevents new bindings and wakes queued admissions, while
   existing bindings still admit exact follow-ups to their owning live Workers.

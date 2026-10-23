@@ -34,6 +34,7 @@ export interface KernelExecutionContext {
   readonly auth?: ServiceRequestMetadata["auth"];
   readonly secrets?: Record<string, string>;
   readonly signal?: AbortSignal;
+  readonly authenticating?: boolean;
 }
 
 interface BridgeMessage {
@@ -51,6 +52,10 @@ interface Pending {
 
 export interface KernelBridge {
   executionContext(): KernelExecutionContext | undefined;
+  authenticate(
+    metadata: ServiceRequestMetadata,
+    signal: AbortSignal,
+  ): Promise<boolean>;
   withRequest<Result>(
     metadata: ServiceRequestMetadata,
     invoke: () => Result,
@@ -123,6 +128,11 @@ export function createKernelBridge(
     ) {
       return Promise.reject(
         new Error("persistent execution context is unavailable"),
+      );
+    }
+    if (request?.authenticating && !operation.startsWith("database.")) {
+      return Promise.reject(
+        new Error("only database access is available during authentication"),
       );
     }
     const correlationId = newId("cor");
@@ -234,6 +244,13 @@ export function createKernelBridge(
 
   return {
     executionContext: () => requestContext.getStore(),
+    authenticate(meta, signal) {
+      return this.withRequest(
+        meta,
+        async () => await invoke("execution.authenticate", {}) === true,
+        signal,
+      );
+    },
     async closeExecution(): Promise<void> {
       await invoke("database.scope.close", {});
     },
@@ -252,6 +269,11 @@ export function createKernelBridge(
             metadata.persistentKeepAliveMilliseconds,
           user: canonicalExecutionUser(metadata.user),
           auth: Object.freeze({ ...metadata.auth }),
+          authenticating: metadata.authentication !== undefined &&
+            metadata.authentication.approved !== true,
+          secrets: metadata.authentication?.secrets === undefined
+            ? undefined
+            : Object.freeze({ ...metadata.authentication.secrets }),
           signal,
         }),
         callback,

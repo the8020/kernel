@@ -1207,6 +1207,9 @@ Deno.test("target Worker authenticates before HTTP and WebSocket handlers", asyn
     },
     kernelCall: (call) => {
       calls.push(call);
+      if (call.operation === "execution.authenticate") {
+        return Promise.resolve(true);
+      }
       return Promise.resolve({ columns: ["allowed"], rows: [[allowed]] });
     },
   });
@@ -1227,7 +1230,8 @@ Deno.test("target Worker authenticates before HTTP and WebSocket handlers", asyn
     auth: { authenticated: false },
     authentication: {
       module: new URL("./testdata/authentication.ts", import.meta.url).href,
-      claims: { sub: "user:alice" },
+      input: { sub: "user:alice" },
+      principal: "user:alice",
       unauthenticated: { action: "reject", status: 401 },
     },
   };
@@ -1273,15 +1277,15 @@ Deno.test("target Worker authenticates before HTTP and WebSocket handlers", asyn
       nativeApproval,
     );
     assertEquals((await native.json()).authenticated, true);
-    await assertRejects(
-      () =>
-        worker.dispatchService(new Request("https://service/"), {
-          ...nativeApproval,
-          user: { userId: "user:other", username: "other" },
-        }),
-      Error,
-      "does not match execution principal",
+    const mismatch = await worker.dispatchService(
+      new Request("https://service/"),
+      {
+        ...nativeApproval,
+        user: { userId: "user:other", username: "other" },
+      },
     );
+    assertEquals(mismatch.status, 503);
+    await mismatch.body?.cancel();
     allowed = true;
     const accepted = await worker.dispatchService(
       new Request("https://service/"),

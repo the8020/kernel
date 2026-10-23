@@ -96,7 +96,9 @@ export interface ServiceRequestMetadata {
   authentication?: {
     approved?: boolean;
     module: string;
-    claims: Record<string, unknown>;
+    input?: unknown;
+    secrets?: Record<string, string>;
+    principal?: string;
     unauthenticated: {
       action: string;
       status: number;
@@ -138,6 +140,7 @@ export type KernelOperation =
   | "database.transaction.rollback"
   | "worker.invoke"
   | "execution.releaseWorker"
+  | "execution.authenticate"
   | "execution.retainPersistent"
   | "execution.completePersistent";
 

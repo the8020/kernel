@@ -303,10 +303,12 @@ relevant child AGENTS.md
 - Public services preserve raw credentials and execute as their configured user.
   All authenticated services accept platform tokens or standard HTTP Basic
   username/password authentication. Tokens use native signature checks followed
-  by users-package account/session policy in the target Worker. Basic uses the
-  existing users authentication program with secure password input before
-  dispatch; handlers receive the verified principal without the password. No new
-  authentication service or execution mechanism is needed.
+  by users-package account/session policy in the target Worker. Basic and
+  certificate policy use that same trusted pre-handler hook directly. Its
+  database-only scope exposes passwords as execution-local secrets; approval
+  establishes the final request principal before handler/upgrade and persistent
+  binding reuse. Handlers receive no platform credentials. Native non-service
+  transports retain their ordinary authentication program.
 - The kernel owns cryptographic integrity and private deployment key storage;
   the users Deno package owns passwords, sessions, revocation, login/logout, and
   application cookies. Context getters are synchronous and never authenticate.

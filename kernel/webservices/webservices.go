@@ -69,8 +69,11 @@ type Authentication interface {
 // authenticationSetup is trusted request metadata; generic runtime dispatch
 // invokes this package hook in the target Worker before the handler.
 type authenticationSetup struct {
+	CookieName      string                `json:"-"`
 	Module          string                `json:"module"`
-	Claims          auth.TokenClaims      `json:"claims"`
+	Input           any                   `json:"input,omitempty"`
+	Secrets         map[string]string     `json:"secrets,omitempty"`
+	Principal       string                `json:"principal,omitempty"`
 	Unauthenticated UnauthenticatedPolicy `json:"unauthenticated"`
 	Approved        bool                  `json:"approved,omitempty"`
 }
@@ -84,22 +87,20 @@ type NodeRouter interface {
 }
 
 type Config struct {
-	Index                   *Index
-	Pools                   RuntimePools
-	Router                  BoundaryRouter
-	ObservedRoot            string
-	ReconcileInterval       time.Duration
-	StartupTimeout          time.Duration
-	Logger                  *slog.Logger
-	Authentication          Authentication
-	Authenticator           string
-	AuthenticatePassword    func(context.Context, string, string) (execution.User, error)
-	AuthenticateCertificate func(context.Context, string) (execution.User, error)
-	NodeID                  string
-	Signing                 *auth.Signer
-	Nodes                   NodeRouter
-	MatchImports            func(context.Context, string, []string, []string) ([]string, error)
-	Database                database.Store
+	Index             *Index
+	Pools             RuntimePools
+	Router            BoundaryRouter
+	ObservedRoot      string
+	ReconcileInterval time.Duration
+	StartupTimeout    time.Duration
+	Logger            *slog.Logger
+	Authentication    Authentication
+	Authenticator     string
+	NodeID            string
+	Signing           *auth.Signer
+	Nodes             NodeRouter
+	MatchImports      func(context.Context, string, []string, []string) ([]string, error)
+	Database          database.Store
 }
 
 type State string
@@ -219,23 +220,21 @@ type persistentDispatch struct {
 }
 
 type Manager struct {
-	index                   *Index
-	pools                   RuntimePools
-	observed                string
-	interval                time.Duration
-	startup                 time.Duration
-	logger                  *slog.Logger
-	authentication          Authentication
-	authenticator           string
-	authenticatePassword    func(context.Context, string, string) (execution.User, error)
-	authenticateCertificate func(context.Context, string) (execution.User, error)
-	signing                 *auth.Signer
-	nodeID                  string
-	nodes                   NodeRouter
-	matchImports            func(context.Context, string, []string, []string) ([]string, error)
-	database                database.Store
-	hardRestarted           sync.Map
-	restartDemand           sync.Map
+	index          *Index
+	pools          RuntimePools
+	observed       string
+	interval       time.Duration
+	startup        time.Duration
+	logger         *slog.Logger
+	authentication Authentication
+	authenticator  string
+	signing        *auth.Signer
+	nodeID         string
+	nodes          NodeRouter
+	matchImports   func(context.Context, string, []string, []string) ([]string, error)
+	database       database.Store
+	hardRestarted  sync.Map
+	restartDemand  sync.Map
 
 	mu               sync.Mutex
 	services         map[string]*runtimeService
@@ -271,8 +270,6 @@ func New(config Config) (*Manager, error) {
 	}
 	background, stopBackground := context.WithCancel(context.Background())
 	manager := &Manager{index: config.Index, pools: config.Pools, observed: config.ObservedRoot, interval: config.ReconcileInterval, startup: config.StartupTimeout, logger: config.Logger, authentication: config.Authentication, authenticator: config.Authenticator, nodes: config.Nodes, services: map[string]*runtimeService{}, signing: config.Signing, nodeID: config.NodeID, background: background, stopBackground: stopBackground, maintenanceSet: map[string]bool{}}
-	manager.authenticatePassword = config.AuthenticatePassword
-	manager.authenticateCertificate = config.AuthenticateCertificate
 	manager.matchImports = config.MatchImports
 	manager.database = config.Database
 	if config.Database != nil {
@@ -1463,33 +1460,23 @@ func (m *Manager) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	scheme, _, _ := strings.Cut(request.Header.Get("Authorization"), " ")
 	if admission.Access.Mode == "authenticated" && nativeApproved {
 		user = nativeUser
-		authentication = &authenticationSetup{Approved: true, Claims: auth.TokenClaims{"sub": user.ID}}
+		authentication = &authenticationSetup{Approved: true, Principal: user.ID}
 	} else if admission.Access.Mode == "authenticated" && !explicitToken && explicitAuthorization {
 		username, password, ok := request.BasicAuth()
-		if !strings.EqualFold(scheme, "Basic") || !ok || !utf8.ValidString(username) || !utf8.ValidString(password) || len(request.Header.Values("Authorization")) != 1 || len(request.Header.Get("Authorization")) > 8192 || m.authenticatePassword == nil {
+		if !strings.EqualFold(scheme, "Basic") || !ok || !utf8.ValidString(username) || !utf8.ValidString(password) || len(request.Header.Values("Authorization")) != 1 || len(request.Header.Get("Authorization")) > 8192 {
 			m.respondUnauthenticated(writer, UnauthenticatedPolicy{Status: http.StatusUnauthorized, Message: "Authentication required."})
 			return
 		}
-		user, err = m.authenticatePassword(request.Context(), username, password)
-		if err != nil || !user.Valid() || user.Username != username {
-			m.respondUnauthenticated(writer, UnauthenticatedPolicy{Status: http.StatusUnauthorized, Message: "Authentication failed."})
-			return
-		}
-		authentication = &authenticationSetup{Approved: true, Claims: auth.TokenClaims{"sub": user.ID}}
+		authentication = &authenticationSetup{Module: m.authenticator, Input: map[string]any{"method": "password", "username": username}, Secrets: map[string]string{"password": password}, Unauthenticated: UnauthenticatedPolicy{Status: http.StatusUnauthorized, Message: "Authentication failed."}}
 	} else if admission.Access.Mode == "authenticated" && !explicitToken && auth.ClientCertificate(request) != nil {
 		certificate := auth.ClientCertificate(request)
 		fingerprint, certificateErr := auth.ClientCertificateFingerprint(certificate)
-		if certificateErr != nil || m.authenticateCertificate == nil {
-			m.respondUnauthenticated(writer, UnauthenticatedPolicy{Status: http.StatusUnauthorized, Message: "Authentication failed."})
-			return
-		}
-		user, err = m.authenticateCertificate(request.Context(), fingerprint)
-		if err != nil || !user.Valid() {
+		if certificateErr != nil {
 			m.respondUnauthenticated(writer, UnauthenticatedPolicy{Status: http.StatusUnauthorized, Message: "Authentication failed."})
 			return
 		}
 		request = request.WithContext(auth.WithClientCertificate(request.Context(), certificate))
-		authentication = &authenticationSetup{Approved: true, Claims: auth.TokenClaims{"sub": user.ID}}
+		authentication = &authenticationSetup{Module: m.authenticator, Input: map[string]any{"method": "certificate", "fingerprint": fingerprint}, Unauthenticated: UnauthenticatedPolicy{Status: http.StatusUnauthorized, Message: "Authentication failed."}}
 	} else if admission.Access.Mode == "authenticated" {
 		token, fromCookie := auth.RequestToken(request, admission.Access.CookieName)
 		var claims auth.TokenClaims
@@ -1510,10 +1497,19 @@ func (m *Manager) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		}
 		user, err = auth.TokenUser(claims)
 		if err != nil || m.authenticator == "" {
+			writer.Header().Set("Cache-Control", "no-store")
 			http.Error(writer, "authentication unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		authentication = &authenticationSetup{Module: m.authenticator, Claims: claims, Unauthenticated: admission.Access.Unauthenticated}
+		authentication = &authenticationSetup{Module: m.authenticator, Input: map[string]any{"method": "token", "claims": claims, "fromCookie": fromCookie}, Principal: user.ID, Unauthenticated: admission.Access.Unauthenticated}
+	}
+	if authentication != nil && !authentication.Approved && authentication.Module == "" {
+		writer.Header().Set("Cache-Control", "no-store")
+		http.Error(writer, "authentication unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if authentication != nil {
+		authentication.CookieName = admission.Access.CookieName
 	}
 	routeToken := ""
 	if isSessionService(definition) {
@@ -1792,10 +1788,15 @@ func clientNetworkScope(address netip.Addr) string {
 
 func setAuthenticationMetadata(header http.Header, authentication *authenticationSetup, user execution.User) {
 	if authentication != nil {
-		// Passwords are consumed at admission, never passed to application handlers.
-		scheme, _, _ := strings.Cut(header.Get("Authorization"), " ")
-		if strings.EqualFold(scheme, "Basic") {
-			header.Del("Authorization")
+		// The hook receives private input; handlers retain only unrelated cookies.
+		header.Del("Authorization")
+		header.Del(auth.TokenHeader)
+		cookies := (&http.Request{Header: header}).Cookies()
+		header.Del("Cookie")
+		for _, cookie := range cookies {
+			if cookie.Name != authentication.CookieName {
+				(&http.Request{Header: header}).AddCookie(cookie)
+			}
 		}
 		encoded, _ := json.Marshal(authentication)
 		header.Set(internalHeaderPrefix+"authentication", base64.StdEncoding.EncodeToString(encoded))
@@ -1844,7 +1845,7 @@ func (m *Manager) respondUnauthenticated(writer http.ResponseWriter, policy Unau
 		writer.WriteHeader(policy.Status)
 		return
 	}
-	if policy.Status == http.StatusUnauthorized && m.authenticatePassword != nil {
+	if policy.Status == http.StatusUnauthorized && m.authenticator != "" {
 		writer.Header().Set("WWW-Authenticate", `Basic realm="80|20", charset="UTF-8"`)
 	}
 	http.Error(writer, policy.Message, policy.Status)
