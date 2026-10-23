@@ -167,8 +167,8 @@ if [[ ! -f "$BOOTSTRAP_DONE" ]]; then
       IFS= read -r initial_username < "$BOOTSTRAP_PENDING"
       resuming=true
     fi
-    if [[ ! "$initial_username" =~ ^[a-z0-9]{3,32}$ ]]; then
-      echo "initial username must contain 3-32 lowercase letters or digits" >&2
+    if [[ ! "$initial_username" =~ ^[a-z0-9][a-z0-9_-]{1,30}[a-z0-9]$ ]]; then
+      echo "initial username must contain 3-32 lowercase letters, digits, _ or -, starting and ending with a letter or digit" >&2
       exit 1
     fi
     initial_user_exists=$(printf '%s' "$users_json" | "$DENO" eval --quiet --no-config '

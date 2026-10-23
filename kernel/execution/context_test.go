@@ -39,8 +39,15 @@ func TestExecutionIdentityValidation(t *testing.T) {
 	if err != nil || user != (User{ID: "user:alice", Username: "alice"}) || !user.Valid() {
 		t.Fatalf("user=%#v err=%v", user, err)
 	}
-	if _, err := UserForUsername("Alice"); err == nil {
-		t.Fatal("accepted a non-canonical username")
+	for _, valid := range []string{"jan_novak", "jan-novak", "a_b", "a-1"} {
+		if _, err := UserForUsername(valid); err != nil {
+			t.Fatalf("rejected %q: %v", valid, err)
+		}
+	}
+	for _, invalid := range []string{"Alice", "_jan", "jan-", "-jan", "jan.novak", "ab"} {
+		if _, err := UserForUsername(invalid); err == nil {
+			t.Fatalf("accepted a non-canonical username %q", invalid)
+		}
 	}
 	if !(Origin{Type: OriginService, ID: "example/api"}).ValidForWorkload(model.WorkloadService) {
 		t.Fatal("rejected service origin")

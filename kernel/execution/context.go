@@ -25,9 +25,14 @@ func UserForUsername(username string) (User, error) {
 	if len(username) < 3 || len(username) > 32 {
 		return User{}, invalidUsername("must be between 3 and 32 characters")
 	}
-	for _, character := range username {
-		if (character < 'a' || character > 'z') && (character < '0' || character > '9') {
-			return User{}, invalidUsername("must contain only lowercase letters and digits")
+	for index, character := range username {
+		alphanumeric := (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9')
+		separator := character == '_' || character == '-'
+		if !alphanumeric && !separator {
+			return User{}, invalidUsername("must contain only lowercase letters, digits, _ and -")
+		}
+		if separator && (index == 0 || index == len(username)-1) {
+			return User{}, invalidUsername("must start and end with a lowercase letter or digit")
 		}
 	}
 	return User{ID: "user:" + username, Username: username}, nil

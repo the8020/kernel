@@ -29,7 +29,7 @@ export function canonicalExecutionUser(
   if (
     typeof user.userId !== "string" ||
     typeof user.username !== "string" ||
-    !/^[a-z0-9]{3,32}$/.test(user.username) ||
+    !/^[a-z0-9][a-z0-9_-]{1,30}[a-z0-9]$/.test(user.username) ||
     user.userId !== `user:${user.username}`
   ) throw new TypeError("execution user is invalid");
   return Object.freeze({ userId: user.userId, username: user.username });

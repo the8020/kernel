@@ -183,7 +183,8 @@ export function bindWorkerRecord(
     }
   }
   if (
-    record.username !== undefined && !/^[a-z0-9]{3,32}$/.test(record.username)
+    record.username !== undefined &&
+    !/^[a-z0-9][a-z0-9_-]{1,30}[a-z0-9]$/.test(record.username)
   ) throw new Error("invalid log username");
   const attributes: Record<string, string> = Object.create(null);
   if (record.attributes !== undefined) {
