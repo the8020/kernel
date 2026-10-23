@@ -45,7 +45,7 @@ version = "0.9.7"
 [[packages]]
 id = "the8020/uui"
 source = "https://github.com/the8020/uui.git"
-version = "0.9.9"
+version = "0.9.10"
 
 [[packages]]
 id = "the8020/https"
@@ -65,7 +65,7 @@ version = "0.7.6"
 [[packages]]
 id = "the8020/deployments"
 source = "https://github.com/the8020/deployments.git"
-version = "0.9.6"
+version = "0.9.7"
 
 [[packages]]
 id = "the8020/dev-core"
