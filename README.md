@@ -1,5 +1,9 @@
 # 80|20 kernel
 
+Kernel `0.9.11` and users `0.9.6` must be upgraded together: they share the
+trusted HTTP authentication hook contract. This kernel recommends users
+`0.9.6` and deployments `0.9.6`; mixed kernel/users versions are unsupported.
+
 ## Development updates
 
 Run this one-liner as root **inside the existing container** to update to
