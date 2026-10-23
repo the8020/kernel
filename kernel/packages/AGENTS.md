@@ -204,6 +204,21 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   remain fetchable. Pull explicitly fast-forwards a clean attached branch; push
   publishes it without force. Commit checkout retains the branch.
   Source-changing operations use the same activation transaction.
+- Read-only repository inspection holds the shared source observation lock and
+  validates it before returning. `absent` means no package directory; `empty`
+  means an empty uninstalled mount placeholder. Nonempty uninitialized source,
+  invalid Git metadata and missing initial commits retain distinct diagnostic
+  statuses; filesystem/permission errors are never absence. Mutation guards
+  still require an initialized repository.
+- Successful synchronization preparation immediately registers abort cleanup,
+  including failures reading the schema outcome before source publication.
+  Receipt-aware completion retains forward recovery when required; cleanup
+  failures are joined with the original error rather than discarded.
+- After native activation recovery, startup validation permits desired/failed
+  first-install records without an active commit only when native source
+  inspection confirms absence or an empty placeholder. Active-source mismatch,
+  unsettled activation, corrupt source and unindexed installed packages still
+  prevent application readiness.
 - Bounded version listings include exact commit parent IDs. Local repositories
   select their current HEAD and never require or fetch an upstream reference.
 - Kernel repository SQL remains portable across SQLite and PostgreSQL. Bind

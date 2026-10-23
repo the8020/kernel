@@ -74,7 +74,7 @@ func (s *Store) ListPackageRepositories(ctx context.Context) ([]Repository, erro
 			if !repository.IsDir() || ValidateName(repository.Name()) != nil {
 				continue
 			}
-			item, err := s.inspectPackageRepositoryUnlocked(ctx, namespace.Name()+"/"+repository.Name())
+			item, err := s.InspectPackageRepository(ctx, namespace.Name()+"/"+repository.Name())
 			if err != nil {
 				return nil, err
 			}
@@ -86,7 +86,16 @@ func (s *Store) ListPackageRepositories(ctx context.Context) ([]Repository, erro
 }
 
 func (s *Store) InspectPackageRepository(ctx context.Context, packageID string) (Repository, error) {
-	return s.inspectPackageRepositoryUnlocked(ctx, packageID)
+	validate, release, err := ObserveSources(ctx, s.packagesRoot, []string{packageID})
+	if err != nil {
+		return Repository{}, err
+	}
+	defer release()
+	repository, err := s.inspectPackageRepositoryUnlocked(ctx, packageID)
+	if err != nil {
+		return Repository{}, err
+	}
+	return repository, validate()
 }
 
 func (s *Store) inspectPackageRepositoryUnlocked(ctx context.Context, packageID string) (Repository, error) {
@@ -95,7 +104,7 @@ func (s *Store) inspectPackageRepositoryUnlocked(ctx context.Context, packageID 
 		return Repository{}, err
 	}
 	if !exists {
-		return Repository{}, fmt.Errorf("package is not installed: %s", packageID)
+		return Repository{PackageID: packageID, Path: path, Status: "absent", Branches: []RepositoryBranch{}, Commits: []RepositoryCommit{}}, nil
 	}
 	return s.inspectPackageRepositoryAt(ctx, packageID, path)
 }
@@ -105,8 +114,15 @@ func (s *Store) inspectPackageRepositoryAt(ctx context.Context, packageID, path 
 		PackageID: packageID, Path: path, Status: "not-initialized",
 		Branches: []RepositoryBranch{}, Commits: []RepositoryCommit{},
 	}
-	info, err := os.Stat(filepath.Join(path, ".git"))
+	info, err := os.Lstat(filepath.Join(path, ".git"))
 	if errors.Is(err, os.ErrNotExist) {
+		entries, readErr := os.ReadDir(path)
+		if readErr != nil {
+			return Repository{}, readErr
+		}
+		if len(entries) == 0 {
+			result.Status = "empty"
+		}
 		return result, nil
 	}
 	if err != nil {

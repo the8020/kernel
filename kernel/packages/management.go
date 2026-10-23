@@ -348,7 +348,7 @@ func (s *Store) synchronizePackages(ctx context.Context, packageIDs []string, to
 	return results, nil
 }
 
-func (s *Store) synchronizePackage(ctx context.Context, packageID, transientToken, username string, recommendation *recommendedPackage) (PackageSynchronization, error) {
+func (s *Store) synchronizePackage(ctx context.Context, packageID, transientToken, username string, recommendation *recommendedPackage) (result PackageSynchronization, err error) {
 	unlock, err := s.lockPackage(ctx, packageID)
 	if err != nil {
 		return PackageSynchronization{}, err
@@ -361,7 +361,7 @@ func (s *Store) synchronizePackage(ctx context.Context, packageID, transientToke
 	if !exists && recommendation == nil {
 		return PackageSynchronization{}, os.ErrNotExist
 	}
-	result := PackageSynchronization{PackageID: packageID, Source: entry.Source, Requested: entry.selector(), Local: entry.Local}
+	result = PackageSynchronization{PackageID: packageID, Source: entry.Source, Requested: entry.selector(), Local: entry.Local}
 	if recommendation != nil {
 		if exists && (entry.Local || entry.Source != recommendation.Source) {
 			result.skipped = "local package or custom source"
@@ -511,17 +511,17 @@ func (s *Store) synchronizePackage(ctx context.Context, packageID, transientToke
 			return result, fmt.Errorf("prepare package database schema: %w", err)
 		}
 		preparedSchema = true
+		defer func() {
+			if preparedSchema && !sourceSwitched {
+				err = errors.Join(err, hook.Complete(context.WithoutCancel(ctx), transactionID, false))
+			}
+		}()
 		if outcome, ok := hook.(deployment.OutcomeHook); ok {
 			result.SchemaResult, err = outcome.SchemaOutcome(ctx, transactionID)
 			if err != nil {
 				return result, err
 			}
 		}
-		defer func() {
-			if preparedSchema && !sourceSwitched {
-				_ = hook.Complete(context.Background(), transactionID, false)
-			}
-		}()
 	}
 	sourceSwitched, err = replacePackageDirectory(destination, stage)
 	if err != nil {

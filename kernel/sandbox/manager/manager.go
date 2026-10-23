@@ -605,6 +605,9 @@ func (m *Manager) List() ([]Inspection, error) {
 	result := make([]Inspection, 0, len(ids))
 	for _, id := range ids {
 		spec, status, loadErr := m.store.Load(id)
+		if errors.Is(loadErr, os.ErrNotExist) && !m.store.Contains(id) {
+			continue
+		}
 		if loadErr != nil {
 			return nil, loadErr
 		}

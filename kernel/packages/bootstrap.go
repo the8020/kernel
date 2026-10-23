@@ -67,14 +67,26 @@ func (s *Store) ValidateInstalled(ctx context.Context, commits map[string]string
 	if err != nil {
 		return err
 	}
-	if len(entries) != len(commits) {
-		return fmt.Errorf("installed package count %d does not match database package count %d", len(commits), len(entries))
-	}
+	installed := 0
 	for _, entry := range entries {
 		commit := commits[entry.PackageID]
+		// A settled first-install failure retains intent, not an active checkout.
+		if commit == "" && entry.ActiveCommit == "" && (entry.State == "desired" || entry.State == "failed") {
+			repository, err := s.InspectPackageRepository(ctx, entry.PackageID)
+			if err != nil {
+				return err
+			}
+			if repository.Status == "absent" || repository.Status == "empty" {
+				continue
+			}
+		}
 		if entry.State != "ready" || entry.ActiveCommit == "" || commit != entry.ActiveCommit {
 			return fmt.Errorf("package %s checkout %q does not match ready database commit %q", entry.PackageID, commit, entry.ActiveCommit)
 		}
+		installed++
+	}
+	if installed != len(commits) {
+		return fmt.Errorf("installed package count %d does not match active database package count %d", len(commits), installed)
 	}
 	return nil
 }

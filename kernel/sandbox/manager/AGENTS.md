@@ -68,6 +68,10 @@ Parent DOX: [kernel/kernel/sandbox DOX](../AGENTS.md).
   explicitly samples one selected sandbox's absolute supervisor snapshot and raw
   CPU, memory, and process diagnostics concurrently, then updates the memory
   cache. Resource observations never become placement utilization.
+- Listing skips a record removed between ID enumeration and loading only when
+  the load reports ENOENT and the live registry no longer owns its ID. Missing
+  files in still-owned records, corrupt data and permission errors remain
+  failures; ordinary retirement does not abort unrelated Worker admission.
 - Exact sandbox resolution returns only the persisted specification and never
   contacts the supervisor or backend; identity-routing callers use it when they
   already hold the sandbox ID.
