@@ -1,15 +1,31 @@
 # 80|20 kernel
 
+Kernel `0.9.16` fixes activation receipt inspection when unpublished package
+source is missing and ships official Deno `2.9.8`, which returns a controlled
+error for unsupported explicit-parameter client certificates/keys in direct
+calls and Workers. It recommends
+[Jobs `0.9.6`](https://github.com/the8020/jobs/tree/0.9.6), whose administration
+test fixtures now isolate their execution contexts; production Jobs behavior is
+unchanged.
+
+The runtime update applies to newly constructed service/job sandboxes and fresh
+development templates. Existing development sandboxes retain their private
+system root and Deno binary: update Deno there explicitly or create a fresh
+sandbox. Restarting a retained development sandbox alone does not replace its
+Deno binary. Already running old executables also need replacement before they
+benefit from the runtime fix. This release does not establish the cause of the
+reported sandbox restarts or deploy changes to customer systems.
+
 Kernel `0.9.15` adds the native APIs for the administration console, literal log
 search and authenticated host-node sandbox log access. Upgrade it together with
 [admin-core `0.9.0`](https://github.com/the8020/admin-core/tree/0.9.0),
-[dev-skills `0.9.3`](https://github.com/the8020/dev-skills/tree/0.9.3)
-and [UUI `0.9.11`](https://github.com/the8020/uui/tree/0.9.11). UUI
-includes the native test-harness installer correction; its application behavior
-is unchanged. The installed bootstrap list pins the complete compatible package
-set, including users `0.9.7`, auth `0.8.3`, services `0.7.6`, deployments
-`0.9.7`, HTTPS `0.9.4` and dev-core `0.9.4`. Kernel and users must retain their
-matching trusted HTTP authentication hook contract.
+[dev-skills `0.9.3`](https://github.com/the8020/dev-skills/tree/0.9.3) and
+[UUI `0.9.11`](https://github.com/the8020/uui/tree/0.9.11). UUI includes the
+native test-harness installer correction; its application behavior is unchanged.
+The installed bootstrap list pins the complete compatible package set, including
+users `0.9.7`, auth `0.8.3`, services `0.7.6`, deployments `0.9.7`, HTTPS
+`0.9.4` and dev-core `0.9.4`. Kernel and users must retain their matching
+trusted HTTP authentication hook contract.
 
 Use the ordinary kernel updater, which refreshes the runtime SDK and development
 helpers before applying recommended package versions. Do not install the new
@@ -23,19 +39,18 @@ grants native administration including mutations; output retains approximately
 64 KiB. Secure-input calls require native admin or their dedicated screens.
 Kernel logs requires `the8020.admin-core.logs.view` for the exact node. Search
 is case-sensitive literal text; Copy page and Save page contain exactly the
-displayed bounded page, including when filters have unsubmitted edits. These
-releases do not fix the separately reported activation-recovery or EC-key crash
-issues.
+displayed bounded page, including when filters have unsubmitted edits. The
+administration features retain these limits in `0.9.16`.
 
 ## Development updates
 
 Run this one-liner as root **inside the existing container** to update to
-`0.9.15`. It supports rootless development containers at `/8020` running kernel
+`0.9.16`. It supports rootless development containers at `/8020` running kernel
 `0.7.4` or newer:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/the8020/kernel/0.9.15/docker/update.sh \
-  -o /tmp/update.sh && bash /tmp/update.sh 0.9.15
+curl -fsSL https://raw.githubusercontent.com/the8020/kernel/0.9.16/docker/update.sh \
+  -o /tmp/update.sh && bash /tmp/update.sh 0.9.16
 ```
 
 After printing `Bootstrap started` or `Update started`, the updater continues in
@@ -45,7 +60,7 @@ the background. Follow its progress with:
 tail -F /8020/node/kernel/update.log
 ```
 
-Completion is reported as `update: completed 0.9.15`. Ctrl-C stops following the
+Completion is reported as `update: completed 0.9.16`. Ctrl-C stops following the
 log while the updater keeps running. Confirm the running version and startup
 status with:
 
