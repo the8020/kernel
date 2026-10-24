@@ -9,10 +9,16 @@ Parent DOX: [kernel/defaults DOX](../AGENTS.md).
 - Own `activate`, `activate.ts`, `activation-conflicts.ts`, `install-codex.sh`,
   and `install-claude.sh`; installation refreshes the instance scripts tree.
 - `development-init.sh` is the mounted development entrypoint. It runs
-  `setup-agent-skills.sh` before the image's existing lock-directory/sleep init,
-  including for retained system roots after an upgrade.
+  Bash key setup and `setup-agent-skills.sh` before the image's existing
+  lock-directory/sleep init, including for retained system roots after an upgrade.
 
 # Local Contracts
+
+- Startup adds the Bash-only `CSI 13;2u` Shift+Enter binding to
+  `/etc/bash.bashrc` once, using the default Ctrl+V/Ctrl+J quoted newline macro.
+  Preserve existing system/user startup settings, ordinary Enter execution and
+  raw key input to applications. New Bash shells pick it up after sandbox start;
+  no image rebuild or durable-root reset is needed.
 
 - `kernel-logs` delegates to dev-skills `8020-dev/scripts/kernel-logs.ts` with
   only the existing sandbox ingress environment and network permission. Package
