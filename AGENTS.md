@@ -130,11 +130,12 @@ Default section order:
   `the8020.users.administrator` (`"*" = "*"`, declared by `the8020/users`), and
   falls back to role `**` with the same permission through
   `auth.roles.create --if-missing`, `auth.roles.grant`, and `auth.users.assign`
-  when the installed users package predates that role. No authorization policy enters Go or the supervisor. The
-  private `node/docker/initial-user.pending` marker retains the target username
-  through interrupted account/grant steps; completion removes it and writes
-  `initial-user.done`. Retries preserve an already-created account and repeat
-  idempotent role grants. Existing completed volumes are not regranted.
+  when the installed users package predates that role. No authorization policy
+  enters Go or the supervisor. The private `node/docker/initial-user.pending`
+  marker retains the target username through interrupted account/grant steps;
+  completion removes it and writes `initial-user.done`. Retries preserve an
+  already-created account and repeat idempotent role grants. Existing completed
+  volumes are not regranted.
 
 When the user requests a durable behavior change, record it here or in the
 relevant child AGENTS.md
@@ -587,8 +588,7 @@ below.
   `.gitignore`, `install.sh`, `run.sh`, `release-tag.sh`, release resolver
   tests, `Dockerfile`, `.dockerignore`, `docker-entrypoint_test.sh`,
   `install-dependencies_test.sh`, `check-cpu_test.sh`,
-  `install-development-assets.sh`, and
-  root-level project documentation.
+  `install-development-assets.sh`, and root-level project documentation.
 
 # 80|20
 
@@ -647,10 +647,12 @@ below.
 ## Development Workflow
 
 - Verify the final release contents, including documentation added to discovery
-  folders, before tagging. Install and test a fresh native node in
-  `/root/8020/test<N>`; Docker image build/run checks are not required.
-  Bootstrap changes must exercise the entrypoint's first-user path natively; a
-  browser flow that creates its own test user does not verify that path.
+  folders, before tagging. Install and test a fresh system either natively in
+  `/root/8020/test<N>` or inside an isolated Docker container using Bash. Bound
+  CPU, memory, and runtime. Package-only changes can use an existing runtime
+  image; an image build alone does not validate the installed changes. Bootstrap
+  changes must exercise the entrypoint's first-user path; a browser flow that
+  creates its own test user does not verify that path.
 - `build.sh` generates protocol/command glue and compiles ordinary production
   sources plus the common native runsc module. Never extract implementations
   from test files, apply project-source compiler overlays, or retain replaced

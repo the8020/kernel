@@ -127,9 +127,10 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   seeding, interrupted-seed recovery, fresh smoke on restart, retention of a
   selected newer release despite changed factory assets, and private-work
   preservation. Missing bootstrap assets fail before kernel startup.
-- Install and test a fresh native node, including the entrypoint's first-user
-  path when bootstrap changes. Docker image builds and container runs are not
-  release checks.
+- Install and test a fresh system natively or inside an isolated Docker
+  container using Bash, including the entrypoint's first-user path when
+  bootstrap changes. Bound CPU, memory, and runtime. Package-only changes can
+  use an existing runtime image; an image build alone is insufficient.
 
 # Child DOX Index
 
