@@ -8,18 +8,28 @@ let json = false;
 let description = "";
 let authorName = "";
 let authorEmail = "";
+let action = "";
+let attempt_id = "";
 const selected_packages: string[] = [];
 const package_messages: Record<string, string> = {};
 for (let index = 0; index < Deno.args.length; index++) {
   const argument = Deno.args[index]!;
   if (argument === "--help" || argument === "-h") {
     console.log(
-      "Usage: activate --message 'Describe the changes' [--package namespace/package] [--force table-id.column]\n       activate --preview [--schema] [--package namespace/package]\n\n--force may repeat. Cleanup and native activation run first. Only incompatible cells in exact authorized columns may use NULL or an authored target default. Rows, other cells, keys and identity are retained; unsupported repair stops. Requires --package.\nUse --json for machine-readable output.",
+      "Usage: activate --message 'Describe the changes' [--package namespace/package] [--force table-id.column]\n       activate --preview [--schema] [--package namespace/package]\n       activate --status\n       activate --continue [--message 'Describe the changes']\n       activate --abort [--attempt ID]\n\nAbort preserves private edits and distinct resolution work; safely disposable generated staging is removed. Committed schema changes require forward recovery; abort cannot undo them. Legacy attempts need explicit disposition. Cleanup retries need no message.\n--force may repeat. Cleanup and native activation run first. Only incompatible cells in exact authorized columns may use NULL or an authored target default. Rows, other cells, keys and identity are retained; unsupported repair stops. Requires --package.\nUse --json for machine-readable output.",
     );
     Deno.exit(0);
   }
   if (argument === "--json") json = true;
-  else if (argument === "--preview") preview = true;
+  else if (["--status", "--continue", "--abort"].includes(argument)) {
+    if (action) throw new Error("Select only one lifecycle action");
+    action = argument.slice(2);
+  } else if (argument === "--attempt") {
+    attempt_id = Deno.args[++index] ?? "";
+    if (!attempt_id || attempt_id.startsWith("--")) {
+      throw new Error("--attempt requires an ID");
+    }
+  } else if (argument === "--preview") preview = true;
   else if (argument === "--schema") schema_preview = true;
   else if (argument === "--force") {
     const table = Deno.args[++index];
@@ -49,8 +59,19 @@ for (let index = 0; index < Deno.args.length; index++) {
 if (!endpoint || !user || !token) {
   throw new Error("activate is available only inside a development sandbox");
 }
-if (!preview && !description.trim()) {
+if (!preview && !action && !description.trim()) {
   throw new Error("an activation description is required");
+}
+if (
+  action && preview ||
+  (action === "status" || action === "abort") && force_columns.length
+) {
+  throw new Error(
+    "Status and abort cannot force activation; lifecycle actions cannot preview",
+  );
+}
+if (attempt_id && action !== "abort") {
+  throw new Error("--attempt requires --abort");
 }
 if (schema_preview && !preview) throw new Error("--schema requires --preview");
 if (force_columns.length && !selected_packages.length) {
@@ -87,6 +108,8 @@ const response = await fetch(
     },
     body: JSON.stringify({
       description,
+      action,
+      attempt_id,
       selected_packages,
       package_messages,
       author_name: authorName,
@@ -101,7 +124,47 @@ if (json) console.log(body.trim());
 else {
   const result = JSON.parse(body);
   const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-  if (preview) {
+  const inventory = result.retained ?? [];
+  for (const retained of inventory) {
+    console.log(
+      `${retained.attempt_id}: ${retained.status} — ${retained.worktree}`,
+    );
+    if (retained.recovery) console.log(retained.recovery);
+    if (retained.status === "legacy-unresolved") {
+      console.log(
+        `  Recover/export using ordinary Git, or preserve explicitly: activate --abort --attempt ${
+          quote(retained.attempt_id)
+        }`,
+      );
+    }
+  }
+  if (result.inventory_truncated) {
+    console.log(
+      "Inventory limited to 128 entries; inspect retained directories in the terminal.",
+    );
+  }
+  if (action === "status") {
+    console.log(
+      `${result.status}${
+        result.attempt_id ? ` (${result.attempt_id}, ${result.phase})` : ""
+      }`,
+    );
+    if (result.error) console.log(result.error);
+    for (const item of result.packages ?? []) {
+      console.log(
+        `  ${item.package_id}: ${item.status} ${item.worktree ?? ""}`,
+      );
+    }
+  } else if (result.status === "aborted-preserved") {
+    console.log(
+      "Attempt closed. Files and captures are preserved for recovery/export. Current private changes remain pending.",
+    );
+  } else if (result.success && result.phase === "aborted") {
+    console.log("Attempt closed. Current private changes remain pending.");
+  } else if (preview) {
+    if (result.pending) {
+      console.log(`${result.pending.status}: ${result.pending.error}`);
+    }
     if (result.schema_plan) {
       for (const table of result.schema_plan.tables) {
         console.log(
@@ -126,7 +189,7 @@ else {
         }`,
       );
     }
-    if (!result.packages?.length && !result.schema_plan) {
+    if (!result.pending && !result.packages?.length && !result.schema_plan) {
       console.log("No private changes.");
     }
   } else if (result.success) {
@@ -179,12 +242,15 @@ else {
           }\n  git status\n  # Edit the conflicting files; use git rm for a deletion.\n  git add -A\n  git commit -m 'Resolve activation conflicts'`,
         );
       } else if (item.error) console.error(item.error);
+      else if (item.worktree) {
+        console.error(`  Inspect preserved staging: ${item.worktree}`);
+      }
     }
     if (result.status === "conflicted") {
       console.error(
-        `\nThen rerun: activate ${
-          Deno.args.map(quote).join(" ")
-        }\nYou can also resolve these files in Development → Review changes → Resolve conflicts.`,
+        `\nThen continue: activate --continue --message ${
+          quote(description)
+        }\nOr preserve and leave this attempt: activate --abort\nYou can also resolve these files in Development → Review changes → Resolve conflicts.`,
       );
     }
   }

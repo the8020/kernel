@@ -80,6 +80,8 @@ type ImageStatus struct {
 }
 
 type ActivationOptions struct {
+	Action           string            `json:"action,omitempty"`
+	AttemptID        string            `json:"attempt_id,omitempty"`
 	Description      string            `json:"description"`
 	SelectedPackages []string          `json:"selected_packages,omitempty"`
 	PreviewFile      string            `json:"preview_file,omitempty"`
@@ -121,6 +123,9 @@ type ActivationPackagePreview struct {
 
 type ActivationPreview struct {
 	Packages             []ActivationPackagePreview `json:"packages"`
+	Pending              *ActivationResult          `json:"pending,omitempty"`
+	Retained             []ActivationRetained       `json:"retained,omitempty"`
+	InventoryTruncated   bool                       `json:"inventory_truncated,omitempty"`
 	SchemaPlan           json.RawMessage            `json:"schema_plan,omitempty"`
 	SchemaOptionsVersion int                        `json:"schema_options_version"`
 }
@@ -133,19 +138,30 @@ type ActivationPackageResult struct {
 	CommitMessage    string   `json:"commit_message,omitempty"`
 	Conflicts        []string `json:"conflicts,omitempty"`
 	ConflictWorktree string   `json:"conflict_worktree,omitempty"`
+	Worktree         string   `json:"worktree,omitempty"`
 	Error            string   `json:"error,omitempty"`
 }
 
 type ActivationResult struct {
-	Error        string                    `json:"error,omitempty"`
-	DeploymentID string                    `json:"deployment_id,omitempty"`
-	Phase        string                    `json:"phase,omitempty"`
-	Resumed      bool                      `json:"resumed,omitempty"`
-	Success      bool                      `json:"success"`
-	Status       string                    `json:"status"`
-	Packages     []ActivationPackageResult `json:"packages"`
-	SchemaPlan   json.RawMessage           `json:"schema_plan,omitempty"`
-	SchemaResult json.RawMessage           `json:"schema_result,omitempty"`
+	AttemptID          string                    `json:"attempt_id,omitempty"`
+	Retained           []ActivationRetained      `json:"retained,omitempty"`
+	InventoryTruncated bool                      `json:"inventory_truncated,omitempty"`
+	Error              string                    `json:"error,omitempty"`
+	DeploymentID       string                    `json:"deployment_id,omitempty"`
+	Phase              string                    `json:"phase,omitempty"`
+	Resumed            bool                      `json:"resumed,omitempty"`
+	Success            bool                      `json:"success"`
+	Status             string                    `json:"status"`
+	Packages           []ActivationPackageResult `json:"packages"`
+	SchemaPlan         json.RawMessage           `json:"schema_plan,omitempty"`
+	SchemaResult       json.RawMessage           `json:"schema_result,omitempty"`
+}
+
+type ActivationRetained struct {
+	AttemptID string `json:"attempt_id"`
+	Status    string `json:"status"`
+	Worktree  string `json:"worktree"`
+	Recovery  string `json:"recovery,omitempty"`
 }
 
 type ShellResult struct {

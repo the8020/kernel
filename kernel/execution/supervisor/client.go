@@ -101,10 +101,11 @@ func (m ExecutionMetadata) Valid() bool {
 }
 
 type ServiceExecutionMetadata struct {
-	ServiceID         string `json:"serviceId"`
-	Generation        uint64 `json:"generation"`
-	CanonicalBasePath string `json:"canonicalBasePath"`
-	ExecutionMode     string `json:"executionMode,omitempty"`
+	CredentialNamespace string `json:"credentialNamespace,omitempty"`
+	ServiceID           string `json:"serviceId"`
+	Generation          uint64 `json:"generation"`
+	CanonicalBasePath   string `json:"canonicalBasePath"`
+	ExecutionMode       string `json:"executionMode,omitempty"`
 }
 
 type WorkerInvocationError struct {

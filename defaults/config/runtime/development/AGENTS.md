@@ -17,18 +17,20 @@ Parent DOX: [kernel/defaults/config/runtime DOX](../AGENTS.md).
 
 # Local Contracts
 
-- `deno.json` is installed separately at `/workspace/deno.json` as a read-only
-  workspace config. It includes `packages/*/*`, supplies platform aliases to the
-  mounted runtime SDK, and lets packages own their dependencies and tasks. Deno
-  maintains its ordinary shared lockfile in the writable workspace.
+- `deno.json` is the template for the native read-only `/workspace/deno.json`
+  mount. Its empty member list is replaced on read with current explicit package
+  members by the workspace Gofer, without recursive discovery or a refresh
+  process. It supplies platform aliases to the mounted SDK; packages own their
+  dependencies and tasks. Deno maintains its ordinary shared lockfile in the
+  writable workspace.
 
-- The image contains Git, pinned Deno, Bash, common Unix tools, `procps` (including
-  `ps` for developer tools such as Codex), `clear`, the
-  common `ncurses-base` terminal definitions including `xterm` and
-  `xterm-256color`, CA certificates, curl, Nano, and APT/dpkg. The canonical
-  `activate` helper is supplied separately through the read-only
-  `/workspace/scripts` mount. Codex, Node.js, and npm are not preinstalled;
-  developers may add their own tools through APT.
+- The image contains Git, pinned Deno, Bash, common Unix tools, `procps`
+  (including `ps` for developer tools such as Codex), `clear`, the common
+  `ncurses-base` terminal definitions including `xterm` and `xterm-256color`, CA
+  certificates, curl, Nano, and APT/dpkg. The canonical `activate` helper is
+  supplied separately through the read-only `/workspace/scripts` mount. Codex,
+  Node.js, and npm are not preinstalled; developers may add their own tools
+  through APT.
 - Interactive login shells source the image-owned `/etc/profile` and expose a
   restrained colorized `user@host:working-directory` prompt, with a plain-text
   fallback for terminals without common ANSI capabilities. Mounted agent
@@ -62,14 +64,14 @@ Parent DOX: [kernel/defaults/config/runtime DOX](../AGENTS.md).
 
 # Verification
 
-- Both image builds verify `ps` runs (or, inside a Docker outer build chroot without
-  `/proc`, that it is installed) and require its executable before publication.
-  Portable installation verifies required executables, the absence of Codex,
-  Node.js, and npm, APT metadata, Debian `dpkg`, common terminfo, pinned tools,
-  and image identity. The real rootless/rootful E2E requires a contextual
-  working-directory prompt, a native dpkg transaction, an actual `xterm`
-  full-screen Nano session over SSH, a `sleep` PID 1, a usable Debian lock
-  directory, ephemeral `/run`, no scanner, durable root-home/APT writes and
+- Both image builds verify `ps` runs (or, inside a Docker outer build chroot
+  without `/proc`, that it is installed) and require its executable before
+  publication. Portable installation verifies required executables, the absence
+  of Codex, Node.js, and npm, APT metadata, Debian `dpkg`, common terminfo,
+  pinned tools, and image identity. The real rootless/rootful E2E requires a
+  contextual working-directory prompt, a native dpkg transaction, an actual
+  `xterm` full-screen Nano session over SSH, a `sleep` PID 1, a usable Debian
+  lock directory, ephemeral `/run`, no scanner, durable root-home/APT writes and
   private package deltas across sandbox restart, mounted-helper
   preview/activation, and verified source/factory reset boundaries.
 

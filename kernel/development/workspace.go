@@ -568,5 +568,8 @@ func (m *Manager) resetWorkspace(sandbox *Sandbox) error {
 		return err
 	}
 	sandbox.LastActivationResult, sandbox.LastActivationStatus = nil, ""
-	return os.RemoveAll(filepath.Join(m.sandboxRoot(*sandbox), "workspace"))
+	if err := os.RemoveAll(filepath.Join(m.sandboxRoot(*sandbox), "workspace")); err != nil {
+		return err
+	}
+	return os.RemoveAll(filepath.Join(m.sandboxRoot(*sandbox), "activation/retained"))
 }

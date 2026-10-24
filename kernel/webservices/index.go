@@ -39,9 +39,10 @@ type Specification struct {
 }
 
 type AccessPolicy struct {
-	Mode            string                `json:"mode"`
-	CookieName      string                `json:"cookie_name,omitempty"`
-	Unauthenticated UnauthenticatedPolicy `json:"unauthenticated"`
+	CredentialNamespace string                `json:"credential_namespace,omitempty"`
+	Mode                string                `json:"mode"`
+	CookieName          string                `json:"cookie_name,omitempty"`
+	Unauthenticated     UnauthenticatedPolicy `json:"unauthenticated"`
 }
 
 type UnauthenticatedPolicy struct {
@@ -137,6 +138,9 @@ func (i *Index) ReplacePackage(packageID string, draft []Specification) ([]strin
 	defer i.mu.Unlock()
 	cookieName := ""
 	checkCookie := func(spec Specification) error {
+		if spec.Access.CredentialNamespace != "" && !execution.ValidCredentialNamespace(spec.Access.CredentialNamespace) {
+			return errors.New("invalid credential namespace")
+		}
 		if spec.Access.CookieName != "" {
 			if cookieName != "" && cookieName != spec.Access.CookieName {
 				return errors.New("service authentication cookie names disagree")

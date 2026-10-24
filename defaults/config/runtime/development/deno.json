@@ -1,7 +1,5 @@
 {
-  "workspace": [
-    "./packages/*/*"
-  ],
+  "workspace": [],
   "nodeModulesDir": "none",
   "compilerOptions": {
     "strict": true,

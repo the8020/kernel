@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 
 	"the8020/kernel/identity"
 	"the8020/kernel/sandbox/model"
@@ -95,13 +96,18 @@ func (o Origin) ValidForWorkload(workload model.WorkloadType) bool {
 		workload == model.WorkloadJob && (o.Type == OriginModule || o.Type == OriginProgram)
 }
 
+var credentialNamespace = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_./:-]{0,255}$`)
+
+func ValidCredentialNamespace(value string) bool { return credentialNamespace.MatchString(value) }
+
 type Caller struct {
-	ContextID string
-	JobRunID  string
-	SandboxID string
-	WorkerID  string
-	Workload  model.WorkloadType
-	User      User
+	CredentialNamespace string
+	ContextID           string
+	JobRunID            string
+	SandboxID           string
+	WorkerID            string
+	Workload            model.WorkloadType
+	User                User
 }
 
 func (c Caller) Valid() bool {

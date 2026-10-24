@@ -27,26 +27,27 @@ Parent DOX: [kernel/kernel/runtime DOX](../AGENTS.md).
   `Server.Address`, and `Close`.
 - Only generated registration, heartbeat, administrative, database, and
   Worker-invocation envelopes are accepted; envelope/payload versions and
-  sandbox identity must agree, constant-time bearer validation uses the
-  state store's preloaded token cache, unknown identities remain cache-only
-  misses, and terminal groups cannot be revived by late callbacks.
+  sandbox identity must agree, constant-time bearer validation uses the state
+  store's preloaded token cache, unknown identities remain cache-only misses,
+  and terminal groups cannot be revived by late callbacks.
 - Registration and heartbeat carry one absolute revisioned supervisor snapshot.
   Applying a snapshot and refreshing heartbeat freshness are memory-only; stale
   revisions cannot replace newer state, and restart recovery obtains fresh truth
   from the supervisor heartbeat.
 - Administration, typed operations, database access, and Worker invocation are
   available to both job and service Workers after cached sandbox token
-  validation and shared canonical Worker/context identity validation. They do not
-  reverse-query the supervisor or scan Workers per call.
-- Administration and typed-operation calls carry the trusted invocation context, optional job-run identity,
-  and effective user in Go context so child jobs inherit identity and cannot
-  queue behind the waiting parent that requested them.
+  validation and shared canonical Worker/context identity validation. They do
+  not reverse-query the supervisor or scan Workers per call.
+- Administration and typed-operation calls carry the trusted invocation context,
+  optional job-run identity, and effective user in Go context so child jobs
+  inherit identity and cannot queue behind the waiting parent that requested
+  them.
 - Reject malformed caller `ctx-`/optional `job-` identities before attaching Go
-  context or dispatching an operation. Exact Worker calls additionally apply
-  the shared node target validator before forwarding.
+  context or dispatching an operation. Exact Worker calls additionally apply the
+  shared node target validator before forwarding.
 - Sandbox and workload identity derive from the authenticated runtime envelope.
-  Payloads carry only Worker, invocation context, and optional job-run identity plus fields owned by
-  the selected operation.
+  Payloads carry only Worker, invocation context, and optional job-run identity
+  plus fields owned by the selected operation.
 - Signing and verification are ordinary typed runtime operations for both
   service and job Workers. There are no login/logout endpoints, application
   account/session types, or active HTTP request registry. Secure program inputs
@@ -60,23 +61,23 @@ Parent DOX: [kernel/kernel/runtime DOX](../AGENTS.md).
   value.
 - Database calls delegate to the kernel-owned database. The backend name needed
   during module import travels in non-secret Worker metadata.
-- Database transaction tokens are scoped by sandbox, Worker, and
-  invocation context. Request completion closes that
-  exact scope; Worker termination closes its scope prefix, rolling back leaked
-  transactions. These checks are in memory and never validate Worker liveness.
-  Evaluator Workers have database calls disabled.
+- Database transaction tokens are scoped by sandbox, Worker, and invocation
+  context. Request completion closes that exact scope; Worker termination closes
+  its scope prefix, rolling back leaked transactions. These checks are in memory
+  and never validate Worker liveness. Evaluator Workers have database calls
+  disabled.
 - Database metadata access allows an absent context. Any provided Worker,
-  context, or job-run ID must be canonical; other database operations require
-  an execution context.
+  context, or job-run ID must be canonical; other database operations require an
+  execution context.
 - Supervisor-only `/v1/runtime/execution/release` accepts an exact canonical
   Worker ID under the authenticated sandbox envelope, releases native resource
   leases, and closes any leaked Worker database scopes. It requires no active
   invocation or SQL. Typed operation ingress stamps the sandbox/Worker pair in
   the trusted caller context so packages cannot select another attachment owner.
 - Worker invocation applies a five-second context and forwards one exact
-  node/sandbox/Worker, the caller's context and validated effective user, and an optional
-  persistent-execution target while treating the registered function and JSON as
-  opaque.
+  node/sandbox/Worker, the caller's context and validated effective user, and an
+  optional persistent-execution target while treating the registered function
+  and JSON as opaque.
 - Production mounts the socket's containing node-private directory for the
   trusted supervisor, while application Worker permissions deny both the socket
   and token. Supervisors open a new Unix connection per call so a socket
@@ -84,6 +85,12 @@ Parent DOX: [kernel/kernel/runtime DOX](../AGENTS.md).
   responses declare their exact content length so completion does not depend on
   Unix transport EOF propagation. Closing a cancelled connection cancels the Go
   request context.
+
+- Typed callbacks carry the supervisor-stamped `credential_namespace` into
+  `execution.Caller`; application operation input cannot override it. It is
+  selected from trusted Worker service metadata or program-package origin, under
+  the existing authenticated sandbox channel. No key/account lookup or password
+  policy enters callback transport.
 
 # Work Guidance
 

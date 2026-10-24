@@ -133,9 +133,10 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 - `kernel.execution.secret()` reads a required execution-local secure input;
   `optionalSecret()` returns `undefined` when absent. Jobs and trusted service
   authentication hooks have separate scopes; application handlers and concurrent
-  requests cannot observe hook passwords. Hook scopes permit only database
-  calls. The private bridge confirms the approved request user with the
-  supervisor; `execution.authenticate` never crosses the native callback socket.
+  requests cannot observe hook passwords. Hook scopes permit database calls and
+  the scoped password-digest primitive only. The private bridge confirms the
+  approved request user with the supervisor; `execution.authenticate` never
+  crosses the native callback socket.
 - Named-secret APIs belong to `/p/the8020/secrets/mod.ts`, which owns SQL and
   transparent encryption/decryption. The SDK exports no named-secret operations.
 - `kernel.packages` provides typed index list/inspect/set, source inspection,
@@ -228,6 +229,15 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   `ServiceIndexState.packages` holds mutable per-package service arrays and
   optional explicit errors. Hooks share the complete state in one invocation;
   the Go owner validates scope and publishes each accepted fragment.
+
+- `kernel.crypto.passwordDigest(userId, password, nonce)` accepts UTF-8 password
+  bytes and a 16-byte public record nonce, and returns the final 32-byte digest
+  in one native invocation. The native signer enforces 1–256 UTF-8 byte IDs and
+  1–1048576 UTF-8 password bytes. Callers cannot select the trusted namespace;
+  all key derivation and hashing stay native, with no key-export API. Callers
+  clear password buffers after use and never log credentials. This is available
+  in authentication scopes alongside SQL, without allowing signing,
+  administration or other crypto.
 
 # Work Guidance
 

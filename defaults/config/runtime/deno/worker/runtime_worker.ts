@@ -406,6 +406,14 @@ export class RuntimeWorker {
         jobRunId: payload.request?.jobRunId,
         parentContextId: payload.request?.parentContextId,
         workerId: this.metadata.workerId,
+        credentialNamespace: this.metadata.workloadType === "service"
+          ? this.metadata.service?.credentialNamespace ||
+            `service:${this.metadata.origin.id}`
+          : this.metadata.origin.type === "program"
+          ? `package:${
+            this.metadata.origin.id.split("/").slice(0, 2).join("/")
+          }`
+          : undefined,
         persistentExecutionId: payload.request?.persistentExecutionId,
         user: payload.request?.user,
       }, controller.signal);

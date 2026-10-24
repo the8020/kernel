@@ -72,6 +72,10 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
   Routine routing reads the kernel snapshot cache; this live RPC is reserved for
   targeted refresh and recovery.
 
+- `ServiceExecutionMetadata.credentialNamespace` carries the accepted namespace
+  into the trusted supervisor. It is startup metadata, never an HTTP/request or
+  application kernel-call field.
+
 # Work Guidance
 
 - Keep JSON control bodies small, cap error bodies, preserve Worker idle

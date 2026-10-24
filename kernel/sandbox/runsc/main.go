@@ -121,7 +121,20 @@ func (e *workspaceExtension) PrepareGofer(ctx extension.GoferPrepareContext) (ex
 	return result, nil
 }
 func (e *workspaceExtension) TryHandleMount(spec *specs.Spec, mount *specs.Mount, mountPath string, readonly bool) (lisafs.ConnectionImpl, lisafs.ConnectionOpts, error) {
-	if mount == nil || mount.Destination != workspaceMount || spec.Annotations["the8020.workspace.lower"] == "" {
+	if mount == nil || spec.Annotations["the8020.workspace.lower"] == "" {
+		return nil, lisafs.ConnectionOpts{}, nil
+	}
+	if mount.Destination == "/workspace/deno.json" {
+		if e.fs == nil || !readonly {
+			return nil, lisafs.ConnectionOpts{}, unix.EINVAL
+		}
+		template, err := os.Open(mountPath)
+		if err != nil {
+			return nil, lisafs.ConnectionOpts{}, err
+		}
+		return &denoConfigFS{workspaceFS: e.fs, template: template}, lisafs.ConnectionOpts{Readonly: true, WalkStatSupported: true}, nil
+	}
+	if mount.Destination != workspaceMount {
 		return nil, lisafs.ConnectionOpts{}, nil
 	}
 	if e.fs == nil || readonly {
@@ -1443,6 +1456,7 @@ func (f *workspaceFS) serveControl(file *os.File) {
 	for scanner.Scan() {
 		var request struct {
 			Action, Path, ID string
+			Version          string
 			Moves            map[string]string
 		}
 		var answer map[string]any
@@ -1452,6 +1466,8 @@ func (f *workspaceFS) serveControl(file *os.File) {
 		}
 		if err == nil {
 			switch request.Action {
+			case "staging-version", "retire-staging", "release-staging":
+				answer, err = f.staging(request.Action, request.Path, request.ID, request.Version)
 			case "package-state":
 				f.publicationMu.RLock()
 				var directories []string
@@ -1482,6 +1498,9 @@ func (f *workspaceFS) serveControl(file *os.File) {
 				answer, err = f.acknowledge(request.Path, request.ID)
 			case "acknowledge-directory":
 				answer, err = f.acknowledgeDirectory(request.Path, request.ID)
+			case "discard":
+				err = f.discardCapture(request.Path, request.ID)
+				answer = map[string]any{"status": "discarded"}
 			case "release":
 				err = f.releaseCapture(request.Path, request.ID)
 				answer = map[string]any{"status": "released"}
@@ -2013,6 +2032,48 @@ func syncRootPath(root *os.Root, name string) error {
 		return err
 	}
 	return errors.Join(file.Sync(), file.Close())
+}
+
+// The activation owner authorizes discard only after confirmed rollback and
+// staging retirement. Private source/originals and publication heads stay intact.
+func (f *workspaceFS) discardCapture(name, id string) error {
+	f.publicationMu.Lock()
+	defer f.publicationMu.Unlock()
+	owned, err := f.snapshots.ReadFile(id + "/path")
+	if err != nil || string(owned) != name {
+		return unix.EINVAL
+	}
+	receipt := ".heads/" + name
+	if _, err := f.snapshots.Lstat(id + "/directory"); err == nil {
+		receipt = directoryHead(name)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	head, err := f.readPublicationHead(receipt)
+	if err != nil {
+		return err
+	}
+	parent, err := f.snapshots.ReadFile(id + "/parent")
+	if err != nil || head == id || head != string(parent) {
+		return unix.ESTALE
+	}
+	pending := ".pending/" + name
+	if current, err := f.snapshots.ReadFile(pending); err == nil && string(current) == id {
+		if err := f.snapshots.Remove(pending); err != nil {
+			return err
+		}
+		if err := syncRootPath(f.snapshots, path.Dir(pending)); err != nil {
+			return err
+		}
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	for _, payload := range []string{"file", "base", "file-reference", "base-reference"} {
+		if err := f.snapshots.Remove(id + "/" + payload); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return syncRootPath(f.snapshots, id)
 }
 
 // Only the serialized control owner releases captures, after publication and

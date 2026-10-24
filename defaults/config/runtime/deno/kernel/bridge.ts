@@ -130,9 +130,15 @@ export function createKernelBridge(
         new Error("persistent execution context is unavailable"),
       );
     }
-    if (request?.authenticating && !operation.startsWith("database.")) {
+    if (
+      request?.authenticating && !operation.startsWith("database.") &&
+      !(operation === "runtime.operation" &&
+        input.operation === "crypto.password.digest")
+    ) {
       return Promise.reject(
-        new Error("only database access is available during authentication"),
+        new Error(
+          "only database and password-digest access is available during authentication",
+        ),
       );
     }
     const correlationId = newId("cor");

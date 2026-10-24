@@ -46,6 +46,7 @@ type Policy struct {
 	Logger          *slog.Logger
 }
 type Options struct {
+	CredentialNamespace  string
 	User                 execution.User
 	GroupKey             string
 	Namespace            string
@@ -67,6 +68,7 @@ type Options struct {
 	PlacementWorkers     int
 }
 type Record struct {
+	CredentialNamespace  string                       `json:"credential_namespace,omitempty"`
 	User                 execution.User               `json:"user"`
 	ServiceID            string                       `json:"service_id"`
 	Entrypoint           string                       `json:"entrypoint"`
@@ -212,6 +214,7 @@ func (m *Manager) Start(ctx context.Context, serviceID, entrypoint string, optio
 		options.ReleaseID = "development"
 	}
 	record := Record{ServiceID: serviceID, LogicalServiceID: options.LogicalServiceID, Generation: options.Generation, CanonicalBasePath: options.CanonicalBasePath, SandboxIndex: options.SandboxIndex, Entrypoint: entrypoint, ReleaseID: options.ReleaseID, State: "STARTING", MinimumWorkers: minimum, MaximumWorkers: maximum, ConcurrencyPerWorker: concurrency, WorkerKeepAlive: options.WorkerKeepAlive, StartedAt: m.now(), ExecutionMode: options.ExecutionMode, TargetUtilization: options.TargetUtilization}
+	record.CredentialNamespace = options.CredentialNamespace
 	record.RestartRevision = options.RestartRevision
 	if record.LogicalServiceID == "" {
 		record.LogicalServiceID = serviceID
@@ -855,7 +858,7 @@ func (m *Manager) startWorker(ctx context.Context, record Record, permissions su
 	if err != nil {
 		return "", err
 	}
-	started, err := m.workers.Start(ctx, record.SandboxID, supervisor.StartWorkerRequest{Metadata: supervisor.ExecutionMetadata{WorkerID: workerID, WorkloadType: model.WorkloadService, OwnerID: record.LogicalServiceID, WorkloadID: record.ServiceID, ReleaseID: record.ReleaseID, Entrypoint: record.Entrypoint, DebuggerName: "service:" + record.LogicalServiceID + ":" + workerID, User: record.User, Origin: execution.Origin{Type: execution.OriginService, ID: record.LogicalServiceID}, Service: &supervisor.ServiceExecutionMetadata{ServiceID: record.LogicalServiceID, Generation: record.Generation, CanonicalBasePath: record.CanonicalBasePath, ExecutionMode: record.ExecutionMode}}, Permissions: permissions})
+	started, err := m.workers.Start(ctx, record.SandboxID, supervisor.StartWorkerRequest{Metadata: supervisor.ExecutionMetadata{WorkerID: workerID, WorkloadType: model.WorkloadService, OwnerID: record.LogicalServiceID, WorkloadID: record.ServiceID, ReleaseID: record.ReleaseID, Entrypoint: record.Entrypoint, DebuggerName: "service:" + record.LogicalServiceID + ":" + workerID, User: record.User, Origin: execution.Origin{Type: execution.OriginService, ID: record.LogicalServiceID}, Service: &supervisor.ServiceExecutionMetadata{CredentialNamespace: record.CredentialNamespace, ServiceID: record.LogicalServiceID, Generation: record.Generation, CanonicalBasePath: record.CanonicalBasePath, ExecutionMode: record.ExecutionMode}}, Permissions: permissions})
 	if err != nil {
 		if supervisor.IsRequestRejected(err) {
 			return "", &invalidServiceDefinitionError{cause: err}

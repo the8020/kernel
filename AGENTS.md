@@ -306,10 +306,10 @@ relevant child AGENTS.md
   username/password authentication. Tokens use native signature checks followed
   by users-package account/session policy in the target Worker. Basic and
   certificate policy use that same trusted pre-handler hook directly. Its
-  database-only scope exposes passwords as execution-local secrets; approval
-  establishes the final request principal before handler/upgrade and persistent
-  binding reuse. Handlers receive no platform credentials. Native non-service
-  transports retain their ordinary authentication program.
+  database/password-digest scope exposes passwords as execution-local secrets;
+  approval establishes the final request principal before handler/upgrade and
+  persistent binding reuse. Handlers receive no platform credentials. Native
+  non-service transports retain their ordinary authentication program.
 - The kernel owns cryptographic integrity and private deployment key storage;
   the users Deno package owns passwords, sessions, revocation, login/logout, and
   application cookies. Context getters are synchronous and never authenticate.
@@ -645,6 +645,11 @@ below.
   speculative callers or extension points.
 
 ## Development Workflow
+
+- Release `1.0.0` is the incompatible Argon2-to-native-digest credential
+  transition. Its README owns the coordinated package set, key backup and
+  explicit CBus recovery procedure. The same-major updater must not accept a
+  `0.x` to `1.x` transition; no automatic password reset is installed.
 
 - Verify the final release contents, including documentation added to discovery
   folders, before tagging. Install and test a fresh system either natively in

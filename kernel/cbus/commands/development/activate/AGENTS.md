@@ -11,13 +11,15 @@ Parent DOX: [kernel/kernel/cbus/commands/development DOX](../AGENTS.md).
 # Local Contracts
 
 - Requests support selection, common and per-package messages, author identity,
-  and metadata. Preview is read-only; run returns package-level committed,
-  not-committed, conflicted, or failed results and never pushes remotes.
+  metadata and lifecycle action/attempt selection. Preview is read-only and
+  includes current pending/retained attempts. Run distinguishes staging, actual
+  conflicts, publication recovery and cleanup; it never pushes remotes. Status,
+  Continue and data-preserving Abort delegate to the same journal owner.
 - Preview accepts `file` with exactly one selected package to include that
   changed file's bounded native Git diff. Unselected file contents stay omitted.
-- Preview/run scan the live sandbox package overlay through the domain's
-  temporary Git-index path. Lifecycle checkpoints may invoke the same domain
-  scanner to persist deltas across process recreation.
+- Preview/run inspect the selected sparse workspace through the domain owner.
+  Journal recovery retains captured changes across process recreation; no
+  checkpoint timer or retained-tree cleanup sweep exists.
 
 # Work Guidance
 

@@ -142,12 +142,13 @@ type workerCallPayload struct {
 }
 
 type operationCallPayload struct {
-	JobRunID  string         `json:"job_run_id,omitempty"`
-	WorkerID  string         `json:"worker_id"`
-	ContextID string         `json:"context_id,omitempty"`
-	Operation string         `json:"operation"`
-	Input     map[string]any `json:"input"`
-	User      execution.User `json:"user"`
+	CredentialNamespace string         `json:"credential_namespace,omitempty"`
+	JobRunID            string         `json:"job_run_id,omitempty"`
+	WorkerID            string         `json:"worker_id"`
+	ContextID           string         `json:"context_id,omitempty"`
+	Operation           string         `json:"operation"`
+	Input               map[string]any `json:"input"`
+	User                execution.User `json:"user"`
 }
 
 type operationCallResult struct {
@@ -567,6 +568,7 @@ func (s *Server) handleOperation(writer http.ResponseWriter, request *http.Reque
 		http.Error(writer, "invalid runtime operation payload", http.StatusBadRequest)
 		return
 	}
+	caller.CredentialNamespace = payload.CredentialNamespace
 	callContext := execution.WithCaller(request.Context(), caller)
 	var result any
 	var operationErr error

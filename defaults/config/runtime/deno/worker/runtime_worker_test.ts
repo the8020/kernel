@@ -13,6 +13,37 @@ import type {
 const example = (name: string): string =>
   new URL(`../examples/${name}.ts`, import.meta.url).href;
 
+Deno.test("program password digests use their trusted package namespace", async () => {
+  const entry = new URL("./testdata/password_namespace.ts", import.meta.url);
+  const definition = metadata("job", entry.href);
+  definition.origin = { type: "program", id: "example/accounts/create" };
+  const worker = new RuntimeWorker({
+    metadata: definition,
+    permissions: { read: [new URL("./testdata/", import.meta.url).pathname] },
+    kernelCall: (call) => {
+      if (call.operation === "database.scope.close") return Promise.resolve({});
+      assertEquals(call.credentialNamespace, "package:example/accounts");
+      assertEquals(call.arguments, {
+        operation: "crypto.password.digest",
+        input: {
+          user_id: "alice",
+          password: "cGFzc3dvcmQ=",
+          nonce: new Uint8Array(16).toBase64(),
+        },
+      });
+      return Promise.resolve({
+        success: true,
+        result: { digest: new Uint8Array(32).toBase64() },
+      });
+    },
+  });
+  try {
+    assertEquals(await worker.runJob(testInvocation(), []), true);
+  } finally {
+    worker.kill();
+  }
+});
+
 Deno.test("Worker records only loaded direct, transitive and late dynamic imports", async () => {
   const root = new URL("./testdata/", import.meta.url);
   const worker = new RuntimeWorker({
@@ -875,6 +906,7 @@ Deno.test("service Worker bridges signing, verification, admin, and database cal
       serviceId: "example/auth/login",
 
       workerId: worker.metadata.workerId,
+      credentialNamespace: "service:owner-kernel",
       persistentExecutionId: undefined,
       user: { userId: "user:system", username: "system" },
     });

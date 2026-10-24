@@ -60,6 +60,11 @@ func (g *CommandBusGateway) execute(ctx context.Context, commandName, resultFiel
 		return fmt.Errorf("development activation command %s is unavailable", commandName)
 	}
 	arguments := []string{userID}
+	for name, value := range map[string]string{"action": options.Action, "attempt": options.AttemptID} {
+		if value != "" {
+			arguments = append(arguments, "--"+name, value)
+		}
+	}
 	if options.Description != "" || resultField == "activation" {
 		arguments = append(arguments, "--message", options.Description)
 	}

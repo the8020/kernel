@@ -69,12 +69,12 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   handlers or WebSocket acceptance. The generic runtime has no users-package
   path or SQL. Public requests omit this metadata and bypass imports,
   verification, and policy. The hook returns a canonical user or rejection
-  Response. Its scope permits only database operations and confines/redacts its
-  secure inputs. Hook failures return non-cacheable, unchallenged 503. Approval
-  confirms the principal with the supervisor before publishing
-  `auth.authenticated`; streaming bodies and WebSocket callbacks restore that
-  approved request context. Context getters do not perform I/O. Never introduce
-  a second auth Worker, service, or sandbox.
+  Response. Its scope permits database and password-digest operations and
+  confines/redacts its secure inputs. Hook failures return non-cacheable,
+  unchallenged 503. Approval confirms the principal with the supervisor before
+  publishing `auth.authenticated`; streaming bodies and WebSocket callbacks
+  restore that approved request context. Context getters do not perform I/O.
+  Never introduce a second auth Worker, service, or sandbox.
 - Trusted native-transport approval in authentication metadata skips the package
   hook already performed by that transport. The signed/approved subject must
   still match the execution principal before publishing authenticated context.
@@ -144,6 +144,13 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   timeout and failure. These Worker-wide events omit invocation and username;
   detailed application errors remain owned by the active redacting Worker scope.
   Failure and explicit termination share cleanup of calls, contexts and streams.
+
+- RuntimeWorker stamps credential namespaces independently of Worker arguments:
+  service metadata's explicit namespace or `service:<logical service ID>`;
+  program jobs use `package:<namespace/package>` from their trusted origin.
+  Direct module jobs have no credential namespace and cannot compute password
+  digests. Imported modules do not change the outer namespace. Shared-store
+  service declarations must opt into the matching program-package namespace.
 
 # Lifecycle
 

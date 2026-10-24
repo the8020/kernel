@@ -18,6 +18,8 @@ Parent DOX: [kernel/kernel/cbus/commands/development DOX](../AGENTS.md).
   failed.
 - Preview maps the optional `file` argument to the domain's `PreviewFile`; path
   validation and diff generation belong to development.
+- Activation maps `action` (status/continue/abort) and optional `attempt` to the
+  same native journal owner. It never invents a separate cleanup command path.
 
 # Work Guidance
 

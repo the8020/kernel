@@ -493,6 +493,43 @@ func TestSecureMetadataIsValidatedAndForwardedSeparately(t *testing.T) {
 	}
 }
 
+func TestUsersResetDeclarationKeepsRecoverySecretOutOfArguments(t *testing.T) {
+	users := filepath.Join("..", "..", "..", "..", "users")
+	if _, err := os.Stat(users); os.IsNotExist(err) {
+		t.Skip("requires sibling users source workspace")
+	}
+	root := t.TempDir()
+	for _, relative := range []string{"package.toml", "cbus/commands/reset-passwords.toml", "programs/reset-passwords/program.toml", "programs/reset-passwords/program.ts"} {
+		data, err := os.ReadFile(filepath.Join(users, relative))
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(root, "the8020/users", relative), string(data))
+	}
+	packages := &fakePackages{root: root, entries: []workspacepackages.PackageIndex{{PackageID: "the8020/users", State: "ready", ActiveCommit: "fixture"}}}
+	programs := &fakePrograms{}
+	registry := core.NewRegistry(nil)
+	indexer, _ := New(packages, programs, registry)
+	if report, err := indexer.Reindex(t.Context()); err != nil || report.Commands != 1 || len(report.Diagnostics) != 0 {
+		t.Fatalf("reset declaration rejected: %v, %v", report, err)
+	}
+	command := registry.Catalog().Commands[0]
+	if command.Name != "users.reset-passwords" || len(command.Secrets) != 1 || !command.Secrets[0].Required || command.Secrets[0].ConfirmationPrompt == "" || command.Secrets[0].StdinOption != "password-stdin" {
+		t.Fatal("reset declaration lost secure input metadata")
+	}
+	request := core.Request{ProtocolVersion: core.ProtocolVersion, CommandID: command.ID, Argv: []string{"alice", "--confirm"}}
+	if result := registry.Execute(t.Context(), request); result.Error == nil || result.Error.Code != core.CodeInvalidArguments {
+		t.Fatal("reset accepted missing recovery secret")
+	}
+	request.Secrets = map[string]string{"password": "synthetic-fixture-input"}
+	if result := registry.Execute(t.Context(), request); !result.Success {
+		t.Fatal("reset dispatch failed")
+	}
+	if programs.programID != "the8020/users/reset-passwords" || !reflect.DeepEqual(programs.arguments, []any{"alice", "--confirm"}) || programs.secrets["password"] != request.Secrets["password"] {
+		t.Fatal("reset dispatch changed recovery program or mixed secret into arguments")
+	}
+}
+
 func writeCommandPackage(t *testing.T, root, packageID, filename, command, program, extra string) {
 	t.Helper()
 	parts := strings.Split(packageID, "/")

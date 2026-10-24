@@ -691,6 +691,22 @@ export const kernel = Object.freeze({
     },
   }),
   crypto: Object.freeze({
+    async passwordDigest(
+      userId: string,
+      password: Uint8Array,
+      nonce: Uint8Array,
+    ): Promise<Uint8Array> {
+      const digest = await runtimeOperationField<string>(
+        "crypto.password.digest",
+        {
+          user_id: userId,
+          password: password.toBase64(),
+          nonce: nonce.toBase64(),
+        },
+        "digest",
+      );
+      return Uint8Array.fromBase64(digest);
+    },
     encrypt(
       purpose: `app-${string}`,
       data: Uint8Array,

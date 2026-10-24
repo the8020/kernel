@@ -47,6 +47,72 @@ const workerMetadata: ExecutionMetadata = {
   origin: { type: "service", id: "example/auth/login" },
 };
 
+Deno.test("authentication permits only the scoped password-digest primitive alongside database access", async () => {
+  const channel = new MessageChannel();
+  const bridge = createKernelBridge(channel.port1, workerMetadata);
+  const calls = createCallQueue(channel.port2);
+  const scope = {
+    ...metadata,
+    authentication: {
+      module: "fixture",
+      unauthenticated: { action: "reject", status: 401 },
+    },
+  };
+  try {
+    await assertRejects(
+      () => bridge.withRequest(scope, () => kernel.crypto.token.sign({})),
+      Error,
+      "only database and password-digest",
+    );
+    const pending = bridge.withRequest(
+      scope,
+      () =>
+        kernel.crypto.passwordDigest(
+          "alice",
+          new TextEncoder().encode("password"),
+          new Uint8Array(16),
+        ),
+    );
+    const call = await calls.next();
+    assertEquals((call.payload as { arguments: unknown }).arguments, {
+      operation: "crypto.password.digest",
+      input: {
+        user_id: "alice",
+        password: "cGFzc3dvcmQ=",
+        nonce: new Uint8Array(16).toBase64(),
+      },
+    });
+    bridge.handle({
+      type: "kernel_result",
+      correlationId: call.correlationId as string,
+      payload: {
+        success: true,
+        result: { digest: new Uint8Array(32).toBase64() },
+      },
+    });
+    assertEquals((await pending).length, 32);
+    await assertRejects(
+      () =>
+        bridge.withRequest(
+          scope,
+          () =>
+            kernel.crypto.passwordDigest(
+              "alice",
+              new TextEncoder().encode("password"),
+              new Uint8Array(16),
+            ),
+          AbortSignal.abort(new Error("password lookup cancelled")),
+        ),
+      Error,
+      "password lookup cancelled",
+    );
+  } finally {
+    bridge.close();
+    channel.port1.close();
+    channel.port2.close();
+  }
+});
+
 Deno.test("catalog and console line use the active private operation bridge", async () => {
   const channel = new MessageChannel();
   const bridge = createKernelBridge(channel.port1, workerMetadata);

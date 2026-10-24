@@ -82,7 +82,12 @@ export function kernelCallbackRequest(
         path: "/v1/runtime/operation/execute",
         messageType: "admin_command",
         responseMessageType: "admin_result",
-        payload: { ...call.arguments, user: call.user, ...identity },
+        payload: {
+          ...call.arguments,
+          user: call.user,
+          ...identity,
+          credential_namespace: call.credentialNamespace,
+        },
       };
     case "database.execute":
       return {

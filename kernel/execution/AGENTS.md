@@ -2,8 +2,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 # Purpose
 
-- Own one generic sandbox and Worker execution system shared by services
-  and jobs.
+- Own one generic sandbox and Worker execution system shared by services and
+  jobs.
 
 # Ownership
 
@@ -48,9 +48,12 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   `Caller`. Native replaceable resource leases use this pair, independent of
   request or authentication-session lifetime. The optional pair is validated
   together; kernel-originated callers need not invent Worker identities.
-- Newly generated sandbox IDs are `sbx-` plus ten random lowercase
-  alphanumeric characters; newly generated Worker IDs are the equivalent `wrk-`
-  format.
+- Newly generated sandbox IDs are `sbx-` plus ten random lowercase alphanumeric
+  characters; newly generated Worker IDs are the equivalent `wrk-` format.
+
+- `Caller.CredentialNamespace` carries trusted runtime credential ownership.
+  Password-digest operations require its bounded ASCII form; other callers may
+  omit it. It is not chosen from application operation arguments.
 
 # Work Guidance
 

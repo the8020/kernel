@@ -126,6 +126,11 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   updates coalesce toward each live Worker. No ordinary record goes through
   kernel RPC, and no log history survives in supervisor memory.
 
+- Runtime callback envelopes overwrite any application-supplied
+  `credential_namespace` with RuntimeWorker's trusted namespace. Namespace
+  authority comes from native Worker startup, not HTTP headers or operation
+  payloads. There is no password cache.
+
 # Lifecycle
 
 - Construct → listen/register → healthy → drain → stop; each Worker follows

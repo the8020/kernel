@@ -139,7 +139,7 @@ func (d *Dispatcher) Execute(ctx context.Context, operation string, input map[st
 		return commandcore.Result{"service": status}, err
 	}
 	if strings.HasPrefix(operation, "crypto.") {
-		return d.crypto(operation, input)
+		return d.crypto(ctx, operation, input)
 	}
 	if strings.HasPrefix(operation, "settings.global.") {
 		return d.settings(ctx, settings.StorageGlobal, strings.TrimPrefix(operation, "settings.global."), input)

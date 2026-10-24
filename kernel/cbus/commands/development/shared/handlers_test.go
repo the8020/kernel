@@ -90,7 +90,7 @@ func TestEveryDevelopmentCommandHandlerDelegatesExactlyOnce(t *testing.T) {
 		{"sandbox.reset-source", SandboxResetSource(serviceSet), map[string]any{"user_id": "alice", "confirm": true}},
 		{"sandbox.factory-reset", SandboxFactoryReset(serviceSet), map[string]any{"user_id": "alice", "confirm": true}},
 		{"activate.preview", ActivatePreview(serviceSet), map[string]any{"user_id": "alice", "packages": "the8020/dev-core", "file": "src/message.ts"}},
-		{"activate.run", ActivateRun(serviceSet), map[string]any{"user_id": "alice", "message": "Activate", "packages": "the8020/dev-core,the8020/demo", "package_messages": `{"the8020/demo":"Override"}`, "author_name": "Developer", "author_email": "developer@example.test", "metadata": `{"client":"external-cli"}`}},
+		{"activate.run", ActivateRun(serviceSet), map[string]any{"user_id": "alice", "message": "Activate", "action": "continue", "attempt": "retained-attempt", "packages": "the8020/dev-core,the8020/demo", "package_messages": `{"the8020/demo":"Override"}`, "author_name": "Developer", "author_email": "developer@example.test", "metadata": `{"client":"external-cli"}`}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -108,5 +108,8 @@ func TestEveryDevelopmentCommandHandlerDelegatesExactlyOnce(t *testing.T) {
 	}
 	if len(recorder.activationOptions.SelectedPackages) != 2 || recorder.activationOptions.PackageMessages["the8020/demo"] != "Override" || recorder.activationOptions.Metadata["client"] != "external-cli" {
 		t.Fatalf("activation options = %#v", recorder.activationOptions)
+	}
+	if recorder.activationOptions.Action != "continue" || recorder.activationOptions.AttemptID != "retained-attempt" {
+		t.Fatalf("lifecycle arguments lost: %+v", recorder.activationOptions)
 	}
 }

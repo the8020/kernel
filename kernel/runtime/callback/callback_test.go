@@ -272,12 +272,13 @@ func TestJobsAndServicesCanUseTypedRuntimeOperations(t *testing.T) {
 			response := runtimeControlCall(t, server, spec, "/v1/runtime/operation/execute", protocol.MessageAdminCommand, operationCallPayload{
 				JobRunID: "job-1111111111", WorkerID: "wrk-1111111111", ContextID: "ctx-1111111111",
 				Operation: "example.inspect", Input: map[string]any{"id": "one"},
-				User: execution.SystemUser(),
+				CredentialNamespace: "service:example/accounts/login",
+				User:                execution.SystemUser(),
 			})
 			if response.Code != http.StatusOK || operations.operation != "example.inspect" || operations.input["id"] != "one" {
 				t.Fatalf("status=%d body=%q operation=%#v", response.Code, response.Body.String(), operations)
 			}
-			if operations.caller.JobRunID != "job-1111111111" || operations.caller.Workload != workload || operations.caller.SandboxID != spec.SandboxID || operations.caller.WorkerID != "wrk-1111111111" {
+			if operations.caller.CredentialNamespace != "service:example/accounts/login" || operations.caller.JobRunID != "job-1111111111" || operations.caller.Workload != workload || operations.caller.SandboxID != spec.SandboxID || operations.caller.WorkerID != "wrk-1111111111" {
 				t.Fatalf("runtime caller = %#v", operations.caller)
 			}
 			if response.Header().Get("Content-Length") != strconv.Itoa(response.Body.Len()) {

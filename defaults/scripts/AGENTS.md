@@ -8,9 +8,10 @@ Parent DOX: [kernel/defaults DOX](../AGENTS.md).
 
 - Own `activate`, `activate.ts`, `activation-conflicts.ts`, `install-codex.sh`,
   and `install-claude.sh`; installation refreshes the instance scripts tree.
-- `development-init.sh` is the mounted development entrypoint. It runs
-  Bash key setup and `setup-agent-skills.sh` before the image's existing
-  lock-directory/sleep init, including for retained system roots after an upgrade.
+- `development-init.sh` is the mounted development entrypoint. It runs Bash key
+  setup and `setup-agent-skills.sh` before the image's existing
+  lock-directory/sleep init, including for retained system roots after an
+  upgrade.
 
 # Local Contracts
 
@@ -25,13 +26,25 @@ Parent DOX: [kernel/defaults DOX](../AGENTS.md).
   activation owns guidance/CLI behavior; installation stages this thin
   executable helper through the same read-only scripts mount as `sql`.
 
+- Self-contained `activate`, `activation-conflicts.ts`, `sql`, `kernel-logs` and
+  `uui` invocations use Deno `--no-config`, retaining their existing permission
+  grants. They import no workspace/package dependencies. General developer
+  commands and language servers retain ordinary configuration discovery.
 - Helpers are mounted read-only at `/workspace/scripts`; activation uses the
   typed kernel ingress and requires a publication message.
 - `activate` prints readable status, conflicting paths, native Git commands and
   the retry command; `--json` retains structured output and `--help` gives
   usage.
-- A resumed success says captured changes were activated and asks the developer
-  to review remaining workspace changes; JSON preserves native recovery fields.
+- A resumed publication says captured changes were activated and asks the
+  developer to review remaining workspace changes. Completed rollback cleanup
+  says the attempt closed with private changes pending; JSON retains native
+  recovery fields.
+- `--status` exposes current staging/conflict/recovery/cleanup and bounded
+  retained inventory. `--continue` resumes the same attempt (a message is needed
+  only for publication); `--abort` preserves work while closing a safely
+  abortable attempt. `--abort --attempt ID` explicitly preserves a legacy tree
+  without asserting it was published or rolled back. Helpers show native
+  recovery errors and concrete commands; they own no cleanup logic.
 - `activate --preview --schema --package namespace/package` reads the shared
   metadata-only plan. Repeat `--force table-id.column` with explicit packages
   for exact incompatible-cell consent, without another prompt. Cleanup/native

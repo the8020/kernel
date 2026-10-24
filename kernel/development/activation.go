@@ -40,6 +40,8 @@ type activationPackage struct {
 	RemovalChecked                                            bool
 	Captures                                                  []capturedPath
 	Directories                                               []capturedPath
+	Resolved, GitDir, StagingVersion                          string
+	Conflicted, Retired, Resolution                           bool
 }
 
 func packageGit(ctx context.Context, d *RunscDriver, sandbox Sandbox, id string, input io.Reader, args ...string) (string, error) {
@@ -400,6 +402,9 @@ func packageSelection(ctx context.Context, d *workspace, selection []string) ([]
 
 type activationAttempt struct {
 	ID, Phase, TransactionID string
+	SandboxID                string
+	Validation               string
+	RetainedCleanup          bool
 	CommitTime               time.Time
 	Candidates               []deployment.Candidate
 	Packages                 []activationPackage
@@ -703,6 +708,15 @@ func (m *Manager) Preview(ctx context.Context, user string, options ActivationOp
 	d, ok := m.workspaceFor(sandbox.SandboxID)
 	if !ok {
 		return result, errors.New("development sandbox is not running")
+	}
+	pending, err := m.activationStatus(sandbox, d)
+	if err != nil {
+		return result, err
+	}
+	result.Retained, result.InventoryTruncated = pending.Retained, pending.InventoryTruncated
+	if pending.AttemptID != "" {
+		result.Pending = &pending
+		return result, nil
 	}
 	ordered, _, err := packageSelection(ctx, d, nil)
 	if err != nil {
@@ -1319,6 +1333,12 @@ func validationView(ctx context.Context, shared, gitRoot, previous, candidate, t
 }
 
 func (m *Manager) Activate(ctx context.Context, userID string, options ActivationOptions) (result ActivationResult, returnErr error) {
+	if options.Action != "" && options.Action != "status" && options.Action != "continue" && options.Action != "abort" {
+		return result, errors.New("activation action must be status, continue or abort")
+	}
+	if options.AttemptID != "" && (options.Action != "abort" || len(options.AttemptID) > 64 || !safePackageSegment(options.AttemptID)) {
+		return result, errors.New("an attempt ID is accepted only for explicit retained-work abort")
+	}
 	if len(options.ForceColumns) > 0 && len(options.SelectedPackages) == 0 {
 		return result, errors.New("--force requires an explicit package selection")
 	}
@@ -1328,6 +1348,15 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 	sandbox, err := m.loadSandbox(userID)
 	if err != nil {
 		return result, err
+	}
+	if options.Action == "status" {
+		d, ok := m.workspaceFor(sandbox.SandboxID)
+		if !ok {
+			return result, errors.New("development workspace is not running")
+		}
+		status, err := m.activationStatus(sandbox, d)
+		status.Success = err == nil
+		return status, err
 	}
 	result = ActivationResult{Status: "failed", Packages: []ActivationPackageResult{}}
 	defer func() {
@@ -1346,7 +1375,7 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 			result.Error = returnErr.Error()
 		}
 	}()
-	if strings.TrimSpace(options.Description) == "" {
+	if strings.TrimSpace(options.Description) == "" && options.Action != "abort" && options.Action != "continue" {
 		return result, errors.New("activation description is required")
 	}
 	d, ok := m.workspaceFor(sandbox.SandboxID)
@@ -1367,11 +1396,115 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 	err = readJSON(journal, &attempt)
 	resumed := err == nil
 	defer func() {
-		result.DeploymentID, result.Phase, result.Resumed = attempt.TransactionID, attempt.Phase, resumed
+		result.AttemptID, result.DeploymentID, result.Phase, result.Resumed = attempt.ID, attempt.TransactionID, attempt.Phase, resumed
+		if returnErr != nil && attempt.Phase == "discarding" {
+			result.Status = "cleanup-pending"
+		}
+		if returnErr != nil && len(result.Packages) == 0 && attempt.ID != "" {
+			result.Packages = attemptResult(attempt).Packages
+		}
 	}()
 	hook := m.schemaDeployment()
 	if hook == nil {
 		return result, errors.New("schema coordinator is required")
+	}
+	if options.Action == "abort" {
+		if options.AttemptID != "" && options.AttemptID != attempt.ID {
+			inventory, inventoryErr := m.activationStatus(sandbox, d)
+			if inventoryErr != nil {
+				return result, inventoryErr
+			}
+			for _, retained := range inventory.Retained {
+				if retained.AttemptID == options.AttemptID {
+					if retained.Status == "aborted-preserved" {
+						result.Success, result.Status, result.Retained = true, "aborted-preserved", []ActivationRetained{retained}
+						attempt, resumed = activationAttempt{ID: retained.AttemptID, Phase: "aborted"}, false
+						return result, nil
+					}
+					legacy := activationAttempt{ID: options.AttemptID, SandboxID: sandbox.SandboxID, Phase: "aborted"}
+					if err := saveAttempt(filepath.Join(directory, "retained", legacy.ID+".json"), &legacy); err != nil {
+						return result, err
+					}
+					result.Success, result.Status, result.Retained = true, "aborted-preserved", []ActivationRetained{retained}
+					attempt, resumed = legacy, false
+					return result, nil
+				}
+			}
+			return result, errors.New("retained attempt is absent from the bounded inventory; inspect/export it in the terminal")
+		}
+		if err != nil {
+			return result, errors.New("no pending activation to abort; use activate --status for retained attempts")
+		}
+		if attempt.Phase == "preparing" || attempt.Phase == "prepared" {
+			ids := make([]string, 0, len(attempt.Packages))
+			for _, item := range attempt.Packages {
+				ids = append(ids, item.PackageID)
+			}
+			release, err := workspacepackages.LockSources(ctx, m.config.PackagesRoot, ids)
+			if err != nil {
+				return result, err
+			}
+			defer func() {
+				if release != nil {
+					release()
+				}
+			}()
+			forward, err := deployment.NeedsForward(ctx, hook, attempt.TransactionID)
+			if err != nil || forward {
+				return result, fmt.Errorf("cannot abort uncertain or committed schema changes; use activate --continue for recovery: %v", err)
+			}
+			attempt.Phase = "preparing"
+			if err := saveAttempt(journal, &attempt); err != nil {
+				return result, err
+			}
+			if err := hook.Complete(ctx, attempt.TransactionID, false); err != nil {
+				return result, fmt.Errorf("abort rollback remains pending: %w", err)
+			}
+			attempt.Phase = "captured"
+			release()
+			release = nil
+		}
+		if attempt.Phase != "staging" && attempt.Phase != "captured" && attempt.Phase != "cleanup" && attempt.Phase != "discarding" {
+			return result, errors.New("publication recovery must finish before abort; use activate --continue (committed schema changes cannot be rolled back)")
+		}
+		if attempt.Phase == "captured" && disposableAttempt(attempt) {
+			if err := m.rollbackAttempt(ctx, sandbox, d, journal, &attempt); err != nil {
+				return result, err
+			}
+			result.Success, result.Status = true, "not-committed"
+			return result, nil
+		}
+		if err := m.retainAttempt(sandbox, journal, &attempt); err != nil {
+			return result, err
+		}
+		result.Success, result.Status = true, "aborted-preserved"
+		result.Packages = attemptResult(attempt).Packages
+		return result, nil
+	}
+	if err == nil && attempt.Phase == "discarding" {
+		if err := m.retireStaging(ctx, sandbox, d, journal, &attempt); err != nil {
+			return result, err
+		}
+		if options.Action == "continue" {
+			result.Success, result.Status = true, "not-committed"
+			return result, nil
+		}
+		attempt, resumed, err = activationAttempt{}, false, os.ErrNotExist
+	}
+	if err == nil && attempt.Phase == "cleanup" {
+		result = attemptResult(attempt)
+		if err := m.retireStaging(ctx, sandbox, d, journal, &attempt); err != nil {
+			return result, err
+		}
+		result.Success, result.Status, result.Error = true, "committed", ""
+		return result, nil
+	}
+	if err == nil && attempt.Phase == "staging" {
+		result = attemptResult(attempt)
+		return result, errors.New("staging was interrupted before capture completed; use activate --abort to preserve it, then activate current changes")
+	}
+	if strings.TrimSpace(options.Description) == "" {
+		return result, errors.New("activation description is required to continue publication")
 	}
 	if err == nil && options.SchemaPreview && attempt.Phase != "captured" {
 		return result, errors.New("resume the pending activation before previewing another candidate")
@@ -1418,14 +1551,16 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 			if err := hook.Complete(ctx, attempt.TransactionID, false); err != nil {
 				return result, fmt.Errorf("recover pending deployment %s (activation phase %s): %w; recovery must finish before loading new workspace changes", attempt.TransactionID, attempt.Phase, err)
 			}
-			if err := os.Remove(journal); err != nil {
-				return result, err
-			}
-			attempt = activationAttempt{}
-			resumed = false
 			releaseSources()
 			releaseSources = nil
-			err = os.ErrNotExist
+			if err := m.rollbackAttempt(ctx, sandbox, d, journal, &attempt); err != nil {
+				return result, err
+			}
+			if attempt.Phase == "aborted" {
+				attempt = activationAttempt{}
+				resumed = false
+				err = os.ErrNotExist
+			}
 		}
 		if forward {
 			if err := saveAttempt(journal, &attempt); err != nil {
@@ -1434,14 +1569,33 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 		}
 	}
 	if errors.Is(err, os.ErrNotExist) {
+		if options.Action == "continue" {
+			return result, errors.New("no pending activation; preview current changes before starting another attempt")
+		}
+		inventory, inventoryErr := m.activationStatus(sandbox, d)
+		if inventoryErr != nil {
+			return result, inventoryErr
+		}
+		result.Retained, result.InventoryTruncated = inventory.Retained, inventory.InventoryTruncated
+		for _, retained := range inventory.Retained {
+			if retained.Status == "legacy-unresolved" {
+				return result, fmt.Errorf("retained activation %s has unknown recovery ownership; recover/export its files, or explicitly preserve it with activate --abort --attempt %s before starting more work", retained.AttemptID, retained.AttemptID)
+			}
+		}
+		if inventory.InventoryTruncated {
+			return result, errors.New("retained activation inventory exceeds 128 entries; inspect and recover/export it in the terminal before starting more work")
+		}
 		attempt.ID, err = randomHex(12)
 		if err != nil {
 			return result, err
 		}
-		attempt.Phase = "captured"
+		attempt.Phase, attempt.SandboxID = "staging", sandbox.SandboxID
 		attempt.CommitTime = time.Now().UTC()
 		ordered, state, err := packageSelection(ctx, d, options.SelectedPackages)
 		if err != nil {
+			return result, err
+		}
+		if err := saveAttempt(journal, &attempt); err != nil {
 			return result, err
 		}
 		attempt.Moves = map[string]string{}
@@ -1472,7 +1626,7 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 			attempt.Namespaces = append(attempt.Namespaces, capturedPath{Path: namespace, ID: captureID})
 		}
 		for _, id := range ordered {
-			item, err := func() (activationPackage, error) {
+			_, err := func() (activationPackage, error) {
 				if changed, err := packageChanged(ctx, d, id); err != nil || !changed {
 					return activationPackage{}, err
 				}
@@ -1500,20 +1654,26 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 					item.Origin = state.Moves[id]
 				}
 				message := activationCommitMessage(options.Description, sandbox.SandboxID, options.Metadata)
+				attempt.Packages = append(attempt.Packages, item)
+				if err := saveAttempt(journal, &attempt); err != nil {
+					return item, err
+				}
 				err = prepareGit(ctx, d, sandbox, &item, attempt.ID, head, author, email, message)
-				return item, err
+				attempt.Packages[len(attempt.Packages)-1] = item
+				return item, errors.Join(err, saveAttempt(journal, &attempt))
 			}()
 			if err != nil {
 				return result, err
 			}
-			if len(item.Captures) != 0 || len(item.Directories) != 0 {
-				attempt.Packages = append(attempt.Packages, item)
-			}
 		}
 		if len(attempt.Packages) == 0 {
+			if err := os.Remove(journal); err != nil {
+				return result, err
+			}
 			result.Success, result.Status = true, "not-committed"
 			return result, nil
 		}
+		attempt.Phase = "captured"
 		if err := saveAttempt(journal, &attempt); err != nil {
 			return result, err
 		}
@@ -1560,20 +1720,17 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 	}
 	if attempt.Phase == "captured" {
 		var candidates []deployment.Candidate
-		stage, err := os.MkdirTemp(directory, "validation-")
-		if err != nil {
+		if err := removeValidation(journal, &attempt); err != nil {
 			return result, err
 		}
-		defer func() {
-			if attempt.Phase == "captured" || attempt.Phase == "published" {
-				_ = os.RemoveAll(stage)
-				return
-			}
-			forward, err := deployment.NeedsForward(context.WithoutCancel(ctx), hook, attempt.TransactionID)
-			if err == nil && !forward {
-				_ = os.RemoveAll(stage)
-			}
-		}()
+		stage := filepath.Join(directory, "validation-"+attempt.ID)
+		attempt.Validation = stage
+		if err := saveAttempt(journal, &attempt); err != nil {
+			return result, err
+		}
+		if err := os.MkdirAll(stage, 0700); err != nil {
+			return result, err
+		}
 		for index := range attempt.Packages {
 			item := &attempt.Packages[index]
 			head, err := m.sharedHead(item.PackageID)
@@ -1589,6 +1746,15 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 				return nativeGit(ctx, d.RunscDriver, sandbox, item.Worktree, nil, args...)
 			}
 			packageResult := ActivationPackageResult{PackageID: item.PackageID, Status: "failed", CommitMessage: options.Description}
+			expected := item.Resolved
+			if expected == "" {
+				expected = item.Private
+			}
+			current, err := git("rev-parse", "HEAD")
+			if err != nil {
+				return result, err
+			}
+			item.Resolution = item.Resolution || strings.TrimSpace(current) != expected
 			for _, comparison := range []string{item.Shared, item.Private} {
 				if comparison == item.Shared {
 					_, err = git("-c", "user.name="+author, "-c", "user.email="+email, "-c", "merge.conflictStyle=diff3", "merge", "--no-edit", comparison)
@@ -1623,11 +1789,17 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 				if paths != "" {
 					packageResult.Conflicts = strings.Split(strings.TrimSuffix(paths, "\x00"), "\x00")
 				}
-				packageResult.Status, result.Status = "conflicted", "conflicted"
-				packageResult.ConflictWorktree = item.Worktree
-				packageResult.Error = "Resolve and commit with ordinary Git in " + item.Worktree + ", then rerun activate. " + err.Error()
+				item.Conflicted = len(packageResult.Conflicts) > 0
+				item.Resolution = item.Resolution || item.Conflicted
+				packageResult.Status, result.Status = "staging-failed", "staging-failed"
+				packageResult.Worktree = item.Worktree
+				if item.Conflicted {
+					packageResult.Status, result.Status = "conflicted", "conflicted"
+					packageResult.ConflictWorktree = item.Worktree
+				}
+				packageResult.Error = "Inspect and resolve with ordinary Git in " + item.Worktree + ", then activate --continue --message 'Describe the changes'; or activate --abort to preserve it. " + err.Error()
 				result.Packages = append(result.Packages, packageResult)
-				return result, err
+				return result, errors.Join(err, saveAttempt(journal, &attempt))
 			}
 			resolved, err := git("rev-parse", "HEAD")
 			if err != nil {
@@ -1637,6 +1809,17 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 			if err != nil {
 				return result, err
 			}
+			item.Resolved, item.Conflicted = resolved, false
+			item.GitDir, err = git("rev-parse", "--absolute-git-dir")
+			if err != nil {
+				return result, err
+			}
+			item.GitDir = strings.TrimSpace(item.GitDir)
+			version, err := stagingRequest(ctx, d, "staging-version", &attempt, item)
+			if err != nil {
+				return result, err
+			}
+			item.StagingVersion, _ = version["version"].(string)
 			shared := filepath.Join(d.shared, item.PackageID)
 			target := shared
 			if item.Previous == "" {
@@ -1726,6 +1909,9 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 			candidates = append(candidates, deployment.Candidate{PackageID: item.PackageID, Root: view, Commit: item.Published})
 		}
 		if options.SchemaPreview {
+			if err := saveAttempt(journal, &attempt); err != nil {
+				return result, err
+			}
 			planner, ok := hook.(deployment.PlanningHook)
 			if !ok {
 				return result, errors.New("schema preview requires an updated coordinator")
@@ -1749,10 +1935,11 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 				if rollbackErr := hook.Complete(context.WithoutCancel(ctx), attempt.TransactionID, false); rollbackErr != nil {
 					return result, fmt.Errorf("prepare schema and hooks: %w", errors.Join(err, fmt.Errorf("rollback pending deployment %s failed: %w; deployment retained for recovery", attempt.TransactionID, rollbackErr)))
 				}
-				if removeErr := os.Remove(journal); removeErr != nil {
+				releaseSources()
+				releaseSources = nil
+				if removeErr := m.rollbackAttempt(context.WithoutCancel(ctx), sandbox, d, journal, &attempt); removeErr != nil {
 					return result, errors.Join(err, removeErr)
 				}
-				attempt.Phase, attempt.TransactionID = "", ""
 			} else if forward {
 				result.Status = "schema-committed-activation-incomplete"
 			} else {
@@ -1778,11 +1965,12 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 					returnErr = errors.Join(returnErr, fmt.Errorf("rollback pending deployment %s failed: %w; deployment retained for recovery", attempt.TransactionID, err))
 					return
 				}
-				if err := os.Remove(journal); err != nil {
+				releaseSources()
+				releaseSources = nil
+				if err := m.rollbackAttempt(context.WithoutCancel(ctx), sandbox, d, journal, &attempt); err != nil {
 					returnErr = errors.Join(returnErr, err)
 					return
 				}
-				attempt.Phase, attempt.TransactionID = "", ""
 			}
 		}()
 		sort.Slice(attempt.Packages, func(i, j int) bool { return attempt.Packages[i].PackageID < attempt.Packages[j].PackageID })
@@ -1863,7 +2051,17 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 	if _, err := d.exchangeControl(ctx, map[string]any{"action": "acknowledge-moves", "path": "packages", "id": "acknowledge", "moves": attempt.Moves}); err != nil {
 		return result, err
 	}
-	if err := os.Remove(journal); err != nil {
+	attempt.Phase = "cleanup"
+	if err := saveAttempt(journal, &attempt); err != nil {
+		return result, err
+	}
+	if releaseSources != nil {
+		releaseSources()
+		releaseSources = nil
+	}
+	if err := m.retireStaging(ctx, sandbox, d, journal, &attempt); err != nil {
+		result.Status = "cleanup-pending"
+		result.Packages = attemptResult(attempt).Packages
 		return result, err
 	}
 	sandbox.ConflictedPackages = nil

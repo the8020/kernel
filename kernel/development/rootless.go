@@ -249,6 +249,10 @@ func developmentSpec(start SandboxStart, bundle string) specs.Spec {
 		if mount.Target == "/workspace/packages" {
 			options = append(options, "overlayfs_stale_read", "dcache=0")
 		}
+		if mount.Target == "/workspace/deno.json" {
+			// Each open must read current membership, not a previous reader's snapshot.
+			options = append(options, "disable_file_handle_sharing")
+		}
 		mounts = append(mounts, specs.Mount{Destination: mount.Target, Type: "bind", Source: mount.HostSource, Options: options})
 	}
 	capabilities := append([]string(nil), developmentRootCapabilities...)

@@ -2062,6 +2062,16 @@ Deno.test("target Worker policy isolates credentials, native principals, and per
     supervisorVersion: "test",
     logSink: sink,
     kernelCall: async (call, signal) => {
+      if (
+        call.operation === "runtime.operation" &&
+        call.arguments.operation === "crypto.password.digest"
+      ) {
+        assertEquals(call.credentialNamespace, "service:service-a");
+        return {
+          success: true,
+          result: { digest: new Uint8Array(32).toBase64() },
+        };
+      }
       if (call.operation === "admin.execute") {
         calls.push({
           command: call.arguments.commandId,

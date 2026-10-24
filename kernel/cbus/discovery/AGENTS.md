@@ -59,6 +59,8 @@ Parent DOX: [kernel/kernel/cbus DOX](../AGENTS.md).
   malformed manifests, reserved names, same/cross-package duplicates,
   active-package filtering, cross-package dispatch/commit checks, candidate
   resolution/deletion, and scoped atomic refresh with immutable old handlers.
+- When sibling users source is present, tests validate the real reset command
+  declaration and dispatch recovery input separately from ordinary arguments.
 - The rootless backend E2E test verifies discovered command dispatch through
   ordinary jobs with system identity, a program in another package, and
   cross-package imports.

@@ -74,6 +74,7 @@ export interface ExecutionMetadata {
 }
 
 export interface ServiceExecutionMetadata {
+  credentialNamespace?: string;
   serviceId: string;
   generation: number;
   canonicalBasePath: string;
@@ -145,6 +146,7 @@ export type KernelOperation =
   | "execution.completePersistent";
 
 export interface KernelCallRequest {
+  credentialNamespace?: string;
   operation: KernelOperation;
   arguments: Record<string, unknown>;
   contextId?: string;

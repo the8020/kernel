@@ -39,6 +39,7 @@ export interface ServiceSpecification {
   access: {
     mode: "public" | "authenticated";
     cookie_name?: string;
+    credential_namespace?: string;
     unauthenticated: {
       action: "reject" | "redirect";
       status: number;

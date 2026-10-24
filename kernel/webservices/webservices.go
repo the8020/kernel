@@ -1150,6 +1150,7 @@ func (m *Manager) prepareSandbox(ctx context.Context, definition Specification, 
 			Generation:           definition.Version,
 			RestartRevision:      definition.RestartRevision,
 			CanonicalBasePath:    definition.Identity.CanonicalBasePath(),
+			CredentialNamespace:  definition.Access.CredentialNamespace,
 			SandboxIndex:         index,
 			ExecutionMode:        serviceExecutionMode(definition),
 			TargetUtilization:    definition.Effective.Scaling.TargetUtilization,
@@ -1348,9 +1349,10 @@ func (m *Manager) Validate(ctx context.Context, serviceID string) ValidationResu
 		WorkerKeepAlive: definition.Effective.Scaling.WorkerKeepAlive,
 		ReleaseID:       "service-validation", LogicalServiceID: serviceID,
 		Generation: definition.Version, CanonicalBasePath: definition.Identity.CanonicalBasePath(),
-		ExecutionMode:     serviceExecutionMode(definition),
-		TargetUtilization: definition.Effective.Scaling.TargetUtilization,
-		PlacementWorkers:  1,
+		CredentialNamespace: definition.Access.CredentialNamespace,
+		ExecutionMode:       serviceExecutionMode(definition),
+		TargetUtilization:   definition.Effective.Scaling.TargetUtilization,
+		PlacementWorkers:    1,
 	})
 	if err != nil {
 		return ValidationResult{ServiceID: serviceID, Error: err.Error()}

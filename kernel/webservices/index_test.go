@@ -143,3 +143,21 @@ func TestRuntimeIndexSessionKeepAliveAllowsExplicitCompletionLifetime(t *testing
 		t.Fatal("Worker idle cleanup still requires a positive keepalive")
 	}
 }
+
+func TestCredentialNamespacePublication(t *testing.T) {
+	index := NewIndex()
+	spec := indexedTestSpecification("acme/api/one")
+	spec.Access.CredentialNamespace = "package:acme/accounts"
+	if _, err := index.ReplacePackage("acme/api", []Specification{spec}); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := index.ReadService(spec.ServiceID)
+	spec.Access.CredentialNamespace = "invalid namespace"
+	if _, err := index.ReplacePackage("acme/api", []Specification{spec}); err == nil {
+		t.Fatal("invalid namespace accepted")
+	}
+	after, _ := index.ReadService(spec.ServiceID)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("failed publication changed namespace")
+	}
+}

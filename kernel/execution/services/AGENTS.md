@@ -94,9 +94,8 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
   owner, and leaves empty-sandbox keepalive to the shared lifecycle manager.
   Failed startup also releases partial ownership. If the sandbox was already
   removed, shutdown retires the recoverable pool index without contacting
-  missing Workers.
-  `RemoveStopped` deletes only a pool that is durably `STOPPED` with no recorded
-  Workers.
+  missing Workers. `RemoveStopped` deletes only a pool that is durably `STOPPED`
+  with no recorded Workers.
 - A start failure before group ownership is acquired removes its provisional
   pool record immediately; it must not leave an empty-group artifact for the
   filesystem reconciler to retry.
@@ -125,6 +124,11 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
   Failed startup is logged before cleanup clears its allocated sandbox identity;
   repeated drain/stop/failure reconciliation does not repeat unchanged events.
   Quarantine records trust only the registry key, not malformed stored metadata.
+
+- Carry the accepted credential namespace through pool records and immutable
+  Worker service metadata, including later scale-up. Empty selects the logical
+  service's own namespace in the runtime; it never shares another service's
+  credentials implicitly.
 
 # Work Guidance
 

@@ -341,7 +341,7 @@ func TestNativeActivation(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		response, err := m.Shell(ctx, sandbox.UserID, "printf %s "+shellQuote(string(body))+" | deno run --allow-read --allow-write --allow-run=/usr/bin/git --allow-env=DEVELOPMENT_USER_ID /workspace/scripts/activation-conflicts.ts")
+		response, err := m.Shell(ctx, sandbox.UserID, "printf %s "+shellQuote(string(body))+" | deno run --no-config --allow-read --allow-write --allow-run=/usr/bin/git --allow-env=DEVELOPMENT_USER_ID /workspace/scripts/activation-conflicts.ts")
 		if wantFailure {
 			if err == nil {
 				t.Fatal("conflict editor accepted a stale write")
@@ -476,7 +476,7 @@ func TestNativeActivation(t *testing.T) {
 		t.Fatalf("next merge used an original the editor never saw: %q", got)
 	}
 	nativeExec(t, d, sandbox, "set -e; cd "+shellQuote(next)+"; printf 'resolved later label\\n' >same.txt; git add same.txt; git -c user.name=Fixture -c user.email=fixture@example.test commit -qm 'Resolve later label'")
-	// Confirmed aborts retire each candidate; fresh captures can require a new merge.
+	// Failed validation reuses a resolved conflict instead of archiving duplicates.
 	preparations, rollbacks, completions := 0, 0, 0
 	m.SetSchemaDeployment(nativeActivationHook{
 		prepare: func(ctx context.Context, _ string, candidates []deployment.Candidate) error {
@@ -522,8 +522,9 @@ func TestNativeActivation(t *testing.T) {
 		if failed.Success || failed.Status != "failed" {
 			t.Fatalf("expected validation/source failure %d: %+v", failure, failed)
 		}
-		if _, err := os.Stat(filepath.Join(m.sandboxRoot(sandbox), "activation/active.json")); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("confirmed abort retained an active attempt: %v", err)
+		pending := loadAttempt()
+		if pending.ID != attempt.ID || pending.Phase != "captured" || pending.TransactionID != "" {
+			t.Fatalf("rollback lost the retained resolution: %+v", pending)
 		}
 		if body, err := os.ReadFile(filepath.Join(shared, "same.txt")); err != nil || string(body) != "resolved label\n" {
 			t.Fatalf("failure published candidate source: %q: %v", body, err)
@@ -531,17 +532,10 @@ func TestNativeActivation(t *testing.T) {
 		if got := nativeExec(t, d, sandbox, prefix+"cat same.txt"); got != "private after failed validation\n" {
 			t.Fatalf("failure consumed a later edit: %q", got)
 		}
-		fresh := activate(3)
-		if fresh.Status != "conflicted" || fresh.Resumed {
-			t.Fatalf("fresh candidate did not preserve current private conflict: %+v", fresh)
+		if got := nativeExec(t, d, sandbox, "cat "+shellQuote(next+"/same.txt")); got != "resolved later label\n" {
+			t.Fatalf("rollback lost resolution: %q", got)
 		}
-		pending := loadAttempt()
-		if pending.ID == attempt.ID {
-			t.Fatal("confirmed abort reused the rejected capture")
-		}
-		attempt = pending
-		next = pending.Packages[0].Worktree
-		nativeExec(t, d, sandbox, "set -e; cd "+shellQuote(next)+"; printf 'resolved later label\\n' >same.txt; git add same.txt; git -c user.name=Fixture -c user.email=fixture@example.test commit -qm 'Resolve fresh candidate'")
+
 	}
 	if preparations != 2 || rollbacks != 2 || completions != 0 {
 		t.Fatalf("incorrect failure handshake: prepare=%d rollback=%d complete=%d", preparations, rollbacks, completions)
@@ -571,7 +565,7 @@ func TestNativeActivation(t *testing.T) {
 	if body, err := os.ReadFile(filepath.Join(shared, "same.txt")); err != nil || string(body) != "resolved later label\n" {
 		t.Fatalf("retry lost resolved content: %q: %v", body, err)
 	}
-	if got := nativeExec(t, d, sandbox, prefix+"cat same.txt untouched.txt"); got != "resolved later label\nshared during validation\n" {
+	if got := nativeExec(t, d, sandbox, prefix+"cat same.txt untouched.txt"); got != "private after failed validation\nshared during validation\n" {
 		t.Fatalf("retry lost later/private or shared work: %q", got)
 	}
 	writeTestFile(t, filepath.Join(shared, "directory-intent/file.txt"), "directory original\n")

@@ -510,6 +510,7 @@ func TestPersistentModeUsesTheSamePrewarmedHTTPAndWebSocketWorkerPool(t *testing
 		User:          execution.SystemUser(),
 		ExecutionMode: "persistent", LogicalServiceID: "example/chat/session", Generation: 3,
 		CanonicalBasePath: "/example/chat/session", MinimumWorkers: 2, MaximumWorkers: 8,
+		CredentialNamespace:  "package:example/accounts",
 		ConcurrencyPerWorker: 4, WorkerKeepAlive: time.Minute, TargetUtilization: 0.7, PlacementWorkers: 2,
 	})
 	if err != nil {
@@ -519,7 +520,7 @@ func TestPersistentModeUsesTheSamePrewarmedHTTPAndWebSocketWorkerPool(t *testing
 		t.Fatalf("persistent pool = %#v starts=%d", record, len(workersFake.starts))
 	}
 	for _, started := range workersFake.starts {
-		if started.Metadata.User != execution.SystemUser() || started.Metadata.Origin != (execution.Origin{Type: execution.OriginService, ID: "example/chat/session"}) {
+		if started.Metadata.Service.CredentialNamespace != "package:example/accounts" || started.Metadata.User != execution.SystemUser() || started.Metadata.Origin != (execution.Origin{Type: execution.OriginService, ID: "example/chat/session"}) {
 			t.Fatalf("service Worker execution identity = %#v", started.Metadata)
 		}
 	}

@@ -1,13 +1,77 @@
 package operations
 
 import (
+	"context"
+	"encoding/base64"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"the8020/kernel/auth"
+	"the8020/kernel/execution"
+	"the8020/kernel/sandbox/model"
 	"the8020/kernel/services"
 )
+
+func TestPasswordDigestUsesOnlyTrustedNamespace(t *testing.T) {
+	signer, err := auth.OpenSigner(filepath.Join(t.TempDir(), "key"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatcher, err := New(&services.Services{Signing: signer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	caller := execution.Caller{ContextID: "ctx-aaaaaaaaaa", Workload: model.WorkloadService, User: execution.SystemUser(), CredentialNamespace: "service:example/a/login"}
+	ctx := execution.WithCaller(t.Context(), caller)
+	input := map[string]any{"user_id": "alice", "password": base64.StdEncoding.EncodeToString([]byte("fixture-password")), "nonce": base64.StdEncoding.EncodeToString(make([]byte, 16))}
+	first, err := dispatcher.Execute(ctx, "crypto.password.digest", input)
+	if err != nil || len(first.(map[string]any)) != 1 {
+		t.Fatal("derivation failed", err)
+	}
+	caller.CredentialNamespace = "service:example/b/login"
+	other, err := dispatcher.Execute(execution.WithCaller(t.Context(), caller), "crypto.password.digest", input)
+	if err != nil || first.(map[string]any)["digest"] == other.(map[string]any)["digest"] {
+		t.Fatal("namespaces share digests", err)
+	}
+	input["namespace"] = caller.CredentialNamespace
+	if _, err := dispatcher.Execute(ctx, "crypto.password.digest", input); err == nil {
+		t.Fatal("caller selected another namespace")
+	}
+	delete(input, "namespace")
+	if _, err := dispatcher.Execute(t.Context(), "crypto.password.digest", input); err == nil {
+		t.Fatal("unidentified caller accepted")
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := dispatcher.Execute(cancelled, "crypto.password.digest", input); err != context.Canceled {
+		t.Fatal("cancelled derivation accepted", err)
+	}
+	for _, change := range []struct {
+		key   string
+		value any
+	}{
+		{"user_id", nil}, {"user_id", ""}, {"password", nil}, {"password", ""},
+		{"password", "credential-marker%%%"}, {"password", strings.Repeat("A", base64.StdEncoding.EncodedLen(1<<20)+1)},
+		{"password", base64.StdEncoding.EncodeToString([]byte{255})},
+		{"nonce", nil}, {"nonce", ""}, {"nonce", strings.Repeat("!", 24)},
+		{"nonce", base64.StdEncoding.EncodeToString(make([]byte, 17))},
+	} {
+		previous := input[change.key]
+		input[change.key] = change.value
+		_, err := dispatcher.Execute(ctx, "crypto.password.digest", input)
+		input[change.key] = previous
+		if err == nil || strings.Contains(err.Error(), "credential-marker") {
+			t.Fatal("invalid input accepted or exposed")
+		}
+	}
+	decoded, err := base64.StdEncoding.DecodeString(first.(map[string]any)["digest"].(string))
+	if err != nil || len(decoded) != 32 {
+		t.Fatal("expected only a final SHA-256 digest", err)
+	}
+
+}
 
 func TestCryptoBridgeRequiresApplicationPurpose(t *testing.T) {
 	signer, err := auth.OpenSigner(filepath.Join(t.TempDir(), "key"), "")

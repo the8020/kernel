@@ -13,6 +13,14 @@ export async function authenticate(
     restricted = true;
   }
   if (!restricted) throw new Error("authentication gained native authority");
+  const digest = await kernel.crypto.passwordDigest(
+    input.username,
+    new TextEncoder().encode(
+      kernel.execution.optionalSecret("password") ?? "fixture",
+    ),
+    new Uint8Array(16),
+  );
+  if (digest.length !== 32) throw new Error("password digest unavailable");
   console.log("policy secret", kernel.execution.optionalSecret("password"));
   if (input.fail) throw new Error("policy unavailable");
   await kernel.database.execute("SELECT authentication", [input.username], {

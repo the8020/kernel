@@ -1,17 +1,53 @@
 package operations
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 
 	"the8020/kernel/auth"
+	"the8020/kernel/execution"
 )
 
 // Bytes use standard base64 on the JSON bridge. Invalid signatures are data,
 // while malformed operation inputs are errors; neither returns key material.
-func (d *Dispatcher) crypto(operation string, input map[string]any) (any, error) {
+func (d *Dispatcher) crypto(ctx context.Context, operation string, input map[string]any) (any, error) {
 	signer := d.services.Signing
 	switch operation {
+	case "crypto.password.digest":
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		caller, ok := execution.CallerFromContext(ctx)
+		if !ok || !execution.ValidCredentialNamespace(caller.CredentialNamespace) {
+			return nil, errors.New("trusted credential namespace is required")
+		}
+		userID, userOK := input["user_id"].(string)
+		encoded, passwordOK := input["password"].(string)
+		nonceEncoded, nonceOK := input["nonce"].(string)
+		if !userOK || !passwordOK || !nonceOK || len(input) != 3 {
+			return nil, errors.New("only user_id, password and nonce are accepted")
+		}
+		if len(encoded) > base64.StdEncoding.EncodedLen(1<<20) || len(nonceEncoded) != base64.StdEncoding.EncodedLen(16) {
+			return nil, errors.New("password or nonce exceeds its bounds")
+		}
+		password, err := base64.StdEncoding.Strict().DecodeString(encoded)
+		defer clear(password)
+		if err != nil {
+			return nil, errors.New("password must be base64")
+		}
+		nonce, err := base64.StdEncoding.Strict().DecodeString(nonceEncoded)
+		if err != nil {
+			return nil, errors.New("nonce must be base64")
+		}
+		digest, err := signer.PasswordDigest(caller.CredentialNamespace, userID, password, nonce)
+		if err != nil {
+			return nil, err
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return map[string]any{"digest": base64.StdEncoding.EncodeToString(digest)}, nil
 	case "crypto.encrypt", "crypto.decrypt":
 		purpose, _ := input["purpose"].(string)
 		associated, ok := input["associated_data"].(string)

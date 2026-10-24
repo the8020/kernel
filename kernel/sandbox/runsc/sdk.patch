@@ -40,3 +40,25 @@
 -	// Remove this import once sidecar binaries are replaced by on-disk binaries.
 -	_ "gvisor.dev/gvisor/runsc/gvisorbinaries/embed"
  )
+--- a/runsc/cmd/sandboxsetup/fs.go
++++ b/runsc/cmd/sandboxsetup/fs.go
+@@ -20,6 +20,7 @@
+ 	"io"
+ 	"os"
+ 	"path/filepath"
++	"slices"
+ 	"strings"
+ 
+ 	"golang.org/x/sys/unix"
+@@ -135,7 +136,10 @@
+ 	}
+ 	switch statfs.Type {
+ 	case unix.OVERLAYFS_SUPER_MAGIC:
+-		rv = append(rv, "overlayfs_stale_read")
++		// Read-only per-open handles never need promotion to a writable handle.
++		if !slices.Contains(opts, "ro") || !slices.Contains(opts, "disable_file_handle_sharing") {
++			rv = append(rv, "overlayfs_stale_read")
++		}
+ 	case unix.NFS_SUPER_MAGIC, unix.FUSE_SUPER_MAGIC:
+ 		// The gofer client implements remote file handle sharing for
+ 		// performance. However, remote filesystems like NFS and FUSE

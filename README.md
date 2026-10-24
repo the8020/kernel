@@ -1,50 +1,120 @@
 # 80|20 kernel
 
-Kernel `0.9.16` fixes activation receipt inspection when unpublished package
-source is missing and ships official Deno `2.9.8`, which returns a controlled
-error for unsupported explicit-parameter client certificates/keys in direct
-calls and Workers. It recommends
-[Jobs `0.9.6`](https://github.com/the8020/jobs/tree/0.9.6), whose administration
-test fixtures now isolate their execution contexts; production Jobs behavior is
-unchanged.
+## 1.0.0: password digests and development cleanup
 
-The runtime update applies to newly constructed service/job sandboxes and fresh
-development templates. Existing development sandboxes retain their private
-system root and Deno binary: update Deno there explicitly or create a fresh
-sandbox. Restarting a retained development sandbox alone does not replace its
-Deno binary. Already running old executables also need replacement before they
-benefit from the runtime fix. This release does not establish the cause of the
-reported sandbox restarts or deploy changes to customer systems.
+Kernel **1.0.0** ships the single-call native password digest, shallow explicit
+Deno workspace membership, and recoverable activation staging cleanup. It is a
+**breaking credential transition**: existing Argon2 passwords are not accepted
+and cannot be converted without plaintext. This uses the first version position
+for incompatibility; it is not a compatible 0.x update.
 
-Kernel `0.9.15` adds the native APIs for the administration console, literal log
-search and authenticated host-node sandbox log access. Upgrade it together with
-[admin-core `0.9.0`](https://github.com/the8020/admin-core/tree/0.9.0),
-[dev-skills `0.9.3`](https://github.com/the8020/dev-skills/tree/0.9.3) and
-[UUI `0.9.11`](https://github.com/the8020/uui/tree/0.9.11). UUI includes the
-native test-harness installer correction; its application behavior is unchanged.
-The installed bootstrap list pins the complete compatible package set, including
-users `0.9.7`, auth `0.8.3`, services `0.7.6`, deployments `0.9.7`, HTTPS
-`0.9.4` and dev-core `0.9.4`. Kernel and users must retain their matching
-trusted HTTP authentication hook contract.
+Use kernel, users, services, UUI, dev-core and dev-skills **1.0.0** together.
+The ordered [bootstrap and recommended set](defaults/bootstrap-packages.toml)
+pins all sixteen packages to **1.0.0**. The other eleven packages receive
+compatibility tags at their previously recommended commits, without source
+changes. Package manifests and `/p/` imports remain unversioned.
 
-Use the ordinary kernel updater, which refreshes the runtime SDK and development
-helpers before applying recommended package versions. Do not install the new
-admin-core or log helper against an older kernel. Existing package edits, local
-commits, custom sources or newer versions can cause recommendations to be
-skipped; check the update result. Restart existing development sandboxes after
-upgrading so their helper mounts and instruction files refresh.
+### Installation and rollout
 
-Kernel calls requires the `the8020.admin-core.kernel.execute` permission, which
-grants native administration including mutations; output retains approximately
-64 KiB. Secure-input calls require native admin or their dedicated screens.
-Kernel logs requires `the8020.admin-core.logs.view` for the exact node. Search
-is case-sensitive literal text; Copy page and Save page contain exactly the
-displayed bounded page, including when filters have unsubmitted edits. The
-administration features retain these limits in `0.9.16`.
+Fresh installations build from the exact source tag using the ordinary
+installer. For the existing kernel Docker build:
 
-## Development updates
+```bash
+git clone --branch 1.0.0 https://github.com/the8020/kernel.git
+cd kernel
+docker build -t the8020:1.0.0 .
+```
 
-Run this one-liner as root **inside the existing container** to update to
+The Dockerfile derives release line `1.0` from the tag and installs the pinned
+package set. The separate [deployment image](https://github.com/the8020/deploy)
+can select that same line with `VERSION=1.0`. These commands build an image;
+they do not upgrade an existing instance or constitute an installation test.
+
+Existing 0.x systems require an operator-managed major transition. The ordinary
+`kernel.update` and Docker update helper support only same-major updates;
+**do not use them to upgrade 0.x to 1.0.0**. No automatic cross-major migration
+or live password reset ships with this release. Select the instance, back up its
+database and original master seed separately, and prepare the coordinated
+kernel/runtime and package replacement before resetting credentials. Preserve
+private developer work and unresolved activation recovery. Restore matching
+original keys with backups; replacing a key does not migrate encrypted secrets.
+
+Publish/install shared package owners before their consumers in the order in the
+bootstrap list. Provision the matching kernel/runtime before executing the new
+password callers. Retire old service Workers/streams with the existing hard
+service restart or coordinated instance restart before the explicit reset;
+never mix old/new password writers. All nodes of one system need the same
+original master seed and matching versions. Restart development sandboxes after
+the platform refresh so helper, SDK and generated-config mounts refresh; this
+does not replace a retained sandbox's Deno binary. Fresh templates use Deno
+2.9.8; updating a retained Deno binary is a separate operator action.
+
+### Password recovery and key dependence
+
+`crypto.password.digest` / `kernel.crypto.passwordDigest` accepts the password,
+user identity and public nonce in one call and returns only the final digest.
+Purpose-separated key derivation and HMAC-SHA-256 remain native. Trusted service
+declarations or program package identity bind the credential namespace; users
+owns constant-time comparison, account/session policy and its credential store.
+Custom service stores and policies remain independent.
+
+This accepts the database-only theft model, without a memory-hard work factor.
+A compromised native key or usable digest oracle permits fast guessing. Back up
+the **original master seed separately from the database**. Loss/replacement
+requires password recovery and also affects tokens and encrypted secrets.
+
+After the coordinated transition, use the selected instance's native CBus,
+which remains independent of platform password login. Inspect the recovery
+administrator's roles with `auth.users.roles <existing-admin>`; repair an
+assignment if necessary with
+`auth.users.assign <existing-admin> the8020.users.administrator`. Then run:
+
+```text
+admin --root /absolute/selected-instance users.reset-passwords <existing-admin> --confirm
+```
+
+Enter and confirm the new password at the secure prompt; automation may use
+`--password-stdin` from a secure pipe. Never place passwords in arguments, logs
+or shell history. The transaction clears platform passwords and authentication
+sessions, advances account versions, and enables the existing recovery account
+with its new password. Roles, certificates and custom stores are preserved.
+Sign in as that administrator and issue passwords through `users.set-password`.
+Already-running work is not terminated by a password reset. A failed reset rolls
+back; after a lost response inspect state and try the recovery login before
+retrying, because another confirmed reset revokes newly issued credentials too.
+See the [complete recovery procedure](https://github.com/the8020/users/blob/1.0.0/cbus/AGENTS.md).
+
+### Workspace and conflict behavior
+
+Standalone activate, SQL, log and UUI helpers bypass Deno config discovery with
+unchanged grants. Ordinary checks and the language server retain explicit live
+workspace membership from the merged shallow package roots, excluding hidden
+conflict trees without deleting them.
+
+Successful activation automatically retires verified generated staging and Git
+registrations after recovery obligations finish. Confirmed rejected attempts
+retire disposable generated copies, so retry/abort does not keep accumulating
+them. Validation staging also follows durable completion and retry. Real
+conflicts retain resolve/continue or safe-abort controls. Distinct user edits,
+open/concurrently changed work, uncertain recovery and explicitly preserved
+legacy data stay protected. There is no age-based directory purge.
+
+### Verification boundary
+
+This publication reuses the independently accepted source checks for the final
+native digest and reset/recovery, namespace isolation, workspace membership and
+helpers, and activation cleanup/retry. No additional release tests, fresh
+installation, benchmarks or independent release review were run. Graphical
+browser execution, installed/public-ingress/customer performance, full
+containerd, live PostgreSQL and host-power-loss behavior remain unqualified.
+Earlier host helper/Basic and rootless startup measurements are fixture results,
+not deployment performance guarantees. No running instance was upgraded and no
+live password reset or customer conflict cleanup was performed by publication.
+
+## Previous 0.x development updates
+
+This procedure stays within the previous 0.x line; it does not install 1.0.0.
+Run it as root **inside the existing container** to update to
 `0.9.16`. It supports rootless development containers at `/8020` running kernel
 `0.7.4` or newer:
 

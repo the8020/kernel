@@ -12,9 +12,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   signing/verification, JWT issuance/verification, credential selection, and
   rejected-cookie removal. Never query application tables or depend on a
   database.
-- Deno users owns accounts, password hashing, sessions, revocation, application
-  cookie construction, and login/logout. Kernel execution principals are
-  independent of all account rows, including system.
+- Deno users owns accounts, password records/comparison, sessions, revocation,
+  application cookie construction, and login/logout. Kernel execution principals
+  are independent of all account rows, including system.
 
 # Local Contracts
 
@@ -113,6 +113,23 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   unknown critical extensions before returning the SHA-256 DER fingerprint.
   Enrollment and account checks run through users on each request, including
   resumed TLS.
+
+- `PasswordDigest(namespace, userID, password, nonce)` returns only the final
+  32-byte HMAC-SHA-256 verifier. Internally HKDF-SHA256(master, nil,
+  `the8020/salt/hmac-sha256/v1`, 32) derives the dedicated key; HMAC-SHA256 of
+  namespace then user ID, each prefixed by its unsigned 32-bit big-endian UTF-8
+  byte length, derives the per-user key. Both IDs contain 1–256 UTF-8 bytes,
+  without normalization. The final HMAC input is
+  UTF8("the8020/password/hmac-sha256/v1\0") || nonce || password, with one NUL
+  domain terminator, exactly 16 public nonce bytes and 1–1048576 UTF-8 password
+  bytes (including embedded NUL). All keys remain native; temporary key buffers
+  are cleared. Native code performs no account lookup.
+- The trusted runtime selects the credential namespace from service metadata or
+  package program identity. The private operation rejects per-call namespace
+  overrides. Salt-key/root/per-user-key or digest-oracle compromise defeats the
+  accepted database-only verifier protection. Key replacement/loss requires
+  users-owned password recovery; backups require the original master separately
+  from database backups. No password conversion or key ring exists.
 
 # Work Guidance
 

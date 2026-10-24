@@ -81,6 +81,14 @@ Parent DOX: [kernel/kernel/runtime DOX](../AGENTS.md).
   delegates to the package catalog. Application schedule/history operations
   belong to the jobs Deno package.
 
+- `crypto.password.digest` accepts only `user_id`, base64 `password` and base64
+  `nonce`, requires an active validated caller with a trusted credential
+  namespace, observes cancellation, and returns only the final base64 `digest`.
+  Namespace selection is never an operation input. The signer owns key
+  derivation, hashing and bounds; the adapter clears decoded password bytes.
+  Errors never include credentials. Password records, constant-time comparison
+  and authentication policy remain Deno.
+
 # Work Guidance
 
 - A new operation must expose a necessary kernel foundation through a thin typed

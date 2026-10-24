@@ -160,15 +160,72 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   recovery use their retained captures; later private edits remain pending.
   Failed rollback identifies the older deployment and explains that new
   workspace changes have not been loaded.
+- The existing active journal owns `staging` before native worktree creation,
+  `captured` during merge/resolution, the established schema/publication phases,
+  `cleanup` after finalization and capture acknowledgements/releases, and
+  `discarding` for verified generated staging after confirmed rollback. Every
+  selected package still uses a detached, no-checkout sparse Git worktree under
+  `.conflicts/<attempt>/<package>`; that directory name alone is not evidence of
+  conflict. Only unmerged index entries produce `conflicted`. Other Git
+  preparation errors are `staging-failed` and retain the same attempt.
+- `activate --status` and ordinary preview read the active journal plus bounded
+  names from the worktree and retained-journal directories, returning at most
+  128 attempts; they do not scan package contents. Preview carries `pending` and
+  `retained` for the UI; a pending attempt returns its retained selection
+  without inspecting fresh package changes. `activate --continue --message ...`
+  resumes publication; cleanup-only retries need no message. Unfinished staging
+  requires an explicit abort and fresh capture. No new attempt bypasses the
+  current journal or an unresolved legacy inventory entry. Only the affected
+  developer's activation is gated; normal shells, other users and workloads
+  remain available.
+- After successful publication, cleanup requires the journal's sandbox/attempt
+  identity, resolved Git HEAD, exact registration and filesystem version. Native
+  HEAD/index lockfiles exclude ordinary concurrent Git updates. The Gofer
+  refuses changed files, hardlinks and open references, then atomically moves
+  that exact sparse worktree into its protected capture storage. Only after
+  non-forced Git registration removal is that retired payload released.
+  Validation staging is recorded before creation and removed through this same
+  durable completion path, including resumed committed preparation; removal
+  errors remain retryable. Partial cleanup retains the journal for idempotent
+  retry across restart; failures report `cleanup-pending`, never silently create
+  another attempt. No timeout or startup sweep removes retained work.
+- `activate --abort` retires verified generated staging after confirmed rollback
+  without acknowledging private source. Unresolved or edited work, captures and
+  resolution files remain preserved when they cannot be safely retired. For
+  prepared work it first confirms no committed schema receipt and a successful
+  rollback; uncertain/committed publication requires forward recovery with
+  Continue. Retained journals live under `activation/retained/`. Aborted work
+  remains visible for export, is never acknowledged as published, and is not
+  automatically purged. Source/factory resets retain their explicit destructive
+  confirmation semantics; source reset also drops retained inventory records
+  after discarding the workspace they describe. Native HEAD/index locks left by
+  a killed Git process require inspecting that worktree and confirming no Git
+  operation is running before manually removing only those stale locks; abort
+  remains available.
+- Aborting partial cleanup retains its journal in the inventory even when the
+  worktree has already left the sandbox namespace. The result identifies
+  protected retired files for operator export. Explicitly preserved attempts and
+  their recovery records remain until the operator finishes recovery/export; the
+  inventory limit is reported and never bypassed by creating more attempts.
+- Legacy worktrees without an active journal never acquire publication or
+  deletion authority from cleanliness. Inventory reports `legacy-unresolved`;
+  recover/export with ordinary Git, or use `activate --abort --attempt ID` to
+  explicitly classify that exact tree as preserved, with no file deletion or
+  claim of rollback. Unknown trees and later committed/uncommitted edits are
+  never automatically removed. Protected partial-retirement payloads remain
+  beneath `workspace/snapshots/retire-*/staging` for operator export if aborted.
 - Absence of committed receipts does not confirm rollback. Keep the deployment
   ID until `Complete(false)` succeeds. Before aborting a prepared candidate,
-  persist the recoverable `preparing` phase. A confirmed uncommitted abort
-  retires the active journal; the next candidate captures current workspace
-  bytes, including when an activation first finishes an older failed rollback.
-  Release the old source locks before acquiring a fresh selection. Failed
-  receipt inspection or rollback retains the attempt and reports uncertainty.
-  Private source, original captures and native resolution worktrees remain
-  intact; an aborted capture is never acknowledged as published source.
+  persist the recoverable `preparing` phase. Confirmed rollback discards only
+  unchanged, fully prepared generated worktrees and their capture payloads; it
+  never acknowledges private edits or changes publication heads. Cleanup
+  failures retain one journal for retry. A fresh activation then captures
+  current workspace bytes. Release source locks before retirement and fresh
+  selection. If an attempt contains user commits or a conflict resolution,
+  failed validation reuses that captured attempt instead of archiving another
+  copy; later private edits remain pending. Explicit abort preserves such
+  distinct work for recovery/export. Failed receipt inspection or rollback
+  retains the deployment and uncertainty.
 - The platform-owned instance `scripts/` tree is a real directory, never a
   symlink into protected `node/` storage. It is mounted read-only and executable
   at `/workspace/scripts`; `/workspace/scripts/activate` is the canonical
@@ -180,11 +237,15 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   overrides omit root's native user-binary directory.
 - Installation stages the service runtime sources and generated protocol in
   `scripts/runtime`. Development mounts that payload read-only at `/opt/runtime`
-  and `scripts/deno.json` at `/workspace/deno.json`, including for retained
-  system roots on their next start. The workspace includes `packages/*/*` and
-  supplies platform imports; member configs retain package dependencies and
-  tasks. Ordinary Deno checks use the real SDK without a Worker bridge or
-  import-map overrides.
+  and the `scripts/deno.json` template at `/workspace/deno.json`, including for
+  retained system roots on their next start. The native read-only config derives
+  explicit members from the current merged namespace/package directories with
+  `deno.json`, `deno.jsonc`, or `package.json`. It never descends into package
+  contents or hidden staging/conflict trees. Shared installs/removals, private
+  edits, activation and restart need no inventory cache or refresh timer. The
+  template supplies platform imports; members retain dependencies and tasks.
+  Ordinary Deno checks use the real SDK without a Worker bridge or import-map
+  overrides.
 - The activated `packages/the8020/dev-skills` package is mounted read-only at
   `/workspace/skills/builtin`; its `workspace.md` also supplies
   `/workspace/AGENTS.md` and `/workspace/CLAUDE.md`. Skills update through
@@ -285,9 +346,26 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Unit tests cover identity collisions, user isolation, lifecycle and idle
   admission, independent shutdown, bounded diagnostics, authorized-key
   confinement, reset boundaries, mount policy, and helper guidance.
+- `TestNativeActivationLifecycle` checks sparse repeated success against both
+  worktree files and Git registrations, lost retirement replies and restart,
+  later edits, safe abort, unknown legacy contents, same-user shell and other
+  user activation liveness, real conflicts and explicit continuation, plus
+  validation staging retirement after committed preparation/finalization
+  recovery across restart. `TestNativeActivationRetryCleanup` checks repeated
+  rejection and safe abort without retained copies, private-source preservation
+  and interrupted rollback cleanup.
+  `TestValidationCleanupRetainsJournalOnFailure` checks confinement and
+  saved-candidate cleanup. Runsc's
+  `TestStagingRetirementPreservesChangesAndRetries` checks versions, open
+  references, recreated paths, protected payloads and idempotent release.
 - `TestNativeDevelopmentDeno` verifies workspace and package Deno checks,
   cross-package imports, SDK type-error detection, and read-only SDK/config
-  mounts through the real sandbox. It uses `THE8020_DEVELOPMENT_E2E=1`.
+  mounts through the real sandbox. `TestNativeDevelopmentDenoDiscovery` covers
+  explicit membership after shared/private additions, config removal, rename,
+  activation and restart, self-contained helper permissions, and a retained
+  large conflict-tree control. The real Deno LSP test checks SDK and
+  cross-package definitions, including a newly created member while the server
+  remains open. Both use `THE8020_DEVELOPMENT_E2E=1`.
 - `TestSandboxSQLRequiresItsOwnersToken` and
   `TestSandboxLogsRequiresItsOwnersToken` cover sandbox tool authentication,
   foreign-owner rejection, and independence from the activation gateway. The

@@ -70,19 +70,19 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   claims. Native transport approval remains a private in-process capability.
 - Strip Authorization, the platform header and this system's authentication
   cookie before Worker dispatch, preserving unrelated cookies. Original
-  credentials and certificate evidence survive only authenticated node forwarding
-  until the destination performs its own policy. Malformed Basic remains 401
-  with a challenge; unavailable policy is non-cacheable 503 without a challenge.
-  Missing credentials retain declared reject/redirect behavior.
+  credentials and certificate evidence survive only authenticated node
+  forwarding until the destination performs its own policy. Malformed Basic
+  remains 401 with a challenge; unavailable policy is non-cacheable 503 without
+  a challenge. Missing credentials retain declared reject/redirect behavior.
 - HTTP and WebSocket request contexts are fresh `ctx-` IDs. Public internal
   context and parent-context headers are stripped even with mixed casing; only
   explicit trusted kernel-call forwarding carries a parent execution context.
 - Successful token verification carries claims, the composition-selected package
   hook, and the existing unauthenticated response policy as trusted request
   metadata. It never marks application authentication complete. The target
-  Worker approves policy and confirms the final principal before handler/upgrade;
-  persistent bindings and native callbacks use that approved principal. Go never queries the users package
-  tables.
+  Worker approves policy and confirms the final principal before
+  handler/upgrade; persistent bindings and native callbacks use that approved
+  principal. Go never queries the users package tables.
 - In-process `RequestOptions.AuthenticatedUser` carries a principal already
   approved by a native transport's package authentication. A private Go context
   marks this request; the target Worker checks principal consistency and skips
@@ -217,6 +217,13 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   kernel socket and its loopback, private, link-local, public, or special
   network scope. Client-supplied internal address metadata is discarded; proxy
   forwarding headers are not trusted without an explicit trusted-proxy policy.
+
+- `access.credential_namespace` is optional trusted service configuration,
+  restricted to 1–256 ASCII letters/digits and `_./:-` with an alphanumeric
+  first character. Publication and pool startup preserve it; omission isolates
+  the logical service. Deno service policy owns explicit shared-store selection.
+  Changing a store's namespace invalidates its password records and requires
+  owner-controlled password replacement/reset.
 
 # Work Guidance
 
