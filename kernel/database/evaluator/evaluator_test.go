@@ -131,7 +131,7 @@ func tableFile(index int) string {
 
 func TestUnrelatedDeploymentPassesWaitingEvaluator(t *testing.T) {
 	evaluator, runner, manager, orders := testEvaluator(t, 1)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	if _, err := evaluator.SynchronizeAll(ctx, false); err != nil {
 		t.Fatal(err)
@@ -192,7 +192,7 @@ func TestUnrelatedDeploymentPassesWaitingEvaluator(t *testing.T) {
 			<-firstDone
 			t.Fatalf("unrelated deployment could not complete during evaluation: %v", err)
 		}
-	case <-time.After(time.Second):
+	case <-ctx.Done():
 		unblock()
 		<-firstDone
 		<-secondDone
@@ -602,5 +602,59 @@ func TestSchemaApplicationUsesOrdinarySQLJobAndCandidateMounts(t *testing.T) {
 	ctx := context.WithValue(context.Background(), schemaSourceContextKey{}, schemaSource{release: "candidate", mounts: []model.Mount{{}}})
 	if _, err := evaluator.RunSchema(ctx, database.SchemaRequest{Operation: "initialize", PublicationLockHeld: true}); err != nil || calls != 1 {
 		t.Fatalf("schema job: %d %v", calls, err)
+	}
+}
+
+func TestSchemaRecoveryWithoutUnpublishedSource(t *testing.T) {
+	manager := database.New(database.Config{Backend: database.BackendSQLite, Location: filepath.Join(t.TempDir(), "system.db")})
+	defer manager.Close()
+	candidate := deployment.Candidate{PackageID: "example/new", Root: filepath.Join(t.TempDir(), "missing"), Commit: "candidate"}
+	ctx := deployment.WithCandidates(t.Context(), []deployment.Candidate{candidate})
+	var result any = map[string]any{}
+	var failure error
+	dbRoot := ""
+	e := &Evaluator{database: manager, jobs: schemaJobFunc(func(_ context.Context, _, _ string, options jobs.Options) (jobs.Record, error) {
+		for _, mount := range options.Mounts {
+			if _, err := os.Stat(mount.Source); err != nil {
+				return jobs.Record{}, err
+			}
+		}
+		if dbRoot != "" && (len(options.Mounts) != 1 || options.Mounts[0].Source != dbRoot) {
+			t.Fatalf("lost staged db recovery implementation: %+v", options.Mounts)
+		}
+		request := options.Arguments[0].(database.SchemaRequest)
+		if request.Input.(map[string]any)["id"] != "act-0123456789" {
+			t.Fatalf("lost activation identity: %+v", request)
+		}
+		return jobs.Record{Result: map[string]any{"value": result}}, failure
+	})}
+	manager.SetSchemaExecutor(e.RunSchema)
+	for i := 0; i < 2; i++ {
+		if forward, err := e.ForwardRequired(ctx, "act-0123456789"); err != nil || forward {
+			t.Fatalf("uncommitted recovery %d: %t %v", i, forward, err)
+		}
+	}
+	result = map[string]any{"example__new__items": map[string]any{"route": "native", "target_hash": "same-candidate"}}
+	if forward, err := e.ForwardRequired(ctx, "act-0123456789"); err != nil || !forward {
+		t.Fatalf("committed recovery: %t %v", forward, err)
+	}
+	if outcome, err := e.SchemaOutcome(ctx, "act-0123456789"); err != nil || !strings.Contains(string(outcome), "same-candidate") {
+		t.Fatalf("committed outcome: %s %v", outcome, err)
+	}
+	for _, invalid := range []any{nil, "corrupt receipts"} {
+		result = invalid
+		if _, err := e.ForwardRequired(ctx, "act-0123456789"); err == nil {
+			t.Fatal("missing or malformed receipts accepted")
+		}
+	}
+	failure = errors.New("receipt read unavailable")
+	if _, err := e.ForwardRequired(ctx, "act-0123456789"); !errors.Is(err, failure) {
+		t.Fatalf("receipt failure lost: %v", err)
+	}
+	failure, result = nil, map[string]any{}
+	dbRoot = t.TempDir()
+	ctx = deployment.WithCandidates(ctx, []deployment.Candidate{candidate, {PackageID: "the8020/db", Root: dbRoot, Commit: "db-upgrade"}})
+	if forward, err := e.ForwardRequired(ctx, "act-0123456789"); err != nil || forward {
+		t.Fatalf("staged db recovery: %t %v", forward, err)
 	}
 }

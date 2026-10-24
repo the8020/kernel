@@ -255,6 +255,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   sparse conflicts, concurrent/later edits, interrupted publication, schema and
   hook recovery, package creation/removal, and retained PTYs. Test fault
   injection belongs at test transports and executables, never in shipped code.
+- `TestNativeMissingSourceRecovery` covers interrupted first/existing activation
+  with lost staged source, repeated receipt inspection, confirmed abort and a
+  fresh successful activation without manual shared-directory creation.
 - `TestNativeFailedRollbackRetainsActivation` covers failed preparation and
   pre-publication aborts, retained deployment identity, helper diagnostics and
   fresh same-inode edits after confirmed recovery.
@@ -269,12 +272,13 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - `TestNativeSchemaEvolution` covers staged cleanup/old-schema codecs, enum
   evolution, minimal column repair, catalog-v2 DB-package upgrade and forward
   recovery, including a lost schema response before the coordinator checkpoint
-  and retry with the original force/approved-plan consent. Its catalog-v2
-  baseline uses the immutable DB `0.7.0` tag. Later private source remains
-  unpublished during committed-receipt recovery. Its callback transport matches
-  production Content-Length framing. Shared database tests qualify
-  SQLite/PostgreSQL, force scope, stale candidate/scope, retained data, unique
-  constraints, cancellation and writer exclusion.
+  and retry with the original force/approved-plan consent and an unpublished
+  new-package candidate whose shared source is absent. Its catalog-v2 baseline
+  uses the immutable DB `0.7.0` tag. Later private source remains unpublished
+  during committed-receipt recovery. Its callback transport matches production
+  Content-Length framing. Shared database tests qualify SQLite/PostgreSQL, force
+  scope, stale candidate/scope, retained data, unique constraints, cancellation
+  and writer exclusion.
 - Run heavy native and browser fixtures in a separate environment with explicit
   CPU, memory, and runtime limits. Keep checks on shared development instances
   small and sequential; stop if responsiveness degrades.

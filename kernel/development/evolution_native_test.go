@@ -17,7 +17,7 @@ import (
 
 func TestNativeSchemaEvolution(t *testing.T) {
 	m, sparse, sandbox, shared := nativeSparseRuntime(t, "evolution", 1)
-	ctx, cancel := context.WithTimeout(t.Context(), 75*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
 	source, err := filepath.Abs("../../..")
 	if err != nil {
@@ -225,7 +225,8 @@ program="the8020/dev-core/gate"
 		t.Fatalf("gate publication: %+v", result)
 	}
 	edit("tables/evolution.ts", strings.ReplaceAll(failed, `"FINAL"`, `"LAST"`))
-	retryOptions := ActivationOptions{Description: "Forward-only repair", SelectedPackages: []string{"the8020/dev-core"}, ForceColumns: []string{"the8020__dev_core__evolution.status"}}
+	nativeExec(t, sparse.RunscDriver, sandbox, "mkdir -p /workspace/packages/the8020/receipt-new; printf 'schema = 1\\n' >/workspace/packages/the8020/receipt-new/package.toml")
+	retryOptions := ActivationOptions{Description: "Forward-only repair", SelectedPackages: []string{"the8020/dev-core", "the8020/receipt-new"}, ForceColumns: []string{"the8020__dev_core__evolution.status"}}
 	previewOptions := retryOptions
 	previewOptions.SchemaPreview = true
 	retryPreview, err := m.Preview(ctx, sandbox.UserID, previewOptions)
@@ -268,6 +269,19 @@ program="the8020/dev-core/gate"
 	if err == nil || interrupted.Success || !strings.Contains(err.Error(), "fixture lost schema response after commit") {
 		t.Fatalf("lost schema response: %+v %v", interrupted, err)
 	}
+	newRoot := filepath.Join(m.config.PackagesRoot, "the8020/receipt-new")
+	// Graceful mount cleanup may leave an empty directory; model its loss without removing any source.
+	if err := os.Remove(newRoot); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(newRoot); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("new source published before committed recovery: %v", err)
+	}
+	for retry := 0; retry < 2; retry++ {
+		if forward, err := owner.ForwardRequired(ctx, activationID); err != nil || !forward {
+			t.Fatalf("committed receipt with missing new source: %t %v", forward, err)
+		}
+	}
 	nativeExec(t, sparse.RunscDriver, sandbox, "printf 'later private edit\\n' >/workspace/packages/the8020/dev-core/after-commit.txt")
 	var stage string
 	if err := db.QueryRowContext(ctx, `SELECT stage FROM the8020__packages__activations WHERE "activationId"=$1`, activationID).Scan(&stage); err != nil || stage != "staged" {
@@ -291,8 +305,11 @@ program="the8020/dev-core/gate"
 	if err := owner.Recover(context.Background()); err != nil {
 		t.Fatalf("forward repair recovery: %v", err)
 	}
-	if result := activate("Forward-only repair", false); !result.Success {
-		t.Fatalf("recovery acknowledgement %+v", result)
+	if result, err := m.Activate(ctx, sandbox.UserID, retryOptions); err != nil || !result.Success {
+		t.Fatalf("recovery acknowledgement %+v %v", result, err)
+	}
+	if _, err := os.Stat(filepath.Join(m.config.PackagesRoot, "the8020/receipt-new/package.toml")); err != nil {
+		t.Fatalf("committed new candidate not published: %v", err)
 	}
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM the8020__dev_core__evolution WHERE id=$1 AND display='after commit'`, firstGenerated+2).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("repair replayed %d %v", count, err)

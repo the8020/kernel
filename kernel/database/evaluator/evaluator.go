@@ -99,7 +99,8 @@ func (e *Evaluator) RunSchema(ctx context.Context, request database.SchemaReques
 		commits := map[string]string{}
 		for _, candidate := range candidates {
 			commits[candidate.PackageID] = candidate.Commit
-			if candidate.Commit != "" {
+			// Recovery reads durable metadata; preparation/planning supply table mounts explicitly.
+			if candidate.Commit != "" && candidate.PackageID == "the8020/db" {
 				mounts = append(mounts, model.Mount{Source: candidate.Root, Target: packageMountRoot + "/" + candidate.PackageID, ReadOnly: true, OwnerScope: "the8020/db", Purpose: "workspace", Persistence: "deployment"})
 			}
 		}
@@ -482,6 +483,9 @@ func (e *Evaluator) ForwardRequired(ctx context.Context, id string) (bool, error
 	var receipts map[string]database.RewriteReceipt
 	if err := json.Unmarshal(encoded, &receipts); err != nil {
 		return false, err
+	}
+	if receipts == nil {
+		return false, errors.New("schema receipt inspection returned no result")
 	}
 	return len(receipts) > 0, nil
 }

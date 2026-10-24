@@ -32,9 +32,12 @@ Parent DOX: [kernel/kernel/database DOX](../AGENTS.md).
   share the restricted evaluator's execution.
 - `RunSchema` forwards opaque operation input/results to db. Its reuse version
   comes from cached publication state without source/Git scans. Candidate
-  application receives staged mounts and the candidate version; rollback uses
-  active sources. Go owns confinement, observed dependencies, bounded evaluation
-  scheduling, and the native activation handshake; schema policy stays in db.
+  application receives explicit staged table mounts and the candidate version;
+  rollback uses active table sources. Recovery metadata/receipt calls mount only
+  a candidate db implementation when present, never unrelated unpublished
+  packages. Missing package source or HEAD does not determine receipt state. Go
+  owns confinement, observed dependencies, bounded evaluation scheduling, and
+  the native activation handshake; schema policy stays in db.
 - Initial and explicit full synchronization discovers all package tables.
   Ordinary deployment reevaluates only new/changed/deleted definitions and
   tables whose recorded Deno module dependency closure intersects Git's changed
