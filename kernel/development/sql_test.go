@@ -9,6 +9,14 @@ import (
 )
 
 func TestSandboxSQLRequiresItsOwnersToken(t *testing.T) {
+	testSandboxToolToken(t, "sql")
+}
+
+func TestSandboxLogsRequiresItsOwnersToken(t *testing.T) {
+	testSandboxToolToken(t, "logs")
+}
+
+func testSandboxToolToken(t *testing.T, operation string) {
 	platform := newTestPlatform(t)
 	for _, user := range []string{"alice", "bob"} {
 		if _, err := platform.manager.Create(context.Background(), user); err != nil {
@@ -21,10 +29,15 @@ func TestSandboxSQLRequiresItsOwnersToken(t *testing.T) {
 	}
 	calls := 0
 	platform.manager.config.ActivationGateway = nil
-	platform.manager.config.SQL = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+	handler := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		calls++
 		writer.WriteHeader(http.StatusOK)
 	})
+	if operation == "sql" {
+		platform.manager.config.SQL = handler
+	} else {
+		platform.manager.config.Logs = handler
+	}
 	for _, test := range []struct {
 		method string
 		user   string
@@ -37,7 +50,7 @@ func TestSandboxSQLRequiresItsOwnersToken(t *testing.T) {
 		{http.MethodGet, "alice", alice.Token, 405},
 		{http.MethodPost, "alice", alice.Token, 200},
 	} {
-		request := httptest.NewRequest(test.method, "/v1/development/sandboxes/"+test.user+"/sql", strings.NewReader(`{"statement":"SELECT 1"}`))
+		request := httptest.NewRequest(test.method, "/v1/development/sandboxes/"+test.user+"/"+operation, strings.NewReader(`{"statement":"SELECT 1"}`))
 		request.Header.Set("Authorization", "Bearer "+test.token)
 		response := httptest.NewRecorder()
 		platform.manager.serveSandbox(response, request)
@@ -46,14 +59,15 @@ func TestSandboxSQLRequiresItsOwnersToken(t *testing.T) {
 		}
 	}
 	if calls != 1 {
-		t.Fatalf("unauthorized requests reached SQL: %d calls", calls)
+		t.Fatalf("unauthorized requests reached sandbox tool: %d calls", calls)
 	}
 	platform.manager.config.SQL = nil
-	request := httptest.NewRequest(http.MethodPost, "/v1/development/sandboxes/alice/sql", strings.NewReader(`{}`))
+	platform.manager.config.Logs = nil
+	request := httptest.NewRequest(http.MethodPost, "/v1/development/sandboxes/alice/"+operation, strings.NewReader(`{}`))
 	request.Header.Set("Authorization", "Bearer "+alice.Token)
 	response := httptest.NewRecorder()
 	platform.manager.serveSandbox(response, request)
 	if response.Code != http.StatusServiceUnavailable {
-		t.Fatalf("missing SQL provider = HTTP %d", response.Code)
+		t.Fatalf("missing tool provider = HTTP %d", response.Code)
 	}
 }

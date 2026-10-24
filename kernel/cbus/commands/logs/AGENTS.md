@@ -11,6 +11,13 @@ Parent DOX: [commands DOX](../AGENTS.md).
 
 # Local Contracts
 
+- `--text` uses the logging owner's bounded literal message/attribute filter.
+- `NewHTTP` adapts the same Query for authenticated development ingress. It
+  strictly decodes one query of at most 16 KiB, rejects a foreign node, pins the
+  immutable host identity, and returns `{node_id,page}` with no-store headers.
+  Sandbox authority is checked by development before this handler; it is never
+  registered on the public listener. Reads have a 30-second deadline.
+
 - The adjacent TOML owns all flags and result metadata. `--user` is the exact
   service/job execution username; typed runtime IDs and declared objects remain
   separate filters. Capture times accept RFC3339 and are normalized to UTC.
@@ -38,6 +45,8 @@ Parent DOX: [commands DOX](../AGENTS.md).
 
 # Verification
 
+- `http_test.go` covers host pinning, unavailable logging, query bounds and
+  rejection of foreign nodes, file paths and extra JSON input.
 - Generated catalog checks and application command-bus integration exercise the
   real separate writer, bounded reads, continuation, and invalid query limits.
 

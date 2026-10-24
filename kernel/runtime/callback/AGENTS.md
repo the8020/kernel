@@ -16,6 +16,13 @@ Parent DOX: [kernel/kernel/runtime DOX](../AGENTS.md).
 
 # Local Contracts
 
+- `admin.catalog` and `admin.line` typed-operation requests reuse this
+  callback's existing administrative registry after the same active
+  Worker/caller checks. Line execution uses the shared CLI parser with no
+  client-local secure inputs; retained output is at most 64 KiB plus an explicit
+  truncation notice. Package authorization stays with the exposing application,
+  as for `admin.execute`.
+
 - Public API: `New`, `Server.Start`, runtime dependency setters,
   `Server.Address`, and `Close`.
 - Only generated registration, heartbeat, administrative, database, and
@@ -84,6 +91,8 @@ Parent DOX: [kernel/kernel/runtime DOX](../AGENTS.md).
 
 # Verification
 
+- `administration_test.go` covers catalog/line dispatch, native validation,
+  trusted caller retention, secure-input rejection and bounded output.
 - Unit tests cover Unix listener lifecycle/reconnect, token/protocol and
   terminal-state rejection, memory-only revisioned snapshots, job/service
   runtime identity, administration and typed operations, concurrent database

@@ -14,7 +14,7 @@ import (
 func New(serviceSet *services.Services) core.Handler {
 	return func(ctx context.Context, request core.Request) (core.Result, error) {
 		q := records.Query{Filter: records.Filter{
-			Level: commandutil.String(request, "level"), Source: commandutil.String(request, "source"),
+			Text: commandutil.String(request, "text"), Level: commandutil.String(request, "level"), Source: commandutil.String(request, "source"),
 			NodeID: commandutil.String(request, "node_id"), SandboxID: commandutil.String(request, "sandbox_id"),
 			WorkerID: commandutil.String(request, "worker_id"), ContextID: commandutil.String(request, "context_id"),
 			ParentContextID: commandutil.String(request, "parent_context_id"), JobID: commandutil.String(request, "job_id"),

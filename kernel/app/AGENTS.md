@@ -18,6 +18,11 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 # Local Contracts
 
+- Development `Config.Logs` is the existing log-query adapter's narrow HTTP
+  handler. Development authenticates sandbox authority; the adapter fixes the
+  hosting node and retains the shared file owner's filtering, bounds and
+  cursors.
+
 - HTTP Basic, certificate, and token policy run directly through the composed
   users hook in the target service Worker. Composition supplies no HTTP program
   verifier. Native password/token transports retain their ordinary program and

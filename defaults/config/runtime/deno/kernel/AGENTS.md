@@ -22,6 +22,18 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 
 # Local Contracts
 
+- `kernel.admin.catalog(signal?)` returns current CBus metadata;
+  `kernel.admin.runLine(line, signal?)` executes native console syntax and
+  returns `{exit_code, output, truncated}`. Output is bounded to 64 KiB and
+  contains no retained history. Native confirmation flags and validation apply.
+  Commands declaring secure input are rejected before host stdin/file
+  resolution; callers should direct users to the native client or a dedicated
+  secure-input screen. These APIs use the existing active-execution bridge and
+  are native admin capabilities; application entrypoints must authorize their
+  exposure.
+- LogQuery `text` is a case-sensitive literal message/attribute search, bounded
+  to 1024 bytes and included in the native cursor's filter fingerprint.
+
 - `kernel.packages.synchronize(ids, gitToken?, gitUsername?, schema?)` accepts a
   transient token or Basic password; omitted username retains `x-access-token`.
   Neither credential is persisted in desired package state or Git configuration.

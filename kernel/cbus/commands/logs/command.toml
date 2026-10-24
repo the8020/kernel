@@ -9,6 +9,12 @@ restart_behavior = "none"
 file = "kernel/cbus/commands/logs/logs.go"
 symbol = "New"
 [[parameters]]
+name = "text"
+type = "string"
+option = "text"
+required = false
+description = "Case-sensitive literal search in message and attributes, at most 1024 bytes."
+[[parameters]]
 name = "from"
 type = "string"
 option = "from"

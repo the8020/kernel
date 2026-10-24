@@ -19,6 +19,7 @@ type Filter struct {
 	Until           time.Time `json:"until,omitempty"`
 	Level           string    `json:"level,omitempty"`
 	Source          string    `json:"source,omitempty"`
+	Text            string    `json:"text,omitempty"`
 	NodeID          string    `json:"node_id,omitempty"`
 	SandboxID       string    `json:"sandbox_id,omitempty"`
 	WorkerID        string    `json:"worker_id,omitempty"`
@@ -42,6 +43,9 @@ type Query struct {
 func (q Query) Normalize() (Query, error) {
 	if q.Limit == 0 {
 		q.Limit = 100
+	}
+	if len(q.Text) > 1024 {
+		return q, errors.New("log search text exceeds 1024 bytes")
 	}
 	if q.Limit < 1 || q.Limit > MaxQueryRecords || len(q.Cursor) > 4096 || len(q.Position) > 4096 {
 		return q, errors.New("invalid log query limits")
@@ -72,13 +76,25 @@ func (q Query) Normalize() (Query, error) {
 }
 
 func (f Filter) Matches(r Record) bool {
-	return (f.From.IsZero() || !r.Time.Before(f.From)) && (f.Until.IsZero() || r.Time.Before(f.Until)) &&
+	return f.matchesText(r) && (f.From.IsZero() || !r.Time.Before(f.From)) && (f.Until.IsZero() || r.Time.Before(f.Until)) &&
 		(f.Level == "" || Severity(r.Level) >= Severity(f.Level)) && (f.Source == "" || r.Source == f.Source) &&
 		(f.NodeID == "" || r.NodeID == f.NodeID) && (f.SandboxID == "" || r.SandboxID == f.SandboxID) &&
 		(f.WorkerID == "" || r.WorkerID == f.WorkerID) && (f.ContextID == "" || r.ContextID == f.ContextID) &&
 		(f.ParentContextID == "" || r.ParentContextID == f.ParentContextID) && (f.JobID == "" || r.JobID == f.JobID) &&
 		(f.ServiceID == "" || r.ServiceID == f.ServiceID) && (f.PersistentID == "" || r.PersistentID == f.PersistentID) &&
 		(f.Object == "" || r.Object == f.Object) && (f.Username == "" || r.Username == f.Username)
+}
+
+func (f Filter) matchesText(r Record) bool {
+	if f.Text == "" || strings.Contains(r.Message, f.Text) {
+		return true
+	}
+	for key, value := range r.Attributes {
+		if strings.Contains(key, f.Text) || strings.Contains(value, f.Text) {
+			return true
+		}
+	}
+	return false
 }
 
 type LocatedRecord struct {

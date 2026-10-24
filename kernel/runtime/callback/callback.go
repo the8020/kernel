@@ -40,6 +40,7 @@ type Config struct {
 }
 
 type AdminBus interface {
+	Catalog() core.Catalog
 	Execute(context.Context, core.Request) core.Response
 }
 
@@ -567,7 +568,13 @@ func (s *Server) handleOperation(writer http.ResponseWriter, request *http.Reque
 		return
 	}
 	callContext := execution.WithCaller(request.Context(), caller)
-	result, operationErr := operations.Execute(callContext, payload.Operation, payload.Input)
+	var result any
+	var operationErr error
+	if payload.Operation == "admin.catalog" || payload.Operation == "admin.line" {
+		result, operationErr = s.administration(callContext, payload.Operation, payload.Input)
+	} else {
+		result, operationErr = operations.Execute(callContext, payload.Operation, payload.Input)
+	}
 	responseResult := operationCallResult{Success: operationErr == nil, Result: result}
 	if operationErr != nil {
 		var commandError *core.Error

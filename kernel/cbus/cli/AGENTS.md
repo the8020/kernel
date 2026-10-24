@@ -14,6 +14,11 @@ Parent DOX: [kernel/kernel/cbus DOX](../AGENTS.md).
 
 # Local Contracts
 
+- `Runner.RunLine` uses `SplitLine` and normal catalog dispatch for a bounded 16
+  KiB remote console line. It rejects commands declaring secure inputs before
+  argument preparation, so stdin and secret-file access remain client-local. It
+  returns the normal exit status and structured JSON rendering (or help).
+
 - Public API: `Executor`, `CatalogProvider`, `SecretResolver`, `Runner`, `New`,
   `NewDynamic`, `Runner.SetSecretResolver`, `Runner.Run`, `Runner.Help`, and
   `SplitLine`.

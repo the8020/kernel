@@ -47,6 +47,53 @@ const workerMetadata: ExecutionMetadata = {
   origin: { type: "service", id: "example/auth/login" },
 };
 
+Deno.test("catalog and console line use the active private operation bridge", async () => {
+  const channel = new MessageChannel();
+  const bridge = createKernelBridge(channel.port1, workerMetadata);
+  const calls = createCallQueue(channel.port2);
+  try {
+    for (
+      const [operation, input, invoke, result] of [
+        ["admin.catalog", {}, () => kernel.admin.catalog(), {
+          revision: "catalog-1",
+          commands: [],
+        }],
+        [
+          "admin.line",
+          { line: 'kernel.test "two words"' },
+          () => kernel.admin.runLine('kernel.test "two words"'),
+          {
+            exit_code: 2,
+            output: "invalid_arguments",
+            truncated: false,
+          },
+        ],
+      ] as const
+    ) {
+      const pending = bridge.withRequest<unknown>(metadata, invoke);
+      const call = await calls.next();
+      assertEquals(
+        (call.payload as { operation: string }).operation,
+        "runtime.operation",
+      );
+      assertEquals((call.payload as { arguments: unknown }).arguments, {
+        operation,
+        input,
+      });
+      bridge.handle({
+        type: "kernel_result",
+        correlationId: call.correlationId as string,
+        payload: { success: true, result },
+      });
+      assertEquals(await pending, result);
+    }
+  } finally {
+    bridge.close();
+    channel.port1.close();
+    channel.port2.close();
+  }
+});
+
 Deno.test("the bridge rejects missing execution users instead of defaulting", async () => {
   const channel = new MessageChannel();
   const bridge = createKernelBridge(channel.port1, workerMetadata);

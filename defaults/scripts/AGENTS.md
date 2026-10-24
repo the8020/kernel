@@ -14,6 +14,11 @@ Parent DOX: [kernel/defaults DOX](../AGENTS.md).
 
 # Local Contracts
 
+- `kernel-logs` delegates to dev-skills `8020-dev/scripts/kernel-logs.ts` with
+  only the existing sandbox ingress environment and network permission. Package
+  activation owns guidance/CLI behavior; installation stages this thin
+  executable helper through the same read-only scripts mount as `sql`.
+
 - Helpers are mounted read-only at `/workspace/scripts`; activation uses the
   typed kernel ingress and requires a publication message.
 - `activate` prints readable status, conflicting paths, native Git commands and

@@ -323,3 +323,27 @@ func TestCursorSurvivesWriterRestart(t *testing.T) {
 		t.Fatal("restart cursor did not continue", page.State, len(page.Records))
 	}
 }
+
+func TestTextSearchContinuationUsesSameFilterAcrossRotation(t *testing.T) {
+	s := testStore(t, testPolicy())
+	now := time.Now().UTC()
+	appendLines(t, s, "kernel", now, queryLine("kernel", "INFO", "needle first", now), queryLine("kernel", "INFO", "unrelated", now))
+	q := records.Query{Filter: records.Filter{Text: "needle"}, Limit: 1}
+	page := queryPage(t, s, q)
+	if len(page.Records) != 1 || page.Records[0].Message != "needle first" {
+		t.Fatal(page)
+	}
+	if _, err := s.rotate("all", now); err != nil {
+		t.Fatal(err)
+	}
+	appendLines(t, s, "kernel", now, queryLine("kernel", "INFO", "needle second", now))
+	q.Cursor = page.Cursor
+	page = queryPage(t, s, q)
+	if len(page.Records) != 1 || page.Records[0].Message != "needle second" {
+		t.Fatal(page)
+	}
+	q.Text = "unrelated"
+	if _, err := s.query(context.Background(), q); err == nil {
+		t.Fatal("changed text accepted with previous cursor")
+	}
+}

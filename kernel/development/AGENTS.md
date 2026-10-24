@@ -20,6 +20,13 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 # Local Contracts
 
+- The private `logs` operation authenticates the loaded sandbox owner's bearer
+  token, like `sql`, and delegates to composition's `Config.Logs`. The log owner
+  pins reads to this hosting node, returns its identity even for empty pages and
+  rejects remote-node queries. This uses existing native sandbox administrative
+  authority without a Worker bridge, host log mounts, or copied admin
+  credentials.
+
 - Production implementations live in ordinary source. Builds never extract test
   code, rewrite project source, or retain replaced backends for comparison.
 - Native tests assert behavior directly. Keep diagnostics for failures and
@@ -277,7 +284,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - `TestNativeDevelopmentDeno` verifies workspace and package Deno checks,
   cross-package imports, SDK type-error detection, and read-only SDK/config
   mounts through the real sandbox. It uses `THE8020_DEVELOPMENT_E2E=1`.
-- `TestSandboxSQLRequiresItsOwnersToken` covers SQL ingress authentication,
+- `TestSandboxSQLRequiresItsOwnersToken` and
+  `TestSandboxLogsRequiresItsOwnersToken` cover sandbox tool authentication,
   foreign-owner rejection, and independence from the activation gateway. The
   native SQL owner's tests cover the database and shipped CLI path.
 - `TestRootlessDevelopmentE2E` covers native SSH/PTY, APT/dpkg persistence,

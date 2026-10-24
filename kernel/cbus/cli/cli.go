@@ -74,6 +74,39 @@ func NewDynamic(catalog CatalogProvider, executor Executor) *Runner {
 // SetSecretResolver configures client-local secret acquisition.
 func (r *Runner) SetSecretResolver(resolver SecretResolver) { r.secretResolver = resolver }
 
+// RunLine uses console syntax without allowing client-local secret file/stdin access.
+func (r *Runner) RunLine(ctx context.Context, line string, output io.Writer) int {
+	if len(line) > 16<<10 {
+		renderLocalError(output, errors.New("command line exceeds 16 KiB"))
+		return 2
+	}
+	tokens, err := SplitLine(line)
+	if err != nil {
+		renderLocalError(output, err)
+		return 2
+	}
+	if err := r.refresh(ctx, false); err != nil {
+		renderLocalError(output, err)
+		return 1
+	}
+	if len(tokens) > 0 && tokens[0] != "help" {
+		command, _, err := r.match(tokens)
+		if err != nil {
+			renderLocalError(output, err)
+			return 2
+		}
+		secure := len(command.Secrets) > 0
+		for _, parameter := range command.Parameters {
+			secure = secure || parameter.Secret
+		}
+		if secure {
+			renderLocalError(output, errors.New("secure-input commands require the native admin client or their dedicated administration screen"))
+			return 2
+		}
+	}
+	return r.Run(ctx, tokens, true, output)
+}
+
 // Run resolves, validates, invokes, and renders one command line.
 func (r *Runner) Run(ctx context.Context, args []string, jsonOutput bool, output io.Writer) int {
 	if err := r.refresh(ctx, false); err != nil {

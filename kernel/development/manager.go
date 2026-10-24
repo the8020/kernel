@@ -39,6 +39,7 @@ type Config struct {
 	MountProfile      []MountDefinition
 	ActivationGateway ActivationGateway
 	SQL               http.Handler
+	Logs              http.Handler
 	UserAccess        func(http.ResponseWriter, *http.Request, string, string)
 	SystemURL         func() string
 	Driver            SandboxDriver
@@ -938,6 +939,14 @@ func (m *Manager) serveSandbox(response http.ResponseWriter, request *http.Reque
 	}
 	if request.Header.Get("Authorization") != "Bearer "+sandbox.Token {
 		http.Error(response, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if operation == "logs" {
+		if m.config.Logs == nil {
+			http.Error(response, "native logs unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		m.config.Logs.ServeHTTP(response, request)
 		return
 	}
 	if operation == "sql" {

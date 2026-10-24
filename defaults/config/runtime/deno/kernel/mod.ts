@@ -185,6 +185,37 @@ export interface LocalPackageResult {
   repository_path: string;
 }
 
+export interface AdminCatalog {
+  revision: string;
+  commands: Array<{
+    id: string;
+    name: string;
+    path?: string[];
+    kind: string;
+    summary: string;
+    description?: string;
+    usage?: string;
+    mutates_state: boolean;
+    parameters?: Array<{
+      name: string;
+      type: string;
+      description: string;
+      option?: string;
+      required: boolean;
+      secret?: boolean;
+    }>;
+    secrets?: Array<{ name: string }>;
+    examples?: string[];
+  }>;
+  diagnostics?: Array<{ package_id?: string; message: string }>;
+}
+
+export interface AdminLineResult {
+  exit_code: number;
+  output: string;
+  truncated: boolean;
+}
+
 export interface AdminCommandErrorValue {
   code: string;
   message: string;
@@ -1103,6 +1134,12 @@ export const kernel = Object.freeze({
   }),
   admin: Object.freeze({
     execute: executeAdminCommand,
+    catalog(signal?: AbortSignal): Promise<AdminCatalog> {
+      return executeRuntimeOperation("admin.catalog", {}, signal);
+    },
+    runLine(line: string, signal?: AbortSignal): Promise<AdminLineResult> {
+      return executeRuntimeOperation("admin.line", { line }, signal);
+    },
   }),
 });
 

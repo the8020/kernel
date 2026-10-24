@@ -5,6 +5,8 @@ import type {
 
 /** Filters use capture time (from inclusive, until exclusive) and exact IDs. */
 export interface LogQuery {
+  /** Case-sensitive literal match in message and attributes; at most 1024 bytes. */
+  text?: string;
   node_id?: string;
   sandbox_id?: string;
   worker_id?: string;

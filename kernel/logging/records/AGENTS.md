@@ -11,6 +11,11 @@ Parent DOX: [logging DOX](../AGENTS.md).
 
 # Local Contracts
 
+- Query `text` is a case-sensitive literal substring in decoded message or
+  attribute keys/values, at most 1024 bytes. It participates in the ordinary
+  filter fingerprint; changing it requires a new query. Search adds no index or
+  unbounded scan and retains existing record/page/scan limits.
+
 - Each disk record is one UTF-8 line: full UTC timestamp, severity,
   `source/component`, bracketed bare operational IDs and declared object,
   escaped message, optional TAB plus JSON string-valued attributes, newline. The
@@ -65,6 +70,9 @@ Parent DOX: [logging DOX](../AGENTS.md).
 
 # Verification
 
+- `query_test.go` covers literal case-sensitive message/attribute search,
+  including multiline records; daemon query tests bind text to rotation-safe
+  continuation cursors.
 - Go tests cover round-trip escaping, middle truncation, UTF-8 fragments,
   metadata validation, encoded limits, and bounded partial-frame I/O.
 
