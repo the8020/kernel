@@ -28,13 +28,13 @@ archive_sha256_amd64 = "2da148c50540409988c837e62b72176e4a9ad7855548a2dd6ea1cd0c
 archive_sha256_arm64 = "d0c9601e49f441dcc5c6493c884275a5470dcc9c188c96573c4dd503f2fde97d"
 
 [deno]
-version = "2.9.4"
-archive_sha256_amd64 = "c24f955d9fbfe0ea5ae2b501c8e71ae76e31e4c9782390a54a284b3364fda725"
-archive_sha256_arm64 = "111da5c05c240cfdc4340f234a0e3539d39dbcb6755221f19dcd60bacc8be5aa"
-base_image = "docker.io/denoland/deno:2.9.4"
-base_image_digest = "sha256:c777b4b225501a61074837e90a826a58f99124837824023cd60334b1e2374498"
-base_manifest_digest_amd64 = "sha256:15ce8dc7aab3bea3c43c1f91e7b45b6bbd8cfbb64a71360659e476e4e87e78f2"
-base_manifest_digest_arm64 = "sha256:4c186883472a8f457b8500b5749d61898b9eddb38ea5fac2ad2bf4d026cd230e"
+version = "2.9.8"
+archive_sha256_amd64 = "e890975bc2549807bbcc0b584ffafda72cc7c93349dd99c80483dd784f6c4609"
+archive_sha256_arm64 = "d49596c20b9788cf8f5d8ddf644103d4bde56ed239753f0bdb92ba9361d51905"
+base_image = "docker.io/denoland/deno:2.9.8"
+base_image_digest = "sha256:a0d88a7fcbd44f062cba2748e19df67d30290ad12aa203c7c1e0b12462c483f0"
+base_manifest_digest_amd64 = "sha256:1998ffcda0e4a61c816153fa2b9a3b6a3f898d0582f108fd88ba3011bee11164"
+base_manifest_digest_arm64 = "sha256:4b7a0491cc5de580af102c1e2ce34af23a845f17a1dd6c750aee29c9de935ff5"
 
 [development_image]
 name = "the8020/development:1"

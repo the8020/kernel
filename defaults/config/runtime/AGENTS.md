@@ -32,6 +32,11 @@ Parent DOX: [kernel/defaults DOX](../../AGENTS.md).
   exact-Worker reuse, explicit persistent completion, physical WebSocket relay,
   and registered JSON-in/JSON-out Worker functions are generic capabilities.
   Function names and application payloads remain opaque.
+- Deno 2.9.8 is the pinned upstream runtime: invalid explicit-parameter client
+  certificates/keys return controlled errors without killing the supervisor from
+  a Worker. Keep TLS verification enabled; no key parser or runtime patch is
+  installed. Existing development sandboxes retain their image-qualified root
+  and Deno until an operator updates that root or creates a fresh sandbox.
 - `versions.toml` and `protocol/schema.json` are authoritative. Generation
   writes `protocol/generated.ts`, build-only Go output, and the tracked Go
   mirror under `kernel/runtime/protocol/`; generated files are not hand-edited.

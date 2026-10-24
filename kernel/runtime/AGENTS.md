@@ -43,6 +43,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 # Verification
 
+- With Deno and OpenSSL on PATH, `TestDenoClientKeyFailureIsCatchable` verifies
+  direct/Worker controlled rejection and named-curve EC/RSA mutual TLS against a
+  local verifying server. Run it against the installed image binary when
+  changing the runtime pin; keys are synthetic and removed with the fixture.
 - Unit tests cover strict manifest parsing, pin validation,
   architecture/gVisor-release resolution, healthy and degraded host reports,
   image identity, smoke status, and the image-smoke/installer source contracts.

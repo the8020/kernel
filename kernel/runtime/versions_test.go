@@ -16,7 +16,7 @@ func TestLoadVersionsAndArchitectureChecksums(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if versions.Deno.Version != "2.9.4" || versions.RuntimeImage.Name == "" || versions.DevelopmentImage.Name == "" {
+	if versions.Deno.Version != "2.9.8" || versions.RuntimeImage.Name == "" || versions.DevelopmentImage.Name == "" {
 		t.Fatalf("versions: %#v", versions)
 	}
 	amd64, err := versions.Checksums("x86_64")
@@ -41,7 +41,7 @@ func TestLoadVersionsRejectsUnknownAndFloatingValues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	floating := strings.Replace(string(source), `version = "2.9.4"`, `version = "latest"`, 1)
+	floating := strings.Replace(string(source), `version = "2.9.8"`, `version = "latest"`, 1)
 	if err := os.WriteFile(filepath.Join(root, "defaults", "config", "runtime", "versions.toml"), []byte(floating), 0o600); err != nil {
 		t.Fatal(err)
 	}

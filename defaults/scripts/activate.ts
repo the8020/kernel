@@ -11,7 +11,7 @@ let authorEmail = "";
 const selected_packages: string[] = [];
 const package_messages: Record<string, string> = {};
 for (let index = 0; index < Deno.args.length; index++) {
-  const argument = Deno.args[index];
+  const argument = Deno.args[index]!;
   if (argument === "--help" || argument === "-h") {
     console.log(
       "Usage: activate --message 'Describe the changes' [--package namespace/package] [--force table-id.column]\n       activate --preview [--schema] [--package namespace/package]\n\n--force may repeat. Cleanup and native activation run first. Only incompatible cells in exact authorized columns may use NULL or an authored target default. Rows, other cells, keys and identity are retained; unsupported repair stops. Requires --package.\nUse --json for machine-readable output.",
