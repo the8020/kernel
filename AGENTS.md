@@ -646,10 +646,12 @@ below.
 
 ## Development Workflow
 
-- Release `1.0.0` is the incompatible Argon2-to-native-digest credential
-  transition. Its README owns the coordinated package set, key backup and
-  explicit CBus recovery procedure. The same-major updater must not accept a
-  `0.x` to `1.x` transition; no automatic password reset is installed.
+- Release `0.9.17` uses the ordinary same-major updater, followed by explicit
+  CBus reset/recovery of legacy platform passwords. Its README owns the package
+  versions and recovery procedure. Preserve the existing master seed and data;
+  this password reset does not require a major bump or container redeployment.
+  Reserve the first version digit for actual breaking platform changes. Keep
+  the general same-major guard; no automatic password reset is installed.
 
 - Verify the final release contents, including documentation added to discovery
   folders, before tagging. Install and test a fresh system either natively in

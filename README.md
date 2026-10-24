@@ -1,43 +1,60 @@
 # 80|20 kernel
 
-## 1.0.0: password digests and development cleanup
+## 0.9.17: password digests and development cleanup
 
-Kernel **1.0.0** ships the single-call native password digest, shallow explicit
-Deno workspace membership, and recoverable activation staging cleanup. It is a
-**breaking credential transition**: existing Argon2 passwords are not accepted
-and cannot be converted without plaintext. This uses the first version position
-for incompatibility; it is not a compatible 0.x update.
+Kernel **0.9.17** ships the single-call native password digest, shallow explicit
+Deno workspace membership, and recoverable activation staging cleanup. Existing
+0.x installations use the ordinary same-major update, then explicitly reset
+legacy platform passwords through CBus. Existing Argon2 passwords are not
+accepted and cannot be converted without plaintext. This accepted password
+reset does not require a major release; the first version digit remains reserved
+for actual breaking platform changes.
 
-Use kernel, users, services, UUI, dev-core and dev-skills **1.0.0** together.
+Use kernel **0.9.17**, users **0.9.8**, services **0.7.7**, UUI **0.9.14**,
+dev-core **0.9.7** and dev-skills **0.9.4** together.
 The ordered [bootstrap and recommended set](defaults/bootstrap-packages.toml)
-pins all sixteen packages to **1.0.0**. The other eleven packages receive
-compatibility tags at their previously recommended commits, without source
-changes. Package manifests and `/p/` imports remain unversioned.
+pins all sixteen packages to existing 0.x lines. The other eleven packages keep
+their previously recommended versions and commits. Package manifests and `/p/`
+imports remain unversioned. This corrects the withdrawn 1.0.0 publication;
+accepted implementation commits are preserved.
 
 ### Installation and rollout
+
+For existing installations, follow [In-place development updates](#in-place-development-updates)
+below, wait for kernel and recommended-package completion, then perform
+[Password recovery](#password-recovery-and-key-dependence). No container
+redeployment or cross-major transition is needed for these changes. The updater
+restarts the kernel and interrupts running work while keeping its enclosing
+launcher alive. The older bundled-Caddy conversion retains its separate
+one-time container restart requirement described below.
 
 Fresh installations build from the exact source tag using the ordinary
 installer. For the existing kernel Docker build:
 
 ```bash
-git clone --branch 1.0.0 https://github.com/the8020/kernel.git
+git clone --branch 0.9.17 https://github.com/the8020/kernel.git
 cd kernel
-docker build -t the8020:1.0.0 .
+docker build -t the8020:0.9.17 .
 ```
 
-The Dockerfile derives release line `1.0` from the tag and installs the pinned
+The Dockerfile derives release line `0.9` from the tag and installs the pinned
 package set. The separate [deployment image](https://github.com/the8020/deploy)
-can select that same line with `VERSION=1.0`. These commands build an image;
+can select that same line with `VERSION=0.9`. These commands build an image;
 they do not upgrade an existing instance or constitute an installation test.
 
-Existing 0.x systems require an operator-managed major transition. The ordinary
-`kernel.update` and Docker update helper support only same-major updates;
-**do not use them to upgrade 0.x to 1.0.0**. No automatic cross-major migration
-or live password reset ships with this release. Select the instance, back up its
-database and original master seed separately, and prepare the coordinated
-kernel/runtime and package replacement before resetting credentials. Preserve
-private developer work and unresolved activation recovery. Restore matching
-original keys with backups; replacing a key does not migrate encrypted secrets.
+Select the instance and back up its database and original master seed separately
+before updating. Keep that same seed: its loading, format, and existing signing
+and encryption derivations are unchanged. The password digest adds a separate
+purpose-derived key from the existing master; no key rotation or regeneration
+is needed. Preserve private developer work and unresolved activation recovery.
+Restore matching original keys with backups; replacing a key does not migrate
+encrypted secrets. No password reset runs automatically.
+
+Deleting the mistaken 1.0.0 tags does not remove copies already fetched by
+consumers. An instance already installed as 1.0.0 cannot use the ordinary
+updater to downgrade to 0.9.17; its installed version and cached package tags
+need separate operator assessment. This publication does not modify any such
+instance or remove its local tags.
 
 Publish/install shared package owners before their consumers in the order in the
 bootstrap list. Provision the matching kernel/runtime before executing the new
@@ -63,7 +80,8 @@ A compromised native key or usable digest oracle permits fast guessing. Back up
 the **original master seed separately from the database**. Loss/replacement
 requires password recovery and also affects tokens and encrypted secrets.
 
-After the coordinated transition, use the selected instance's native CBus,
+After the same-major update and recommended packages complete, use the selected
+instance's native CBus,
 which remains independent of platform password login. Inspect the recovery
 administrator's roles with `auth.users.roles <existing-admin>`; repair an
 assignment if necessary with
@@ -82,7 +100,7 @@ Sign in as that administrator and issue passwords through `users.set-password`.
 Already-running work is not terminated by a password reset. A failed reset rolls
 back; after a lost response inspect state and try the recovery login before
 retrying, because another confirmed reset revokes newly issued credentials too.
-See the [complete recovery procedure](https://github.com/the8020/users/blob/1.0.0/cbus/AGENTS.md).
+See the [complete recovery procedure](https://github.com/the8020/users/blob/0.9.8/cbus/AGENTS.md).
 
 ### Workspace and conflict behavior
 
@@ -111,17 +129,19 @@ Earlier host helper/Basic and rootless startup measurements are fixture results,
 not deployment performance guarantees. No running instance was upgraded and no
 live password reset or customer conflict cleanup was performed by publication.
 
-## Previous 0.x development updates
+## In-place development updates
 
-This procedure stays within the previous 0.x line; it does not install 1.0.0.
 Run it as root **inside the existing container** to update to
-`0.9.16`. It supports rootless development containers at `/8020` running kernel
+`0.9.17`. It supports rootless development containers at `/8020` running kernel
 `0.7.4` or newer:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/the8020/kernel/0.9.16/docker/update.sh \
-  -o /tmp/update.sh && bash /tmp/update.sh 0.9.16
+curl -fsSL https://raw.githubusercontent.com/the8020/kernel/0.9.17/docker/update.sh \
+  -o /tmp/update.sh && bash /tmp/update.sh 0.9.17
 ```
+
+An instance already using the managed launcher can instead request
+`admin --root /8020 kernel.update 0.9.17` through its ordinary native CBus.
 
 After printing `Bootstrap started` or `Update started`, the updater continues in
 the background. Follow its progress with:
@@ -130,7 +150,7 @@ the background. Follow its progress with:
 tail -F /8020/node/kernel/update.log
 ```
 
-Completion is reported as `update: completed 0.9.16`. Ctrl-C stops following the
+Completion is reported as `update: completed 0.9.17`. Ctrl-C stops following the
 log while the updater keeps running. Confirm the running version and startup
 status with:
 
