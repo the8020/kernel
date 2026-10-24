@@ -33,6 +33,12 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   `initial-user.done`. Retries preserve an already-created account and repeat
   idempotent role grants. Existing completed volumes are not regranted.
 
+- Before first-user commands, require `kernel.status` to report `runtime_ready`
+  with no `runtime_application_failure`. Native commands can be reachable while
+  application initialization has not yet published its event dispatcher.
+- Shutdown waits for the launcher to drain its kernel. EXIT cleanup ignores
+  repeated stop signals so a failed bootstrap cannot return before that wait.
+
 - The kernel Dockerfile builds its local tagged checkout without build
   arguments. The tag supplies the compatible package release line through the
   ordinary installer. It never selects or checks out another kernel version.
@@ -127,6 +133,7 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   seeding, interrupted-seed recovery, fresh smoke on restart, retention of a
   selected newer release despite changed factory assets, and private-work
   preservation. Missing bootstrap assets fail before kernel startup.
+  Initialization gating and shutdown during failed bootstrap are covered too.
 - Install and test a fresh system natively or inside an isolated Docker
   container using Bash, including the entrypoint's first-user path when
   bootstrap changes. Bound CPU, memory, and runtime. Package-only changes can

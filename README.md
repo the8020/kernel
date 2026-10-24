@@ -1,8 +1,15 @@
 # 80|20 kernel
 
-## 0.9.17: password digests and development cleanup
+## 0.9.18: reliable deployment startup
 
-Kernel **0.9.17** ships the single-call native password digest, shallow explicit
+Kernel **0.9.18** waits for application initialization before creating the first
+user, drains the kernel completely during failed-bootstrap shutdown, and fixes
+rootless development sandbox startup inside rootless Docker. The recommended
+package set now includes admin-core **0.9.1**.
+
+The password and development changes introduced in 0.9.17 remain included:
+
+The release ships the single-call native password digest, shallow explicit
 Deno workspace membership, and recoverable activation staging cleanup. Existing
 0.x installations use the ordinary same-major update, then explicitly reset
 legacy platform passwords through CBus. Existing Argon2 passwords are not
@@ -10,10 +17,10 @@ accepted and cannot be converted without plaintext. This accepted password
 reset does not require a major release; the first version digit remains reserved
 for actual breaking platform changes.
 
-Use kernel **0.9.17**, users **0.9.8**, services **0.7.7**, UUI **0.9.14**,
+Use kernel **0.9.18**, users **0.9.8**, services **0.7.7**, UUI **0.9.14**,
 dev-core **0.9.7** and dev-skills **0.9.4** together.
 The ordered [bootstrap and recommended set](defaults/bootstrap-packages.toml)
-pins all sixteen packages to existing 0.x lines. The other eleven packages keep
+pins all sixteen packages to existing 0.x lines. The remaining packages keep
 their previously recommended versions and commits. Package manifests and `/p/`
 imports remain unversioned. This corrects the withdrawn 1.0.0 publication;
 accepted implementation commits are preserved.
@@ -32,9 +39,9 @@ Fresh installations build from the exact source tag using the ordinary
 installer. For the existing kernel Docker build:
 
 ```bash
-git clone --branch 0.9.17 https://github.com/the8020/kernel.git
+git clone --branch 0.9.18 https://github.com/the8020/kernel.git
 cd kernel
-docker build -t the8020:0.9.17 .
+docker build -t the8020:0.9.18 .
 ```
 
 The Dockerfile derives release line `0.9` from the tag and installs the pinned
@@ -52,7 +59,7 @@ encrypted secrets. No password reset runs automatically.
 
 Deleting the mistaken 1.0.0 tags does not remove copies already fetched by
 consumers. An instance already installed as 1.0.0 cannot use the ordinary
-updater to downgrade to 0.9.17; its installed version and cached package tags
+updater to downgrade to 0.9.18; its installed version and cached package tags
 need separate operator assessment. This publication does not modify any such
 instance or remove its local tags.
 
@@ -119,29 +126,30 @@ legacy data stay protected. There is no age-based directory purge.
 
 ### Verification boundary
 
-This publication reuses the independently accepted source checks for the final
-native digest and reset/recovery, namespace isolation, workspace membership and
-helpers, and activation cleanup/retry. No additional release tests, fresh
-installation, benchmarks or independent release review were run. Graphical
-browser execution, installed/public-ingress/customer performance, full
-containerd, live PostgreSQL and host-power-loss behavior remain unqualified.
-Earlier host helper/Basic and rootless startup measurements are fixture results,
-not deployment performance guarantees. No running instance was upgraded and no
-live password reset or customer conflict cleanup was performed by publication.
+The release candidate passed fresh first-user bootstrap and native HTTPS
+handoff, password/Basic login, graphical Home and Kernel calls, SSH development
+with Deno 2.9.8, package activation, and the sandbox SQL helper in an isolated
+container. Regression checks passed for readiness gating, failed-bootstrap
+shutdown, and rootless UID/GID mapping; the development package tests and native
+build also passed. Checks used bounded CPU, memory, and runtime.
+
+Full containerd, live PostgreSQL, public ACME issuance, ARM hosts, and
+host-power-loss behavior require separate qualification. No customer instance
+is upgraded or reset by this publication.
 
 ## In-place development updates
 
 Run it as root **inside the existing container** to update to
-`0.9.17`. It supports rootless development containers at `/8020` running kernel
+`0.9.18`. It supports rootless development containers at `/8020` running kernel
 `0.7.4` or newer:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/the8020/kernel/0.9.17/docker/update.sh \
-  -o /tmp/update.sh && bash /tmp/update.sh 0.9.17
+curl -fsSL https://raw.githubusercontent.com/the8020/kernel/0.9.18/docker/update.sh \
+  -o /tmp/update.sh && bash /tmp/update.sh 0.9.18
 ```
 
 An instance already using the managed launcher can instead request
-`admin --root /8020 kernel.update 0.9.17` through its ordinary native CBus.
+`admin --root /8020 kernel.update 0.9.18` through its ordinary native CBus.
 
 After printing `Bootstrap started` or `Update started`, the updater continues in
 the background. Follow its progress with:
@@ -150,7 +158,7 @@ the background. Follow its progress with:
 tail -F /8020/node/kernel/update.log
 ```
 
-Completion is reported as `update: completed 0.9.17`. Ctrl-C stops following the
+Completion is reported as `update: completed 0.9.18`. Ctrl-C stops following the
 log while the updater keeps running. Confirm the running version and startup
 status with:
 

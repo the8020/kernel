@@ -21,7 +21,10 @@ exec sleep 60
 EOF
 cat > "$TEST_ROOT/bin/admin" <<'EOF'
 #!/usr/bin/env bash
-if [[ "$*" == *users.list* ]]; then
+if [[ "$*" == *'--json kernel.status'* ]]; then
+  touch "$CASE_ROOT/status-probed"
+  cat "$CASE_ROOT/status.json"
+elif [[ "$*" == *users.list* ]]; then
   echo users.list >> "$CASE_ROOT/users-calls"
   cat "$CASE_ROOT/users.json"
 elif [[ "$*" == *users.add* ]]; then
@@ -115,6 +118,7 @@ prepare() {
     esac
   done < "$SOURCE_ROOT/docker/rootfs/usr/local/bin/docker-entrypoint.sh" > "$CASE_ROOT/entrypoint.sh"
   printf '%s\n' 503 > "$CASE_ROOT/http-status"
+  printf '%s\n' '{"success":true,"result":{"runtime_ready":true,"runtime_application_failure":""}}' > "$CASE_ROOT/status.json"
   printf '%s\n' '{"success":true,"result":{"users":[{"enabled":true,"full_name":"Admin","has_password":true}]}}' > "$CASE_ROOT/users.json"
 }
 
@@ -344,7 +348,28 @@ if PATH=/nonexistent "$BASH" "$CASE_ROOT/entrypoint.sh" > "$CASE_ROOT/output" 2>
 fi
 grep -Fq 'curl is required for container startup' "$CASE_ROOT/output"
 
-# Group shutdown and the entrypoint can both signal the launcher during draining.
+# User commands can work before event dispatch and service indexing are ready.
+prepare initializing
+printf '%s\n' '{"success":true,"result":{"users":[]}}' > "$CASE_ROOT/users.json"
+printf '%s\n' '{"success":true,"result":{"runtime_ready":true,"runtime_application_failure":"application initialization is in progress"}}' > "$CASE_ROOT/status.json"
+printf '%s\n' 200 > "$CASE_ROOT/http-status"
+bash "$CASE_ROOT/entrypoint.sh" > "$CASE_ROOT/output" 2>&1 &
+entrypoint_pid=$!
+for _ in {1..200}; do
+  [[ ! -f "$CASE_ROOT/status-probed" ]] || break
+  sleep 0.01
+done
+[[ -f "$CASE_ROOT/status-probed" ]]
+[[ ! -f "$CASE_ROOT/users-calls" && ! -f "$CASE_ROOT/user-created" ]]
+[[ ! -f "$CASE_ROOT/instance/node/docker/initial-user.done" ]]
+printf '%s\n' '{"success":true,"result":{"runtime_ready":true,"runtime_application_failure":""}}' > "$CASE_ROOT/status.json"
+wait_for '80|20 is ready' "$CASE_ROOT/output"
+[[ -f "$CASE_ROOT/user-created" && -f "$CASE_ROOT/instance/node/docker/initial-user.done" ]]
+kill -TERM "$entrypoint_pid"
+wait "$entrypoint_pid" 2>/dev/null || true
+entrypoint_pid=""
+
+# timeout signals both its direct child and its group during HTTPS preparation.
 prepare draining
 cat > "$TEST_ROOT/bin/kernel" <<'EOF'
 #!/usr/bin/env bash
@@ -353,22 +378,39 @@ echo "$$" > "$CASE_ROOT/kernel.pid"
 while true; do sleep 0.05; done
 EOF
 printf '%s\n' 200 > "$CASE_ROOT/http-status"
-bash "$CASE_ROOT/entrypoint.sh" > "$CASE_ROOT/output" 2>&1 &
+timeout --kill-after=3s 30s bash "$CASE_ROOT/entrypoint.sh" > "$CASE_ROOT/output" 2>&1 &
 entrypoint_pid=$!
 wait_for '80|20 is ready' "$CASE_ROOT/output"
-launcher=$(cat "$CASE_ROOT/instance/node/kernel/run/launcher.pid")
 kill -TERM "$entrypoint_pid"
 for _ in {1..200}; do
   [[ ! -f "$CASE_ROOT/stopping" ]] || break
   sleep 0.01
 done
 [[ -f "$CASE_ROOT/stopping" ]]
-kill -TERM "$launcher"
 wait "$entrypoint_pid" 2>/dev/null || true
 entrypoint_pid=""
 if [[ ! -f "$CASE_ROOT/stopped" ]]; then
   kill -KILL "$(cat "$CASE_ROOT/kernel.pid")" 2>/dev/null || true
   echo 'launcher returned before its draining kernel stopped' >&2
+  exit 1
+fi
+[[ ! -f "$CASE_ROOT/instance/node/kernel/run/launcher.pid" ]]
+
+# An outer stop can interrupt the EXIT cleanup after bootstrap fails.
+prepare failed-draining
+printf '%s\n' '{}' > "$CASE_ROOT/users.json"
+bash "$CASE_ROOT/entrypoint.sh" > "$CASE_ROOT/output" 2>&1 &
+entrypoint_pid=$!
+for _ in {1..200}; do
+  [[ ! -f "$CASE_ROOT/stopping" ]] || break
+  sleep 0.01
+done
+[[ -f "$CASE_ROOT/stopping" ]]
+kill -TERM "$entrypoint_pid"
+wait "$entrypoint_pid" 2>/dev/null || true
+entrypoint_pid=""
+if [[ ! -f "$CASE_ROOT/stopped" ]]; then
+  echo 'failed bootstrap returned before its draining kernel stopped' >&2
   exit 1
 fi
 [[ ! -f "$CASE_ROOT/instance/node/kernel/run/launcher.pid" ]]

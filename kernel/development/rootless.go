@@ -430,10 +430,15 @@ func (d *RunscDriver) configureCommand(command *exec.Cmd) {
 	if !d.config.Rootless {
 		return
 	}
+	// Rootless Docker maps root separately from its contiguous subordinate IDs.
+	mappings := []syscall.SysProcIDMap{
+		{ContainerID: 0, HostID: 0, Size: 1},
+		{ContainerID: 1, HostID: 1, Size: rootlessIDMapSize - 1},
+	}
 	command.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags:  syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
-		UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: 0, Size: rootlessIDMapSize}},
-		GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: 0, Size: rootlessIDMapSize}},
+		UidMappings: mappings,
+		GidMappings: mappings,
 		Credential:  &syscall.Credential{Uid: 0, Gid: 0},
 		Pdeathsig:   syscall.SIGKILL,
 		Setsid:      true,

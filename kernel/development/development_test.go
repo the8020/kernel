@@ -1048,11 +1048,14 @@ func TestRootlessDevelopmentCommandsMapPackageOwnershipIDs(t *testing.T) {
 	if attributes == nil || attributes.Cloneflags&syscall.CLONE_NEWUSER == 0 || attributes.Cloneflags&syscall.CLONE_NEWNS == 0 {
 		t.Fatalf("rootless command namespaces = %#v", attributes)
 	}
-	wantMapping := syscall.SysProcIDMap{ContainerID: 0, HostID: 0, Size: rootlessIDMapSize}
-	if len(attributes.UidMappings) != 1 || attributes.UidMappings[0] != wantMapping {
+	wantMappings := []syscall.SysProcIDMap{
+		{ContainerID: 0, HostID: 0, Size: 1},
+		{ContainerID: 1, HostID: 1, Size: rootlessIDMapSize - 1},
+	}
+	if !slices.Equal(attributes.UidMappings, wantMappings) {
 		t.Fatalf("rootless UID mappings = %#v", attributes.UidMappings)
 	}
-	if len(attributes.GidMappings) != 1 || attributes.GidMappings[0] != wantMapping {
+	if !slices.Equal(attributes.GidMappings, wantMappings) {
 		t.Fatalf("rootless GID mappings = %#v", attributes.GidMappings)
 	}
 	if attributes.Credential == nil || attributes.Credential.Uid != 0 || attributes.Credential.Gid != 0 || attributes.Pdeathsig != syscall.SIGKILL || !attributes.Setsid {

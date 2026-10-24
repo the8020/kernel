@@ -646,7 +646,7 @@ below.
 
 ## Development Workflow
 
-- Release `0.9.17` uses the ordinary same-major updater, followed by explicit
+- Release `0.9.18` uses the ordinary same-major updater, followed by explicit
   CBus reset/recovery of legacy platform passwords. Its README owns the package
   versions and recovery procedure. Preserve the existing master seed and data;
   this password reset does not require a major bump or container redeployment.

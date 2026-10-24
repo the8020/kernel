@@ -55,7 +55,7 @@ version = "0.9.4"
 [[packages]]
 id = "the8020/admin-core"
 source = "https://github.com/the8020/admin-core.git"
-version = "0.9.0"
+version = "0.9.1"
 
 [[packages]]
 id = "the8020/admin-db"

@@ -97,7 +97,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   malformed roots, and never creates, starts, restarts, or mutates a sandbox.
 - Development sandboxes run as Linux root and have no `developer` account or
   `/home/developer`. Rootless runsc processes use the kernel-created identity
-  mapping for Linux UID/GID `0..65535`. The development runsc uses the sparse
+  mapping for Linux UID/GID `0..65535`, split into root and subordinate extents
+  so it also nests inside rootless Docker's discontiguous parent mapping.
+  The development runsc uses the sparse
   Gofer with directfs disabled, retaining the exact donated-mount boundary.
 - Manager startup never waits for inherited runsc cleanup or scans sandbox
   records. User lifecycle calls load only

@@ -100,6 +100,7 @@ stop_kernel() {
   fi
 }
 finish() {
+  trap '' INT TERM HUP
   stop_kernel
   if [[ -n "$kernel_pid" ]]; then
     wait "$kernel_pid" 2>/dev/null || true
@@ -139,7 +140,13 @@ if [[ ! -f "$BOOTSTRAP_DONE" ]]; then
   users_ready=false
   users_json=""
   for _ in {1..300}; do
-    if users_json=$("$ADMIN" --root "$INSTANCE_ROOT" --json users.list 2>&1); then
+    if "$ADMIN" --root "$INSTANCE_ROOT" --json kernel.status 2>/dev/null |
+        "$DENO" eval --quiet --no-config '
+          const response = JSON.parse(await new Response(Deno.stdin.readable).text());
+          Deno.exit(response.success && response.result?.runtime_ready &&
+              !response.result?.runtime_application_failure ? 0 : 1);
+        ' 2>/dev/null &&
+        users_json=$("$ADMIN" --root "$INSTANCE_ROOT" --json users.list 2>&1); then
       users_ready=true
       break
     fi
