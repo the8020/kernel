@@ -5,6 +5,8 @@ export interface ExecutionContext {
   readonly id: string;
   readonly userId: string;
   readonly username: string;
+  /** Application-selected presentation language; absent in unlocalized executions. */
+  readonly language?: string;
   readonly authenticated: boolean;
   readonly nodeId: string;
 

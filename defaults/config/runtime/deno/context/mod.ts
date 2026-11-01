@@ -1,4 +1,5 @@
 import { currentExecutionContext } from "./runtime.ts";
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { ExecutionContext, ExecutionContextType } from "./types.ts";
 
 export type { ExecutionContext, ExecutionContextType } from "./types.ts";
@@ -9,6 +10,7 @@ export interface ContextAPI {
   readonly id: string;
   readonly userId: string;
   readonly username: string;
+  readonly language: string | undefined;
   readonly authenticated: boolean;
   readonly nodeId: string;
 
@@ -21,9 +23,25 @@ export interface ContextAPI {
   readonly persistentExecutionId: string | undefined;
 }
 
+const languageScope = new AsyncLocalStorage<string>();
+
+/** Scope application presentation data without changing execution authority. */
+export function withLanguage<T>(language: string, run: () => T): T {
+  if (
+    typeof language !== "string" || !language.length || language.length > 128
+  ) {
+    throw new TypeError("invalid context language");
+  }
+  return languageScope.run(language, run);
+}
+
 export const context: ContextAPI = Object.freeze({
   get current() {
-    return currentExecutionContext();
+    const current = currentExecutionContext();
+    const language = languageScope.getStore();
+    return language === undefined
+      ? current
+      : Object.freeze({ ...current, language });
   },
   get type() {
     return currentExecutionContext().type;
@@ -39,6 +57,9 @@ export const context: ContextAPI = Object.freeze({
   },
   get username() {
     return currentExecutionContext().username;
+  },
+  get language() {
+    return languageScope.getStore();
   },
   get nodeId() {
     return currentExecutionContext().nodeId;

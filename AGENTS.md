@@ -646,12 +646,16 @@ below.
 
 ## Development Workflow
 
+- Release `0.10.0` pairs the invocation-local language SDK with the seventeen
+  `0.10.0` bootstrap packages, including `the8020/i18n`. Install the matching
+  kernel before these packages; language selection remains application-owned.
+
 - Release `0.9.18` uses the ordinary same-major updater, followed by explicit
   CBus reset/recovery of legacy platform passwords. Its README owns the package
   versions and recovery procedure. Preserve the existing master seed and data;
   this password reset does not require a major bump or container redeployment.
-  Reserve the first version digit for actual breaking platform changes. Keep
-  the general same-major guard; no automatic password reset is installed.
+  Reserve the first version digit for actual breaking platform changes. Keep the
+  general same-major guard; no automatic password reset is installed.
 
 - Verify the final release contents, including documentation added to discovery
   folders, before tagging. Install and test a fresh system either natively in

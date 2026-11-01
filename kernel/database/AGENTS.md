@@ -125,7 +125,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   concurrent runtime read load, pool pressure, and configurable result bounds.
 - PostgreSQL JSON parameters, short conditional claims, and reads on warmed
   connections after another pool changes the schema have optional live
-  regression tests. Schema-change coverage includes transaction commit. Set
+  regression tests. Schema-change coverage includes transaction commit,
+  `SELECT *`/`UPDATE ... RETURNING *`, unchanged explicit projections, retained
+  backend identities, and a cached-mode positive control with SQLSTATE and
+  rollback/retry assertions. Set
   `THE8020_TEST_POSTGRES_LOCATION` and, if needed,
   `THE8020_TEST_POSTGRES_USERNAME` to a disposable PostgreSQL database; the test
   creates and removes its own uniquely named table. SQLite tests also verify

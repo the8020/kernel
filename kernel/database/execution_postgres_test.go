@@ -3,12 +3,17 @@ package database
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 // Uses a disposable PostgreSQL database when explicitly configured by the test
@@ -174,5 +179,144 @@ func TestPostgreSQLSchemaChanges(t *testing.T) {
 	result, err := publisher.Query(ctx, `SELECT visits FROM `+table, nil)
 	if err != nil || len(result.Rows) != 1 || result.Rows[0][0] != int64(1) {
 		t.Fatalf("transaction did not commit once: %#v, %v", result, err)
+	}
+}
+
+func TestPostgreSQLSchemaChangeModes(t *testing.T) {
+	location := os.Getenv("THE8020_TEST_POSTGRES_LOCATION")
+	if location == "" {
+		t.Skip("set THE8020_TEST_POSTGRES_LOCATION for PostgreSQL integration")
+	}
+	for _, cached := range []bool{true, false} {
+		for _, transactional := range []bool{false, true} {
+			for _, saving := range []bool{false, true} {
+				t.Run(fmt.Sprintf("cached=%t/transaction=%t/returning=%t", cached, transactional, saving), func(t *testing.T) {
+					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					config := sqliteConfig(filepath.Join(t.TempDir(), "unused.db"))
+					config.Backend, config.Location, config.Username = BackendPostgreSQL, location, os.Getenv("THE8020_TEST_POSTGRES_USERNAME")
+					config.MaximumOpenConnections, config.MaximumIdleConnections = 1, 1
+					m := New(config)
+					defer m.Close()
+					if cached {
+						// Positive control: the pre-0.9.6 pool mode, with the same driver and SQL owner.
+						connection, err := pgx.ParseConfig(location)
+						if err != nil {
+							t.Fatal(err)
+						}
+						connection.User, connection.Password = config.Username, config.Password
+						connection.DefaultQueryExecMode = pgx.QueryExecModeCacheStatement
+						if err := m.db.Close(); err != nil {
+							t.Fatal(err)
+						}
+						m.db = stdlib.OpenDB(*connection)
+						m.db.SetMaxOpenConns(1)
+						m.db.SetMaxIdleConns(1)
+					}
+					publisher := New(config)
+					defer publisher.Close()
+					identity := func(manager *Manager) []any {
+						t.Helper()
+						result, err := manager.Query(ctx, `SELECT pg_backend_pid(), backend_start::text FROM pg_stat_activity WHERE pid=pg_backend_pid()`, nil)
+						if err != nil || len(result.Rows) != 1 {
+							t.Fatalf("session identity: %#v, %v", result, err)
+						}
+						return result.Rows[0]
+					}
+					before, publisherID := identity(m), identity(publisher)
+					if reflect.DeepEqual(before, publisherID) {
+						t.Fatal("DDL publisher must use a different session")
+					}
+					table := fmt.Sprintf("test_schema_mode_%d", time.Now().UnixNano())
+					if _, err := publisher.Execute(ctx, `CREATE TABLE `+table+` (id INTEGER PRIMARY KEY, visits INTEGER NOT NULL DEFAULT 0)`, nil); err != nil {
+						t.Fatal(err)
+					}
+					defer func() {
+						cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+						defer cancel()
+						if _, err := publisher.Execute(cleanup, `DROP TABLE `+table, nil); err != nil {
+							t.Errorf("cleanup: %v", err)
+						}
+					}()
+					if _, err := publisher.Execute(ctx, `INSERT INTO `+table+` (id) VALUES (1)`, nil); err != nil {
+						t.Fatal(err)
+					}
+					request := StatementRequest{Statement: `SELECT * FROM ` + table + ` WHERE id=$1`, Parameters: json.RawMessage(`[1]`), ReturnRows: true}
+					var visits int64
+					if saving {
+						request.Statement = `UPDATE ` + table + ` SET visits=visits+1 WHERE id=$1 RETURNING *`
+						visits = 1
+					}
+					check := func(result StatementResult, err error, columns []string, row []any) {
+						t.Helper()
+						if err != nil || !reflect.DeepEqual(result.Columns, columns) || !reflect.DeepEqual(result.Rows, [][]any{row}) {
+							t.Fatalf("result=%#v, error=%v; want columns=%v row=%v", result, err, columns, row)
+						}
+					}
+					result, err := m.RunStatement(ctx, "schema-mode", request)
+					check(result, err, []string{"id", "visits"}, []any{int64(1), visits})
+					explicit := StatementRequest{Statement: `SELECT id FROM ` + table + ` WHERE id=$1`, Parameters: request.Parameters, ReturnRows: true}
+					result, err = m.RunStatement(ctx, "schema-mode", explicit)
+					check(result, err, []string{"id"}, []any{int64(1)})
+					if _, err := publisher.Execute(ctx, `ALTER TABLE `+table+` ADD COLUMN active BOOLEAN NOT NULL DEFAULT true`, nil); err != nil {
+						t.Fatal(err)
+					}
+					if transactional {
+						request.Transaction, err = m.BeginTransaction(ctx, "schema-mode", TransactionSettings{})
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer m.FinishTransaction(context.Background(), "schema-mode", request.Transaction, false)
+						explicit.Transaction = request.Transaction
+					}
+					result, err = m.RunStatement(ctx, "schema-mode", explicit)
+					check(result, err, []string{"id"}, []any{int64(1)})
+					t.Log("first explicit projection after ADD COLUMN: columns=[id] row=[1], success")
+					result, err = m.RunStatement(ctx, "schema-mode", request)
+					if cached {
+						var pgErr *pgconn.PgError
+						if !errors.As(err, &pgErr) || pgErr.Code != "0A000" || pgErr.Message != "cached plan must not change result type" {
+							t.Fatalf("positive control: want cached result-type error, got %#v, %v", result, err)
+						}
+						t.Logf("first wildcard after ADD COLUMN: %s (SQLSTATE %s)", pgErr.Message, pgErr.Code)
+						if transactional {
+							_, err = m.RunStatement(ctx, "schema-mode", request)
+							if !errors.As(err, &pgErr) || pgErr.Code != "25P02" {
+								t.Fatalf("retry in aborted transaction: %v", err)
+							}
+							t.Logf("retry before rollback: SQLSTATE %s", pgErr.Code)
+							if err := m.FinishTransaction(ctx, "schema-mode", request.Transaction, false); err != nil {
+								t.Fatal(err)
+							}
+							request.Transaction = ""
+						}
+						stored, storedErr := publisher.Query(ctx, `SELECT visits FROM `+table, nil)
+						if storedErr != nil || !reflect.DeepEqual(stored.Rows, [][]any{{visits}}) {
+							t.Fatalf("failed statement changed data: %#v, %v", stored, storedErr)
+						}
+						result, err = m.RunStatement(ctx, "schema-mode", request)
+					}
+					if saving {
+						visits++
+					}
+					check(result, err, []string{"id", "visits", "active"}, []any{int64(1), visits, true})
+					t.Logf("wildcard success (retry=%t): columns=%v rows=%v", cached, result.Columns, result.Rows)
+					if request.Transaction != "" {
+						if err := m.FinishTransaction(ctx, "schema-mode", request.Transaction, true); err != nil {
+							t.Fatal(err)
+						}
+					}
+					stored, err := publisher.Query(ctx, `SELECT visits FROM `+table, nil)
+					if err != nil || !reflect.DeepEqual(stored.Rows, [][]any{{visits}}) {
+						t.Fatalf("committed count: %#v, %v", stored, err)
+					}
+					after := identity(m)
+					if !reflect.DeepEqual(before, after) {
+						t.Fatalf("session replaced: before=%v after=%v", before, after)
+					}
+					t.Logf("retained session before=%v after=%v; DDL session=%v; committed visits=%d", before, after, publisherID, visits)
+				})
+			}
+		}
 	}
 }

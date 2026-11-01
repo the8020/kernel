@@ -28,6 +28,10 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 
 # Local Contracts
 
+- Bootstrap stages `the8020/i18n` before services for shared language
+  configuration, customer translations, and presentation scopes. A published
+  compatible i18n release is required before release-mode installation.
+
 - Bootstrap includes `the8020/auth` with the ordinary package set so its tables,
   commands, and screens exist before first-user administrator grants. Release
   builds require a compatible auth package tag through normal resolution.

@@ -7,6 +7,12 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 
 # Local Contracts
 
+- `withLanguage(language, callback)` scopes optional presentation data through
+  AsyncLocalStorage. `context.language` and `context.current.language` expose it
+  synchronously without database access. Application packages select language;
+  this scope cannot change trusted identity. Unscoped raw invocations have no
+  language. Language is not a native authorization or routing attribute.
+
 - `authenticated` is the synchronous application-policy result already
   established during protected request setup; it is false for public requests
   and jobs. Reading any context property never checks a token, account, or
