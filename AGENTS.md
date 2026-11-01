@@ -646,9 +646,10 @@ below.
 
 ## Development Workflow
 
-- Release `0.10.0` pairs the invocation-local language SDK with the seventeen
-  `0.10.0` bootstrap packages, including `the8020/i18n`. Install the matching
-  kernel before these packages; language selection remains application-owned.
+- Release `0.10.1` recommends the seventeen `0.10.1` application packages, which
+  ship all 43 curated languages. The invocation-local language SDK remains
+  unchanged from `0.10.0`; install kernel `0.10.0` or newer before these
+  packages. Language selection and catalogs remain application-owned.
 
 - Release `0.9.18` uses the ordinary same-major updater, followed by explicit
   CBus reset/recovery of legacy platform passwords. Its README owns the package

@@ -1,24 +1,27 @@
 # 80|20 kernel
 
-## 0.10.0: package internationalization
+## 0.10.1: 43 built-in languages
 
-Release **0.10.0** pairs the kernel's invocation-local `context.language` API
-with seventeen application packages tagged **0.10.0**, including the new
-`the8020/i18n` owner. Install this coordinated set through the ordered
-[bootstrap and recommended list](defaults/bootstrap-packages.toml). Update the
-kernel before these packages: older runtimes do not expose the language scope.
+Release **0.10.1** recommends seventeen application packages with complete
+catalogs for Tuxee’s 43 curated languages, including separate Portuguese and
+Chinese variants. Fresh systems enable all 43; existing language settings stay
+unchanged. The kernel runtime is unchanged from **0.10.0**.
 
-Packages ship English and Czech catalogs, customer database overrides, and
-per-language fallback chains. Languages administration sets the system default
-and a separate login-screen default. Login remembers explicit browser choices;
-existing UUI sessions retain their language. Service callers may override their
-account default with the `the8020-language` header.
+Install the coordinated package set through the ordered
+[bootstrap and recommended list](defaults/bootstrap-packages.toml). These
+packages require kernel **0.10.0** or newer for invocation-local
+`context.language`.
+
+Package catalogs support customer database overrides and per-language fallback
+chains. Languages administration sets the system default and a separate
+login-screen default. Login remembers explicit browser choices; existing UUI
+sessions retain their language. Service callers may override their account
+default with the `the8020-language` header.
 
 Fresh installations use
-`git clone --branch 0.10.0
+`git clone --branch 0.10.1
 https://github.com/the8020/kernel.git` followed by
-`docker build -t
-the8020:0.10.0 .`, or the deployment image with `VERSION=0.10`.
+`docker build -t the8020:0.10.1 .`, or the deployment image with `VERSION=0.10`.
 Existing 0.x systems use the ordinary same-major update and recommended-package
 operation. The password recovery instructions below apply only when upgrading
 from the legacy password format; this i18n release does not reset passwords.
@@ -163,16 +166,16 @@ is upgraded or reset by this publication.
 ## In-place development updates
 
 Run it as root **inside the existing container** to update to
-`0.10.0`. It supports rootless development containers at `/8020` running kernel
+`0.10.1`. It supports rootless development containers at `/8020` running kernel
 `0.7.4` or newer:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/the8020/kernel/0.10.0/docker/update.sh \
-  -o /tmp/update.sh && bash /tmp/update.sh 0.10.0
+curl -fsSL https://raw.githubusercontent.com/the8020/kernel/0.10.1/docker/update.sh \
+  -o /tmp/update.sh && bash /tmp/update.sh 0.10.1
 ```
 
 An instance already using the managed launcher can instead request
-`admin --root /8020 kernel.update 0.10.0` through its ordinary native CBus.
+`admin --root /8020 kernel.update 0.10.1` through its ordinary native CBus.
 
 After printing `Bootstrap started` or `Update started`, the updater continues in
 the background. Follow its progress with:
@@ -181,7 +184,7 @@ the background. Follow its progress with:
 tail -F /8020/node/kernel/update.log
 ```
 
-Completion is reported as `update: completed 0.10.0`. Ctrl-C stops following the
+Completion is reported as `update: completed 0.10.1`. Ctrl-C stops following the
 log while the updater keeps running. Confirm the running version and startup
 status with:
 
