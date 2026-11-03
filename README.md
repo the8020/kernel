@@ -38,7 +38,8 @@ admin --root "$instance" kernel.packages.inspect the8020/i18n
 ```
 
 This procedure requires kernel **0.10.1**, db already active at **0.10.1**,
-system still at its previous version, and i18n absent or older than **0.10.1**.
+system checkout/`active_commit` still at its previous version (its desired tag
+may already say `0.10.1`), and i18n absent or older than **0.10.1**.
 Confirm the installed recommendation file selects the published first-party
 **0.10.1** packages, the failed stage reports the missing i18n module, and there
 is no unresolved committed-schema activation. Inspect
@@ -55,7 +56,8 @@ rollback, wait for runtime readiness and no pending database deployment, then
 finish the original pending update:
 
 ```bash
-admin --root "$instance" kernel.packages.set the8020 i18n   --source https://github.com/the8020/i18n.git --tag 0.10.1
+admin --root "$instance" kernel.packages.set the8020 i18n \
+  --source https://github.com/the8020/i18n.git --tag 0.10.1
 admin --root "$instance" kernel.packages.synchronize --packages the8020/i18n
 admin --root "$instance" kernel.restart
 # Wait for kernel.status to show runtime_ready and no pending database deployment.
@@ -72,6 +74,13 @@ Do not delete worktrees or data, force versions, edit the update journal, or
 replace a customized bootstrap file. If a fixed-kernel activation itself fails,
 repair its reported cause and repeat `kernel.packages.recommended` or the same
 pending kernel update; the coordinator resumes its retained attempt first.
+
+Qualification used isolated SQLite/rootless gVisor instances with the actual
+released 0.9.14 kernel and packages: direct target adoption, the released
+0.10.1 failure and recovery above, retained keys/configuration/private work,
+users and unrelated database data, and a fresh fixed-kernel first-user login.
+No customer installation was accessed. Multi-node/containerd rollout remains
+outside the existing single-node rootless updater contract.
 
 ## 0.10.1: 43 built-in languages
 
@@ -239,16 +248,16 @@ is upgraded or reset by this publication.
 ## In-place development updates
 
 Run it as root **inside the existing container** to update to
-`0.10.1`. It supports rootless development containers at `/8020` running kernel
+`0.10.2`. It supports rootless development containers at `/8020` running kernel
 `0.7.4` or newer:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/the8020/kernel/0.10.1/docker/update.sh \
-  -o /tmp/update.sh && bash /tmp/update.sh 0.10.1
+curl -fsSL https://raw.githubusercontent.com/the8020/kernel/0.10.2/docker/update.sh \
+  -o /tmp/update.sh && bash /tmp/update.sh 0.10.2
 ```
 
 An instance already using the managed launcher can instead request
-`admin --root /8020 kernel.update 0.10.1` through its ordinary native CBus.
+`admin --root /8020 kernel.update 0.10.2` through its ordinary native CBus.
 
 After printing `Bootstrap started` or `Update started`, the updater continues in
 the background. Follow its progress with:
@@ -257,7 +266,7 @@ the background. Follow its progress with:
 tail -F /8020/node/kernel/update.log
 ```
 
-Completion is reported as `update: completed 0.10.1`. Ctrl-C stops following the
+Completion is reported as `update: completed 0.10.2`. Ctrl-C stops following the
 log while the updater keeps running. Confirm the running version and startup
 status with:
 
