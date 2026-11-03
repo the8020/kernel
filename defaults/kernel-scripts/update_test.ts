@@ -582,14 +582,22 @@ Deno.test("after-start migrations wait for application startup to finish", async
   }
 });
 
-Deno.test("recommended package failure keeps update pending and retries after startup", async () => {
-  const f = await fixture("0.9.1");
+Deno.test("published 0.9.14 updater adopts target recommendations and retries without replay", async () => {
+  const f = await fixture("0.9.14");
   try {
-    await f.version("0.9.2", {
-      "0.9.2/after-start/010-once.sh":
+    await f.version("0.10.2", {
+      "0.10.2/after-start/010-once.sh":
         'echo once >> "$THE8020_INSTANCE_ROOT/migrated"\n',
     });
-    for (const action of ["0.9.2", "--apply"]) {
+    const old = await run("git", [
+      "-C",
+      source,
+      "show",
+      "0.9.14:defaults/kernel-scripts/update.ts",
+    ]);
+    assert(old.code === 0, old.output);
+    await Deno.writeTextFile(`${f.kernel}/scripts/update.ts`, old.output);
+    for (const action of ["0.10.2", "--apply"]) {
       const result = await f.update(action);
       assert(result.code === 0, result.output);
     }
@@ -597,6 +605,14 @@ Deno.test("recommended package failure keeps update pending and retries after st
     const failed = await f.update("--finish");
     assert(failed.code !== 0, failed.output);
     assert((await f.state()).phase === "installed");
+    const differentTarget = await f.update("0.10.3");
+    assert(
+      differentTarget.code !== 0 &&
+        differentTarget.output.includes(
+          "Finish the pending update to 0.10.2 first",
+        ),
+      differentTarget.output,
+    );
     assert((await read(`${f.temp}/recommendations`)).trim() === "recommended");
     await Deno.remove(`${f.temp}/fail-recommendations`);
     const retried = await f.update("--finish");

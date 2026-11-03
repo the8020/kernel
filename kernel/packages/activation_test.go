@@ -466,6 +466,10 @@ func TestRecoveryResumesMissingPreHookWhenCandidateSourceIsPresent(t *testing.T)
 	active := writeActivationPackage(t, filepath.Join(root, "packages"), "acme/orders", false)
 	putActivePackage(t, store, "acme/orders", "commit-old")
 	candidate := writeActivationPackage(t, t.TempDir(), "acme/orders", true)
+	candidateCommit, err := FingerprintPackage(candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
 	events := []string{}
 	runner := &activationJobRecorder{events: &events, failures: map[string]int{}, calls: map[string]int{}}
 	schema := &activationSchemaRecorder{events: &events}
@@ -473,7 +477,7 @@ func TestRecoveryResumesMissingPreHookWhenCandidateSourceIsPresent(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	change := deployment.Candidate{PackageID: "acme/orders", Root: candidate, Commit: "commit-new"}
+	change := deployment.Candidate{PackageID: "acme/orders", Root: candidate, Commit: candidateCommit}
 	if err := coordinator.Prepare(context.Background(), "act-0123456789", []deployment.Candidate{change}); err != nil {
 		t.Fatal(err)
 	}
@@ -585,6 +589,11 @@ func TestRecoveryRollsBackPartialMultiPackageSourceSwitch(t *testing.T) {
 	}
 	firstPath := store.packagePath(candidates[0].PackageID)
 	runTestGit(t, gitPath, firstPath, "reset", "--hard", candidates[0].Commit)
+	// An unexpected backup can reject the next rename; it does not prove that
+	// the still-old destination switched to the candidate.
+	if err := os.Mkdir(store.packagePath(candidates[1].PackageID)+".previous", 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	recovered, err := NewActivationCoordinator(ActivationCoordinatorConfig{Database: db, Schema: schema, Packages: store, Jobs: runner})
 	if err != nil {

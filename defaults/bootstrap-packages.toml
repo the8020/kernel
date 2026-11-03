@@ -1,6 +1,6 @@
 schema = 1
 
-# Installation order: schema and shared owners precede their consumers.
+# Stage this compatible set together; declaration order only controls reporting.
 
 [[packages]]
 id = "the8020/db"

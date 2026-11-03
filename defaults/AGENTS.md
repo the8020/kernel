@@ -6,11 +6,11 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 
 # Ownership
 
-- `bootstrap-packages.toml` owns the ordered initial and recommended package
+- `bootstrap-packages.toml` owns the initial and recommended package
   source list, shipped at `node/kernel/scripts/bootstrap-packages.toml`. Entries
-  declare `id`, `source`, and an optional numeric `version` Git tag. Shared
-  owners precede consumers; this file supplies ordering without a dependency
-  graph. It includes `the8020/dev-skills` so fresh deployments install the
+  declare `id`, `source`, and an optional numeric `version` Git tag. The complete selected source set is staged before
+  schema/import/hook validation; declaration order is reporting order, not a
+  dependency order. It includes `the8020/dev-skills` so fresh deployments install the
   shipped agent guidance through the ordinary package release path.
 - `config/runtime/` owns platform-maintained runtime versions, protocol source,
   Deno supervisor/Worker source, generic SDKs, and service/development image
@@ -28,7 +28,7 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 
 # Local Contracts
 
-- Bootstrap stages `the8020/i18n` before services for shared language
+- Bootstrap includes `the8020/i18n` alongside services for shared language
   configuration, customer translations, and presentation scopes. A published
   compatible i18n release is required before release-mode installation.
 
@@ -56,7 +56,7 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   evaluation/synchronization and activation-hook run. Existing databases and
   ordinary restarts never reapply the bootstrap list or rescan all tables.
 - `kernel.packages.recommended` explicitly applies the installed list through
-  native package synchronization. Kernel updates invoke it after startup;
+  one native staged-set activation. Kernel updates invoke it after startup;
   unversioned recommendations follow the remote default branch. Existing local
   work, custom sources, and newer versions are preserved.
 - Materialized images, build caches, downloads, smoke records, and temporary

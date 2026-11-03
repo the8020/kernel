@@ -1,5 +1,78 @@
 # 80|20 kernel
 
+## 0.10.2: order-independent recommended-package upgrades
+
+Kernel **0.10.2** keeps the compatible **0.10.1** application tags and stages
+all selected package candidates before evaluating schema, imports or hooks.
+Mutually dependent packages such as db and i18n can upgrade together. The
+bootstrap list controls reporting order; operators do not need to reorder it.
+Dirty work, local commits, custom sources and newer versions remain protected.
+A retained package must still be compatible: resolve the reported import/schema
+failure before explicitly retrying. A failed fetch or preactivation validation
+publishes no new package sources. Source switching retains candidates and backups for durable recovery;
+committed schema/data receipts require forward recovery. Without such a receipt,
+interrupted partial switches can restore the prior sources. This is not a
+promise to roll back arbitrary migrations or hook side effects. Completed hook
+phases and committed schema work are not repeated by recovery.
+
+A completed **0.9.14** installation can select **0.10.2** through the ordinary
+same-major updater. Its updater already invokes the new target kernel's
+`kernel.packages.recommended`; no intermediate kernel or bootstrap-file edit is
+required. Follow [In-place development updates](#in-place-development-updates),
+back up the database and original master seed separately, retain operator
+configuration and private work, and expect running work to be interrupted.
+The legacy password recovery below still applies to 0.9.14 accounts.
+
+### Recovering a pending 0.10.1 recommendation failure
+
+The old updater deliberately rejects a different target while **0.10.1** is
+pending. For the specific db/system/i18n failure, inspect the selected instance
+before changing it:
+
+```bash
+instance=/absolute/selected-instance
+admin --root "$instance" kernel.status
+admin --root "$instance" kernel.packages.inspect the8020/db
+admin --root "$instance" kernel.packages.inspect the8020/system
+admin --root "$instance" kernel.packages.inspect the8020/i18n
+```
+
+This procedure requires kernel **0.10.1**, db already active at **0.10.1**,
+system still at its previous version, and i18n absent or older than **0.10.1**.
+Confirm the installed recommendation file selects the published first-party
+**0.10.1** packages, the failed stage reports the missing i18n module, and there
+is no unresolved committed-schema activation. Inspect
+`node/kernel/update/state.json` read-only: target must be `0.10.1` and phase
+`installed`. Back up the database, original master seed, node configuration and
+private work before mutation. Check any existing i18n checkout with
+`git -C "$instance/packages/the8020/i18n" status --short` and inspect its origin
+and HEAD; retain customized sources, dirty work, local commits and newer
+versions for separate assessment. Do not run this procedure against those.
+
+Install the missing compatible peer using the native recovery commands. Restart
+the kernel to let its existing activation recovery settle any failed schema
+rollback, wait for runtime readiness and no pending database deployment, then
+finish the original pending update:
+
+```bash
+admin --root "$instance" kernel.packages.set the8020 i18n   --source https://github.com/the8020/i18n.git --tag 0.10.1
+admin --root "$instance" kernel.packages.synchronize --packages the8020/i18n
+admin --root "$instance" kernel.restart
+# Wait for kernel.status to show runtime_ready and no pending database deployment.
+bash "$instance/node/kernel/scripts/update.sh" 0.10.1
+```
+
+Require successful command results, update phase `complete`, ready package
+records matching the recommended tags, and HTTP 200 from `/health` and
+`/the8020/uui/login/` on the configured listener. Then request **0.10.2** through
+the ordinary updater. If recovery reports a different missing module, schema
+conflict or unfinished activation, stop at that explicit error and retain its
+sources/backups; this procedure covers the stated released package combination.
+Do not delete worktrees or data, force versions, edit the update journal, or
+replace a customized bootstrap file. If a fixed-kernel activation itself fails,
+repair its reported cause and repeat `kernel.packages.recommended` or the same
+pending kernel update; the coordinator resumes its retained attempt first.
+
 ## 0.10.1: 43 built-in languages
 
 Release **0.10.1** recommends seventeen application packages with complete
@@ -7,7 +80,7 @@ catalogs for Tuxee’s 43 curated languages, including separate Portuguese and
 Chinese variants. Fresh systems enable all 43; existing language settings stay
 unchanged. The kernel runtime is unchanged from **0.10.0**.
 
-Install the coordinated package set through the ordered
+Install the coordinated package set through the compatible
 [bootstrap and recommended list](defaults/bootstrap-packages.toml). These
 packages require kernel **0.10.0** or newer for invocation-local
 `context.language`.
@@ -45,7 +118,7 @@ for actual breaking platform changes.
 
 Use kernel **0.9.18**, users **0.9.8**, services **0.7.7**, UUI **0.9.14**,
 dev-core **0.9.7** and dev-skills **0.9.4** together.
-The ordered [bootstrap and recommended set](defaults/bootstrap-packages.toml)
+The compatible [bootstrap and recommended set](defaults/bootstrap-packages.toml)
 pins all sixteen packages to existing 0.x lines. The remaining packages keep
 their previously recommended versions and commits. Package manifests and `/p/`
 imports remain unversioned. This corrects the withdrawn 1.0.0 publication;
@@ -89,8 +162,8 @@ updater to downgrade to 0.9.18; its installed version and cached package tags
 need separate operator assessment. This publication does not modify any such
 instance or remove its local tags.
 
-Publish/install shared package owners before their consumers in the order in the
-bootstrap list. Provision the matching kernel/runtime before executing the new
+Apply the complete compatible recommended set together using kernel 0.10.2
+or newer. Provision the matching kernel/runtime before executing the new
 password callers. Retire old service Workers/streams with the existing hard
 service restart or coordinated instance restart before the explicit reset;
 never mix old/new password writers. All nodes of one system need the same

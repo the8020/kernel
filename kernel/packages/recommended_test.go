@@ -44,6 +44,7 @@ func TestRecommendedPackagesPreserveWorkAndOnlyAdvance(t *testing.T) {
 	defer server.Close()
 	root := t.TempDir()
 	store := newTestStore(t, root)
+	store.SetSchemaDeployment(&recordingSchemaHook{})
 	path := filepath.Join(root, "node/kernel/scripts/bootstrap-packages.toml")
 	installed := filepath.Join(root, "packages/acme/demo")
 	setVersion := func(version string) {

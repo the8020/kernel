@@ -54,11 +54,17 @@ Parent DOX: [kernel defaults](../AGENTS.md).
   Application initialization failures remain visible separately. After-start
   migrations precede `kernel.packages.recommended`; completion requires that
   command to succeed. A failure leaves the installed phase pending for explicit
-  same-version retry. Completed migrations are not repeated; recommendations are
+  same-version retry. Completed migrations are not repeated; recommendations stage compatible candidates as one set and are
   idempotent and preserve local edits/commits, custom sources, and newer
   versions, reporting those skips. Existing activation validation can reject
   unpublished shared edits while changing another package; retain the pending
   update until those edits are published or moved out of the shared checkout.
+- Published `0.9.14` updater and launcher scripts already use the target kernel's
+  native recommendation command; the staged-set fix needs no updater adapter or
+  migration. An installed pending `0.10.1` update must finish before selecting a
+  later version. The README owns the narrow, preflighted i18n recovery procedure
+  for the reported partially upgraded state; do not edit the updater journal or
+  replace an operator's bootstrap list.
 - Wait until the application initialization attempt has finished before running
   after-start migrations. Generic Worker readiness alone is insufficient while
   native package management is still being published. A completed application

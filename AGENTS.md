@@ -646,6 +646,12 @@ below.
 
 ## Development Workflow
 
+- Release `0.10.2` stages compatible recommended candidates together before
+  schema/import/hook validation and publishes through the existing activation
+  coordinator. Bootstrap list order is reporting-only; retain the compatible
+  `0.10.1` application tags. The README owns direct old-version adoption,
+  explicit retry, and the tested recovery boundary for a pending `0.10.1` update.
+
 - Release `0.10.1` recommends the seventeen `0.10.1` application packages, which
   ship all 43 curated languages. The invocation-local language SDK remains
   unchanged from `0.10.0`; install kernel `0.10.0` or newer before these
@@ -719,7 +725,7 @@ below.
 - The installed updater fetches an exact kernel Git tag and runs its ordinary
   installer in a separate initialized staging instance. No bootstrap packages
   are installed there. The installed `scripts/bootstrap-packages.toml` also
-  supplies ordered package recommendations to the native command after startup.
+  supplies set-based package recommendations to the native command after startup.
   Build and smoke checks complete before the old kernel is stopped. Limit Go to
   two processors, 512 MiB runtime memory, and a 30-minute preparation deadline.
   The updater needs 6 GiB of free temporary disk space; successful completion

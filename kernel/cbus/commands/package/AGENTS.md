@@ -46,8 +46,8 @@ Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
   through activation, preserves dirty work, and retains physical database data.
 - Recommendations delegate to `InstallRecommendedPackages` using the installed
   kernel list, without arguments. Results distinguish installed, updated,
-  unchanged, skipped, and failed packages; failure details retain earlier
-  outcomes. The package store owns version/fast-forward decisions and source
+  unchanged, skipped, not-applied, and failed packages. All candidates stage
+  before one activation; failure details distinguish candidates never applied. The package store owns version/fast-forward decisions and source
   protection, including preservation of local work and custom sources.
 - Repository initialization is explicit, never inferred from discovery, and
   creates one initial commit at the package root. Remote configuration rejects

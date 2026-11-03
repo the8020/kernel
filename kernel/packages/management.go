@@ -351,17 +351,108 @@ func (s *Store) synchronizePackages(ctx context.Context, packageIDs []string, to
 func (s *Store) synchronizePackage(ctx context.Context, packageID, transientToken, username string, recommendation *recommendedPackage) (result PackageSynchronization, err error) {
 	unlock, err := s.lockPackage(ctx, packageID)
 	if err != nil {
-		return PackageSynchronization{}, err
+		return result, err
 	}
 	defer unlock()
+	staged, err := s.stagePackageSynchronization(ctx, packageID, transientToken, username, recommendation)
+	result = staged.PackageSynchronization
+	if err != nil || staged.root == "" {
+		return result, err
+	}
+	stage, stageRoot, destination, exists, entry := staged.root, staged.stageRoot, staged.destination, staged.exists, staged.entry
+	hook := s.schemaDeployment()
+	var transactionID string
+	sourceSwitched := false
+	defer func() {
+		if !sourceSwitched && hook != nil && transactionID != "" {
+			forward, checkErr := deployment.NeedsForward(context.WithoutCancel(ctx), hook, transactionID)
+			if checkErr != nil || forward {
+				return
+			}
+		}
+		err = errors.Join(err, os.RemoveAll(stageRoot))
+	}()
+	if recommendation != nil {
+		if err := s.index.Put(ctx, entry); err != nil {
+			return result, err
+		}
+	}
+	if deployment.Options(ctx).Preview {
+		if hook == nil {
+			return result, errors.New("schema coordinator is unavailable")
+		}
+		planner, ok := hook.(deployment.PlanningHook)
+		if !ok {
+			return result, errors.New("schema preview requires an updated coordinator")
+		}
+		result.SchemaPlan, err = planner.Plan(ctx, []deployment.Candidate{{PackageID: packageID, Root: stage, Commit: result.Commit}})
+		return result, err
+	}
+	if exists && result.PreviousCommit == result.Commit && entry.State == "ready" && entry.ActiveCommit == result.Commit && len(deployment.Options(ctx).ForceColumns) == 0 && deployment.Options(ctx).ApprovedPlan == "" {
+		if _, err := replacePackageDirectory(destination, stage); err != nil {
+			return result, err
+		}
+		return result, finalizePackageDirectory(destination)
+	}
+	transactionID, err = activationID()
+	if err != nil {
+		return result, err
+	}
+	preparedSchema := false
+	if hook != nil {
+		if err := hook.Prepare(ctx, transactionID, []deployment.Candidate{{PackageID: packageID, Root: stage, Commit: result.Commit}}); err != nil {
+			return result, fmt.Errorf("prepare package database schema: %w", err)
+		}
+		preparedSchema = true
+		defer func() {
+			if preparedSchema && !sourceSwitched {
+				err = errors.Join(err, hook.Complete(context.WithoutCancel(ctx), transactionID, false))
+			}
+		}()
+		if outcome, ok := hook.(deployment.OutcomeHook); ok {
+			result.SchemaResult, err = outcome.SchemaOutcome(ctx, transactionID)
+			if err != nil {
+				return result, err
+			}
+		}
+	}
+	sourceSwitched, err = replacePackageDirectory(destination, stage)
+	if err != nil {
+		return result, fmt.Errorf("activate synchronized package: %w", err)
+	}
+	if hook != nil {
+		if err := hook.Complete(ctx, transactionID, true); err != nil {
+			return result, fmt.Errorf("complete package activation: %w", err)
+		}
+		preparedSchema = false
+	}
+	if err := finalizePackageDirectory(destination); err != nil {
+		return result, err
+	}
+	result.Changed, result.Cloned = true, !exists
+	if s.logger != nil {
+		s.logger.Log(ctx, slog.LevelInfo, "package synchronized", "package_id", packageID, "source", entry.Source, "requested", result.Requested, "previous_commit", result.PreviousCommit, "commit", result.Commit, "cloned", result.Cloned)
+	}
+	return result, nil
+}
+
+type stagedSynchronization struct {
+	PackageSynchronization
+	entry                        PackageIndex
+	root, stageRoot, destination string
+	exists                       bool
+}
+
+// The caller holds the source lock; staging never publishes source or desired state.
+func (s *Store) stagePackageSynchronization(ctx context.Context, packageID, transientToken, username string, recommendation *recommendedPackage) (result stagedSynchronization, err error) {
 	entry, exists, err := s.index.Get(ctx, packageID)
 	if err != nil {
-		return PackageSynchronization{}, err
+		return result, err
 	}
 	if !exists && recommendation == nil {
-		return PackageSynchronization{}, os.ErrNotExist
+		return result, os.ErrNotExist
 	}
-	result = PackageSynchronization{PackageID: packageID, Source: entry.Source, Requested: entry.selector(), Local: entry.Local}
+	result.PackageSynchronization = PackageSynchronization{PackageID: packageID, Source: entry.Source, Requested: entry.selector(), Local: entry.Local}
 	if recommendation != nil {
 		if exists && (entry.Local || entry.Source != recommendation.Source) {
 			result.skipped = "local package or custom source"
@@ -414,17 +505,9 @@ func (s *Store) synchronizePackage(ctx context.Context, packageID, transientToke
 	if err != nil {
 		return result, fmt.Errorf("create package staging directory: %w", err)
 	}
-	hook := s.schemaDeployment()
-	var transactionID string
-	sourceSwitched := false
 	defer func() {
-		if sourceSwitched || hook == nil || transactionID == "" {
-			_ = os.RemoveAll(stageRoot)
-			return
-		}
-		forward, err := deployment.NeedsForward(context.WithoutCancel(ctx), hook, transactionID)
-		if err == nil && !forward {
-			_ = os.RemoveAll(stageRoot)
+		if result.root == "" {
+			err = errors.Join(err, os.RemoveAll(stageRoot))
 		}
 	}()
 	stage := filepath.Join(stageRoot, "repository")
@@ -478,68 +561,9 @@ func (s *Store) synchronizePackage(ctx context.Context, packageID, transientToke
 	if err := validateStagedPackage(stage); err != nil {
 		return result, err
 	}
-	if recommendation != nil {
-		if err := s.index.Put(ctx, entry); err != nil {
-			return result, err
-		}
-	}
 	result.Commit = commit
-	if deployment.Options(ctx).Preview {
-		if hook == nil {
-			return result, errors.New("schema coordinator is unavailable")
-		}
-		planner, ok := hook.(deployment.PlanningHook)
-		if !ok {
-			return result, errors.New("schema preview requires an updated coordinator")
-		}
-		result.SchemaPlan, err = planner.Plan(ctx, []deployment.Candidate{{PackageID: packageID, Root: stage, Commit: commit}})
-		return result, err
-	}
-	if exists && result.PreviousCommit == result.Commit && entry.State == "ready" && entry.ActiveCommit == result.Commit && len(deployment.Options(ctx).ForceColumns) == 0 && deployment.Options(ctx).ApprovedPlan == "" {
-		if _, err := replacePackageDirectory(destination, stage); err != nil {
-			return result, err
-		}
-		return result, finalizePackageDirectory(destination)
-	}
-	transactionID, err = activationID()
-	if err != nil {
-		return result, err
-	}
-	preparedSchema := false
-	if hook != nil {
-		if err := hook.Prepare(ctx, transactionID, []deployment.Candidate{{PackageID: packageID, Root: stage, Commit: commit}}); err != nil {
-			return result, fmt.Errorf("prepare package database schema: %w", err)
-		}
-		preparedSchema = true
-		defer func() {
-			if preparedSchema && !sourceSwitched {
-				err = errors.Join(err, hook.Complete(context.WithoutCancel(ctx), transactionID, false))
-			}
-		}()
-		if outcome, ok := hook.(deployment.OutcomeHook); ok {
-			result.SchemaResult, err = outcome.SchemaOutcome(ctx, transactionID)
-			if err != nil {
-				return result, err
-			}
-		}
-	}
-	sourceSwitched, err = replacePackageDirectory(destination, stage)
-	if err != nil {
-		return result, fmt.Errorf("activate synchronized package: %w", err)
-	}
-	if hook != nil {
-		if err := hook.Complete(ctx, transactionID, true); err != nil {
-			return result, fmt.Errorf("complete package activation: %w", err)
-		}
-		preparedSchema = false
-	}
-	if err := finalizePackageDirectory(destination); err != nil {
-		return result, err
-	}
-	result.Changed, result.Cloned = true, !exists
-	if s.logger != nil {
-		s.logger.Log(ctx, slog.LevelInfo, "package synchronized", "package_id", packageID, "source", entry.Source, "requested", result.Requested, "previous_commit", result.PreviousCommit, "commit", result.Commit, "cloned", result.Cloned)
-	}
+	result.entry, result.root, result.stageRoot = entry, stage, stageRoot
+	result.destination, result.exists = destination, exists
 	return result, nil
 }
 

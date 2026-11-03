@@ -326,7 +326,22 @@ func (c *ActivationCoordinator) Bootstrap(ctx context.Context, commits map[strin
 // Recover visits a bounded snapshot of unfinished attempts. Busy or failed
 // attempts remain visible without preventing recovery of unrelated packages.
 func (c *ActivationCoordinator) Recover(ctx context.Context) error {
-	rows, err := c.database.QueryContext(ctx, `SELECT "activationId" FROM `+activationsTable+` WHERE "stage" IN `+unfinishedActivationStages+` ORDER BY "startedAt", "activationId" LIMIT 257`)
+	return c.RecoverPackages(ctx, nil)
+}
+
+// RecoverPackages resumes unfinished activations intersecting an explicit selection.
+// An empty selection recovers every unfinished activation at startup.
+func (c *ActivationCoordinator) RecoverPackages(ctx context.Context, packageIDs []string) error {
+	selection := ""
+	arguments := make([]any, len(packageIDs))
+	if len(packageIDs) > 0 {
+		parameters := make([]string, len(packageIDs))
+		for i, id := range packageIDs {
+			parameters[i], arguments[i] = fmt.Sprintf("$%d", i+1), id
+		}
+		selection = ` AND EXISTS (SELECT 1 FROM ` + activationPackagesTable + ` p WHERE p."activationId" = a."activationId" AND p."packageId" IN (` + strings.Join(parameters, ",") + `))`
+	}
+	rows, err := c.database.QueryContext(ctx, `SELECT "activationId" FROM `+activationsTable+` a WHERE "stage" IN `+unfinishedActivationStages+selection+` ORDER BY "startedAt", "activationId" LIMIT 257`, arguments...)
 	if err != nil {
 		return err
 	}
@@ -545,7 +560,6 @@ func (c *ActivationCoordinator) sourceIsCandidate(ctx context.Context, candidate
 		} else if destinationErr != nil {
 			return false, destinationErr
 		}
-		return true, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return false, err
 	}

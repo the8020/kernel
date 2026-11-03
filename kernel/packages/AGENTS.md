@@ -173,18 +173,25 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   Git objects, branch names, and history when applying versions. Dirty shared
   worktrees are preserved and rejected. One failed batch package has explicit
   durable failure state.
-- `InstallRecommendedPackages` reads the current kernel's
-  `scripts/bootstrap-packages.toml`, validates the entire bounded schema-1 list,
-  and processes declaration order through the ordinary source lock and
-  synchronization/activation transaction. Optional numeric `version` selects a
-  tag; omission selects the remote default branch. Install missing packages;
-  advance existing checkouts only by fast-forward and never downgrade a numeric
-  installed version. Preserve dirty work, local commits, local packages, and
-  custom sources before changing desired state. Return per-package outcomes and
-  stop at the first failure; explicit retries retain earlier successes. Existing
-  activation validation still requires unchanged packages to match their
-  published commits; unpublished shared edits can block another package's
-  activation even when their own recommendation is skipped.
+- `InstallRecommendedPackages` validates the current kernel's bounded schema-1
+  `scripts/bootstrap-packages.toml`, recovers unfinished activations overlapping
+  its selection, then holds all selected source locks while staging candidates.
+  Optional numeric `version` selects a tag; omission follows the remote default
+  branch. Preserve local/custom sources, dirty work, local commits and newer
+  versions before changing desired state. Fetch every candidate before one
+  schema/handler/hook preparation against the complete set, including mutual
+  imports. Declaration order controls reporting only. Unchanged/skipped peers
+  remain installed and must be compatible; failures identify the invalid source
+  or import and direct the operator to repair and explicitly retry.
+- Fetch/validation failures before source switching publish no candidate roots
+  or ready commits. Results distinguish `not_applied` candidates from unchanged
+  or skipped packages when staging stops. Durable schema receipts and partial
+  source switches retain every staged candidate and existing backup for forward
+  recovery; no universal rollback is promised. Explicit repeated recommendations
+  recover overlapping attempts before staging fresh work, without repeating
+  successful schema/hook phases. Other pending activations remain untouched.
+  Recovery verifies installed candidate identity even when `.previous` exists;
+  a backup alone is not evidence that source switched.
 - Activated-source consumers can require a clean installed checkout whose HEAD
   or content fingerprint exactly matches the ready database commit; schema
   evaluation uses this guard while staged activation evaluates its candidate.
@@ -250,7 +257,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   fetch/select/push through ordinary repositories.
 - Recommendation regressions cover missing packages, version/default-branch
   advancement, idempotence, downgrade/local-work protection, configuration
-  validation before mutation, schema failures, and ordered retries.
+  validation before mutation, schema failures, all six three-package order permutations with real cyclic
+  TypeScript imports, prepublication fetch/retained-peer failures, and durable
+  post-hook recovery without repeated successful work.
 - Declaration regressions include documentation-only and documented TOML
   folders, candidate activation validation, and live handler reindexing.
 - Deletion regressions cover absent/empty uninstalled source, nonempty/corrupt
