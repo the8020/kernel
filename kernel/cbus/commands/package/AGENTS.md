@@ -7,9 +7,11 @@ Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
 
 # Ownership
 
-- Publish only `kernel.packages.list`, `kernel.packages.inspect`,
-  `kernel.packages.set`, `kernel.packages.synchronize`, and
-  `kernel.packages.delete`, and `kernel.packages.recommended`.
+- Publish only `kernel.packages.activation.inspect`,
+  `kernel.packages.activation.resume`, `kernel.packages.list`,
+  `kernel.packages.inspect`, `kernel.packages.set`,
+  `kernel.packages.synchronize`, and `kernel.packages.delete`,
+  `kernel.packages.synchronize.set`, and `kernel.packages.recommended`.
 - Retain remaining package/source/version/local/repository thin handlers behind
   the private runtime-operation dispatcher. `the8020/packages` owns their
   visible `packages.*` command programs.
@@ -26,6 +28,15 @@ Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
   the ordinary service plane is degraded. Source-changing mutations fail closed
   until the schema evaluator/job runtime and database deployment coordinator are
   ready.
+- `kernel.packages.activation.inspect` reads one exact native activation's
+  candidate and hook records. It does not resume activation or establish that
+  its owner, Worker or schema is settled; never use it alone to release a lock.
+- `kernel.packages.synchronize.set` without input checks protocol/schema
+  capability without mutation. Its bounded JSON input selects a fresh activation
+  ID and exact source/version/baseline set; secure Git input remains separate.
+  `kernel.packages.activation.resume` explicitly resumes only this native owner
+  under existing source and operation locks. It cannot replace development or
+  legacy journals, change membership, or guarantee exactly-once failed hooks.
 - Recovery list/inspect/set manage kernel-owned desired package records. Source
   inspection lists bounded refs without cloning and may name one global secret
   for a private source, applied only as a transient authorization header.
@@ -47,8 +58,9 @@ Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
 - Recommendations delegate to `InstallRecommendedPackages` using the installed
   kernel list, without arguments. Results distinguish installed, updated,
   unchanged, skipped, not-applied, and failed packages. All candidates stage
-  before one activation; failure details distinguish candidates never applied. The package store owns version/fast-forward decisions and source
-  protection, including preservation of local work and custom sources.
+  before one activation; failure details distinguish candidates never applied.
+  The package store owns version/fast-forward decisions and source protection,
+  including preservation of local work and custom sources.
 - Repository initialization is explicit, never inferred from discovery, and
   creates one initial commit at the package root. Remote configuration rejects
   embedded credentials. Fetch refreshes refs/tags without changing the checkout.
@@ -64,11 +76,11 @@ Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
 
 # Verification
 
-- Generator catalog and aggregate handler tests cover the six recovery commands
-  and private operation adapters; package-store tests own discovery/path safety
-  and real Git synchronization/authentication. Package-command tests cover
-  concise package results and publication failure reporting; package-domain
-  tests own schema/hook activation history.
+- Generator catalog and aggregate handler tests cover the recovery commands and
+  private operation adapters; package-store tests own discovery/path safety and
+  real Git synchronization/authentication. Package-command tests cover concise
+  package results and publication failure reporting; package-domain tests own
+  schema/hook activation history.
 
 # Child DOX Index
 

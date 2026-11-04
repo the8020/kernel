@@ -356,6 +356,7 @@ func testPublicationFinishesIndexes(t *testing.T) {
 			root, store, db := activationStore(t)
 			active := writeActivationPackage(t, filepath.Join(root, "packages"), "acme/orders", true)
 			putActivePackage(t, store, "acme/orders", "old")
+			commit := activationFingerprint(t, active)
 			ctx := context.Background()
 			events := []string{}
 			runner := &activationJobRecorder{events: &events, failures: map[string]int{}, calls: map[string]int{}}
@@ -372,7 +373,7 @@ func testPublicationFinishesIndexes(t *testing.T) {
 				Reindex: func(ctx context.Context, ids []string) error {
 					indexCalls++
 					entry, _, err := store.index.Get(ctx, "acme/orders")
-					if err != nil || entry.ActiveCommit != "new" || entry.State != "ready" {
+					if err != nil || entry.ActiveCommit != commit || entry.State != "ready" {
 						t.Fatalf("index refresh preceded package publication: %+v: %v", entry, err)
 					}
 					if indexCalls == 1 && resume != "record" {
@@ -388,12 +389,12 @@ func testPublicationFinishesIndexes(t *testing.T) {
 			}
 			id := "act-jjjjjjjjjj"
 			if resume == "bootstrap" {
-				err = coordinator.Bootstrap(ctx, map[string]string{"acme/orders": "new"})
+				err = coordinator.Bootstrap(ctx, map[string]string{"acme/orders": commit})
 				if queryErr := db.QueryRowContext(ctx, `SELECT "activationId" FROM `+activationsTable).Scan(&id); queryErr != nil {
 					t.Fatal(queryErr)
 				}
 			} else {
-				if err := coordinator.Prepare(ctx, id, []deployment.Candidate{{PackageID: "acme/orders", Root: active, Commit: "new"}}); err != nil {
+				if err := coordinator.Prepare(ctx, id, []deployment.Candidate{{PackageID: "acme/orders", Root: active, Commit: commit}}); err != nil {
 					t.Fatal(err)
 				}
 				err = coordinator.Complete(ctx, id, true)
@@ -422,6 +423,26 @@ func testPublicationFinishesIndexes(t *testing.T) {
 			eventCount := len(events)
 			if resume == "record" {
 				if _, err := db.ExecContext(ctx, `DROP TRIGGER reject_completion_record`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if resume == "complete" || resume == "recover" {
+				backup := active + ".previous"
+				writeFile(t, filepath.Join(backup, "preserved"), "backup")
+				writeFile(t, filepath.Join(active, "drift"), "changed")
+				if resume == "complete" {
+					err = coordinator.Complete(ctx, id, true)
+				} else {
+					err = coordinator.Recover(ctx)
+				}
+				if err == nil || indexCalls != 1 {
+					t.Fatalf("finalization accepted changed published source: calls=%d err=%v", indexCalls, err)
+				}
+				if _, err := os.Stat(filepath.Join(backup, "preserved")); err != nil {
+					t.Fatalf("finalization removed the backup: %v", err)
+				}
+				assertActivationState(t, db, "published")
+				if err := os.Remove(filepath.Join(active, "drift")); err != nil {
 					t.Fatal(err)
 				}
 			}

@@ -112,16 +112,16 @@ func (c *ActivationCoordinator) Prepare(ctx context.Context, transactionID strin
 			if len(run.candidates) != len(candidates) {
 				return fmt.Errorf("unfinished activation %s candidate set changed", transactionID)
 			}
+			remaining := make(map[string]string, len(run.candidates))
+			for _, saved := range run.candidates {
+				remaining[saved.PackageID] = saved.Commit
+			}
 			for _, candidate := range candidates {
-				found := false
-				for _, saved := range run.candidates {
-					if saved.PackageID == candidate.PackageID && saved.Commit == candidate.Commit {
-						found = true
-					}
-				}
-				if !found {
+				commit, found := remaining[candidate.PackageID]
+				if !found || commit != candidate.Commit {
 					return fmt.Errorf("unfinished activation %s candidate changed", transactionID)
 				}
+				delete(remaining, candidate.PackageID)
 			}
 		}
 	}
@@ -229,7 +229,10 @@ func (c *ActivationCoordinator) Complete(ctx context.Context, transactionID stri
 		if !activated {
 			return fmt.Errorf("activation %s is already published; finish activation instead of rolling it back", transactionID)
 		}
-		return c.finish(ctx, run)
+		if err := c.verifyInstalledCandidates(ctx, run); err != nil {
+			return err
+		}
+		return c.finish(deployment.WithCandidates(ctx, run.rawCandidates()), run)
 	}
 	if !activated {
 		cause := run.failure
@@ -397,24 +400,32 @@ func (c *ActivationCoordinator) recoverActivation(ctx context.Context, id string
 		return nil
 	}
 	if stage == "published" {
-		return c.finish(ctx, run)
+		if err := c.verifyInstalledCandidates(ctx, run); err != nil {
+			return err
+		}
+		return c.finish(deployment.WithCandidates(ctx, run.rawCandidates()), run)
+	}
+	if err := c.verifySynchronization(ctx, id); err != nil {
+		return err
 	}
 	candidates := make([]deployment.Candidate, len(run.candidates))
 	for i := range run.candidates {
 		candidates[i] = run.candidates[i].Candidate
 	}
-	handlers, err := c.validate(ctx, candidates)
-	if err != nil {
-		return err
-	}
-	run.handlers = handlers
 	forward, err := c.ForwardRequired(ctx, run.id)
 	if err != nil {
 		return err
 	}
 	codeSwitched := stage == "code_switched" || stage == "post_activated"
+	if codeSwitched {
+		if err := c.verifyInstalledCandidates(ctx, run); err != nil {
+			return err
+		}
+		candidates = run.rawCandidates()
+		ctx = deployment.WithCandidates(ctx, candidates)
+	}
+	switched := make([]activationCandidate, 0, len(run.candidates))
 	if !codeSwitched {
-		switched := make([]activationCandidate, 0, len(run.candidates))
 		for _, candidate := range run.candidates {
 			active, err := c.sourceIsCandidate(ctx, candidate)
 			if err != nil {
@@ -424,6 +435,53 @@ func (c *ActivationCoordinator) recoverActivation(ctx context.Context, id string
 				switched = append(switched, candidate)
 			}
 		}
+		if !forward && len(switched) < len(run.candidates) {
+			if len(switched) == 0 {
+				return c.rollback(ctx, run, errors.New("activation interrupted before source switch"))
+			}
+			if err := c.restoreSources(ctx, switched); err != nil {
+				return err
+			}
+			return c.rollback(ctx, run, errors.New("activation interrupted during source switch"))
+		}
+	}
+	// Recovery must not run schema or hooks against an older installed fallback.
+	for _, candidate := range run.candidates {
+		if candidate.Commit == "" {
+			continue
+		}
+		if candidate.Root == c.packages.packagePath(candidate.PackageID) {
+			commit, err := c.packages.installedCommit(ctx, candidate.Root)
+			if err != nil {
+				return fmt.Errorf("inspect recovery candidate %s: %w", candidate.PackageID, err)
+			}
+			if commit != candidate.Commit {
+				return fmt.Errorf("recovery candidate %s changed or staged source is missing: expected %s, found %s", candidate.PackageID, candidate.Commit, commit)
+			}
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(candidate.Root, ".git")); err == nil {
+			commit, err := CleanRepositoryHead(ctx, candidate.Root)
+			if err != nil {
+				return fmt.Errorf("inspect forward candidate %s: %w", candidate.PackageID, err)
+			}
+			if commit != candidate.Commit {
+				return fmt.Errorf("forward candidate %s changed: expected %s, found %s", candidate.PackageID, candidate.Commit, commit)
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		} else if filepath.Base(candidate.Root) == "repository" &&
+			filepath.Dir(filepath.Dir(candidate.Root)) == filepath.Dir(c.packages.packagePath(candidate.PackageID)) &&
+			strings.HasPrefix(filepath.Base(filepath.Dir(candidate.Root)), "."+filepath.Base(c.packages.packagePath(candidate.PackageID))+"-sync-") {
+			return fmt.Errorf("forward candidate %s staged Git metadata is missing", candidate.PackageID)
+		}
+	}
+	handlers, err := c.validate(ctx, candidates)
+	if err != nil {
+		return err
+	}
+	run.handlers = handlers
+	if !codeSwitched {
 		if forward && len(switched) < len(run.candidates) {
 			if stage == "staged" {
 				if err := c.schema.Prepare(ctx, run.id, candidates); err != nil {
@@ -474,16 +532,6 @@ func (c *ActivationCoordinator) recoverActivation(ctx context.Context, id string
 			}
 			switched = run.candidates
 		}
-		if len(switched) > 0 && len(switched) < len(run.candidates) {
-			if err := c.restoreSources(ctx, switched); err != nil {
-				return err
-			}
-			return c.rollback(ctx, run, errors.New("activation interrupted during source switch"))
-		}
-		codeSwitched = len(switched) == len(run.candidates)
-		if !codeSwitched {
-			return c.rollback(ctx, run, errors.New("activation interrupted before source switch"))
-		}
 		// Fresh bootstrap sources are already in their final paths. If a crash
 		// preceded a durable phase update, resume the missing schema/pre work
 		// from those exact candidate commits before exposing them.
@@ -531,6 +579,30 @@ func (c *ActivationCoordinator) recoverActivation(ctx context.Context, id string
 		return err
 	}
 	return c.finish(ctx, run)
+}
+
+// verifyInstalledCandidates checks source identity before resuming published work.
+func (c *ActivationCoordinator) verifyInstalledCandidates(ctx context.Context, run *activationRun) error {
+	for i, candidate := range run.candidates {
+		path := c.packages.packagePath(candidate.PackageID)
+		if candidate.Commit == "" {
+			if _, err := os.Lstat(path); err == nil {
+				return fmt.Errorf("removed candidate %s is still present", candidate.PackageID)
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("inspect removed candidate %s: %w", candidate.PackageID, err)
+			}
+			continue
+		}
+		commit, err := c.packages.installedCommit(ctx, path)
+		if err != nil {
+			return fmt.Errorf("inspect recovery candidate %s: %w", candidate.PackageID, err)
+		}
+		if commit != candidate.Commit {
+			return fmt.Errorf("recovery candidate %s changed: expected %s, found %s", candidate.PackageID, candidate.Commit, commit)
+		}
+		run.candidates[i].Root = path
+	}
+	return nil
 }
 
 // Pending reports whether startup has an unfinished activation to recover.
@@ -687,9 +759,10 @@ func (c *ActivationCoordinator) begin(ctx context.Context, id string, raw []depl
 	for _, item := range candidates {
 		if item.first && item.Commit != "" {
 			identity, _ := ParsePackageID(item.PackageID)
+			_, synchronizing := ctx.Value(synchronizationKey{}).([]synchronizationIntent)
 			if _, err := tx.ExecContext(ctx, `INSERT INTO `+packagesTable+` ("packageId", "author", "repository", "local", "state", "revision", "createdAt", "updatedAt")
 				VALUES ($1, $2, $3, $4, 'desired', 0, $5, $5)
-				ON CONFLICT ("packageId") DO NOTHING`, item.PackageID, identity.Namespace, identity.Repository, true, now); err != nil {
+				ON CONFLICT ("packageId") DO NOTHING`, item.PackageID, identity.Namespace, identity.Repository, !synchronizing, now); err != nil {
 				return nil, err
 			}
 		}
@@ -702,6 +775,15 @@ func (c *ActivationCoordinator) begin(ctx context.Context, id string, raw []depl
 			}
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE `+packagesTable+` SET "state" = CASE WHEN "activeCommit" IS NULL THEN 'activating' ELSE "state" END, "error" = NULL, "updatedAt" = $1 WHERE "packageId" = $2`, now, item.PackageID); err != nil {
+			return nil, err
+		}
+	}
+	if intents, ok := ctx.Value(synchronizationKey{}).([]synchronizationIntent); ok {
+		encoded, err := database.EncodeJSON(c.database.Backend(), intents)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO `+synchronizationsTable+` ("activationId", "packages") VALUES ($1, $2)`, id, encoded); err != nil {
 			return nil, err
 		}
 	}
@@ -720,6 +802,18 @@ func (run *activationRun) packageIDs() []string {
 }
 
 func (c *ActivationCoordinator) validate(ctx context.Context, candidates []deployment.Candidate) (map[string]packageHandlers, error) {
+	for _, candidate := range candidates {
+		if candidate.Commit == "" {
+			continue
+		}
+		info, err := os.Stat(candidate.Root)
+		if err != nil {
+			return nil, fmt.Errorf("candidate %s source: %w", candidate.PackageID, err)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("candidate %s source is not a directory", candidate.PackageID)
+		}
+	}
 	handlers, err := c.packages.indexCandidateHandlers(ctx, candidates)
 	if err != nil {
 		return nil, fmt.Errorf("validate package handlers: %w", err)
@@ -889,12 +983,34 @@ func (c *ActivationCoordinator) activeCommits(ctx context.Context) (map[string]s
 // publish exposes every candidate, advances the package-set revision once,
 // and records the remaining local finalization in one transaction.
 func (c *ActivationCoordinator) publish(ctx context.Context, run *activationRun) error {
+	intents, err := c.synchronizationIntent(ctx, run.id)
+	if err != nil {
+		return err
+	}
 	tx, err := c.database.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 	now := database.EncodeTime(c.database, c.now().UTC())
+	for _, intent := range intents {
+		desired, previous := intent.Desired, intent.Previous
+		result, err := tx.ExecContext(ctx, `UPDATE `+packagesTable+` SET "source" = $1, "requestedCommit" = $2, "requestedTag" = $3, "local" = $4
+			WHERE "packageId" = $5 AND COALESCE("source", '') = $6 AND COALESCE("requestedCommit", '') = $7
+			AND COALESCE("requestedTag", '') = $8 AND COALESCE("secretName", '') = $9 AND "local" = $10`,
+			nullableText(desired.Source), nullableText(desired.Commit), nullableText(desired.Tag), desired.Local, intent.PackageID,
+			previous.Source, previous.Commit, previous.Tag, previous.Secret, previous.Local)
+		if err != nil {
+			return err
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if changed != 1 {
+			return fmt.Errorf("%s source configuration changed during activation %s", intent.PackageID, run.id)
+		}
+	}
 	for _, candidate := range run.candidates {
 		state := "ready"
 		if candidate.Commit == "" {

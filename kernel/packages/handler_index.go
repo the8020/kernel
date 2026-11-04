@@ -201,7 +201,7 @@ func (s *Store) resolveHandlerPrograms(ctx context.Context, item packageHandlers
 	for i, event := range item.events {
 		program, updated, err := resolve(event.ProgramID)
 		if err != nil {
-			return packageHandlers{}, err
+			return packageHandlers{}, fmt.Errorf("%s references program %s: %w", event.ID, event.ProgramID, err)
 		}
 		if updated {
 			item.events[i].ProgramCommit = program.Commit
@@ -213,7 +213,7 @@ func (s *Store) resolveHandlerPrograms(ctx context.Context, item packageHandlers
 		for i, handler := range handlers {
 			program, updated, err := resolve(handler.ProgramID)
 			if err != nil {
-				return packageHandlers{}, err
+				return packageHandlers{}, fmt.Errorf("%s references program %s: %w", handler.ID, handler.ProgramID, err)
 			}
 			if updated {
 				handlers[i].Program = program

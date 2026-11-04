@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"the8020/kernel/deployment"
@@ -49,6 +50,79 @@ func (r testSecretResolver) SecretValue(name string) (string, error) {
 		return "", os.ErrNotExist
 	}
 	return value, nil
+}
+
+func TestStagedPackageUsesSelectedCredential(t *testing.T) {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git is unavailable")
+	}
+	root := t.TempDir()
+	source := t.TempDir()
+	runTestGit(t, git, "", "init", "-q", "-b", "main", source)
+	writeFile(t, filepath.Join(source, "package.toml"), "schema = 1\ndescription = 'Fixture'\n")
+	runTestGit(t, git, source, "add", ".")
+	runTestGit(t, git, source, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-qm", "fixture")
+	commit := runTestGit(t, git, source, "rev-parse", "HEAD")
+	bare := filepath.Join(root, "acme", "demo.git")
+	if err := os.MkdirAll(filepath.Dir(bare), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runTestGit(t, git, "", "clone", "-q", "--bare", source, bare)
+	runTestGit(t, git, bare, "update-server-info")
+	var mu sync.Mutex
+	var headers []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		headers = append(headers, r.Header.Get("Authorization"))
+		mu.Unlock()
+		http.FileServer(http.Dir(root)).ServeHTTP(w, r)
+	}))
+	defer server.Close()
+	store := newTestStore(t, t.TempDir())
+	store.secrets = testSecretResolver{"stored": "stored-password", "selected": "selected-password"}
+	stored, err := store.SetPackageIndex(t.Context(), PackageIndex{Author: "acme", Repository: "demo", Source: "http://old.invalid/acme/demo.git", Secret: "stored"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		secret, username, password, want string
+	}{
+		{},
+		{secret: "selected", want: "x-access-token:selected-password"},
+		{secret: "selected", username: "operator", password: "transient-password", want: "operator:transient-password"},
+	} {
+		mu.Lock()
+		headers = nil
+		mu.Unlock()
+		selected := stored
+		selected.Source, selected.Commit, selected.Secret = server.URL+"/acme/demo.git", commit, test.secret
+		stage, err := store.stagePackageIndex(t.Context(), selected, test.password, test.username, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.RemoveAll(stage.stageRoot); err != nil {
+			t.Fatal(err)
+		}
+		want := ""
+		if test.want != "" {
+			want = "Basic " + base64.StdEncoding.EncodeToString([]byte(test.want))
+		}
+		mu.Lock()
+		got := append([]string(nil), headers...)
+		mu.Unlock()
+		if len(got) == 0 {
+			t.Fatal("Git server received no requests")
+		}
+		for _, header := range got {
+			if header != want {
+				t.Fatal("staging sent a credential other than the selected credential")
+			}
+		}
+		if after, err := store.InspectPackageIndex("acme/demo"); err != nil || after != stored {
+			t.Fatalf("staging changed stored package index: %#v, %v", after, err)
+		}
+	}
 }
 
 func TestPackageIndexRemoteInspectionSynchronizationAndVersionSelection(t *testing.T) {
@@ -91,7 +165,6 @@ func TestPackageIndexRemoteInspectionSynchronizationAndVersionSelection(t *testi
 	if !entry.Valid || entry.PackageID != "the8020/demo" || entry.Source != source {
 		t.Fatalf("package index = %#v", entry)
 	}
-
 	inspection, err := store.InspectPackageSource(ctx, source, "")
 	if err != nil {
 		t.Fatal(err)
@@ -152,6 +225,28 @@ func TestPackageIndexRemoteInspectionSynchronizationAndVersionSelection(t *testi
 	}
 	if len(hook.prepared) != 1 || hook.prepared[0].PackageID != "the8020/demo" || hook.prepared[0].Commit != secondCommit || !slices.Equal(hook.completed, []bool{true}) {
 		t.Fatalf("schema hook = prepared %#v completed %#v", hook.prepared, hook.completed)
+	}
+	beforeStage, err := store.InspectPackageIndex("the8020/demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := beforeStage
+	selected.Commit = firstCommit
+	stage, err := store.stagePackageIndex(ctx, selected, "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stage.Commit != firstCommit || stage.root == "" {
+		t.Fatalf("explicit candidate staging = %#v", stage)
+	}
+	if index, err := store.InspectPackageIndex("the8020/demo"); err != nil || index != beforeStage {
+		t.Fatalf("staging changed desired index = %#v, %v", index, err)
+	}
+	if head := runTestGit(t, gitPath, installed, "rev-parse", "HEAD"); head != secondCommit {
+		t.Fatalf("staging changed installed source to %s", head)
+	}
+	if err := os.RemoveAll(stage.stageRoot); err != nil {
+		t.Fatal(err)
 	}
 	versions, err := store.ListPackageVersions(ctx, "the8020/demo", 20)
 	if err != nil {
@@ -559,6 +654,100 @@ func TestPackageSourceInspectionUsesSelectedSecretForPrivateSources(t *testing.T
 	}
 }
 
+func TestPackageSynchronizationRedactsNamedSecretFromGitFailure(t *testing.T) {
+	const token = "private-git-password"
+	encoded := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
+	wrapper := filepath.Join(t.TempDir(), "git-wrapper")
+	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nprintf '%s %s\\n' \"$TEST_GIT_SECRET\" \"$GIT_CONFIG_VALUE_0\" >&2\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TEST_GIT_SECRET", token)
+	store, err := New(Config{WorkspaceRoot: t.TempDir(), GitPath: wrapper,
+		Secrets: testSecretResolver{"private": token}, IndexStore: newMemoryPackageIndexStore()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPackageIndex(context.Background(), PackageIndex{
+		Author: "example", Repository: "private", Source: "https://example.com/example/private.git", Secret: "private",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	results, err := store.SynchronizePackages(context.Background(), []string{"example/private"})
+	if err != nil || len(results) != 1 || results[0].Success || results[0].Error == "" {
+		t.Fatalf("synchronization = %#v, %v", results, err)
+	}
+	if strings.Contains(results[0].Error, token) || strings.Contains(results[0].Error, encoded) {
+		t.Fatal("synchronization error exposed the named Git credential")
+	}
+}
+
+func TestGitOutputLimitDoesNotReturnPartialCredential(t *testing.T) {
+	wrapper := filepath.Join(t.TempDir(), "git-wrapper")
+	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nhead -c 2097151 /dev/zero\nprintf '%s' \"$GIT_CONFIG_VALUE_0\"\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store := newTestStore(t, t.TempDir())
+	store.gitPath = wrapper
+	output, err := store.runGit(context.Background(), "", []string{
+		"GIT_CONFIG_VALUE_0=Authorization: Basic cGFydGlhbA==",
+	}, "fetch")
+	if !errors.Is(err, errGitOutputLimit) || output != "" {
+		t.Fatalf("output limit: got %d bytes, error %v", len(output), err)
+	}
+}
+
+func TestResolveDesiredCommitRequiresRequestedIdentity(t *testing.T) {
+	wrapper := filepath.Join(t.TempDir(), "git-wrapper")
+	script := `#!/bin/sh
+case "$*" in
+  *"rev-parse --verify FETCH_HEAD^{commit}"*) echo "$TEST_RESOLVED_COMMIT" ;;
+  *"rev-parse --verify"*) [ "$TEST_FETCH" = yes ] && exit 1; echo "$TEST_RESOLVED_COMMIT" ;;
+  *"fetch --quiet origin"*) exit 0 ;;
+  *) exit 1 ;;
+esac
+`
+	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store := newTestStore(t, t.TempDir())
+	store.gitPath = wrapper
+	for _, test := range []struct {
+		name, requested, resolved, fetch string
+		wantError                        bool
+	}{
+		{"direct mismatch", "1111111", "2222222222222222222222222222222222222222", "no", true},
+		{"fetched mismatch", "1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222", "yes", true},
+		{"fetched abbreviated match", "1111111", "1111111111111111111111111111111111111111", "yes", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("TEST_FETCH", test.fetch)
+			t.Setenv("TEST_RESOLVED_COMMIT", test.resolved)
+			commit, err := store.resolveDesiredCommit(context.Background(), t.TempDir(), PackageIndex{Commit: test.requested}, true, nil)
+			if (err != nil) != test.wantError || err == nil && commit != test.resolved {
+				t.Fatalf("resolved commit = %q, error = %v", commit, err)
+			}
+		})
+	}
+}
+
+func TestResolveDesiredCommitRejectsAnnotatedTagObject(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git is unavailable")
+	}
+	repository := t.TempDir()
+	runTestGit(t, gitPath, repository, "init", "-q", "-b", "main")
+	writeFile(t, filepath.Join(repository, "package.toml"), "schema = 1\n")
+	runTestGit(t, gitPath, repository, "add", ".")
+	runTestGit(t, gitPath, repository, "commit", "-q", "-m", "initial")
+	runTestGit(t, gitPath, repository, "tag", "-a", "v1", "-m", "version")
+	tagObject := runTestGit(t, gitPath, repository, "rev-parse", "refs/tags/v1")
+	store := newTestStore(t, t.TempDir())
+	if commit, err := store.resolveDesiredCommit(context.Background(), repository, PackageIndex{Commit: tagObject}, false, nil); err == nil {
+		t.Fatalf("accepted annotated tag as commit %s", commit)
+	}
+}
+
 func TestPackageSynchronizationAppliesTransientCredentialWithoutPersistingIt(t *testing.T) {
 	gitPath, err := exec.LookPath("git")
 	if err != nil {
@@ -569,6 +758,7 @@ func TestPackageSynchronizationAppliesTransientCredentialWithoutPersistingIt(t *
 	writeFile(t, filepath.Join(working, "package.toml"), "schema = 1\ndescription = \"Private package\"\n")
 	runTestGit(t, gitPath, working, "add", ".")
 	runTestGit(t, gitPath, working, "commit", "-q", "-m", "initial")
+	selectedCommit := runTestGit(t, gitPath, working, "rev-parse", "HEAD")
 	remoteRoot := t.TempDir()
 	bare := filepath.Join(remoteRoot, "example", "private.git")
 	if err := os.MkdirAll(filepath.Dir(bare), 0o755); err != nil {
@@ -593,17 +783,42 @@ func TestPackageSynchronizationAppliesTransientCredentialWithoutPersistingIt(t *
 
 	root := t.TempDir()
 	store := newTestStore(t, root)
+	wrapper := filepath.Join(t.TempDir(), "git-wrapper")
+	marker := filepath.Join(t.TempDir(), "commit-fetched")
+	script := `#!/bin/sh
+case "$*" in
+  *"rev-parse --verify $TEST_COMMIT^{commit}"*) exit 1 ;;
+  *"fetch --quiet origin $TEST_COMMIT"*)
+    [ "$GIT_CONFIG_KEY_0" = "$TEST_AUTH_KEY" ] || exit 1
+    [ "$GIT_CONFIG_VALUE_0" = "$TEST_AUTH_VALUE" ] || exit 1
+    : > "$TEST_FETCH_MARKER"; exit 0 ;;
+  *"rev-parse --verify FETCH_HEAD^{commit}"*) echo "$TEST_COMMIT"; exit 0 ;;
+esac
+exec "$TEST_REAL_GIT" "$@"
+`
+	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TEST_REAL_GIT", gitPath)
+	t.Setenv("TEST_COMMIT", selectedCommit)
+	t.Setenv("TEST_AUTH_KEY", "http."+server.URL+"/.extraHeader")
+	t.Setenv("TEST_AUTH_VALUE", "Authorization: "+wantedAuthorization)
+	t.Setenv("TEST_FETCH_MARKER", marker)
+	store.gitPath = wrapper
 	var logs bytes.Buffer
 	store.logger = slog.New(slog.NewJSONHandler(&logs, nil))
 	if _, err := store.SetPackageIndex(context.Background(), PackageIndex{
 		Author: "example", Repository: "private",
-		Source: server.URL + "/example/private.git",
+		Source: server.URL + "/example/private.git", Commit: selectedCommit,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	results, err := store.SynchronizePackagesWithCredential(context.Background(), []string{"example/private"}, token, username)
 	if err != nil || len(results) != 1 || !results[0].Success || !results[0].Cloned {
 		t.Fatalf("authenticated synchronization = %#v, %v", results, err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("exact commit fetch was not attempted: %v", err)
 	}
 	index, exists, err := store.index.Get(context.Background(), "example/private")
 	if err != nil || !exists || index.Secret != "" {

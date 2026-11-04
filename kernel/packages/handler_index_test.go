@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -13,6 +14,37 @@ import (
 
 	"the8020/kernel/deployment"
 )
+
+func TestCandidateHandlerReportsMissingPackageAndAcceptsSelectedPeer(t *testing.T) {
+	_, store, _ := activationStore(t)
+	owner := t.TempDir()
+	peer := t.TempDir()
+	writeHandlerProgram(t, peer, "run")
+	for _, kind := range []string{"events", "hooks"} {
+		t.Run(kind, func(t *testing.T) {
+			root := filepath.Join(owner, kind)
+			trigger := "event = 'minute'"
+			if kind == "hooks" {
+				trigger = "hook = 'pre-activate'"
+			}
+			writeFile(t, filepath.Join(root, "dependency.toml"), trigger+"\ndescription = 'Fixture'\nprogram = 'acme/peer/run'\n")
+			defer os.RemoveAll(root)
+			one := deployment.Candidate{PackageID: "acme/owner", Root: owner, Commit: "owner"}
+			two := deployment.Candidate{PackageID: "acme/peer", Root: peer, Commit: "peer"}
+			err := store.ValidateHandlers(context.Background(), []deployment.Candidate{one})
+			for _, want := range []string{"acme/owner/" + kind + "/dependency.toml", "acme/peer/run", "acme/peer has no ready active commit", "explicit package version"} {
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Fatalf("missing diagnostic %q: %v", want, err)
+				}
+			}
+			for _, candidates := range [][]deployment.Candidate{{one, two}, {two, one}} {
+				if err := store.ValidateHandlers(context.Background(), candidates); err != nil {
+					t.Fatalf("selected peer rejected: %v", err)
+				}
+			}
+		})
+	}
+}
 
 func writeIndexedHandlers(t *testing.T, root, id string) {
 	t.Helper()
@@ -203,8 +235,14 @@ func TestScopedTargetCommitRefreshUpdatesCachedCrossPackageReferences(t *testing
 		t.Fatal("caller mutated the index")
 	}
 	missing := writeActivationPackage(t, t.TempDir(), "acme/target", false)
-	if err := store.ValidateHandlers(ctx, []deployment.Candidate{{PackageID: "acme/target", Root: missing, Commit: "third"}}); err == nil {
-		t.Fatal("candidate removed a program referenced by an indexed handler")
+	err := store.ValidateHandlers(ctx, []deployment.Candidate{{PackageID: "acme/target", Root: missing, Commit: "third"}})
+	for _, want := range []string{"acme/owner/", "acme/target/run"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("candidate removed a referenced program without diagnostic %q: %v", want, err)
+		}
+	}
+	if items := store.EventListeners("minute"); len(items) != 1 || items[0].ProgramCommit != "second" {
+		t.Fatalf("rejected candidate changed the live handler index: %#v", items)
 	}
 }
 

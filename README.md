@@ -1,5 +1,39 @@
 # 80|20 kernel
 
+## 0.10.3: selected-set deployment and exact activation recovery
+
+Kernel **0.10.3** recommends **packages 0.10.2** and **deployments 0.10.2**;
+all other application pins remain **0.10.1**. Deployment now stages the exact
+selected versions together before schema evaluation and pre-hooks, then switches
+all selected sources before post-hooks. Legitimate mutual imports work in either
+selection order, including ordinary development activation. Declared missing
+handlers identify their source declaration and required program; diagnostics do
+not prove complete import or version compatibility.
+
+Use the [ordinary updater](#in-place-development-updates) and wait for update
+completion before applying deployments. It installs the additive packages
+synchronization table and deployment run column through one recommended-package
+activation. Installing deployments alone on an older kernel or packages schema
+leaves new version selections explicitly unsupported; there is no sequential
+fallback. Custom sources, local work and newer versions remain protected. A
+skipped package must still provide the required compatible schema/API.
+
+For an interrupted deployment, retain its apply lock and exact activation ID.
+After the original Worker ends, use `kernel.packages.activation.inspect <id>`
+and, when its reported prerequisites are satisfied,
+`kernel.packages.activation.resume <id>`, then the deployment's Check execution
+operation. Resume accepts only this native set owner; development and legacy
+activations retain their own recovery paths. It cannot add dependencies or
+replace recorded candidates. Never clear locks or edit activation records to
+bypass recovery.
+
+Source renames are individually observable. Committed schema requires forward
+recovery; retrying an incomplete hook chain can repeat partial effects, while
+completed phases are skipped. A missing dependency after schema commit requires
+a schema-aware operator plan. Live PostgreSQL and customer qualification remain
+outside the retained SQLite/rootless verification. Publication does not upgrade
+running instances.
+
 ## 0.10.2: order-independent recommended-package upgrades
 
 Kernel **0.10.2** keeps the compatible **0.10.1** application tags and stages
@@ -248,16 +282,16 @@ is upgraded or reset by this publication.
 ## In-place development updates
 
 Run it as root **inside the existing container** to update to
-`0.10.2`. It supports rootless development containers at `/8020` running kernel
+`0.10.3`. It supports rootless development containers at `/8020` running kernel
 `0.7.4` or newer:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/the8020/kernel/0.10.2/docker/update.sh \
-  -o /tmp/update.sh && bash /tmp/update.sh 0.10.2
+curl -fsSL https://raw.githubusercontent.com/the8020/kernel/0.10.3/docker/update.sh \
+  -o /tmp/update.sh && bash /tmp/update.sh 0.10.3
 ```
 
 An instance already using the managed launcher can instead request
-`admin --root /8020 kernel.update 0.10.2` through its ordinary native CBus.
+`admin --root /8020 kernel.update 0.10.3` through its ordinary native CBus.
 
 After printing `Bootstrap started` or `Update started`, the updater continues in
 the background. Follow its progress with:
@@ -266,7 +300,7 @@ the background. Follow its progress with:
 tail -F /8020/node/kernel/update.log
 ```
 
-Completion is reported as `update: completed 0.10.2`. Ctrl-C stops following the
+Completion is reported as `update: completed 0.10.3`. Ctrl-C stops following the
 log while the updater keeps running. Confirm the running version and startup
 status with:
 

@@ -117,7 +117,7 @@ func (s *Store) ResolveProgramWithCandidates(ctx context.Context, programID stri
 		return ProgramDefinition{}, err
 	}
 	if !found || entry.State != "ready" || entry.ActiveCommit == "" {
-		return ProgramDefinition{}, fmt.Errorf("package %s has no ready active commit", identity.PackageID())
+		return ProgramDefinition{}, fmt.Errorf("package %s has no ready active commit; review an explicit package version or restore the ready package", identity.PackageID())
 	}
 	root, exists, err := s.packageDestination(identity.PackageID())
 	if err != nil {

@@ -1,0 +1,21 @@
+version = 1
+id = "kernel.packages.activation.inspect"
+path = ["kernel.packages.activation.inspect"]
+summary = "Inspect a package activation"
+description = "Reads one exact activation, candidate commits and hook checkpoints. This snapshot does not establish ownership or that native work, the Worker, and schema are settled. It does not resume activation."
+mutates_state = false
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/package/activationinspect/inspect.go"
+symbol = "New"
+[[parameters]]
+name = "activation_id"
+type = "string"
+position = 0
+required = true
+description = "Exact activation ID."
+[[result]]
+name = "activation"
+type = "object"
+[[examples]]
+command = "kernel.packages.activation.inspect act-0123456789"

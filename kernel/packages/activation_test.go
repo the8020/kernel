@@ -195,6 +195,87 @@ func TestInvalidHookReferenceRejectsBeforeSchemaOrHooks(t *testing.T) {
 	}
 }
 
+func TestMissingHandlerPackageRejectsBeforeActivation(t *testing.T) {
+	_, store, db := activationStore(t)
+	root := writeActivationPackage(t, t.TempDir(), "acme/orders", false)
+	writeFile(t, filepath.Join(root, "hooks", "setup.toml"), "hook = 'pre-activate'\ndescription = 'Setup'\nprogram = 'acme/missing/setup'\n")
+	trace := []string{}
+	coordinator, err := NewActivationCoordinator(ActivationCoordinatorConfig{Database: db, Schema: &activationSchemaRecorder{events: &trace}, Packages: store, Jobs: &activationJobRecorder{events: &trace, failures: map[string]int{}, calls: map[string]int{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = coordinator.Prepare(context.Background(), "act-0123456789", []deployment.Candidate{{PackageID: "acme/orders", Root: root, Commit: "new"}})
+	if err == nil || !strings.Contains(err.Error(), "acme/orders/hooks/setup.toml references program acme/missing/setup") {
+		t.Fatalf("missing dependency diagnostic: %v", err)
+	}
+	var count int
+	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM `+activationsTable).Scan(&count); err != nil || count != 0 || len(trace) != 0 {
+		t.Fatalf("missing dependency caused activation effects: rows=%d trace=%v error=%v", count, trace, err)
+	}
+}
+
+func TestSelectedHandlerTargetDoesNotFallBackToInstalledVersion(t *testing.T) {
+	root, store, db := activationStore(t)
+	installed := writeActivationPackage(t, filepath.Join(root, "packages"), "acme/peer", false)
+	writeHandlerProgram(t, installed, "run")
+	putActivePackage(t, store, "acme/peer", "old")
+	owner := writeActivationPackage(t, t.TempDir(), "acme/owner", false)
+	writeFile(t, filepath.Join(owner, "hooks", "setup.toml"), "hook = 'pre-activate'\ndescription = 'Setup'\nprogram = 'acme/peer/run'\n")
+	peer := writeActivationPackage(t, t.TempDir(), "acme/peer", false)
+	ownerCandidate := deployment.Candidate{PackageID: "acme/owner", Root: owner, Commit: "new-owner"}
+	peerCandidate := deployment.Candidate{PackageID: "acme/peer", Root: peer, Commit: "new-peer"}
+	trace := []string{}
+	coordinator, err := NewActivationCoordinator(ActivationCoordinatorConfig{Database: db, Schema: &activationSchemaRecorder{events: &trace}, Packages: store, Jobs: &activationJobRecorder{events: &trace, failures: map[string]int{}, calls: map[string]int{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, candidates := range [][]deployment.Candidate{{ownerCandidate, peerCandidate}, {peerCandidate, ownerCandidate}} {
+		err := coordinator.Prepare(ctx, "act-0123456789", candidates)
+		if err == nil || !strings.Contains(err.Error(), "acme/owner/hooks/setup.toml references program acme/peer/run") {
+			t.Fatalf("invalid selected version was accepted: %v", err)
+		}
+	}
+	var count int
+	entry, found, indexErr := store.index.Get(ctx, "acme/peer")
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+activationsTable).Scan(&count); err != nil || count != 0 || len(trace) != 0 || indexErr != nil || !found || entry.ActiveCommit != "old" {
+		t.Fatalf("rejected candidate changed state: rows=%d trace=%v entry=%+v index error=%v query error=%v", count, trace, entry, indexErr, err)
+	}
+}
+
+func TestRetainedHandlerBlocksRemovalBeforeActivation(t *testing.T) {
+	root, store, db := activationStore(t)
+	owner := writeActivationPackage(t, filepath.Join(root, "packages"), "acme/owner", false)
+	target := writeActivationPackage(t, filepath.Join(root, "packages"), "acme/target", false)
+	writeHandlerProgram(t, target, "run")
+	writeFile(t, filepath.Join(owner, "events", "use-target.toml"), "event = 'minute'\ndescription = 'Use target'\nprogram = 'acme/target/run'\n")
+	putActivePackage(t, store, "acme/owner", "owner")
+	putActivePackage(t, store, "acme/target", "target")
+	ctx := context.Background()
+	if _, err := store.ReindexHandlers(ctx); err != nil {
+		t.Fatal(err)
+	}
+	trace := []string{}
+	coordinator, err := NewActivationCoordinator(ActivationCoordinatorConfig{Database: db, Schema: &activationSchemaRecorder{events: &trace}, Packages: store, Jobs: &activationJobRecorder{events: &trace, failures: map[string]int{}, calls: map[string]int{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = coordinator.Prepare(ctx, "act-0123456789", []deployment.Candidate{{PackageID: "acme/target", Root: target}})
+	for _, want := range []string{"acme/owner/events/use-target.toml", "acme/target/run", "acme/target is being deleted"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("removal diagnostic missing %q: %v", want, err)
+		}
+	}
+	var count int
+	entry, found, indexErr := store.index.Get(ctx, "acme/target")
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+activationsTable).Scan(&count); err != nil || count != 0 || len(trace) != 0 || indexErr != nil || !found || entry.ActiveCommit != "target" {
+		t.Fatalf("rejected removal changed state: rows=%d trace=%v entry=%+v index error=%v query error=%v", count, trace, entry, indexErr, err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "programs", "run", "main.ts")); err != nil {
+		t.Fatalf("rejected removal changed source: %v", err)
+	}
+}
+
 func (r *activationJobRecorder) Run(_ context.Context, jobID, _ string, options jobs.Options) (jobs.Record, error) {
 	key := jobID + ":" + options.OwnerID
 	r.calls[key]++
@@ -358,6 +439,38 @@ func TestFailedPreActivationKeepsPreviousPackageReady(t *testing.T) {
 	assertHookAttempts(t, db, "acme/orders", "pre-activate", "failed", 1)
 }
 
+func TestPrepareRetryRejectsDuplicateCandidate(t *testing.T) {
+	root, store, db := activationStore(t)
+	events := []string{}
+	coordinator, err := NewActivationCoordinator(ActivationCoordinatorConfig{
+		Database: db, Packages: store, Schema: &activationSchemaRecorder{events: &events},
+		Jobs: &activationJobRecorder{events: &events, failures: map[string]int{}, calls: map[string]int{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var candidates []deployment.Candidate
+	for _, id := range []string{"acme/a", "acme/b"} {
+		path := writeActivationPackage(t, filepath.Join(root, "packages"), id, false)
+		putActivePackage(t, store, id, "old")
+		candidates = append(candidates, deployment.Candidate{PackageID: id, Root: path, Commit: "new"})
+	}
+	ctx := context.Background()
+	const id = "act-0123456789"
+	if _, err := coordinator.begin(ctx, id, candidates); err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinator.Prepare(ctx, id, []deployment.Candidate{candidates[0], candidates[0]}); err == nil {
+		t.Fatal("retry accepted a duplicate candidate in place of another package")
+	}
+	if len(events) != 0 {
+		t.Fatalf("rejected retry performed schema or hook work: %v", events)
+	}
+	if err := coordinator.Prepare(ctx, id, []deployment.Candidate{candidates[1], candidates[0]}); err != nil {
+		t.Fatalf("retry rejected the original candidates in another order: %v", err)
+	}
+}
+
 func TestRecoveryRetriesOnlyUnfinishedPostHook(t *testing.T) {
 	root, store, db := activationStore(t)
 	events := []string{}
@@ -369,7 +482,7 @@ func TestRecoveryRetriesOnlyUnfinishedPostHook(t *testing.T) {
 		active := writeActivationPackage(t, filepath.Join(root, "packages"), packageID, false)
 		putActivePackage(t, store, packageID, "commit-old")
 		candidate := writeActivationPackage(t, t.TempDir(), packageID, true)
-		candidates = append(candidates, deployment.Candidate{PackageID: packageID, Root: candidate, Commit: "commit-new"})
+		candidates = append(candidates, deployment.Candidate{PackageID: packageID, Root: candidate, Commit: activationFingerprint(t, candidate)})
 		defer func(destination string) { _ = finalizePackageDirectory(destination) }(active)
 	}
 	schema := &activationSchemaRecorder{events: &events}
@@ -398,7 +511,9 @@ func TestRecoveryRetriesOnlyUnfinishedPostHook(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := recovered.Prepare(context.Background(), "act-0123456789", candidates[:1]); err == nil || !strings.Contains(err.Error(), "unfinished activation act-0123456789") {
+	conflict := candidates[0]
+	conflict.Root = store.packagePath(conflict.PackageID)
+	if err := recovered.Prepare(context.Background(), "act-0123456789", []deployment.Candidate{conflict}); err == nil || !strings.Contains(err.Error(), "unfinished activation act-0123456789") {
 		t.Fatalf("new activation bypassed pending deployment: %v", err)
 	}
 	if err := recovered.Recover(context.Background()); err != nil {
@@ -407,10 +522,10 @@ func TestRecoveryRetriesOnlyUnfinishedPostHook(t *testing.T) {
 	if runner.calls["acme/a/post-activate:acme/a"] != 1 || runner.calls["acme/b/post-activate:acme/b"] != 2 {
 		t.Fatalf("post hook retries=%#v", runner.calls)
 	}
-	for _, packageID := range []string{"acme/a", "acme/b"} {
-		entry, _, err := store.index.Get(context.Background(), packageID)
-		if err != nil || entry.State != "ready" || entry.ActiveCommit != "commit-new" {
-			t.Fatalf("recovered package %s=%#v err=%v", packageID, entry, err)
+	for _, candidate := range candidates {
+		entry, _, err := store.index.Get(context.Background(), candidate.PackageID)
+		if err != nil || entry.State != "ready" || entry.ActiveCommit != candidate.Commit {
+			t.Fatalf("recovered package %s=%#v err=%v", candidate.PackageID, entry, err)
 		}
 	}
 	assertActivationState(t, db, "complete")
@@ -430,7 +545,7 @@ func TestRecoveryKeepsFailedPostHookRetryable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	change := deployment.Candidate{PackageID: "acme/orders", Root: candidate, Commit: "commit-new"}
+	change := deployment.Candidate{PackageID: "acme/orders", Root: candidate, Commit: activationFingerprint(t, candidate)}
 	if err := coordinator.Prepare(context.Background(), "act-0123456789", []deployment.Candidate{change}); err != nil {
 		t.Fatal(err)
 	}
@@ -516,7 +631,7 @@ func TestPackagePublicationAndRevisionAreAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	change := deployment.Candidate{PackageID: "acme/orders", Root: candidate, Commit: "commit-new"}
+	change := deployment.Candidate{PackageID: "acme/orders", Root: candidate, Commit: activationFingerprint(t, candidate)}
 	if err := coordinator.Prepare(context.Background(), "act-0123456789", []deployment.Candidate{change}); err != nil {
 		t.Fatal(err)
 	}
@@ -550,6 +665,111 @@ func TestPackagePublicationAndRevisionAreAtomic(t *testing.T) {
 		t.Fatalf("published revision=%d err=%v", revision, err)
 	}
 	assertActivationState(t, db, "complete")
+}
+
+func TestRecoveryAbortsUnswitchedFirstInstallWithoutCandidate(t *testing.T) {
+	_, store, db := activationStore(t)
+	events := []string{}
+	schema := &activationSchemaRecorder{events: &events}
+	runner := &activationJobRecorder{events: &events, failures: map[string]int{}, calls: map[string]int{}}
+	coordinator, err := NewActivationCoordinator(ActivationCoordinatorConfig{Database: db, Schema: schema, Packages: store, Jobs: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := writeActivationPackage(t, t.TempDir(), "acme/new", true)
+	if _, err := coordinator.begin(t.Context(), "act-0123456789", []deployment.Candidate{{PackageID: "acme/new", Root: candidate, Commit: "new"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(candidate); err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinator.Recover(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	assertActivationState(t, db, "failed")
+	if !reflect.DeepEqual(events, []string{"schema-complete:false"}) {
+		t.Fatalf("recovery events = %v", events)
+	}
+	assertHookAttempts(t, db, "acme/new", "pre-activate", "pending", 0)
+	assertHookAttempts(t, db, "acme/new", "post-activate", "pending", 0)
+	if err := coordinator.Prepare(t.Context(), "act-abcdefghij", []deployment.Candidate{{PackageID: "acme/new", Root: candidate, Commit: "new"}}); err == nil {
+		t.Fatal("missing candidate was accepted for a new activation")
+	}
+	var count int
+	if err := db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM `+activationsTable).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("unexpected activation rows: count=%d err=%v", count, err)
+	}
+}
+
+func TestRecoveryRetainsCommittedFirstInstallWithoutCandidate(t *testing.T) {
+	_, store, db := activationStore(t)
+	events := []string{}
+	schema := &committedSchema{prepares: 1}
+	runner := &activationJobRecorder{events: &events, failures: map[string]int{}, calls: map[string]int{}}
+	coordinator, err := NewActivationCoordinator(ActivationCoordinatorConfig{Database: db, Schema: schema, Packages: store, Jobs: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := writeActivationPackage(t, t.TempDir(), "acme/new", true)
+	if _, err := coordinator.begin(t.Context(), "act-0123456789", []deployment.Candidate{{PackageID: "acme/new", Root: candidate, Commit: "new"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(candidate); err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinator.Recover(t.Context()); err == nil {
+		t.Fatal("missing committed candidate was accepted")
+	}
+	assertActivationState(t, db, "staged")
+	if schema.aborts != 0 || len(events) != 0 {
+		t.Fatalf("committed recovery aborted or ran hooks: aborts=%d events=%v", schema.aborts, events)
+	}
+}
+
+func TestRecoveryRollsBackPartialSwitchWithMissingFirstInstall(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git is unavailable")
+	}
+	root, store, db := activationStore(t)
+	active := writeActivationPackage(t, filepath.Join(root, "packages"), "acme/a", true)
+	runTestGit(t, gitPath, "", "init", "-q", "-b", "main", active)
+	runTestGit(t, gitPath, active, "config", "user.name", "Activation Test")
+	runTestGit(t, gitPath, active, "config", "user.email", "activation@example.test")
+	runTestGit(t, gitPath, active, "add", ".")
+	runTestGit(t, gitPath, active, "commit", "-q", "-m", "old")
+	old := runTestGit(t, gitPath, active, "rev-parse", "HEAD")
+	writeFile(t, filepath.Join(active, "README.md"), "candidate\n")
+	runTestGit(t, gitPath, active, "add", "README.md")
+	runTestGit(t, gitPath, active, "commit", "-q", "-m", "candidate")
+	next := runTestGit(t, gitPath, active, "rev-parse", "HEAD")
+	runTestGit(t, gitPath, active, "reset", "--hard", old)
+	putActivePackage(t, store, "acme/a", old)
+	firstInstall := writeActivationPackage(t, t.TempDir(), "acme/b", true)
+	events := []string{}
+	runner := &activationJobRecorder{events: &events, failures: map[string]int{}, calls: map[string]int{}}
+	schema := &activationSchemaRecorder{events: &events}
+	owner, err := NewActivationCoordinator(ActivationCoordinatorConfig{Database: db, Schema: schema, Packages: store, Jobs: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.Prepare(t.Context(), "act-0123456789", []deployment.Candidate{
+		{PackageID: "acme/a", Root: active, Commit: next},
+		{PackageID: "acme/b", Root: firstInstall, Commit: "new"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runTestGit(t, gitPath, active, "reset", "--hard", next)
+	if err := os.RemoveAll(firstInstall); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.Recover(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if head := runTestGit(t, gitPath, active, "rev-parse", "HEAD"); head != old {
+		t.Fatalf("partial switch remained at %s", head)
+	}
+	assertActivationState(t, db, "failed")
 }
 
 func TestRecoveryRollsBackPartialMultiPackageSourceSwitch(t *testing.T) {
@@ -736,4 +956,69 @@ func assertHookAttempts(t *testing.T, db database.Store, packageID, hook, wantSt
 	if err := db.QueryRowContext(context.Background(), `SELECT "state", "attempts" FROM `+hookRunsTable+` WHERE "packageId" = $1 AND "hook" = $2`, packageID, hook).Scan(&state, &attempts); err != nil || state != wantState || attempts != wantAttempts {
 		t.Fatalf("hook %s/%s state=%q attempts=%d err=%v", packageID, hook, state, attempts, err)
 	}
+}
+
+func TestRecoveryRetriesWholeFailedHookChain(t *testing.T) {
+	root, store, db := activationStore(t)
+	candidates := make([]deployment.Candidate, 0, 2)
+	for _, id := range []string{"acme/a", "acme/b"} {
+		writeActivationPackage(t, filepath.Join(root, "packages"), id, false)
+		putActivePackage(t, store, id, "old")
+		candidate := writeActivationPackage(t, t.TempDir(), id, true)
+		if id == "acme/b" {
+			writeHandlerProgram(t, candidate, "second")
+			writeFile(t, filepath.Join(candidate, "hooks", "second.toml"), "hook = \"post-activate\"\ndescription = \"Second hook\"\nprogram = \"acme/b/second\"\n")
+		}
+		candidates = append(candidates, deployment.Candidate{PackageID: id, Root: candidate, Commit: activationFingerprint(t, candidate)})
+	}
+	calls := map[string]int{}
+	var chains [][]HookReference
+	runner := activationRunFunc(func(_ context.Context, id, _ string, options jobs.Options) (jobs.Record, error) {
+		calls[id]++
+		if id == "acme/b/post-activate" {
+			refs := options.Arguments[0].([]HookReference)
+			chains = append(chains, append([]HookReference(nil), refs...))
+			if calls[id] == 1 {
+				return jobs.Record{}, errors.New("second handler failed after first ran")
+			}
+		}
+		return jobs.Record{State: "SUCCEEDED"}, nil
+	})
+	events := []string{}
+	coordinator, err := NewActivationCoordinator(ActivationCoordinatorConfig{Database: db, Schema: &activationSchemaRecorder{events: &events}, Packages: store, Jobs: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := coordinator.Prepare(ctx, "act-0123456789", candidates); err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range candidates {
+		if _, err := replacePackageDirectory(store.packagePath(candidate.PackageID), candidate.Root); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := coordinator.Complete(ctx, "act-0123456789", true); err == nil {
+		t.Fatal("failed chain was accepted")
+	}
+	assertActivationState(t, db, "code_switched")
+	assertHookAttempts(t, db, "acme/a", "post-activate", "succeeded", 1)
+	assertHookAttempts(t, db, "acme/b", "post-activate", "failed", 1)
+	if err := coordinator.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if calls["acme/a/post-activate"] != 1 || calls["acme/b/post-activate"] != 2 || len(chains) != 2 || len(chains[0]) != 2 || !reflect.DeepEqual(chains[0], chains[1]) {
+		t.Fatalf("recovery calls=%v chains=%v", calls, chains)
+	}
+	assertHookAttempts(t, db, "acme/b", "post-activate", "succeeded", 2)
+	assertActivationState(t, db, "complete")
+}
+
+func activationFingerprint(t *testing.T, root string) string {
+	t.Helper()
+	commit, err := FingerprintPackage(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return commit
 }

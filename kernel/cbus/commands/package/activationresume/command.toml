@@ -1,0 +1,21 @@
+version = 1
+id = "kernel.packages.activation.resume"
+path = ["kernel.packages.activation.resume"]
+summary = "Resume one staged-set activation"
+description = "Recovers only an exact activation owned by staged-set synchronization under its existing native locks and checkpoints. Completed hook phases are skipped; a partly executed failed chain may repeat effects. Development and legacy activations must use their original recovery owner."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/package/activationresume/resume.go"
+symbol = "New"
+[[parameters]]
+name = "activation_id"
+type = "string"
+position = 0
+required = true
+description = "Exact native staged-set activation ID."
+[[result]]
+name = "activation"
+type = "object"
+[[examples]]
+command = "kernel.packages.activation.resume act-0123456789"

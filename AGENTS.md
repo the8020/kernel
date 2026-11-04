@@ -646,6 +646,11 @@ below.
 
 ## Development Workflow
 
+- Release `0.10.3` recommends packages and deployments `0.10.2`, retaining
+  other `0.10.1` pins. The existing recommendation activation installs their
+  additive schema together before the new deployment protocol is admitted.
+  The README owns ordinary update and exact recovery guidance and its limits.
+
 - Release `0.10.2` stages compatible recommended candidates together before
   schema/import/hook validation and publishes through the existing activation
   coordinator. Bootstrap list order is reporting-only; retain the compatible

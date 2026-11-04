@@ -66,6 +66,10 @@ Parent DOX: [kernel/kernel/database DOX](../AGENTS.md).
 
 - Tests cover identity, collision rejection, batching, shared job grouping with
   restricted Worker permissions, package fingerprints, and malformed results.
+- With Deno on PATH, `TestUnrelatedDeploymentCompletesWhileSchemaIsPending`
+  checks that forward completion preserves both non-overlapping package commits
+  when one schema has already been applied. It does not qualify dependency
+  repair or native activation and hook recovery.
 
 # Child DOX Index
 

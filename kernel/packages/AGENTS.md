@@ -58,7 +58,40 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   activation evaluates only candidate package tables in one batch.
 - Activation transactions use shared `act-` IDs. The initial database insert is
   exclusive, rejects collisions, and shares that identity across hook and
-  activation history throughout recovery.
+  activation history throughout recovery. A preparation retry must contain each
+  recorded package and commit exactly once, in any order.
+- Exact activation inspection reads the stage, candidate commits and hook
+  checkpoints in one bounded database query, with errors limited to 2,048
+  characters. It does not resume work or establish ownership, Worker liveness,
+  schema settlement or safe lock release.
+- `SynchronizeSet` accepts a fresh activation ID and 1..256 exact commit/tag
+  selections with observed before commits, bounded to 256 KiB. Under sorted
+  source locks and exact activation ownership it validates the whole baseline,
+  rejects local/custom/named-secret configurations (including retired rows),
+  dirty or unindexed sources, then fetches every candidate before one Prepare.
+  It never applies recommendation skipping or splits the selection. All sources
+  switch before post-hooks; per-source renames are not an atomic set snapshot.
+- The packages-owned `synchronizations` table records non-secret desired and
+  previous source settings with activation admission, bounded to the recovery
+  reader's 512 KiB limit before staging. Desired settings and all active commits
+  publish in the same transaction, only if previous settings still match.
+  Fetch/handler validation publishes no records or source. Schema preparation
+  can leave failed placeholders or forward-required receipts through the
+  existing activation lifecycle. Unsupported schemas reject before staging;
+  install the updated packages schema through existing synchronization first.
+- Exact `ResumeSynchronization` accepts only activations recorded by that set
+  owner, preserving development's separate journal and legacy recovery owners.
+  It uses existing source/activation locks, verifies unchanged source settings,
+  and resumes existing checkpoints; it never starts a new deployment. Completed
+  hook phases remain skipped; a partly executed failed chain may repeat effects.
+  Generic startup recovery applies the same settings guard to these activations.
+- Recovery cannot append a missing dependency or replace a candidate in a
+  retained activation. Uncommitted, unswitched work can settle through ordinary
+  rollback and a fresh reviewed set. Committed schema requires the original
+  candidates forward; dependency repair then needs an operator's schema-aware
+  recovery plan. A non-overlapping install alone does not establish safety, and
+  neither apply locks nor activation rows may be cleared to bypass this
+  boundary.
 - Installed activation is prepare schema → pre-activate hooks → switch source →
   post-activate hooks → publish package records/revision → index and clean up →
   complete. The `published` stage retains retryable indexing/cleanup without
@@ -97,11 +130,25 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   forward without replaying committed schema work. Missing candidate source
   fails explicitly until that same candidate is restored. Ordinary activation
   preparation does not run a presentation preview or count rows for display.
+  Hook checkpoints cover a package phase, not individual handlers: retrying a
+  failed chain can repeat effects from handlers that already ran.
+- Before retrying schema or hooks, recovery checks a retained Git staging tree
+  is clean and matches its recorded candidate commit; a synchronization staging
+  tree without Git metadata is rejected. If staging is missing, the installed
+  fallback must itself match the candidate before it can be read.
+- Before retrying switched-source hooks or schema completion, recovery checks
+  each installed source is clean and matches its recorded candidate identity;
+  removed candidates must remain absent. The same check precedes retrying
+  published indexing and backup cleanup. A mismatch retains the activation and
+  backup.
 - First-install recovery treats an empty sandbox mount-target directory as an
   uninstalled package, using the same placeholder removal as synchronization. A
   nonempty unexpected directory remains an explicit source conflict and is never
   discarded. Resume the retained candidate without replaying committed schema
-  work.
+  work. If schema was not committed and the source switch is incomplete,
+  recovery restores switched sources and aborts even when an unpublished
+  candidate is missing; committed work still requires the exact candidate for
+  forward recovery.
 - Handler folders are flat: `events/*.toml` requires `event`, `description`, and
   `program`; `hooks/*.toml` requires `hook`, `description`, and `program`. Hooks
   also accept integer `order`, defaulting to zero. Each trigger retains all
@@ -163,6 +210,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Commands, hooks, and events share `ResolveProgramWithCandidates` for full
   `namespace/package/program` references: staged replacements take precedence
   over ready active packages, and deleted targets fail validation.
+- Handler resolution errors identify the declaring TOML and referenced program;
+  missing ready packages direct the operator to review a version or restore the
+  package. This validates declared handlers, not all source imports.
 - `ListPrograms` returns up to 2,000 ready executable identities with
   package/commit and entrypoint data. Selected package inspection uses the same
   executable validator, including diagnostics for invalid programs. Neither path
@@ -173,6 +223,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   Git objects, branch names, and history when applying versions. Dirty shared
   worktrees are preserved and rejected. One failed batch package has explicit
   durable failure state.
+- A requested commit ID, including an abbreviated ID, must match the resolved
+  commit before schema preparation or source publication, including after an
+  additional fetch. Tag selection still resolves through the selected tag.
 - `InstallRecommendedPackages` validates the current kernel's bounded schema-1
   `scripts/bootstrap-packages.toml`, recovers unfinished activations overlapping
   its selection, then holds all selected source locks while staging candidates.
@@ -190,8 +243,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   recovery; no universal rollback is promised. Explicit repeated recommendations
   recover overlapping attempts before staging fresh work, without repeating
   successful schema/hook phases. Other pending activations remain untouched.
-  Recovery verifies installed candidate identity even when `.previous` exists;
-  a backup alone is not evidence that source switched.
+  Recovery verifies installed candidate identity even when `.previous` exists; a
+  backup alone is not evidence that source switched.
 - Activated-source consumers can require a clean installed checkout whose HEAD
   or content fingerprint exactly matches the ready database commit; schema
   evaluation uses this guard while staged activation evaluates its candidate.
@@ -201,8 +254,13 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   package records, results, or logs. A selected named secret or recovery command
   secure input is used only for a host-scoped transient HTTP authorization
   header. Synchronization accepts an optional Basic username with its secure
-  password input; omitting it retains `x-access-token` for tokens. Redact both
-  the supplied secret and its actual encoded Basic header from failures.
+  password input; omitting it retains `x-access-token` for tokens. The same
+  invocation credential is used if an exact commit requires a further fetch.
+  Redact both the supplied secret and its actual encoded Basic header from
+  failures.
+- Staging an explicitly selected package record uses its named secret, not a
+  separately stored package record's secret; invocation credentials take
+  precedence. Staging itself does not authorize changing a protected source.
 - Installed versions stay attached to the current branch, using the remote's
   default branch on first install. Tags and commits select the initial or
   applied version without detaching; branch tracking does not advance that
@@ -245,6 +303,11 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 # Verification
 
+- Staged-set regressions cover both cyclic-import orders, exact recorded input,
+  failed staging/validation, missing-handler provenance, source protection,
+  unsupported schema/input and recovery without replaying successful phases. The
+  package fixture executes real Git and Deno with a job double; deployments'
+  native smoke separately exercises ordinary Workers through the actual caller.
 - Tests cover identity/path and program containment/symlink validation, ready
   metadata resolution without Git or filesystem artifacts, bounded inspection,
   database package CRUD and generic index revisions, clean Git synchronization
@@ -252,22 +315,32 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   ordering/idempotence, durable phase recovery, PostgreSQL lock ordering,
   retirement/trim behavior, targeted package refresh, and automatic cross-node
   index propagation without application-table scans.
+- `TestRecoveryRetriesWholeFailedHookChain` uses a job double to verify that
+  recovery resubmits the complete failed chain and skips a successful peer.
+- `TestCommittedSchemaRecoveryFinishesPartialStagedSet` exercises real Git trees
+  across a partial switch, rejects a missing unswitched candidate even when its
+  commit exists in the old checkout, and resumes after restoration.
 - Git regressions cover older-version installation with upstream tracking, fetch
   without activation, attached commit selection, retained local Git history, and
   fetch/select/push through ordinary repositories.
 - Recommendation regressions cover missing packages, version/default-branch
   advancement, idempotence, downgrade/local-work protection, configuration
-  validation before mutation, schema failures, all six three-package order permutations with real cyclic
-  TypeScript imports, prepublication fetch/retained-peer failures, and durable
-  post-hook recovery without repeated successful work.
+  validation before mutation, schema failures, all six three-package order
+  permutations with real cyclic TypeScript imports, prepublication
+  fetch/retained-peer failures, and durable post-hook recovery without repeated
+  successful work.
 - Declaration regressions include documentation-only and documented TOML
-  folders, candidate activation validation, and live handler reindexing.
+  folders, candidate activation validation, retained handler references that
+  block deletion, and live handler reindexing.
 - Deletion regressions cover absent/empty uninstalled source, nonempty/corrupt
   and dirty-source rejection, namespace containment, interrupted
   publication/recovery, removed programs/handlers, cross-node observation after
   source removal, recreation, and source-only registration.
 - Hook regressions distinguish installed bootstrap sources without extra mounts
-  from staged candidates requiring read-only overrides.
+  from staged candidates requiring read-only overrides. A coordinator fixture
+  evaluates cyclic imports through those mounts before source switching and
+  through the installed roots afterward, in both candidate orders; it uses a job
+  double, not sandbox Workers.
 
 # Child DOX Index
 

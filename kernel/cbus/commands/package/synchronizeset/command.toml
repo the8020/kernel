@@ -1,0 +1,53 @@
+version = 1
+id = "kernel.packages.synchronize.set"
+path = ["kernel.packages.synchronize.set"]
+summary = "Synchronize an exact package set"
+description = "Stages all selected sources before one activation. Without input, checks protocol and schema availability without mutation. Input is a JSON object with a fresh activation_id and 1..256 packages (package_id, source, commit, tag, before). A failed operation must be inspected, never replayed under the same ID."
+mutates_state = true
+restart_behavior = "none"
+[handler]
+file = "kernel/cbus/commands/package/synchronizeset/synchronize.go"
+symbol = "New"
+[[parameters]]
+name = "input"
+type = "string"
+option = "input"
+required = false
+description = "Exact selected set as JSON, at most 256 KiB. Empty before means absent; commit or tag is required."
+[[parameters]]
+name = "git_token"
+type = "string"
+required = false
+description = "Invocation-scoped Git token or Basic password."
+secret = true
+secret_prompt = "Git token or password: "
+secret_stdin_option = "git-token-stdin"
+[[parameters]]
+name = "git_username"
+type = "string"
+option = "git-username"
+required = false
+description = "Basic username; omitted uses x-access-token."
+[[parameters]]
+name = "force_columns"
+type = "string"
+option = "force"
+required = false
+description = "Exact table.column force consent, allowed only for one selected package."
+[[parameters]]
+name = "approved_plan"
+type = "string"
+option = "approved-plan"
+required = false
+description = "Approved schema plan for one selected package."
+[[result]]
+name = "protocol"
+type = "integer"
+[[result]]
+name = "maximum"
+type = "integer"
+[[result]]
+name = "packages"
+type = "array"
+[[examples]]
+command = "kernel.packages.synchronize.set"

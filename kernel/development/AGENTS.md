@@ -98,9 +98,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Development sandboxes run as Linux root and have no `developer` account or
   `/home/developer`. Rootless runsc processes use the kernel-created identity
   mapping for Linux UID/GID `0..65535`, split into root and subordinate extents
-  so it also nests inside rootless Docker's discontiguous parent mapping.
-  The development runsc uses the sparse
-  Gofer with directfs disabled, retaining the exact donated-mount boundary.
+  so it also nests inside rootless Docker's discontiguous parent mapping. The
+  development runsc uses the sparse Gofer with directfs disabled, retaining the
+  exact donated-mount boundary.
 - Manager startup never waits for inherited runsc cleanup or scans sandbox
   records. User lifecycle calls load only
   `users/<user_id>/dev-sandbox/sandbox.toml`. Only listing and cold identity
@@ -368,6 +368,13 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   large conflict-tree control. The real Deno LSP test checks SDK and
   cross-package definitions, including a newly created member while the server
   remains open. Both use `THE8020_DEVELOPMENT_E2E=1`.
+- `TestNativeDevelopmentMutualImports` exercises selected packages in both
+  orders, evaluating cyclic imports against candidate views during preparation
+  and published roots during completion. It also requires host Deno.
+- `TestNativeDevelopmentMutualImportHooks` uses the real shared activation
+  coordinator/evaluator and ordinary sandbox Workers to evaluate cyclic table
+  imports and pre/post hooks in both selected orders. It requires the prepared
+  development/service images and host Deno used by the native schema fixture.
 - `TestSandboxSQLRequiresItsOwnersToken` and
   `TestSandboxLogsRequiresItsOwnersToken` cover sandbox tool authentication,
   foreign-owner rejection, and independence from the activation gateway. The

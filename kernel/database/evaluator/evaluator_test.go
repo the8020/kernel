@@ -129,6 +129,43 @@ func tableFile(index int) string {
 	return "table" + leftPad(index, 4) + ".ts"
 }
 
+func TestUnrelatedDeploymentCompletesWhileSchemaIsPending(t *testing.T) {
+	evaluator, _, manager, orders := testEvaluator(t, 1)
+	ctx := t.Context()
+	if _, err := evaluator.SynchronizeAll(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	invoices := filepath.Join(filepath.Dir(orders), "invoices")
+	if err := os.MkdirAll(filepath.Join(invoices, "tables"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{"package.toml": "schema = 1\n", "tables/table0000.ts": "export default {};\n"} {
+		if err := os.WriteFile(filepath.Join(invoices, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const first, second = "act-mmmmmmmmmm", "act-nnnnnnnnnn"
+	if err := evaluator.Prepare(ctx, first, []deployment.Candidate{{PackageID: "acme/orders", Root: orders, Commit: "orders-new"}}); err != nil {
+		t.Fatal(err)
+	}
+	if pending, exists, err := manager.PendingDeploymentFor(ctx, first); err != nil || !exists || pending.Stage != "schema_applied" {
+		t.Fatalf("first schema not pending: %+v, %t, %v", pending, exists, err)
+	}
+	if err := evaluator.Prepare(ctx, second, []deployment.Candidate{{PackageID: "acme/invoices", Root: invoices, Commit: "invoices-new"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := evaluator.Complete(ctx, second, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := evaluator.Complete(ctx, first, true); err != nil {
+		t.Fatal(err)
+	}
+	state, err := manager.CatalogState(ctx)
+	if err != nil || state.PackageCommits["acme/orders"] != "orders-new" || state.PackageCommits["acme/invoices"] != "invoices-new" || manager.Status().PendingDeployment {
+		t.Fatalf("forward completion lost a package: %+v, %v", state, err)
+	}
+}
+
 func TestUnrelatedDeploymentPassesWaitingEvaluator(t *testing.T) {
 	evaluator, runner, manager, orders := testEvaluator(t, 1)
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)

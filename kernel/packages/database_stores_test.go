@@ -34,6 +34,7 @@ func packageDatabase(t *testing.T) *database.Manager {
 		t.Fatal(err)
 	}
 	statements := []string{
+		`CREATE TABLE "the8020__packages__synchronizations" ("activationId" TEXT PRIMARY KEY, "packages" TEXT NOT NULL) STRICT`,
 		`CREATE TABLE "the8020__packages__packages" ("packageId" TEXT PRIMARY KEY, "author" TEXT NOT NULL, "repository" TEXT NOT NULL, "source" TEXT, "requestedCommit" TEXT, "requestedTag" TEXT, "secretName" TEXT, "local" INTEGER NOT NULL, "activeCommit" TEXT, "state" TEXT NOT NULL, "error" TEXT, "revision" INTEGER NOT NULL, "createdAt" TEXT NOT NULL, "updatedAt" TEXT NOT NULL) STRICT`,
 		`CREATE TABLE "the8020__packages__activations" ("activationId" TEXT PRIMARY KEY, "stage" TEXT NOT NULL, "error" TEXT, "previousPackageSetHash" TEXT NOT NULL, "candidatePackageSetHash" TEXT NOT NULL, "startedAt" TEXT NOT NULL, "updatedAt" TEXT NOT NULL, "completedAt" TEXT) STRICT`,
 		`CREATE TABLE "the8020__packages__activation_packages" ("activationId" TEXT NOT NULL, "packageId" TEXT NOT NULL, "previousCommit" TEXT, "candidateCommit" TEXT NOT NULL, "firstActivation" INTEGER NOT NULL, PRIMARY KEY ("activationId", "packageId")) STRICT`,

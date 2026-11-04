@@ -3,6 +3,7 @@ package packages
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -204,6 +205,10 @@ func (s *Store) InspectPackageSource(ctx context.Context, source, secret string)
 }
 
 func (s *Store) sourceAuthentication(source, secret string) ([]string, string, error) {
+	parsed, err := url.Parse(source)
+	if err != nil || parsed.User != nil {
+		return nil, "", errors.New("Git remote URL must not contain credentials")
+	}
 	secret = strings.TrimSpace(secret)
 	if secret == "" {
 		return nil, "", nil
@@ -214,10 +219,6 @@ func (s *Store) sourceAuthentication(source, secret string) ([]string, string, e
 	token, err := s.secrets.SecretValue(secret)
 	if err != nil {
 		return nil, "", fmt.Errorf("resolve package Git secret %q: %w", secret, err)
-	}
-	parsed, err := url.Parse(source)
-	if err != nil {
-		return nil, "", err
 	}
 	environment, err := gitAuthorizationEnvironment(parsed, token, "")
 	return environment, token, err
@@ -264,7 +265,7 @@ func (s *Store) ListPackageVersions(ctx context.Context, packageID string, limit
 	}
 	selected := current
 	if !entry.Local {
-		selected, err = s.resolveDesiredCommit(ctx, repositoryPath, entry, false)
+		selected, err = s.resolveDesiredCommit(ctx, repositoryPath, entry, false, nil)
 		if err != nil {
 			return PackageVersions{}, err
 		}
@@ -464,8 +465,14 @@ func (s *Store) stagePackageSynchronization(ctx context.Context, packageID, tran
 		if err := validatePackageIndex(&entry); err != nil {
 			return result, err
 		}
-		result.Source, result.Requested = entry.Source, entry.selector()
 	}
+	return s.stagePackageIndex(ctx, entry, transientToken, username, recommendation)
+}
+
+// The caller validates the selected record and holds its source lock; this does not publish it.
+func (s *Store) stagePackageIndex(ctx context.Context, entry PackageIndex, transientToken, username string, recommendation *recommendedPackage) (result stagedSynchronization, err error) {
+	packageID := entry.PackageID
+	result.PackageSynchronization = PackageSynchronization{PackageID: packageID, Source: entry.Source, Requested: entry.selector(), Local: entry.Local}
 	destination, exists, err := s.packageDestination(packageID)
 	if err != nil {
 		return result, err
@@ -511,7 +518,12 @@ func (s *Store) stagePackageSynchronization(ctx context.Context, packageID, tran
 		}
 	}()
 	stage := filepath.Join(stageRoot, "repository")
-	authentication, err := s.repositoryAuthenticationWithCredential(packageID, entry.Source, transientToken, username)
+	var authentication []string
+	if transientToken != "" || username != "" {
+		authentication, err = s.repositoryAuthenticationWithCredential(packageID, entry.Source, transientToken, username)
+	} else {
+		authentication, _, err = s.sourceAuthentication(entry.Source, entry.Secret)
+	}
 	if err != nil {
 		return result, err
 	}
@@ -541,7 +553,7 @@ func (s *Store) stagePackageSynchronization(ctx context.Context, packageID, tran
 	} else if output, commandErr := s.runGit(ctx, "", authentication, "clone", "--quiet", "--no-checkout", "--origin", "origin", entry.Source, stage); commandErr != nil {
 		return result, fmt.Errorf("clone package: %w: %s", commandErr, cleanGitOutput(output))
 	}
-	commit, err := s.resolveDesiredCommit(ctx, stage, entry, true)
+	commit, err := s.resolveDesiredCommit(ctx, stage, entry, true, authentication)
 	if err != nil {
 		return result, err
 	}
@@ -805,7 +817,7 @@ func (entry PackageIndex) selector() string {
 	return "latest"
 }
 
-func (s *Store) resolveDesiredCommit(ctx context.Context, repositoryPath string, entry PackageIndex, allowFetchCommit bool) (string, error) {
+func (s *Store) resolveDesiredCommit(ctx context.Context, repositoryPath string, entry PackageIndex, allowFetchCommit bool, authentication []string) (string, error) {
 	revision := "refs/remotes/origin/HEAD^{commit}"
 	if entry.Tag != "" {
 		revision = "refs/tags/" + entry.Tag + "^{commit}"
@@ -814,22 +826,19 @@ func (s *Store) resolveDesiredCommit(ctx context.Context, repositoryPath string,
 		revision = entry.Commit + "^{commit}"
 	}
 	commit, err := s.gitValue(ctx, repositoryPath, "rev-parse", "--verify", revision)
-	if err == nil {
-		return commit, nil
-	}
-	if entry.Commit != "" && allowFetchCommit {
-		authentication, authErr := s.repositoryAuthentication(entry.PackageID, entry.Source)
-		if authErr != nil {
-			return "", authErr
-		}
+	if err != nil && entry.Commit != "" && allowFetchCommit {
 		if output, fetchErr := s.runGit(ctx, repositoryPath, authentication, "fetch", "--quiet", "origin", entry.Commit); fetchErr != nil {
 			return "", fmt.Errorf("fetch selected package commit: %w: %s", fetchErr, cleanGitOutput(output))
 		}
-		if commit, err = s.gitValue(ctx, repositoryPath, "rev-parse", "--verify", "FETCH_HEAD^{commit}"); err == nil {
-			return commit, nil
-		}
+		commit, err = s.gitValue(ctx, repositoryPath, "rev-parse", "--verify", "FETCH_HEAD^{commit}")
 	}
-	return "", fmt.Errorf("resolve requested package version %s: %w", entry.selector(), err)
+	if err != nil {
+		return "", fmt.Errorf("resolve requested package version %s: %w", entry.selector(), err)
+	}
+	if entry.Commit != "" && !strings.HasPrefix(commit, entry.Commit) {
+		return "", fmt.Errorf("resolved package commit %s does not match requested commit %s", commit, entry.Commit)
+	}
+	return commit, nil
 }
 
 func (s *Store) packageDestination(packageID string) (string, bool, error) {
@@ -1057,9 +1066,23 @@ func (s *Store) runGit(ctx context.Context, path string, extraEnvironment []stri
 	command.Stdout, command.Stderr = output, output
 	err := command.Run()
 	if errors.Is(output.err, errGitOutputLimit) {
-		return output.String(), errGitOutputLimit
+		return "", errGitOutputLimit
 	}
-	return output.String(), err
+	text := output.String()
+	if err != nil {
+		for _, value := range extraEnvironment {
+			encoded, ok := strings.CutPrefix(value, "GIT_CONFIG_VALUE_0=Authorization: Basic ")
+			if !ok {
+				continue
+			}
+			decoded, decodeErr := base64.StdEncoding.DecodeString(encoded)
+			text = strings.ReplaceAll(text, encoded, "[secure input]")
+			if _, password, ok := strings.Cut(string(decoded), ":"); decodeErr == nil && ok {
+				text = strings.ReplaceAll(text, password, "[secure input]")
+			}
+		}
+	}
+	return text, err
 }
 
 var errGitOutputLimit = errors.New("Git output exceeded 2 MiB")
