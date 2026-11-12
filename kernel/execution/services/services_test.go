@@ -982,11 +982,11 @@ func TestLiveAllocationPolicyPreservesExistingServicePool(t *testing.T) {
 		t.Fatal(err)
 	}
 	profile.ResourceClass = "new"
-	m.SetAllocationPolicy(model.GroupingShared, profile, model.ResourceLimits{PIDMaximum: 64}, model.LifecyclePolicy{})
+	m.SetAllocationPolicy(profile, model.ResourceLimits{PIDMaximum: 64}, model.LifecyclePolicy{})
 	if _, err := m.Start(t.Context(), "second", "file:///programs/second.ts", testOptions(1, 2, 1)); err != nil {
 		t.Fatal(err)
 	}
-	if c.requests[0].Strategy != model.GroupingOwner || c.requests[0].ResourceLimits.PIDMaximum != 32 || c.requests[1].Strategy != model.GroupingShared || c.requests[1].ResourceLimits.PIDMaximum != 64 {
+	if c.requests[0].Strategy != model.GroupingOwner || c.requests[0].ResourceLimits.PIDMaximum != 32 || c.requests[1].ResourceLimits.PIDMaximum != 64 {
 		t.Fatalf("policies: %+v", c.requests)
 	}
 	current, err := m.Inspect("first")

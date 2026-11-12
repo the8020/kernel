@@ -63,8 +63,7 @@ Parent DOX: [kernel/kernel/settings DOX](../AGENTS.md).
   `runtime.node.temporary_storage_budget`, and `runtime.sandbox.maximum_workers`
   govern new admission. Reductions retain admitted sandboxes, Workers and
   reservations, even above the new limit; topology advertises current limits.
-- `execution.grouping.job` and `execution.grouping.service` select future
-  allocations. Submitted/queued jobs capture their profile, grouping and resource
+- `execution.grouping.job` selects future job allocations. Submitted/queued jobs capture their profile, grouping and resource
   policy; existing service pools retain their sandboxes and exact routes.
 - The four `sandbox.resources.{job,service}.{pid_maximum,tmpfs_maximum}`
   settings update future profiles, resource hashes, tmpfs mounts and warm
@@ -110,6 +109,16 @@ installed isolation artifacts, or infrastructure ownership.
 | `sandbox.image.reference`, `sandbox.image.digest` | These are assertions about the installer-pinned image, not an arbitrary image-selection API. `app.validateConfiguredRuntimeIdentity` rejects a name/digest inconsistent with the verified manifest/image record. Rootless OCI roots share the canonical installed rootfs (`rootless.Backend.ociSpec`); full mode resolves the verified imported digest. Installing another image changes the runtime source/protocol and verified smoke artifacts, so use the ordinary staged kernel installer/updater and its restart. Merely changing either setting cannot materialize or qualify an image. Future PID/tmpfs defaults are independently live. |
 | `sandbox.network.bridge`, `sandbox.network.name`, `sandbox.network.subnet` | CNI `network.Manager` uses the same conflist for ADD/CHECK/DEL; allocation records do not retain a separate conflist generation. nftables derives bridge/subnet routing from that same topology. Replacing it under live namespaces can misroute traffic or make DEL release the wrong network/IPAM allocation. Drain/delete old namespaces under their original CNI policy, provision the replacement network and restart; parallel network migration is an infrastructure change. |
 | `sandbox.startup_policy` | Startup recovery has already destroyed or reconciled inherited tasks before live admission. Reapplying it would destroy current work or mistake it for inherited work. It is persisted for the next startup only, never replayed against the current runtime. |
+
+## Superseded service grouping
+
+`execution.grouping.service` is bypassed by every ordinary service allocation:
+`execution.services.Manager.Start` supplies the package-owned sandbox group,
+including the explicit empty shared group, and `placement.selectKey` gives that
+value precedence. Changing it or restarting cannot affect those allocations.
+Its definition now rejects mutations rather than advertising a live or restart
+change. Configure service placement through the services package. Future service
+resource defaults remain live and existing allocations keep their group.
 
 ## Unresolved egress setting
 

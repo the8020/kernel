@@ -26,7 +26,7 @@ var runtimeSettingKeys = []string{
 	"runtime.node.maximum_sandboxes", "runtime.node.maximum_workers", "runtime.node.temporary_storage_budget",
 	"runtime.sandbox.maximum_workers", "runtime.sandbox.keep_alive", "runtime.sandbox.startup_timeout", "runtime.sandbox.stop_grace_period", "runtime.worker.stop_grace_period",
 	"sandbox.resources.service.pid_maximum", "sandbox.resources.service.tmpfs_maximum", "sandbox.resources.job.pid_maximum", "sandbox.resources.job.tmpfs_maximum",
-	"execution.grouping.job", "execution.grouping.service", "sandbox.warm_pool.size", "sandbox.history.retention", "sandbox.shutdown_policy",
+	"execution.grouping.job", "sandbox.warm_pool.size", "sandbox.history.retention", "sandbox.shutdown_policy",
 	"sandbox.debug.enabled", "sandbox.debug.bind_address", "sandbox.debug.lease_timeout", "services.reconcile_interval", "services.startup_timeout",
 }
 
@@ -53,7 +53,7 @@ type preparedRuntimeSettings struct {
 	sandbox                                                              manager.Config
 	maximumWorkersPerSandbox                                             int
 	heartbeatTimeout, workerStopGrace, reconcileInterval, serviceStartup time.Duration
-	jobStrategy, serviceStrategy                                         model.GroupingStrategy
+	jobStrategy                                                          model.GroupingStrategy
 	serviceProfile, jobProfile                                           model.RuntimeProfile
 	serviceResources, jobResources                                       model.ResourceLimits
 	lifecycle                                                            model.LifecyclePolicy
@@ -94,7 +94,7 @@ func (o *runtimeSettings) Prepare(_ context.Context, values settings.Values) (se
 		heartbeatTimeout:         milliseconds("runtime.supervisor.heartbeat_timeout"),
 		workerStopGrace:          milliseconds("runtime.worker.stop_grace_period"),
 		reconcileInterval:        milliseconds("services.reconcile_interval"), serviceStartup: milliseconds("services.startup_timeout"),
-		jobStrategy: model.GroupingStrategy(text("execution.grouping.job")), serviceStrategy: model.GroupingStrategy(text("execution.grouping.service")),
+		jobStrategy:    model.GroupingStrategy(text("execution.grouping.job")),
 		serviceProfile: o.serviceProfile, jobProfile: o.jobProfile,
 		serviceResources: model.ResourceLimits{PIDMaximum: integer("sandbox.resources.service.pid_maximum"), TmpfsMaximum: bytes("sandbox.resources.service.tmpfs_maximum")},
 		jobResources:     model.ResourceLimits{PIDMaximum: integer("sandbox.resources.job.pid_maximum"), TmpfsMaximum: bytes("sandbox.resources.job.tmpfs_maximum")},
@@ -116,7 +116,7 @@ func (o *runtimeSettings) Prepare(_ context.Context, values settings.Values) (se
 	if invalid != nil {
 		return nil, invalid
 	}
-	if !p.jobStrategy.Valid() || !p.serviceStrategy.Valid() || p.maximumWorkersPerSandbox < 1 || p.sandbox.NodeLimits.MaximumWorkers < 1 || p.sandbox.NodeLimits.MaximumSandboxes < 1 || p.sandbox.StartupTimeout <= 0 || p.sandbox.StopGrace <= 0 || p.sandbox.HistoryRetention <= 0 || p.reconcileInterval <= 0 || p.serviceStartup <= 0 || p.sandbox.HeartbeatInterval < 100*time.Millisecond || p.sandbox.HeartbeatInterval > time.Minute || p.heartbeatTimeout <= p.sandbox.HeartbeatInterval || p.workerStopGrace < 10*time.Millisecond || p.workerStopGrace > time.Minute || p.debugDuration <= 0 || p.debugDuration > time.Hour || (p.shutdown != manager.ShutdownDestroy && p.shutdown != manager.ShutdownLeave) {
+	if !p.jobStrategy.Valid() || p.maximumWorkersPerSandbox < 1 || p.sandbox.NodeLimits.MaximumWorkers < 1 || p.sandbox.NodeLimits.MaximumSandboxes < 1 || p.sandbox.StartupTimeout <= 0 || p.sandbox.StopGrace <= 0 || p.sandbox.HistoryRetention <= 0 || p.reconcileInterval <= 0 || p.serviceStartup <= 0 || p.sandbox.HeartbeatInterval < 100*time.Millisecond || p.sandbox.HeartbeatInterval > time.Minute || p.heartbeatTimeout <= p.sandbox.HeartbeatInterval || p.workerStopGrace < 10*time.Millisecond || p.workerStopGrace > time.Minute || p.debugDuration <= 0 || p.debugDuration > time.Hour || (p.shutdown != manager.ShutdownDestroy && p.shutdown != manager.ShutdownLeave) {
 		return nil, errors.New("invalid runtime policy bounds")
 	}
 	if ip := net.ParseIP(p.debugBind); ip == nil || !ip.IsLoopback() {
@@ -153,7 +153,7 @@ func (p *preparedRuntimeSettings) Commit() {
 	o.workers.SetLimits(p.sandbox.NodeLimits.MaximumWorkers, p.maximumWorkersPerSandbox)
 	o.coordinator.SetMaximumWorkers(p.maximumWorkersPerSandbox)
 	o.jobs.SetAllocationPolicy(p.jobStrategy, p.jobProfile, p.jobResources, p.lifecycle)
-	o.services.SetAllocationPolicy(p.serviceStrategy, p.serviceProfile, p.serviceResources, p.lifecycle)
+	o.services.SetAllocationPolicy(p.serviceProfile, p.serviceResources, p.lifecycle)
 	o.callback.SetRuntimePolicy(p.sandbox.HeartbeatInterval, p.workerStopGrace)
 	if o.backend != nil {
 		o.backend.SetStartupTimeout(p.sandbox.StartupTimeout)

@@ -1250,9 +1250,9 @@ func (m *Manager) lock(serviceID string) func() {
 	return lock.Unlock
 }
 
-func (m *Manager) SetAllocationPolicy(strategy model.GroupingStrategy, profile model.RuntimeProfile, resources model.ResourceLimits, lifecycle model.LifecyclePolicy) {
+func (m *Manager) SetAllocationPolicy(profile model.RuntimeProfile, resources model.ResourceLimits, lifecycle model.LifecyclePolicy) {
 	m.policyMu.Lock()
-	m.policy.Strategy, m.policy.Profile, m.policy.Resources, m.policy.Lifecycle = strategy, profile, resources, lifecycle
+	m.policy.Profile, m.policy.Resources, m.policy.Lifecycle = profile, resources, lifecycle
 	m.policyMu.Unlock()
 }
 

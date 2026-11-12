@@ -2,7 +2,7 @@
 
 ## 0.10.8: live runtime policy
 
-Twenty-five more settings now apply through ordinary `kernel.config.set` and
+Twenty-four more settings now apply through ordinary `kernel.config.set` and
 `kernel.config.unset`, including node/sandbox admission limits, future grouping
 and PID/tmpfs defaults, warm capacity, idle/history retention, debug admission,
 shutdown policy, supervisor/Worker timing, service timing and the HTTPS port.
@@ -18,7 +18,9 @@ spells out timing, existing-work semantics, and the fourteen retained restart
 boundaries. Image settings validate installer-pinned artifacts; they do not
 select arbitrary images. The legacy `sandbox.network.egress_enabled` setting is
 **unenforced**: mutations are now rejected, and restarting does not enforce it.
-Ordinary workloads continue their established outbound/import policy.
+Ordinary workloads continue their established outbound/import policy. The
+legacy `execution.grouping.service` default is also superseded and rejects
+mutations; services always use their package-owned sandbox group.
 
 Use the ordinary updater to install this kernel; that upgrade still restarts
 it. Subsequent eligible setting changes need no kernel restart. Application
