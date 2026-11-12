@@ -18,7 +18,10 @@ import (
 	settingsdb "the8020/kernel/settings/dbstore"
 )
 
-type jobDefaultsRuntime struct{}
+type jobDefaultsRuntime struct {
+	gate    <-chan struct{}
+	started chan<- struct{}
+}
 
 func (jobDefaultsRuntime) Ensure(context.Context, coordinator.Request) (manager.Inspection, error) {
 	return manager.Inspection{Spec: model.SandboxSpec{SandboxID: "sbx-0123456789", WorkloadType: model.WorkloadJob}}, nil
@@ -28,7 +31,15 @@ func (jobDefaultsRuntime) Start(_ context.Context, sandbox string, req superviso
 	return workers.Record{SandboxID: sandbox, Worker: supervisor.WorkerStatus{WorkerID: req.Metadata.WorkerID}}, nil
 }
 func (jobDefaultsRuntime) List(context.Context, string) ([]workers.Record, error) { return nil, nil }
-func (jobDefaultsRuntime) RunJob(context.Context, string, []any, map[string]string, []string) (supervisor.JobResult, error) {
+func (r jobDefaultsRuntime) RunJob(ctx context.Context, _ string, args []any, _ map[string]string, _ []string) (supervisor.JobResult, error) {
+	if len(args) > 0 && args[0] == "block" {
+		r.started <- struct{}{}
+		select {
+		case <-r.gate:
+		case <-ctx.Done():
+			return supervisor.JobResult{}, ctx.Err()
+		}
+	}
 	return supervisor.JobResult{}, nil
 }
 func (jobDefaultsRuntime) StopInSandbox(context.Context, string, string, bool) error { return nil }
@@ -89,7 +100,7 @@ func TestPersistedJobDefaultsAttachToBootstrapManager(t *testing.T) {
 	if err != nil || fresh.State != "SUCCEEDED" || fresh.Parallelism != 4 || fresh.Timeout != 5*time.Minute {
 		t.Fatalf("fresh=%#v err=%v", fresh, err)
 	}
-	values := []any{int64(2), int64(3), int64(42000), int64(900000), true}
+	values := []any{int64(2), int64(3), int64(42000), int64(100), true}
 	for i, def := range defs {
 		if _, err := store.Set(ctx, def, values[i]); err != nil {
 			t.Fatal(err)
@@ -106,11 +117,19 @@ func TestPersistedJobDefaultsAttachToBootstrapManager(t *testing.T) {
 	}
 	policy := jobDefaults(settingsManager)
 	policy.Profile = profile
-	jobManager, err := jobs.New(jobDefaultsRuntime{}, jobDefaultsRuntime{}, policy)
+	gate := make(chan struct{})
+	started := make(chan struct{}, 5)
+	runtime := jobDefaultsRuntime{gate: gate, started: started}
+	jobManager, err := jobs.New(runtime, runtime, policy)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer jobManager.Close()
+	defer func() {
+		if gate != nil {
+			close(gate)
+		}
+	}()
 	bootstrap, err := jobManager.Run(ctx, "bootstrap", "file:///programs/job.ts", jobs.Options{User: execution.SystemUser()})
 	if err != nil || bootstrap.State != "SUCCEEDED" || bootstrap.Parallelism != 7 {
 		t.Fatalf("bootstrap=%#v err=%v", bootstrap, err)
@@ -127,6 +146,60 @@ func TestPersistedJobDefaultsAttachToBootstrapManager(t *testing.T) {
 	record, err := jobManager.Run(ctx, "job", "file:///programs/job.ts", jobs.Options{User: execution.SystemUser()})
 	if err != nil || record.State != "IDLE" || record.Parallelism != 2 || record.Timeout != 42*time.Second {
 		t.Fatalf("record=%#v err=%v", record, err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := jobManager.Inspect(record.ExecutionID); err != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("persisted idle timeout did not retire the worker")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	options := jobs.Options{User: execution.SystemUser(), Detached: true, Arguments: []any{"block"}}
+	for i := 0; i < 2; i++ {
+		if _, err := jobManager.Run(ctx, "running", "file:///programs/job.ts", options); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case <-time.After(3 * time.Second):
+			t.Fatal("job did not start")
+		}
+	}
+	for i := 0; i < 3; i++ {
+		queued, err := jobManager.Run(ctx, "queued", "file:///programs/job.ts", options)
+		if err != nil || queued.State != "QUEUED" {
+			t.Fatalf("queued=%#v err=%v", queued, err)
+		}
+	}
+	if _, err := jobManager.Run(ctx, "overflow", "file:///programs/job.ts", options); err == nil || err.Error() != "job queue limit 3 reached" {
+		t.Fatalf("persisted queue limit: %v", err)
+	}
+	close(gate)
+	gate = nil
+	deadline = time.Now().Add(3 * time.Second)
+	for {
+		records, err := jobManager.List()
+		if err != nil {
+			t.Fatal(err)
+		}
+		busy := false
+		for _, item := range records {
+			if item.State == "QUEUED" || item.State == "STARTING" || item.State == "RUNNING" {
+				busy = true
+			}
+		}
+		if !busy {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("jobs did not drain")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	noReuse := false
 	override, err := jobManager.Run(ctx, "override", "file:///programs/job.ts", jobs.Options{User: execution.SystemUser(), Reuse: &noReuse, Parallelism: 1, Timeout: time.Second})
