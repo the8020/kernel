@@ -220,9 +220,10 @@ func (m *Manager) Run(ctx context.Context, jobID, entrypoint string, options Opt
 	prepared.record.StartedAt = prepared.record.QueuedAt
 	if !m.canStartLocked(prepared.record) {
 		if m.queuedCountLocked() >= m.policy.QueuedExecutionLimit {
+			limit := m.policy.QueuedExecutionLimit
 			m.mu.Unlock()
 			clearSecrets(prepared.secrets)
-			return Record{}, fmt.Errorf("job queue limit %d reached", m.policy.QueuedExecutionLimit)
+			return Record{}, fmt.Errorf("job queue limit %d reached", limit)
 		}
 		prepared.record.State = "QUEUED"
 		prepared.record.StartedAt = time.Time{}

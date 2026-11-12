@@ -617,3 +617,51 @@ func TestSetDefaultsConcurrentWithSubmissions(t *testing.T) {
 	}
 	wait.Wait()
 }
+
+func TestSetDefaultsConcurrentWithFullQueue(t *testing.T) {
+	gate := make(chan struct{})
+	started := make(chan struct{}, 1)
+	policy := testPolicy()
+	policy.MaximumParallel, policy.QueuedExecutionLimit = 1, 2
+	policy.ExecutionTimeout, policy.IdleRuntimeTimeout = time.Minute, time.Minute
+	manager, err := New(&fakeCoordinator{}, &fakeWorkers{gate: gate, runStarted: started}, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	defer close(gate)
+	options := Options{User: execution.SystemUser(), Detached: true}
+	if _, err := manager.Run(context.Background(), "running", "file:///programs/job.ts", options); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("job did not start")
+	}
+	for i := 0; i < 2; i++ {
+		record, err := manager.Run(context.Background(), "queued", "file:///programs/job.ts", options)
+		if err != nil || record.State != "QUEUED" {
+			t.Fatalf("queued=%#v err=%v", record, err)
+		}
+	}
+	var wait sync.WaitGroup
+	wait.Add(1)
+	go func() {
+		defer wait.Done()
+		for i := 0; i < 1000; i++ {
+			_, err := manager.Run(context.Background(), "overflow", "file:///programs/job.ts", options)
+			if err == nil || (err.Error() != "job queue limit 1 reached" && err.Error() != "job queue limit 2 reached") {
+				t.Errorf("unexpected queue admission error: %v", err)
+				return
+			}
+		}
+	}()
+	for i := 0; i < 1000; i++ {
+		policy.QueuedExecutionLimit = 1 + i%2
+		if err := manager.SetDefaults(policy); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wait.Wait()
+}
