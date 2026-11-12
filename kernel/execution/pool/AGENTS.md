@@ -15,6 +15,11 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
 
 # Local Contracts
 
+- `SetTemplates` updates validated future profiles and desired sizes. Old clean
+  profiles reconcile to zero. Trim and assignment atomically reserve the same
+  accounting state, so deletion cannot claim assigned work. Policy wakeups
+  coalesce and reconcile the latest desired values.
+
 - Public API: `New`, `Controller.Start`, `Resize`, `Status`, `Assign`, `Forget`,
   and `Close`, plus `Template`, `WarmPool`, `WarmSandbox`, `PoolStatus`, and
   narrow sandbox dependency contracts. `WarmPool` serializes accounting with

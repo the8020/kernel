@@ -128,6 +128,7 @@ type Manager struct {
 	coordinator  GroupCoordinator
 	workers      WorkerManager
 	store        *records.Store
+	policyMu     sync.RWMutex
 	policy       Policy
 	now          func() time.Time
 	logger       *slog.Logger
@@ -162,6 +163,7 @@ func New(groupCoordinator GroupCoordinator, workerManager WorkerManager, store *
 }
 
 func (m *Manager) Start(ctx context.Context, serviceID, entrypoint string, options Options) (Record, error) {
+	policy := m.runtimePolicy()
 	unlock := m.lock(serviceID)
 	defer unlock()
 	if serviceID == "" || entrypoint == "" {
@@ -173,7 +175,7 @@ func (m *Manager) Start(ctx context.Context, serviceID, entrypoint string, optio
 	if options.TargetUtilization <= 0 || options.TargetUtilization > 1 {
 		return Record{}, errors.New("service target utilization must be greater than zero and at most one")
 	}
-	profile, err := executionprofile.ForWorkerWithWorkspace(m.policy.Profile, options.Permissions, executionprofile.Workspace{Source: options.Workspace, OwnerID: serviceID, Writable: options.WorkspaceWritable}, m.policy.WorkspaceMounts)
+	profile, err := executionprofile.ForWorkerWithWorkspace(policy.Profile, options.Permissions, executionprofile.Workspace{Source: options.Workspace, OwnerID: serviceID, Writable: options.WorkspaceWritable}, policy.WorkspaceMounts)
 	if err != nil {
 		return Record{}, err
 	}
@@ -225,7 +227,7 @@ func (m *Manager) Start(ctx context.Context, serviceID, entrypoint string, optio
 	}
 	m.logEvent(record, slog.LevelInfo, "service_starting", "service starting")
 	placementGroup := options.GroupKey
-	group, err := m.coordinator.Ensure(ctx, coordinator.Request{WorkloadType: model.WorkloadService, OwnerID: serviceID, ExecutionID: record.ServiceID, Namespace: options.Namespace, PlacementGroup: &placementGroup, LogicalServiceID: record.LogicalServiceID, RequestedWorkers: placementWorkers, Strategy: m.policy.Strategy, Profile: profile, ResourceLimits: m.policy.Resources, Lifecycle: m.policy.Lifecycle})
+	group, err := m.coordinator.Ensure(ctx, coordinator.Request{WorkloadType: model.WorkloadService, OwnerID: serviceID, ExecutionID: record.ServiceID, Namespace: options.Namespace, PlacementGroup: &placementGroup, LogicalServiceID: record.LogicalServiceID, RequestedWorkers: placementWorkers, Strategy: policy.Strategy, Profile: profile, ResourceLimits: policy.Resources, Lifecycle: policy.Lifecycle})
 	if err != nil {
 		return m.failUnowned(record, err)
 	}
@@ -286,7 +288,7 @@ func (m *Manager) scaleRecordLocked(ctx context.Context, record Record, count in
 	}
 	permissions := record.Permissions
 	if len(permissions.Read)+len(permissions.Write)+len(permissions.Net)+len(permissions.Import)+len(permissions.Env)+len(permissions.Sys) == 0 {
-		permissions = permissionsFor(m.policy.Profile.Permissions)
+		permissions = permissionsFor(m.runtimePolicy().Profile.Permissions)
 	}
 	previousWorkerIDs := append([]string(nil), record.WorkerIDs...)
 	for len(record.WorkerIDs) < count {
@@ -1246,4 +1248,16 @@ func (m *Manager) lock(serviceID string) func() {
 	lock := &m.locks[hash%uint64(len(m.locks))]
 	lock.Lock()
 	return lock.Unlock
+}
+
+func (m *Manager) SetAllocationPolicy(strategy model.GroupingStrategy, profile model.RuntimeProfile, resources model.ResourceLimits, lifecycle model.LifecyclePolicy) {
+	m.policyMu.Lock()
+	m.policy.Strategy, m.policy.Profile, m.policy.Resources, m.policy.Lifecycle = strategy, profile, resources, lifecycle
+	m.policyMu.Unlock()
+}
+
+func (m *Manager) runtimePolicy() Policy {
+	m.policyMu.RLock()
+	defer m.policyMu.RUnlock()
+	return m.policy
 }

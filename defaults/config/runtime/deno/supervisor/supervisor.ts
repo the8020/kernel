@@ -38,6 +38,7 @@ export interface SupervisorOptions {
   startedAt?: number;
   now?: () => number;
   workerStopGraceMilliseconds?: number;
+  heartbeatIntervalMilliseconds?: number;
   kernelCall?: KernelCall;
   nodeId: string;
   moduleAnalyzer?: (entrypoints: string[]) => Promise<ModuleDependencies>;
@@ -172,6 +173,8 @@ export class Supervisor {
       startedAt: options.startedAt ?? (options.now ?? Date.now)(),
       now: options.now ?? Date.now,
       workerStopGraceMilliseconds: options.workerStopGraceMilliseconds ?? 1_000,
+      heartbeatIntervalMilliseconds: options.heartbeatIntervalMilliseconds ??
+        5_000,
       nodeId: options.nodeId,
     };
     this.#moduleAnalyzer = moduleAnalyzer ?? analyzeModules;
@@ -1148,6 +1151,31 @@ export class Supervisor {
     this.#stateChanged();
   }
 
+  configureRuntimePolicy(value: unknown): number {
+    const policy = value as {
+      heartbeat_interval_ms?: number;
+      worker_stop_grace_ms?: number;
+    };
+    const interval = policy?.heartbeat_interval_ms;
+    const grace = policy?.worker_stop_grace_ms;
+    if (
+      !Number.isSafeInteger(interval) || interval! < 100 ||
+      interval! > 60_000 ||
+      !Number.isSafeInteger(grace) || grace! < 10 || grace! > 60_000
+    ) {
+      throw new TypeError("Invalid runtime timing policy");
+    }
+    if (
+      interval !== this.options.heartbeatIntervalMilliseconds ||
+      grace !== this.options.workerStopGraceMilliseconds
+    ) {
+      this.options.heartbeatIntervalMilliseconds = interval!;
+      this.options.workerStopGraceMilliseconds = grace!;
+      this.#stateChanged();
+    }
+    return interval!;
+  }
+
   heartbeat(): Envelope<Record<string, unknown>> {
     return {
       protocol_version: PROTOCOL_VERSION,
@@ -1169,6 +1197,7 @@ export class Supervisor {
     const persistent = this.#persistentReservationCounts();
     return {
       ...this.status(persistent),
+      heartbeat_interval_ms: this.options.heartbeatIntervalMilliseconds,
       workers: this.workers(persistent),
     };
   }

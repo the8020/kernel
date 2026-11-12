@@ -16,6 +16,10 @@ Parent DOX: [kernel/kernel/runtime DOX](../AGENTS.md).
 
 # Local Contracts
 
+- `SetRuntimePolicy` publishes heartbeat interval and Worker stop grace in
+  authenticated registration/heartbeat acknowledgements. Snapshots carry the
+  supervisor-applied interval so health monitoring can protect cadence changes.
+
 - `admin.catalog` and `admin.line` typed-operation requests reuse this
   callback's existing administrative registry after the same active
   Worker/caller checks. Line execution uses the shared CLI parser with no

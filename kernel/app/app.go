@@ -24,6 +24,7 @@ import (
 	"the8020/kernel/instance"
 	"the8020/kernel/lifecycle"
 	"the8020/kernel/logging"
+	"the8020/kernel/logging/records"
 	runtimehost "the8020/kernel/runtime"
 	"the8020/kernel/services"
 	"the8020/kernel/settings"
@@ -241,7 +242,7 @@ func Run(parent context.Context, config Config) error {
 	loggingManager, err := logging.New(logging.Config{
 		Directory: paths.Logs, Socket: filepath.Join(paths.RuntimeKernelSocketDir, "logs.sock"), NodeID: uuid,
 		Policy: policy, Executable: config.logdExecutable, CaptureStandard: config.captureStandard,
-		MaxProducers: activeInt(settingManager, "runtime.node.maximum_sandboxes", 0) + 1,
+		MaxProducers: records.MaxProducers,
 	})
 	if err != nil {
 		return err

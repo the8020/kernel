@@ -65,21 +65,25 @@ type RuntimeOperations interface {
 }
 
 type Server struct {
-	store           *state.Store
-	protocolVersion int
-	socketPath      string
-	now             func() time.Time
-	adminBus        AdminBus
-	database        Database
-	workerInvoker   WorkerInvoker
-	operations      RuntimeOperations
-	releaseWorker   func(string, string)
-	mu              sync.Mutex
-	listener        net.Listener
-	httpServer      *http.Server
+	store             *state.Store
+	protocolVersion   int
+	timingMu          sync.RWMutex
+	heartbeatInterval time.Duration
+	workerStopGrace   time.Duration
+	socketPath        string
+	now               func() time.Time
+	adminBus          AdminBus
+	database          Database
+	workerInvoker     WorkerInvoker
+	operations        RuntimeOperations
+	releaseWorker     func(string, string)
+	mu                sync.Mutex
+	listener          net.Listener
+	httpServer        *http.Server
 }
 
 type statusPayload struct {
+	HeartbeatIntervalMS   int64  `json:"heartbeat_interval_ms"`
 	Revision              uint64 `json:"revision"`
 	SupervisorStartedAtMS int64  `json:"supervisor_started_at_ms"`
 	ProtocolVersion       int    `json:"protocol_version"`
@@ -164,7 +168,7 @@ func New(config Config) (*Server, error) {
 	if config.Now == nil {
 		config.Now = func() time.Time { return time.Now().UTC() }
 	}
-	return &Server{store: config.Store, protocolVersion: config.ProtocolVersion, socketPath: filepath.Clean(config.SocketPath), now: config.Now, database: config.Database, adminBus: config.AdminBus, workerInvoker: config.WorkerInvoker, operations: config.Operations}, nil
+	return &Server{heartbeatInterval: 5 * time.Second, workerStopGrace: time.Second, store: config.Store, protocolVersion: config.ProtocolVersion, socketPath: filepath.Clean(config.SocketPath), now: config.Now, database: config.Database, adminBus: config.AdminBus, workerInvoker: config.WorkerInvoker, operations: config.Operations}, nil
 }
 
 func (s *Server) SetWorkerInvoker(invoker WorkerInvoker) {
@@ -314,7 +318,7 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 		http.Error(writer, "invalid runtime payload", http.StatusBadRequest)
 		return
 	}
-	if payload.ProtocolVersion != s.protocolVersion || payload.SandboxID != message.SandboxID {
+	if payload.HeartbeatIntervalMS < 0 || payload.HeartbeatIntervalMS > 60000 || payload.ProtocolVersion != s.protocolVersion || payload.SandboxID != message.SandboxID {
 		http.Error(writer, "runtime protocol mismatch", http.StatusBadRequest)
 		return
 	}
@@ -323,7 +327,7 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	_, err := s.store.Observe(spec.SandboxID, model.RuntimeSnapshot{
-		Revision: payload.Revision, SupervisorStartedAtMS: payload.SupervisorStartedAtMS, ProtocolVersion: payload.ProtocolVersion,
+		HeartbeatIntervalMS: payload.HeartbeatIntervalMS, Revision: payload.Revision, SupervisorStartedAtMS: payload.SupervisorStartedAtMS, ProtocolVersion: payload.ProtocolVersion,
 		SupervisorVersion: payload.SupervisorVersion, DenoVersion: payload.DenoVersion,
 		SandboxID:    payload.SandboxID,
 		WorkloadType: model.WorkloadType(payload.WorkloadType), WorkerCount: payload.WorkerCount,
@@ -336,7 +340,10 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 		http.Error(writer, "record runtime snapshot", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(writer, map[string]bool{"accepted": true})
+	s.timingMu.RLock()
+	policy := map[string]any{"accepted": true, "heartbeat_interval_ms": s.heartbeatInterval.Milliseconds(), "worker_stop_grace_ms": s.workerStopGrace.Milliseconds()}
+	s.timingMu.RUnlock()
+	writeJSON(writer, policy)
 }
 
 func runtimeFailures(values []workerFailure) []model.RuntimeFailure {
@@ -605,4 +612,10 @@ func writeJSON(writer http.ResponseWriter, value any) {
 	writer.Header().Set("Content-Type", "application/json")
 	writer.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	_, _ = writer.Write(data)
+}
+
+func (s *Server) SetRuntimePolicy(interval, grace time.Duration) {
+	s.timingMu.Lock()
+	s.heartbeatInterval, s.workerStopGrace = interval, grace
+	s.timingMu.Unlock()
 }

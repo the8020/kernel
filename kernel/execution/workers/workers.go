@@ -524,3 +524,9 @@ func beneath(path, root string) bool {
 	relative, err := filepath.Rel(root, path)
 	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
+
+func (m *Manager) SetLimits(node, sandbox int) {
+	m.capacityMu.Lock()
+	m.maximumWorkers, m.maximumWorkersPerSandbox = node, sandbox
+	m.capacityMu.Unlock()
+}

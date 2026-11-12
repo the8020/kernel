@@ -15,6 +15,10 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
 
 # Local Contracts
 
+- `SetAllocationPolicy` synchronizes future grouping, resource and profile
+  defaults. Preparation captures all of them together; queued/admitted jobs keep
+  that snapshot, and compatible reuse cannot cross its profile hash.
+
 - Public API: `New`, `Manager.SetDefaults`, `Prepare`, `Run`, `List`, `Inspect`, `Cancel`, `FailSandbox`,
   `Close`, and policy/options/record types.
 - `Options.Arguments` is the positional array spread into the job's default

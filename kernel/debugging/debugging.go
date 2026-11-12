@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"the8020/kernel/identity"
@@ -45,6 +46,7 @@ type Manager struct {
 	ports             PortManager
 	httpClient        *http.Client
 	inspectorEndpoint func(model.SandboxSpec) (string, error)
+	policyMu          sync.RWMutex
 	enabled           bool
 	bindAddress       string
 	defaultDuration   time.Duration
@@ -146,11 +148,14 @@ func (m *Manager) Targets(ctx context.Context, spec model.SandboxSpec) ([]Target
 }
 
 func (m *Manager) Open(ctx context.Context, spec model.SandboxSpec, duration time.Duration) (Lease, error) {
-	if !m.enabled {
+	m.policyMu.RLock()
+	enabled, bindAddress, defaultDuration := m.enabled, m.bindAddress, m.defaultDuration
+	m.policyMu.RUnlock()
+	if !enabled {
 		return Lease{}, errors.New("debug leases are disabled by sandbox.debug.enabled")
 	}
 	if duration == 0 {
-		duration = m.defaultDuration
+		duration = defaultDuration
 	}
 	if duration <= 0 || duration > m.maximumDuration {
 		return Lease{}, errors.New("debug lease duration is outside allowed range")
@@ -183,7 +188,7 @@ func (m *Manager) Open(ctx context.Context, spec model.SandboxSpec, duration tim
 		request.Header.Del("Authorization")
 		proxy.ServeHTTP(writer, request)
 	})
-	portLease, err := m.ports.ExposeHTTP(ctx, ports.Request{SandboxID: spec.SandboxID, OwnerID: spec.SandboxID, SandboxIP: spec.Network.SandboxIP, InternalPort: InspectorPort, TargetPort: spec.Network.InspectorEndpointPort(), BindAddress: m.bindAddress, Purpose: "debug", ExpiresAt: time.Now().UTC().Add(duration)}, handler)
+	portLease, err := m.ports.ExposeHTTP(ctx, ports.Request{SandboxID: spec.SandboxID, OwnerID: spec.SandboxID, SandboxIP: spec.Network.SandboxIP, InternalPort: InspectorPort, TargetPort: spec.Network.InspectorEndpointPort(), BindAddress: bindAddress, Purpose: "debug", ExpiresAt: time.Now().UTC().Add(duration)}, handler)
 	if err != nil {
 		return Lease{}, err
 	}
@@ -243,4 +248,11 @@ func localDebugURL(raw, scheme, host, token string) string {
 	query.Set("token", token)
 	parsed.RawQuery = query.Encode()
 	return parsed.String()
+}
+
+// SetPolicy changes admission defaults; already-issued token leases expire normally.
+func (m *Manager) SetPolicy(enabled bool, bindAddress string, duration time.Duration) {
+	m.policyMu.Lock()
+	m.enabled, m.bindAddress, m.defaultDuration = enabled, bindAddress, duration
+	m.policyMu.Unlock()
 }

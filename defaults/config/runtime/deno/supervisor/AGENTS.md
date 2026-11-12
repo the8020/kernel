@@ -16,6 +16,12 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 
 # Local Contracts
 
+- Registration/heartbeat acknowledgements carry authenticated runtime timing.
+  `configureRuntimePolicy` validates heartbeat interval and Worker stop grace;
+  `main.ts` resets its existing periodic timer and snapshots acknowledge
+  cadence. Already stopping Workers retain their deadline; live application work
+  survives.
+
 - Worker snapshots carry optional heap-used bytes, thread CPU microseconds, and
   sample time. The existing periodic heartbeat and targeted snapshot refresh
   sample live Workers through their private ports; a busy Worker retains its

@@ -195,3 +195,25 @@ func (p *WarmPool) Status() []PoolStatus {
 	}
 	return result
 }
+
+// reserveExcess removes clean capacity from assignment before native deletion.
+func (p *WarmPool) reserveExcess(profileHash string) (WarmSandbox, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	ready := 0
+	var candidate WarmSandbox
+	for _, sandbox := range p.sandboxes {
+		if sandbox.ProfileHash == profileHash && sandbox.State == WarmReady {
+			ready++
+			if candidate.SandboxID == "" || sandbox.SandboxID > candidate.SandboxID {
+				candidate = sandbox
+			}
+		}
+	}
+	if ready <= p.desired[profileHash] {
+		return WarmSandbox{}, false
+	}
+	candidate.State = WarmReserved
+	p.sandboxes[candidate.SandboxID] = candidate
+	return candidate, true
+}

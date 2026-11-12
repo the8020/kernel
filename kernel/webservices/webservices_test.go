@@ -2545,3 +2545,32 @@ func TestOpaqueServiceAllocationRecoversByPlacement(t *testing.T) {
 		t.Fatal("conflicting placement was accepted")
 	}
 }
+
+func TestLiveReconcileIntervalWakesPendingCapacityWithoutRestartingServices(t *testing.T) {
+	root := t.TempDir()
+	id := "the8020/demo/variables"
+	store := writeCanonicalTestService(t, root, id, 1, 2, 0, 1, "stateless")
+	pools := newFakePools()
+	pools.failStartIndex[0] = errors.New("temporary capacity unavailable")
+	m := newTestManager(t, store, pools, &fakeRouter{}, filepath.Join(root, "observed"))
+	m.SetRuntimePolicy(time.Hour, time.Second)
+	if _, err := m.Reconcile(t.Context(), id); err == nil {
+		t.Fatal("expected pending capacity")
+	}
+	m.StartReconciler(t.Context())
+	pools.mu.Lock()
+	delete(pools.failStartIndex, 0)
+	pools.mu.Unlock()
+	m.SetRuntimePolicy(5*time.Millisecond, 2*time.Second)
+	deadline := time.Now().Add(time.Second)
+	for {
+		status, err := m.Inspect(id)
+		if err == nil && status.State == StateReady && status.WorkerCount == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("new cadence not applied: %+v %v", status, err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}

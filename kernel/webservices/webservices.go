@@ -223,6 +223,8 @@ type Manager struct {
 	index          *Index
 	pools          RuntimePools
 	observed       string
+	policyMu       sync.RWMutex
+	policyChanged  chan struct{}
 	interval       time.Duration
 	startup        time.Duration
 	logger         *slog.Logger
@@ -269,7 +271,7 @@ func New(config Config) (*Manager, error) {
 		config.StartupTimeout = 30 * time.Second
 	}
 	background, stopBackground := context.WithCancel(context.Background())
-	manager := &Manager{index: config.Index, pools: config.Pools, observed: config.ObservedRoot, interval: config.ReconcileInterval, startup: config.StartupTimeout, logger: config.Logger, authentication: config.Authentication, authenticator: config.Authenticator, nodes: config.Nodes, services: map[string]*runtimeService{}, signing: config.Signing, nodeID: config.NodeID, background: background, stopBackground: stopBackground, maintenanceSet: map[string]bool{}}
+	manager := &Manager{index: config.Index, pools: config.Pools, observed: config.ObservedRoot, policyChanged: make(chan struct{}, 1), interval: config.ReconcileInterval, startup: config.StartupTimeout, logger: config.Logger, authentication: config.Authentication, authenticator: config.Authenticator, nodes: config.Nodes, services: map[string]*runtimeService{}, signing: config.Signing, nodeID: config.NodeID, background: background, stopBackground: stopBackground, maintenanceSet: map[string]bool{}}
 	manager.matchImports = config.MatchImports
 	manager.database = config.Database
 	if config.Database != nil {
@@ -305,12 +307,16 @@ func (m *Manager) StartReconciler(parent context.Context) {
 			m.logger.Error("initial service reconciliation failed", "error", err)
 			lastFailure = err.Error()
 		}
-		ticker := time.NewTicker(m.interval)
+		interval, _ := m.runtimePolicy()
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
+			case <-m.policyChanged:
+				interval, _ := m.runtimePolicy()
+				ticker.Reset(interval)
 			case <-ticker.C:
 				err := m.reconcileMaintained(ctx)
 				if err == nil {
@@ -598,7 +604,8 @@ func (m *Manager) reconcileService(ctx context.Context, serviceID string, provis
 		m.logger.Info("service version preparing", "package_id", definition.Identity.PackageID(), "service_id", serviceID, "desired_version", definition.Version, "loaded_version", starting.LoadedVersion, "state", starting.State)
 	}
 
-	startupContext, cancel := context.WithTimeout(ctx, m.startup)
+	_, startup := m.runtimePolicy()
+	startupContext, cancel := context.WithTimeout(ctx, startup)
 	defer cancel()
 	prepared, preparationErrors := m.prepareVersion(startupContext, definition)
 	_, restartDemand := m.restartDemand.Load(serviceID)
@@ -2063,7 +2070,8 @@ func (m *Manager) triggerCapacityReconcile(runtime *runtimeService, definition S
 	go func() {
 		defer m.wait.Done()
 		defer lock.Unlock()
-		ctx, cancel := context.WithTimeout(background, m.startup)
+		_, startup := m.runtimePolicy()
+		ctx, cancel := context.WithTimeout(background, startup)
 		defer cancel()
 		_, _ = m.selectCapacitySandboxLocked(ctx, runtime, definition, false)
 	}()
@@ -2603,4 +2611,21 @@ func max64(left, right int64) int64 {
 		return left
 	}
 	return right
+}
+
+// SetRuntimePolicy replaces the maintenance cadence; in-progress startup keeps its deadline.
+func (m *Manager) SetRuntimePolicy(interval, startup time.Duration) {
+	m.policyMu.Lock()
+	m.interval, m.startup = interval, startup
+	m.policyMu.Unlock()
+	select {
+	case m.policyChanged <- struct{}{}:
+	default:
+	}
+}
+
+func (m *Manager) runtimePolicy() (time.Duration, time.Duration) {
+	m.policyMu.RLock()
+	defer m.policyMu.RUnlock()
+	return m.interval, m.startup
 }

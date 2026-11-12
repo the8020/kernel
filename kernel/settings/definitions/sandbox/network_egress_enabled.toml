@@ -4,5 +4,5 @@ storage = "node"
 default = false
 environment = "THE8020_SANDBOX_NETWORK_EGRESS_ENABLED"
 runtime_mutable = false
-restart_required = true
-description = "Whether newly created sandboxes may receive explicitly permitted egress."
+restart_required = false
+description = "Unsupported legacy setting; neither changing it nor restarting enforces egress isolation. Workloads retain their runtime permission policy."

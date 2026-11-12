@@ -22,6 +22,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 # Local Contracts
 
+- `SetRuntimePolicy` updates subsequent startup deadlines and signals the
+  reconciler to reset its existing timer. In-flight startup and healthy loaded
+  services keep their deadline, Worker and route identities.
+
 - Canonical service lifecycle is `stateless` or `session`; the latter translates
   once to the supervisor's generic internal `persistent` execution mode. HTTP,
   streaming, SSE, and WebSocket routing use the same boundary in either mode.

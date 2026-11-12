@@ -1,5 +1,29 @@
 # 80|20 kernel
 
+## 0.10.8: live runtime policy
+
+Twenty-five more settings now apply through ordinary `kernel.config.set` and
+`kernel.config.unset`, including node/sandbox admission limits, future grouping
+and PID/tmpfs defaults, warm capacity, idle/history retention, debug admission,
+shutdown policy, supervisor/Worker timing, service timing and the HTTPS port.
+Healthy services and admitted jobs keep their Worker, sandbox and execution
+identities. Reduced limits block new admission without evicting existing work;
+queued jobs retain captured allocation policy. Future resource profiles include
+new tmpfs mount sizes. Supervisors receive timing updates on authenticated
+acknowledgements; warm capacity and maintenance use their existing background
+owners. Failed validation or persistence preserves active policy.
+
+The [setting contract](kernel/settings/definitions/AGENTS.md#runtime-application)
+spells out timing, existing-work semantics, and the fourteen retained restart
+boundaries. Image settings validate installer-pinned artifacts; they do not
+select arbitrary images. The legacy `sandbox.network.egress_enabled` setting is
+**unenforced**: mutations are now rejected, and restarting does not enforce it.
+Ordinary workloads continue their established outbound/import policy.
+
+Use the ordinary updater to install this kernel; that upgrade still restarts
+it. Subsequent eligible setting changes need no kernel restart. Application
+recommendations and database schemas are unchanged.
+
 ## 0.10.7: live job defaults and HTTP settings
 
 All five global `job.default.*` settings and `network.root_alias` now apply

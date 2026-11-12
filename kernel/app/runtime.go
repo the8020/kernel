@@ -62,25 +62,27 @@ import (
 )
 
 type runtimeCleanup struct {
-	once          sync.Once
-	monitorCancel context.CancelFunc
-	monitorWait   sync.WaitGroup
-	sandboxes     *manager.Manager
-	ports         *ports.Manager
-	backend       io.Closer
-	callback      *callback.Server
-	pool          *pool.Controller
-	webservices   *webservices.Manager
-	jobs          *jobs.Manager
-	indexer       *runtimeIndexer
-	events        *events.Manager
-	policy        manager.ShutdownPolicy
-	console       *platformconsole.Manager
-	publicNetwork *mainnetwork.Manager
-	development   *development.Manager
-	ssh           *kernelssh.Manager
-	nodes         *nodes.Manager
-	err           error
+	once             sync.Once
+	monitorCancel    context.CancelFunc
+	monitorWait      sync.WaitGroup
+	sandboxes        *manager.Manager
+	ports            *ports.Manager
+	backend          io.Closer
+	callback         *callback.Server
+	pool             *pool.Controller
+	webservices      *webservices.Manager
+	jobs             *jobs.Manager
+	indexer          *runtimeIndexer
+	events           *events.Manager
+	policyMu         sync.RWMutex
+	heartbeatTimeout time.Duration
+	policy           manager.ShutdownPolicy
+	console          *platformconsole.Manager
+	publicNetwork    *mainnetwork.Manager
+	development      *development.Manager
+	ssh              *kernelssh.Manager
+	nodes            *nodes.Manager
+	err              error
 }
 
 const sandboxKernelSocketPath = "/run/the8020/kernel.sock"
@@ -158,7 +160,7 @@ func (c *runtimeCleanup) Close(ctx context.Context, report shutdownProgressFunc)
 
 		reportShutdownProgress(report, true, "runtime_sandboxes", "runtime sandboxes", "stopping and deleting gVisor sandboxes")
 		if c.sandboxes != nil {
-			c.err = errors.Join(c.err, c.sandboxes.Shutdown(ctx, c.policy))
+			c.err = errors.Join(c.err, c.sandboxes.Shutdown(ctx, c.shutdownPolicy()))
 		}
 		reportShutdownProgress(report, false, "runtime_sandboxes", "runtime sandboxes", "gVisor sandbox cleanup finished")
 
@@ -276,6 +278,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
 	}
+	callbackServer.SetRuntimePolicy(heartbeatInterval, workerStopGrace)
 	if err := callbackServer.Start(); err != nil {
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
@@ -349,7 +352,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	nodeLimits := runtimeNodeLimits(settingManager, paths.Runtime)
 	maximumWorkersPerSandbox := activeInt(settingManager, "runtime.sandbox.maximum_workers", 64)
 	sandboxManager, err := manager.New(manager.Config{
-		InstanceUUID: instanceUUID, StartupTimeout: activeDuration(settingManager, "runtime.sandbox.startup_timeout", 30*time.Second),
+		HeartbeatInterval: heartbeatInterval, InstanceUUID: instanceUUID, StartupTimeout: activeDuration(settingManager, "runtime.sandbox.startup_timeout", 30*time.Second),
 		KeepAlive: activeDuration(settingManager, "runtime.sandbox.keep_alive", 2*time.Minute),
 		StopGrace: activeDuration(settingManager, "runtime.sandbox.stop_grace_period", 10*time.Second), Store: stateStore,
 		Backend: sandboxBackend, Network: networkManager, Supervisor: supervisorClient, Ports: portManager, Logs: serviceSet.Logging,
@@ -703,6 +706,10 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	}
 	additionalHTTP.Commit()
 	https.attach(publicNetwork)
+	if err := settingManager.RegisterApplier([]string{"network.https_port"}, https); err != nil {
+		runtimeServices.Failure = err.Error()
+		return runtimeServices, closeRuntime
+	}
 	if err := settingManager.RegisterApplier([]string{"network.main_port", "network.root_alias", "network.additional_http_port"}, publicNetwork); err != nil {
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
@@ -789,6 +796,24 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	}
 	cleanup.ssh = sshManager
 	if err := settingManager.RegisterApplier([]string{"network.ssh_port"}, sshManager); err != nil {
+		runtimeServices.Failure = err.Error()
+		return runtimeServices, closeRuntime
+	}
+	runtimePolicy := &runtimeSettings{
+		sandboxes: sandboxManager, workers: workerManager, coordinator: groupCoordinator, jobs: jobManager, services: serviceManager, warm: warmController,
+		callback: callbackServer, debugging: debugManager, webservices: webServiceManager, cleanup: cleanup, runtimeRoot: paths.Runtime, networkName: activeString(settingManager, "sandbox.network.name", "the8020"), serviceProfile: serviceProfile, jobProfile: jobProfile,
+	}
+	if backend, ok := sandboxBackend.(interface{ SetStartupTimeout(time.Duration) }); ok {
+		runtimePolicy.backend = backend
+	}
+	preparedPolicy, err := runtimePolicy.Prepare(ctx, settingManager.Snapshot())
+	if err != nil {
+		runtimeServices.Failure = err.Error()
+		return runtimeServices, closeRuntime
+	}
+	// Install initial policy before exposing mutation, so a later command cannot be overwritten.
+	preparedPolicy.Commit()
+	if err := settingManager.RegisterApplier(runtimeSettingKeys, runtimePolicy); err != nil {
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
 	}
@@ -1200,7 +1225,7 @@ func startRuntimeMonitor(cleanup *runtimeCleanup, sandboxes *manager.Manager, se
 				if _, err := sandboxes.CleanupIdle(monitorContext); err != nil && !errors.Is(err, context.Canceled) && logger != nil {
 					logger.Error("idle sandbox cleanup failed", "error", err)
 				}
-				report, err := sandboxes.CheckHealth(monitorContext, timeout)
+				report, err := sandboxes.CheckHealth(monitorContext, cleanup.healthTimeout())
 				if err != nil {
 					if !errors.Is(err, context.Canceled) && logger != nil {
 						logger.Error("runtime health check failed", "error", err)
@@ -1413,4 +1438,15 @@ func activeBoolDefault(manager *settings.Manager, key string, fallback bool) boo
 func activeDuration(manager *settings.Manager, key string, fallback time.Duration) time.Duration {
 	value := activeInt(manager, key, int(fallback/time.Millisecond))
 	return time.Duration(value) * time.Millisecond
+}
+
+func (c *runtimeCleanup) shutdownPolicy() manager.ShutdownPolicy {
+	c.policyMu.RLock()
+	defer c.policyMu.RUnlock()
+	return c.policy
+}
+func (c *runtimeCleanup) healthTimeout() time.Duration {
+	c.policyMu.RLock()
+	defer c.policyMu.RUnlock()
+	return c.heartbeatTimeout
 }

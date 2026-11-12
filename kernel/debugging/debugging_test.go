@@ -103,3 +103,26 @@ func TestOpenRequiresEnabledPolicyAndLoopbackConfiguration(t *testing.T) {
 		t.Fatalf("public bind error=%v", err)
 	}
 }
+
+func TestLiveDebugPolicyChangesAdmissionAndRetainsIssuedLeases(t *testing.T) {
+	inspector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, `[]`) }))
+	defer inspector.Close()
+	leases := &fakePorts{}
+	m, err := New(Config{Ports: leases, InspectorEndpoint: func(model.SandboxSpec) (string, error) { return inspector.URL, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.SetPolicy(true, "::1", time.Second)
+	before := time.Now()
+	lease, err := m.Open(t.Context(), model.SandboxSpec{}, 0)
+	if err != nil || lease.PortLease.BindAddress != "::1" || lease.PortLease.ExpiresAt.Before(before.Add(time.Second)) {
+		t.Fatalf("new lease: %+v %v", lease, err)
+	}
+	m.SetPolicy(false, "127.0.0.1", time.Minute)
+	if _, err := m.Open(t.Context(), model.SandboxSpec{}, 0); err == nil {
+		t.Fatal("disabled admission opened a lease")
+	}
+	if len(m.List()) != 1 || len(leases.closed) != 0 {
+		t.Fatal("policy change revoked an issued bounded lease")
+	}
+}

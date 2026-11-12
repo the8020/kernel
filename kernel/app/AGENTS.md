@@ -18,6 +18,12 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 # Local Contracts
 
+- `runtime_settings.go` composes synchronized admission, future allocation and
+  resource profiles, warm templates, timer/deadline, history, debug and shutdown
+  updates through one settings applier. Install initial policy before registering
+  mutations. Preserve admitted work and captured job policy; see the complete
+  [application semantics](../settings/definitions/AGENTS.md#runtime-application).
+
 - Development `Config.Logs` is the existing log-query adapter's narrow HTTP
   handler. Development authenticates sandbox authority; the adapter fixes the
   hosting node and retains the shared file owner's filtering, bounds and
@@ -36,8 +42,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   TLS state stays live, and the normal monitor retries. Startup retains that
   phase until native ingress is attached; snapshot initialization can then use
   the ready ordinary runtime and topology. Retiring the package closes HTTPS.
-- Node-local `network.https_port` takes effect on restart. Shared enablement,
-  policy, and certificate changes use prepare/commit without restarting work.
+- Node-local `network.https_port` and package enablement/certificate publication
+  serialize on the HTTPS owner lock. Bind before persistence and commit without
+  restarting work; failed preparation/persistence preserves the active listener.
 - Zero `network.https_port` keeps native TLS closed for external termination or
   migration. `network.additional_http_port` optionally serves the same router at
   a second runtime-mutable node-local port, preserving public Docker mappings.
@@ -121,7 +128,7 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - `sandbox.warm_pool.size` defaults to zero. Jobs and enabled services create
   sandboxes from explicit command or request demand; configured positive warm
   capacity remains available as an opt-in latency tradeoff.
-- `sandbox.history.retention` is node-local, restart-required, and defaults to
+- `sandbox.history.retention` is node-local, runtime mutable, and defaults to
   seven days. Runtime composition supplies a separate metadata history root and
   performs cleanup without adding history to live sandbox scans. Log retention
   remains independently owned by logd; history cleanup errors are logged without

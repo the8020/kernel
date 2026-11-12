@@ -18,6 +18,11 @@ Parent DOX: [kernel/kernel/sandbox DOX](../AGENTS.md).
 
 # Local Contracts
 
+- `SetRuntimePolicy` updates new admission, subsequent lifecycle deadlines, idle
+  retention and history cleanup under owner locks. Lower limits retain admitted
+  work. Health checks protect the supervisor-observed old cadence while a shorter
+  heartbeat interval propagates through authenticated acknowledgements.
+
 - Public API: `New`, `NewSandboxID`, `ReleaseSandboxID`, `Manager.Create`,
   `AssignWarm`, `AddOwner`, `RemoveOwner`, `Capacity`, `List`, `ResolveSandbox`,
   `Inspect`, `Refresh`, `Metrics`, `OpenConsole`, `CheckHealth`, `CleanupIdle`,

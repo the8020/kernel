@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"sync/atomic"
+	"the8020/kernel/settings"
 	"time"
 
 	"the8020/kernel/execution"
@@ -18,6 +20,8 @@ type httpsPublication struct {
 	programs  *programs.Runner
 	transport *network.HTTPS
 	network   atomic.Pointer[network.Manager]
+	mu        sync.Mutex
+	enabled   bool
 	port      int
 }
 
@@ -39,10 +43,13 @@ func (p *httpsPublication) publish(ctx context.Context, active bool) (err error)
 		return errors.New("HTTPS publication awaits native ingress readiness")
 	}
 	if !active {
+		p.mu.Lock()
+		defer p.mu.Unlock()
 		listener, err := manager.PrepareTLS(0, nil)
 		if err != nil {
 			return err
 		}
+		p.enabled = false
 		p.transport.Clear()
 		listener.Commit()
 		return nil
@@ -77,6 +84,8 @@ func (p *httpsPublication) publish(ctx context.Context, active bool) (err error)
 	if !state.Configuration.Enabled {
 		state.Certificates = nil
 	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	commit, err := p.transport.Prepare(ctx, state, func(ctx context.Context, name string) (string, error) {
 		return (&packageSecrets{context: ctx, programs: p.programs}).SecretValue(name)
 	})
@@ -96,6 +105,7 @@ func (p *httpsPublication) publish(ctx context.Context, active bool) (err error)
 		return err
 	}
 	commit()
+	p.enabled = state.Configuration.Enabled
 	listener.Commit()
 	return nil
 }
@@ -134,3 +144,39 @@ func (p *httpsPublication) challenge(ctx context.Context, name, kind, token stri
 	}
 	return value, nil
 }
+
+func (p *httpsPublication) Prepare(_ context.Context, values settings.Values) (settings.Prepared, error) {
+	raw, ok := values["network.https_port"].(int64)
+	if !ok || raw < 0 || raw > 65535 {
+		return nil, errors.New("invalid HTTPS port")
+	}
+	p.mu.Lock()
+	manager := p.network.Load()
+	if manager == nil {
+		p.mu.Unlock()
+		return nil, errors.New("HTTPS ingress is unavailable")
+	}
+	port := int(raw)
+	if !p.enabled {
+		port = 0
+	}
+	listener, err := manager.PrepareTLS(port, p.transport.TLSConfig())
+	if err != nil {
+		p.mu.Unlock()
+		return nil, err
+	}
+	return &preparedHTTPSPort{publication: p, port: int(raw), listener: listener}, nil
+}
+
+type preparedHTTPSPort struct {
+	publication *httpsPublication
+	port        int
+	listener    settings.Prepared
+}
+
+func (p *preparedHTTPSPort) Commit() {
+	p.publication.port = p.port
+	p.listener.Commit()
+	p.publication.mu.Unlock()
+}
+func (p *preparedHTTPSPort) Discard() { p.listener.Discard(); p.publication.mu.Unlock() }

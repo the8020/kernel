@@ -510,3 +510,38 @@ func TestForwardedCallsKeepParentAndUserAcrossWorkerReuse(t *testing.T) {
 		previous = call.Invocation.ContextID
 	}
 }
+
+func TestLiveLimitsKeepAdmittedStartsAndRejectNewReservations(t *testing.T) {
+	m, _ := New(&fakeSandboxes{}, &fakeControl{}, 10, 10, "sqlite")
+	live := []manager.Inspection{{Spec: model.SandboxSpec{SandboxID: "sandbox"}, Workers: []supervisor.WorkerStatus{{WorkerID: "wrk-0000000001"}}}}
+	release, err := m.reserveStart(live, "sandbox", "wrk-0000000002")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.SetLimits(1, 1)
+	if _, err := m.reserveStart(live, "sandbox", "wrk-0000000003"); !errors.Is(err, ErrNodeCapacity) {
+		t.Fatalf("lower limit: %v", err)
+	}
+	release(nil)
+	m.SetLimits(3, 3)
+	release, err = m.reserveStart(live, "sandbox", "wrk-0000000003")
+	if err != nil {
+		t.Fatal(err)
+	}
+	release(nil)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 100; i++ {
+			m.SetLimits(3, 3)
+		}
+	}()
+	for i := 0; i < 100; i++ {
+		release, err := m.reserveStart(live, "sandbox", "wrk-0000000004")
+		if err != nil {
+			t.Fatal(err)
+		}
+		release(nil)
+	}
+	<-done
+}

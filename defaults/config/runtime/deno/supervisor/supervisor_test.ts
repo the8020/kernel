@@ -2206,3 +2206,34 @@ Deno.test("target Worker policy isolates credentials, native principals, and per
     await supervisor.drain();
   }
 });
+
+Deno.test("runtime timing policy updates observed cadence and future Worker stops atomically", () => {
+  const supervisor = new Supervisor({
+    nodeId: "nod-0000000001",
+    sandboxId: "sbx-0000000004",
+    workloadType: "job",
+    token,
+    supervisorVersion: "test",
+  });
+  assertEquals(
+    supervisor.configureRuntimePolicy({
+      heartbeat_interval_ms: 200,
+      worker_stop_grace_ms: 25,
+    }),
+    200,
+  );
+  assertEquals(supervisor.snapshot().heartbeat_interval_ms, 200);
+  assertEquals(supervisor.options.workerStopGraceMilliseconds, 25);
+  let rejected = false;
+  try {
+    supervisor.configureRuntimePolicy({
+      heartbeat_interval_ms: 100,
+      worker_stop_grace_ms: 0,
+    });
+  } catch {
+    rejected = true;
+  }
+  assertEquals(rejected, true);
+  assertEquals(supervisor.snapshot().heartbeat_interval_ms, 200);
+  assertEquals(supervisor.options.workerStopGraceMilliseconds, 25);
+});

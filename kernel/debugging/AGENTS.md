@@ -16,6 +16,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 # Local Contracts
 
+- `SetPolicy` synchronizes new-lease admission, bind address and default expiry.
+  Existing token leases retain their listener and expiration; disabling admission
+  does not revoke them.
+
 - Public API: `New`, `Manager.Targets`, `Open`, `List`, `Close`, and
   target/lease types.
 - Debug lease creation obeys `sandbox.debug.enabled`; the configured bind must

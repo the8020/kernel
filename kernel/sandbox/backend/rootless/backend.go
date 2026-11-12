@@ -59,6 +59,7 @@ type Config struct {
 }
 
 type Backend struct {
+	policyMu                    sync.RWMutex
 	mu                          sync.Mutex
 	runscPath                   string
 	rootFS                      string
@@ -137,8 +138,8 @@ func New(config Config) (*Backend, error) {
 	if config.StartTimeout == 0 {
 		config.StartTimeout = 15 * time.Second
 	}
-	if config.StartTimeout < time.Second || config.StartTimeout > 2*time.Minute {
-		return nil, errors.New("rootless sandbox start timeout must be between 1 second and 2 minutes")
+	if config.StartTimeout < time.Second || config.StartTimeout > 10*time.Minute {
+		return nil, errors.New("rootless sandbox start timeout must be between 1 second and 10 minutes")
 	}
 	productionRunner := config.Runner == nil
 	if productionRunner {
@@ -204,6 +205,9 @@ func (b *Backend) OpenConsole(ctx context.Context, sandboxID string, options bac
 }
 
 func (b *Backend) Create(ctx context.Context, sandbox model.SandboxSpec, output records.RawPaths) (backend.Observation, error) {
+	b.policyMu.RLock()
+	startTimeout := b.startTimeout
+	b.policyMu.RUnlock()
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if err := sandbox.Validate(); err != nil {
@@ -264,10 +268,10 @@ func (b *Backend) Create(ctx context.Context, sandbox model.SandboxSpec, output 
 		return backend.Observation{}, err
 	}
 	arguments := b.runscArguments(meta, "run", "--detach", "--bundle="+bundle, "--user-log=/proc/self/fd/2", sandbox.SandboxID)
-	if output, err := b.runner.Run(ctx, Command{Path: b.runscPath, Arguments: arguments, SandboxID: sandbox.SandboxID, Output: output, Timeout: b.startTimeout}); err != nil {
+	if output, err := b.runner.Run(ctx, Command{Path: b.runscPath, Arguments: arguments, SandboxID: sandbox.SandboxID, Output: output, Timeout: startTimeout}); err != nil {
 		return backend.Observation{}, errors.Join(fmt.Errorf("start rootless gVisor sandbox: %w: %s", err, strings.TrimSpace(string(output))), b.rollbackCreate(meta))
 	}
-	state, err := b.waitForState(ctx, meta, map[string]bool{"running": true}, b.startTimeout)
+	state, err := b.waitForState(ctx, meta, map[string]bool{"running": true}, startTimeout)
 	if err != nil {
 		return backend.Observation{}, errors.Join(fmt.Errorf("wait for rootless gVisor sandbox: %w", err), b.rollbackCreate(meta))
 	}
@@ -887,4 +891,10 @@ func cloneMap(values map[string]string) map[string]string {
 		result[key] = value
 	}
 	return result
+}
+
+func (b *Backend) SetStartupTimeout(timeout time.Duration) {
+	b.policyMu.Lock()
+	b.startTimeout = timeout
+	b.policyMu.Unlock()
 }

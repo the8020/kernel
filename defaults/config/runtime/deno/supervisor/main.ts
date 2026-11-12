@@ -115,7 +115,7 @@ const snapshots = new SnapshotPublisher(
   () => supervisor.heartbeat(),
   async (snapshot) => {
     const response = await postCallback("/v1/runtime/heartbeat", snapshot);
-    await response.body?.cancel();
+    applyRuntimePolicy(await response.json());
   },
   (error) => console.error("Heartbeat failed", error),
 );
@@ -129,6 +129,10 @@ const supervisor = new Supervisor({
   kernelCall,
   logSink: logs,
   onStateChange: () => snapshots.markDirty(),
+  heartbeatIntervalMilliseconds: requiredMilliseconds(
+    "HEARTBEAT_INTERVAL_MS",
+    5_000,
+  ),
   workerStopGraceMilliseconds: requiredMilliseconds(
     "WORKER_STOP_GRACE_MS",
     1_000,
@@ -137,7 +141,7 @@ const supervisor = new Supervisor({
 
 const port = Number(Deno.env.get("SUPERVISOR_PORT") ?? "8000");
 const host = Deno.env.get("SUPERVISOR_HOST") ?? "0.0.0.0";
-const heartbeatInterval = Number(
+let heartbeatInterval = Number(
   Deno.env.get("HEARTBEAT_INTERVAL_MS") ?? "5000",
 );
 if (!Number.isSafeInteger(heartbeatInterval) || heartbeatInterval < 100) {
@@ -146,6 +150,17 @@ if (!Number.isSafeInteger(heartbeatInterval) || heartbeatInterval < 100) {
 const server = supervisor.serve({ hostname: host, port });
 
 let heartbeat: ReturnType<typeof setInterval> | undefined;
+const applyRuntimePolicy = (value: unknown): void => {
+  const interval = supervisor.configureRuntimePolicy(value);
+  if (interval === heartbeatInterval) return;
+  heartbeatInterval = interval;
+  if (heartbeat !== undefined) {
+    clearInterval(heartbeat);
+    heartbeat = setInterval(() => {
+      void supervisor.refreshResources();
+    }, interval);
+  }
+};
 let stopping: Promise<void> | undefined;
 const stop = (): void => {
   stopping ??= (async () => {
@@ -162,7 +177,7 @@ try {
   if (kernelSocketPath !== undefined && kernelSocketPath.length > 0) {
     const send = async (path: string, body: unknown): Promise<void> => {
       const response = await postCallback(path, body);
-      await response.body?.cancel();
+      applyRuntimePolicy(await response.json());
     };
     await send("/v1/runtime/register", supervisor.registration());
     snapshots.enable();

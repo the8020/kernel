@@ -993,3 +993,70 @@ func historyForSandbox(t *testing.T, manager *Manager, sandboxID string) history
 	t.Fatalf("sandbox %s is missing from history: %#v", sandboxID, page)
 	return history.Inspection{}
 }
+
+func TestLiveAdmissionReductionPreservesSandboxesAndIdlePolicyRechecks(t *testing.T) {
+	m, _, _, _, _ := testManager(t)
+	policy := m.runtimePolicy()
+	policy.KeepAlive = time.Hour
+	policy.NodeLimits = NodeLimits{MaximumSandboxes: 3, MaximumWorkers: 10, TemporaryStorageBytes: 1000}
+	m.SetRuntimePolicy(policy)
+	for _, id := range []string{"live-one", "live-two"} {
+		if _, err := m.Create(t.Context(), testSandboxSpec(t, id)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	policy.NodeLimits.MaximumSandboxes = 1
+	m.SetRuntimePolicy(policy)
+	if _, err := m.Create(t.Context(), testSandboxSpec(t, "live-three")); err == nil {
+		t.Fatal("limit reduction admitted a new sandbox")
+	}
+	for _, id := range []string{"live-one", "live-two"} {
+		item, err := m.Inspect(t.Context(), id)
+		if err != nil || item.Status.ObservedState != model.StateReady {
+			t.Fatalf("live work changed: %+v %v", item, err)
+		}
+	}
+	if _, err := m.RemoveOwner(t.Context(), "live-one", "job", ""); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := m.CleanupIdle(t.Context()); err != nil || n != 0 {
+		t.Fatalf("old retention: %d %v", n, err)
+	}
+	policy.KeepAlive = 0
+	m.SetRuntimePolicy(policy)
+	if n, err := m.CleanupIdle(t.Context()); err != nil || n != 1 {
+		t.Fatalf("live retention: %d %v", n, err)
+	}
+	if _, err := m.Inspect(t.Context(), "live-two"); err != nil {
+		t.Fatal("active ownership was expired", err)
+	}
+}
+
+func TestHeartbeatReductionWaitsForObservedSupervisorCadence(t *testing.T) {
+	m, store, _, _, _ := testManager(t)
+	spec := testSandboxSpec(t, "live-timing")
+	if _, err := m.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	started := m.now()
+	now := started
+	m.now = func() time.Time { return now }
+	policy := m.runtimePolicy()
+	policy.HeartbeatInterval = 100 * time.Millisecond
+	m.SetRuntimePolicy(policy)
+	observe := func(revision uint64, interval int64) {
+		_, err := store.Observe(spec.SandboxID, model.RuntimeSnapshot{Revision: revision, SupervisorStartedAtMS: 1, SandboxID: spec.SandboxID, WorkloadType: spec.WorkloadType, HeartbeatIntervalMS: interval}, started)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	observe(1, 5000)
+	now = started.Add(time.Second)
+	if report, err := m.CheckHealth(t.Context(), 500*time.Millisecond); err != nil || len(report.Failures) != 0 {
+		t.Fatalf("healthy old cadence failed: %+v %v", report, err)
+	}
+	observe(2, 100)
+	if report, err := m.CheckHealth(t.Context(), 500*time.Millisecond); err != nil || len(report.Failures) != 1 {
+		t.Fatalf("new timeout not enforced: %+v %v", report, err)
+	}
+}

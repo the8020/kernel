@@ -97,8 +97,10 @@ func TestRealRunscSupervisorUsesMountedKernelSocket(t *testing.T) {
 		if request.URL.Path == "/v1/runtime/database/scope" {
 			envelope["message_type"], envelope["payload"] = "database_result", map[string]any{}
 		}
-		// Production callbacks acknowledge with a JSON envelope. Keep that same
-		// framing here so registration and heartbeat completion are exercised.
+		if request.URL.Path == "/v1/runtime/register" || request.URL.Path == "/v1/runtime/heartbeat" {
+			envelope = map[string]any{"accepted": true, "heartbeat_interval_ms": 100, "worker_stop_grace_ms": 1000}
+		}
+		// Match the authenticated production acknowledgement and its timing policy.
 		writer.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(writer).Encode(envelope)
 	})}

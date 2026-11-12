@@ -51,22 +51,23 @@ type LogRegistry interface {
 }
 
 type Config struct {
-	InstanceUUID     string
-	CgroupRoot       string
-	StartupTimeout   time.Duration
-	ProbeInterval    time.Duration
-	KeepAlive        time.Duration
-	StopGrace        time.Duration
-	Store            *state.Store
-	Backend          backend.Backend
-	Network          Network
-	Supervisor       Supervisor
-	Ports            PortLeases
-	Logs             LogRegistry
-	History          *history.Store
-	HistoryRetention time.Duration
-	NodeLimits       NodeLimits
-	Now              func() time.Time
+	InstanceUUID      string
+	CgroupRoot        string
+	HeartbeatInterval time.Duration
+	StartupTimeout    time.Duration
+	ProbeInterval     time.Duration
+	KeepAlive         time.Duration
+	StopGrace         time.Duration
+	Store             *state.Store
+	Backend           backend.Backend
+	Network           Network
+	Supervisor        Supervisor
+	Ports             PortLeases
+	Logs              LogRegistry
+	History           *history.Store
+	HistoryRetention  time.Duration
+	NodeLimits        NodeLimits
+	Now               func() time.Time
 }
 
 // NodeLimits are kernel-owned admission budgets for all live sandboxes on one
@@ -84,11 +85,13 @@ type NodeCapacity struct {
 }
 
 type Manager struct {
+	policyMu           sync.RWMutex
 	admissionMu        sync.Mutex
 	maintenanceMu      sync.Mutex
 	lifecycleLocks     [256]sync.Mutex
 	instanceUUID       string
 	cgroupRoot         string
+	heartbeatInterval  time.Duration
 	startupTimeout     time.Duration
 	probeInterval      time.Duration
 	keepAlive          time.Duration
@@ -176,7 +179,7 @@ func New(config Config) (*Manager, error) {
 	if config.HistoryRetention <= 0 {
 		config.HistoryRetention = history.DefaultRetention
 	}
-	return &Manager{instanceUUID: config.InstanceUUID, cgroupRoot: config.CgroupRoot, startupTimeout: config.StartupTimeout, probeInterval: config.ProbeInterval, keepAlive: config.KeepAlive, stopGrace: config.StopGrace, store: config.Store, backend: config.Backend, network: config.Network, supervisor: config.Supervisor, ports: config.Ports, logs: config.Logs, history: config.History, historyRetention: config.HistoryRetention, nodeLimits: config.NodeLimits, reservedSandboxIDs: map[string]bool{}, pendingCreations: map[string]model.SandboxSpec{}, now: config.Now}, nil
+	return &Manager{instanceUUID: config.InstanceUUID, cgroupRoot: config.CgroupRoot, heartbeatInterval: config.HeartbeatInterval, startupTimeout: config.StartupTimeout, probeInterval: config.ProbeInterval, keepAlive: config.KeepAlive, stopGrace: config.StopGrace, store: config.Store, backend: config.Backend, network: config.Network, supervisor: config.Supervisor, ports: config.Ports, logs: config.Logs, history: config.History, historyRetention: config.HistoryRetention, nodeLimits: config.NodeLimits, reservedSandboxIDs: map[string]bool{}, pendingCreations: map[string]model.SandboxSpec{}, now: config.Now}, nil
 }
 
 // NewSandboxID reserves one short ID after checking both the live catalog and
@@ -225,7 +228,7 @@ func (m *Manager) InspectHistory(historyID string) (history.Inspection, error) {
 }
 
 func (m *Manager) CleanupHistory() (int, error) {
-	return m.history.Cleanup(m.historyRetention)
+	return m.history.Cleanup(m.runtimePolicy().HistoryRetention)
 }
 
 func (m *Manager) Create(ctx context.Context, spec model.SandboxSpec) (result Inspection, resultErr error) {
@@ -524,7 +527,7 @@ func (m *Manager) RemoveOwner(ctx context.Context, sandboxID, ownerID, logicalSe
 	if logicalServiceID != "" {
 		updatedSpec.ServiceIDs = removeString(updatedSpec.ServiceIDs, logicalServiceID)
 	}
-	if len(updatedSpec.OwnerIDs) == 0 && status.WorkerCount == 0 && m.keepAlive == 0 {
+	if len(updatedSpec.OwnerIDs) == 0 && status.WorkerCount == 0 && m.runtimePolicy().KeepAlive == 0 {
 		return true, m.deleteLocked(ctx, spec.SandboxID)
 	}
 	_, err = m.saveOwners(ctx, spec, updatedSpec)
@@ -742,7 +745,7 @@ func (m *Manager) CheckHealth(ctx context.Context, heartbeatTimeout time.Duratio
 // CleanupIdle examines only expired entries in the cached idle queue. Atomic
 // owner acquisition uses the same lifecycle lock as expiry, protecting startup.
 func (m *Manager) CleanupIdle(ctx context.Context) (int, error) {
-	cutoff := m.now().Add(-m.keepAlive)
+	cutoff := m.now().Add(-m.runtimePolicy().KeepAlive)
 	removed := 0
 	var joined error
 	for _, id := range m.store.ClaimIdle(cutoff, maximumMaintenancePerPass) {
@@ -785,6 +788,14 @@ func (m *Manager) checkStaleHealth(ctx context.Context, sandboxID string, now ti
 	}
 	if status.ObservedState != model.StateReady && status.ObservedState != model.StateActive && status.ObservedState != model.StateDraining {
 		return HealthFailure{}, false, nil
+	}
+	snapshot, _ := m.store.Snapshot(sandboxID)
+	interval := time.Duration(snapshot.HeartbeatIntervalMS) * time.Millisecond
+	if interval == 0 && m.runtimePolicy().HeartbeatInterval > 0 {
+		interval = time.Minute
+	}
+	if interval > m.runtimePolicy().HeartbeatInterval {
+		heartbeatTimeout = max(heartbeatTimeout, 3*interval)
 	}
 	cutoff := now.Add(-heartbeatTimeout)
 	if status.LastHeartbeat.After(cutoff) {
@@ -891,7 +902,7 @@ func (m *Manager) deleteLocked(ctx context.Context, sandboxID string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := m.history.Archive(spec, terminal, "sandbox deleted", m.historyRetention); err != nil {
+	if _, err := m.history.Archive(spec, terminal, "sandbox deleted", m.runtimePolicy().HistoryRetention); err != nil {
 		return fmt.Errorf("archive deleted sandbox: %w", err)
 	}
 	return m.store.Delete(spec.SandboxID)
@@ -1092,7 +1103,7 @@ func (m *Manager) destroyInherited(ctx context.Context) (ReconcileReport, error)
 			joined = errors.Join(joined, fmt.Errorf("load persisted sandbox %s for history: %w", id, loadErr))
 			continue
 		}
-		if _, err := m.history.Archive(spec, status, "sandbox cleaned during kernel startup", m.historyRetention); err != nil {
+		if _, err := m.history.Archive(spec, status, "sandbox cleaned during kernel startup", m.runtimePolicy().HistoryRetention); err != nil {
 			joined = errors.Join(joined, fmt.Errorf("archive inherited sandbox %s: %w", id, err))
 			continue
 		}
@@ -1183,7 +1194,7 @@ func (m *Manager) Shutdown(ctx context.Context, policy ShutdownPolicy) error {
 }
 
 func (m *Manager) waitReady(ctx context.Context, spec model.SandboxSpec) (supervisor.Status, error) {
-	readyContext, cancel := context.WithTimeout(ctx, m.startupTimeout)
+	readyContext, cancel := context.WithTimeout(ctx, m.runtimePolicy().StartupTimeout)
 	defer cancel()
 	ticker := time.NewTicker(m.probeInterval)
 	defer ticker.Stop()
@@ -1236,7 +1247,7 @@ func (m *Manager) stopSpecLocked(ctx context.Context, spec model.SandboxSpec, st
 	if immediate {
 		err = m.backend.Kill(ctx, spec.SandboxID)
 	} else {
-		err = m.backend.Stop(ctx, spec.SandboxID, m.stopGrace)
+		err = m.backend.Stop(ctx, spec.SandboxID, m.runtimePolicy().StopGrace)
 	}
 	if err != nil {
 		return errors.Join(portErr, err)
@@ -1295,7 +1306,7 @@ func (m *Manager) failHealth(ctx context.Context, spec model.SandboxSpec, reason
 	} else if cleanupErr != nil {
 		// Keep the failed record in the live catalog until cleanup can be retried
 		// explicitly; history represents only completed runtime cleanup.
-	} else if _, err := m.history.Archive(spec, terminal, reason, m.historyRetention); err != nil {
+	} else if _, err := m.history.Archive(spec, terminal, reason, m.runtimePolicy().HistoryRetention); err != nil {
 		reason += "; archive sandbox history: " + err.Error()
 		_, _ = m.store.UpdateStatus(spec.SandboxID, func(value *model.SandboxStatus) error {
 			value.FailureReason = reason
@@ -1332,4 +1343,21 @@ func (m *Manager) cleanupFailed(ctx context.Context, spec model.SandboxSpec, rea
 		joined = errors.Join(joined, err)
 	}
 	return reason, joined
+}
+
+// SetRuntimePolicy changes subsequent operations; admitted work is never evicted.
+func (m *Manager) SetRuntimePolicy(config Config) {
+	m.policyMu.Lock()
+	m.heartbeatInterval = config.HeartbeatInterval
+	m.startupTimeout, m.stopGrace, m.keepAlive, m.historyRetention = config.StartupTimeout, config.StopGrace, config.KeepAlive, config.HistoryRetention
+	m.policyMu.Unlock()
+	m.admissionMu.Lock()
+	m.nodeLimits = config.NodeLimits
+	m.admissionMu.Unlock()
+}
+
+func (m *Manager) runtimePolicy() Config {
+	m.policyMu.RLock()
+	defer m.policyMu.RUnlock()
+	return Config{HeartbeatInterval: m.heartbeatInterval, StartupTimeout: m.startupTimeout, StopGrace: m.stopGrace, KeepAlive: m.keepAlive, HistoryRetention: m.historyRetention}
 }

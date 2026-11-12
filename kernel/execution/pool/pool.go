@@ -31,23 +31,24 @@ type Template struct {
 }
 
 type Controller struct {
-	pool      *WarmPool
-	sandboxes Sandboxes
-	templates map[string]Template
-	logger    *slog.Logger
-	reconcile sync.Mutex
-	lifecycle sync.Mutex
-	started   bool
-	cancel    context.CancelFunc
-	queue     chan string
-	wait      sync.WaitGroup
+	pool        *WarmPool
+	sandboxes   Sandboxes
+	templates   map[string]Template
+	logger      *slog.Logger
+	templatesMu sync.RWMutex
+	reconcile   sync.Mutex
+	lifecycle   sync.Mutex
+	started     bool
+	cancel      context.CancelFunc
+	queue       chan struct{}
+	wait        sync.WaitGroup
 }
 
 func New(sandboxes Sandboxes, templates []Template, logger *slog.Logger) (*Controller, error) {
 	if sandboxes == nil || len(templates) == 0 {
 		return nil, errors.New("sandbox manager and at least one warm profile template are required")
 	}
-	controller := &Controller{pool: NewWarmPool(), sandboxes: sandboxes, templates: map[string]Template{}, logger: logger, queue: make(chan string, len(templates)*2)}
+	controller := &Controller{pool: NewWarmPool(), sandboxes: sandboxes, templates: map[string]Template{}, logger: logger, queue: make(chan struct{}, 1)}
 	for _, template := range templates {
 		hash, err := template.Profile.Hash()
 		if err != nil {
@@ -116,13 +117,18 @@ func (c *Controller) Start(ctx context.Context, desired int) error {
 }
 
 func (c *Controller) Resize(profileHash string, count int) error {
-	if _, ok := c.templates[profileHash]; !ok {
+	c.templatesMu.RLock()
+	_, ok := c.templates[profileHash]
+	if !ok {
+		c.templatesMu.RUnlock()
 		return fmt.Errorf("warm-pool profile %q is not registered", profileHash)
 	}
-	if err := c.pool.Resize(profileHash, count); err != nil {
+	err := c.pool.Resize(profileHash, count)
+	c.templatesMu.RUnlock()
+	if err != nil {
 		return err
 	}
-	c.trigger(profileHash)
+	c.trigger()
 	return nil
 }
 
@@ -136,14 +142,17 @@ func (c *Controller) Forget(sandboxID string) error {
 		if err := c.pool.Destroy(sandboxID); err != nil {
 			return err
 		}
-		c.trigger(group.ProfileHash)
+		c.trigger()
 		return nil
 	}
 	return nil
 }
 
 func (c *Controller) Assign(ctx context.Context, profileHash, groupKey, ownerID string) (manager.Inspection, bool, error) {
-	if _, ok := c.templates[profileHash]; !ok {
+	c.templatesMu.RLock()
+	_, ok := c.templates[profileHash]
+	c.templatesMu.RUnlock()
+	if !ok {
 		return manager.Inspection{}, false, nil
 	}
 	warm, ok := c.pool.Reserve(profileHash)
@@ -153,13 +162,13 @@ func (c *Controller) Assign(ctx context.Context, profileHash, groupKey, ownerID 
 	assigned, err := c.sandboxes.AssignWarm(ctx, warm.SandboxID, groupKey, ownerID)
 	if err != nil {
 		_ = c.pool.SetState(warm.SandboxID, WarmFailed)
-		c.trigger(profileHash)
+		c.trigger()
 		return manager.Inspection{}, false, err
 	}
 	if err := c.pool.SetState(warm.SandboxID, WarmAssigned); err != nil {
 		return manager.Inspection{}, false, err
 	}
-	c.trigger(profileHash)
+	c.trigger()
 	return assigned, true, nil
 }
 
@@ -179,23 +188,29 @@ func (c *Controller) run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case hash := <-c.queue:
-			if err := c.reconcileProfile(ctx, hash); err != nil {
-				if c.logger != nil {
-					c.logger.Error("warm-pool reconciliation failed", "profile_hash", hash, "error", err)
+		case <-c.queue:
+			for _, status := range c.pool.Status() {
+				if status.Desired == 0 && status.Ready == 0 && status.Creating == 0 {
+					continue
 				}
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(time.Second):
-					c.trigger(hash)
+				hash := status.ProfileHash
+				if err := c.reconcileProfile(ctx, hash); err != nil {
+					if c.logger != nil {
+						c.logger.Error("warm-pool reconciliation failed", "profile_hash", hash, "error", err)
+					}
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(time.Second):
+						c.trigger()
+					}
 				}
 			}
 		}
 	}
 }
 
-func (c *Controller) trigger(profileHash string) {
+func (c *Controller) trigger() {
 	c.lifecycle.Lock()
 	started := c.started
 	c.lifecycle.Unlock()
@@ -203,7 +218,7 @@ func (c *Controller) trigger(profileHash string) {
 		return
 	}
 	select {
-	case c.queue <- profileHash:
+	case c.queue <- struct{}{}:
 	default:
 	}
 }
@@ -211,20 +226,24 @@ func (c *Controller) trigger(profileHash string) {
 func (c *Controller) reconcileProfile(ctx context.Context, profileHash string) error {
 	c.reconcile.Lock()
 	defer c.reconcile.Unlock()
+	c.templatesMu.RLock()
 	template, ok := c.templates[profileHash]
-	if !ok {
+	status := statusFor(c.pool.Status(), profileHash)
+	c.templatesMu.RUnlock()
+	if !ok && status.Desired > 0 {
 		return fmt.Errorf("warm-pool profile %q is not registered", profileHash)
 	}
-	status := statusFor(c.pool.Status(), profileHash)
 	for status.Ready+status.Creating < status.Desired {
 		if err := c.create(ctx, profileHash, template); err != nil {
 			return err
 		}
 		status = statusFor(c.pool.Status(), profileHash)
 	}
-	ready := c.pool.Sandboxes(profileHash, WarmReady)
-	for len(ready) > status.Desired {
-		candidate := ready[len(ready)-1]
+	for {
+		candidate, ok := c.pool.reserveExcess(profileHash)
+		if !ok {
+			break
+		}
 		if err := c.sandboxes.Delete(ctx, candidate.SandboxID); err != nil {
 			_ = c.pool.SetState(candidate.SandboxID, WarmFailed)
 			return fmt.Errorf("trim warm sandbox %s: %w", candidate.SandboxID, err)
@@ -232,7 +251,6 @@ func (c *Controller) reconcileProfile(ctx context.Context, profileHash string) e
 		if err := c.pool.Destroy(candidate.SandboxID); err != nil {
 			return err
 		}
-		ready = ready[:len(ready)-1]
 	}
 	return nil
 }
@@ -279,4 +297,28 @@ func statusFor(statuses []PoolStatus, profileHash string) PoolStatus {
 		}
 	}
 	return PoolStatus{ProfileHash: profileHash}
+}
+
+// SetTemplates accepts validated templates. Old profiles drain only their clean warm capacity.
+func (c *Controller) SetTemplates(templates []Template, desired int) {
+	next := make(map[string]Template, len(templates))
+	for _, template := range templates {
+		if template.Network == "" {
+			template.Network = "the8020"
+		}
+		hash, _ := template.Profile.Hash()
+		next[hash] = template
+	}
+	c.templatesMu.Lock()
+	for hash := range c.templates {
+		if _, retained := next[hash]; !retained {
+			_ = c.pool.Resize(hash, 0)
+		}
+	}
+	c.templates = next
+	for hash := range next {
+		_ = c.pool.Resize(hash, desired)
+	}
+	c.templatesMu.Unlock()
+	c.trigger()
 }

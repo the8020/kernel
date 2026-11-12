@@ -13,8 +13,12 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
+	"the8020/kernel/settings"
 	"time"
 
 	"the8020/kernel/execution"
@@ -114,6 +118,73 @@ func TestHTTPSPublicationUsesPackageProgramsAndPreservesAcceptedListener(t *test
 	if keyReads != 1 {
 		t.Fatalf("unchanged key loaded %d times", keyReads)
 	}
+
+	nodeSettings := filepath.Join(t.TempDir(), "kernel.toml")
+	defs := []settings.Definition{{Key: "network.https_port", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(port), Environment: "THE8020_NETWORK_HTTPS_PORT", RuntimeMutable: true, Description: "Native TLS port."}}
+	configured, err := settings.New(defs, settings.PersistencePaths{Node: nodeSettings}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := configured.RegisterApplier([]string{"network.https_port"}, publisher); err != nil {
+		t.Fatal(err)
+	}
+	occupied, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	occupiedPort := occupied.Addr().(*net.TCPAddr).Port
+	if _, err := configured.Set(t.Context(), "network.https_port", strconv.Itoa(occupiedPort)); err == nil {
+		t.Fatal("occupied port accepted")
+	}
+	occupied.Close()
+	if manager.TLSPort() != port {
+		t.Fatal("failed preparation changed live TLS")
+	}
+	candidate := availablePort(t)
+	if _, err := configured.Set(t.Context(), "network.https_port", strconv.Itoa(candidate)); err != nil {
+		t.Fatal(err)
+	}
+	port = candidate
+	connect()
+	// Settings and package publications serialize on this native owner.
+	var wait sync.WaitGroup
+	results := make(chan error, 2)
+	wait.Add(2)
+	go func() { defer wait.Done(); results <- publisher.publish(t.Context(), true) }()
+	go func() {
+		defer wait.Done()
+		_, err := configured.Set(t.Context(), "network.https_port", strconv.Itoa(port))
+		results <- err
+	}()
+	wait.Wait()
+	close(results)
+	for err := range results {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if manager.TLSPort() != port {
+		t.Fatal("package publication restored an obsolete port")
+	}
+	// A persistence failure discards the prepared listener and leaves the old one serving.
+	badNode := filepath.Join(t.TempDir(), "blocked", "kernel.toml")
+	badSettings, err := settings.New(defs, settings.PersistencePaths{Node: badNode}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Dir(badNode), []byte("block parent directory"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := badSettings.RegisterApplier([]string{"network.https_port"}, publisher); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := badSettings.Set(t.Context(), "network.https_port", strconv.Itoa(availablePort(t))); err == nil {
+		t.Fatal("failed persistence succeeded")
+	}
+	if manager.TLSPort() != port {
+		t.Fatal("failed persistence changed live TLS")
+	}
+	connect()
 	state.Revision++
 	state.Certificates[0].ID = "two"
 	privateKey = "invalid-private-material"

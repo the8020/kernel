@@ -459,3 +459,22 @@ func TestSharedStateHealthDeadlineDoesNotBoundOrdinaryIndexJobs(t *testing.T) {
 		t.Fatal("index jobs inherited the short or canceled health probe context")
 	}
 }
+
+func TestRuntimeResourcePolicyUpdatesFutureMountsWithoutMutatingExistingProfile(t *testing.T) {
+	old := model.ResourceLimits{PIDMaximum: 64, TmpfsMaximum: 64 << 20}
+	existing := runtimeProfile(model.WorkloadJob, "sha256:"+strings.Repeat("a", 64), nil, old, true)
+	oldHash, _ := existing.Hash()
+	next := profileResources(existing, model.ResourceLimits{PIDMaximum: 32, TmpfsMaximum: 32 << 20})
+	nextHash, err := next.Hash()
+	if err != nil || oldHash == nextHash {
+		t.Fatalf("resource compatibility unchanged: %s %s %v", oldHash, nextHash, err)
+	}
+	for i, mount := range next.Mounts {
+		if mount.Purpose == "temporary" && (mount.MaximumSize != 32<<20 || existing.Mounts[i].MaximumSize != 64<<20) {
+			t.Fatalf("mount limits: next=%+v existing=%+v", mount, existing.Mounts[i])
+		}
+	}
+	if hash, _ := existing.Hash(); hash != oldHash {
+		t.Fatal("existing profile mutated")
+	}
+}

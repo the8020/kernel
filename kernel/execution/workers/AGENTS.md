@@ -16,6 +16,9 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
 
 # Local Contracts
 
+- `SetLimits` shares the admission lock with Worker reservations. Reductions
+  never stop admitted Workers; further starts wait for counts below both limits.
+
 - `MatchingImports` targets one known sandbox and selected Workers, sends
   changed paths in batches of at most 1,024, and deduplicates matching IDs. It
   performs no global inventory lookup and stores no imports in Go or snapshots.

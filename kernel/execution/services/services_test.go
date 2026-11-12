@@ -965,3 +965,32 @@ func TestServiceInstanceCollisionPreservesRetainedAllocation(t *testing.T) {
 		t.Fatalf("collision changed owner: %#v", actual)
 	}
 }
+
+func TestLiveAllocationPolicyPreservesExistingServicePool(t *testing.T) {
+	store, err := records.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, w := &fakeCoordinator{}, &fakeWorkers{}
+	profile := model.RuntimeProfile{WorkloadType: model.WorkloadService, ResourceClass: "old"}
+	m, err := New(c, w, store, Policy{Strategy: model.GroupingOwner, Profile: profile, Resources: model.ResourceLimits{PIDMaximum: 32}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := m.Start(t.Context(), "first", "file:///programs/first.ts", testOptions(1, 2, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile.ResourceClass = "new"
+	m.SetAllocationPolicy(model.GroupingShared, profile, model.ResourceLimits{PIDMaximum: 64}, model.LifecyclePolicy{})
+	if _, err := m.Start(t.Context(), "second", "file:///programs/second.ts", testOptions(1, 2, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if c.requests[0].Strategy != model.GroupingOwner || c.requests[0].ResourceLimits.PIDMaximum != 32 || c.requests[1].Strategy != model.GroupingShared || c.requests[1].ResourceLimits.PIDMaximum != 64 {
+		t.Fatalf("policies: %+v", c.requests)
+	}
+	current, err := m.Inspect("first")
+	if err != nil || current.SandboxID != first.SandboxID || !slices.Equal(current.WorkerIDs, first.WorkerIDs) || len(w.stops) != 0 {
+		t.Fatalf("existing service changed: %+v %v", current, err)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"the8020/kernel/identity"
 	"time"
 
@@ -36,7 +37,7 @@ type WarmPool interface {
 type Coordinator struct {
 	sandboxes      SandboxManager
 	warm           WarmPool
-	maximumWorkers int
+	maximumWorkers atomic.Int64
 }
 
 type Request struct {
@@ -62,7 +63,8 @@ func New(sandboxes SandboxManager, maximumWorkers int, warm ...WarmPool) (*Coord
 	if maximumWorkers < 1 {
 		return nil, errors.New("sandbox maximum Workers must be positive")
 	}
-	coordinator := &Coordinator{sandboxes: sandboxes, maximumWorkers: maximumWorkers}
+	coordinator := &Coordinator{sandboxes: sandboxes}
+	coordinator.SetMaximumWorkers(maximumWorkers)
 	if len(warm) > 0 {
 		coordinator.warm = warm[0]
 	}
@@ -85,7 +87,7 @@ func (c *Coordinator) Ensure(ctx context.Context, request Request) (manager.Insp
 		existing = append(existing, group)
 		byID[item.Spec.SandboxID] = item
 	}
-	selection, err := placement.Select(placement.Request{WorkloadType: request.WorkloadType, OwnerID: request.OwnerID, ExecutionID: request.ExecutionID, Namespace: request.Namespace, ExplicitGroupKey: request.ExplicitGroupKey, PlacementGroup: request.PlacementGroup, LogicalServiceID: request.LogicalServiceID, RequestedWorkers: request.RequestedWorkers, MaximumWorkers: c.maximumWorkers, Strategy: request.Strategy, Profile: request.Profile}, existing)
+	selection, err := placement.Select(placement.Request{WorkloadType: request.WorkloadType, OwnerID: request.OwnerID, ExecutionID: request.ExecutionID, Namespace: request.Namespace, ExplicitGroupKey: request.ExplicitGroupKey, PlacementGroup: request.PlacementGroup, LogicalServiceID: request.LogicalServiceID, RequestedWorkers: request.RequestedWorkers, MaximumWorkers: int(c.maximumWorkers.Load()), Strategy: request.Strategy, Profile: request.Profile}, existing)
 	if err != nil {
 		return manager.Inspection{}, err
 	}
@@ -147,3 +149,5 @@ func (c *Coordinator) Ensure(ctx context.Context, request Request) (manager.Insp
 	}
 	return inspection, nil
 }
+
+func (c *Coordinator) SetMaximumWorkers(maximum int) { c.maximumWorkers.Store(int64(maximum)) }

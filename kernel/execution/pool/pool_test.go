@@ -131,3 +131,68 @@ func testTemplate(t *testing.T) (model.RuntimeProfile, model.ResourceLimits) {
 	}
 	return profile, model.ResourceLimits{PIDMaximum: 32, TmpfsMaximum: 64}
 }
+
+func TestLiveTemplatesReplaceOnlyCleanWarmCapacity(t *testing.T) {
+	profile, resources := testTemplate(t)
+	oldHash, _ := profile.Hash()
+	sandboxes := &fakeSandboxes{}
+	c, err := New(sandboxes, []Template{{Profile: profile, Resources: resources}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.Start(t.Context(), 1); err != nil {
+		t.Fatal(err)
+	}
+	assigned, ok, err := c.Assign(t.Context(), oldHash, "group", "owner")
+	if err != nil || !ok {
+		t.Fatalf("assign %t %v", ok, err)
+	}
+	profile.ResourceClass = "live-new-resources"
+	resources.PIDMaximum++
+	next := []Template{{Profile: profile, Resources: resources}}
+	newHash, _ := profile.Hash()
+	for i := 0; i < 20; i++ {
+		c.SetTemplates(next, i%3)
+	}
+	c.SetTemplates(next, 2)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		status := statusFor(c.Status(), newHash)
+		if status.Ready == 2 && status.Desired == 2 && statusFor(c.Status(), oldHash).Ready == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("latest policy was lost: %+v", c.Status())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	sandboxes.mu.Lock()
+	defer sandboxes.mu.Unlock()
+	for _, id := range sandboxes.deleted {
+		if id == assigned.Spec.SandboxID {
+			t.Fatal("assigned sandbox was trimmed")
+		}
+	}
+	for _, spec := range sandboxes.created {
+		if spec.ProfileHash == newHash && spec.ResourceLimits.PIDMaximum != resources.PIDMaximum {
+			t.Fatal("new profile used old resources")
+		}
+	}
+}
+
+func TestTrimAndAssignmentCannotClaimTheSameWarmSandbox(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		p := NewWarmPool()
+		profile, _ := testTemplate(t)
+		hash, _ := profile.Hash()
+		_ = p.Resize(hash, 0)
+		_ = p.Add(WarmSandbox{SandboxID: "one", ProfileHash: hash, State: WarmReady})
+		assigned := make(chan bool, 1)
+		go func() { _, ok := p.Reserve(hash); assigned <- ok }()
+		_, trimmed := p.reserveExcess(hash)
+		if claimed := <-assigned; claimed == trimmed {
+			t.Fatalf("claims assignment=%t trim=%t", claimed, trimmed)
+		}
+	}
+}

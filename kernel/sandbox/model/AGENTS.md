@@ -13,6 +13,9 @@ Parent DOX: [kernel/kernel/sandbox DOX](../AGENTS.md).
 
 # Local Contracts
 
+- `RuntimeSnapshot.HeartbeatIntervalMS` acknowledges the applied supervisor
+  cadence; zero denotes an observation without that field, never a live policy.
+
 - Public API: exported model types, `CanonicalMounts`, `RuntimeProfile.Hash`,
   `SandboxSpec.Validate` and `ValidTransition`.
 - Operational ID generation and validation belong to the shared `identity`

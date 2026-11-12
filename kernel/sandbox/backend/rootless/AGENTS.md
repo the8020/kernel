@@ -15,6 +15,9 @@ Parent DOX: [kernel/kernel/sandbox/backend DOX](../AGENTS.md).
 
 # Local Contracts
 
+- `SetStartupTimeout` changes subsequent native creation deadlines; already
+  starting sandboxes keep the captured timeout.
+
 - Public API: `New`, `Backend.Close`, the shared sandbox backend lifecycle
   methods, and generic `OpenConsole` PTY or direct-stream exec.
 - Every sandbox uses the pinned node-local `runsc`, `--rootless=true`, systrap,

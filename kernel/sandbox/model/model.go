@@ -407,6 +407,7 @@ type RuntimeFailure struct {
 // whenever local runtime state changes, allowing the kernel to reject delayed
 // callbacks without having to reconstruct incremental events.
 type RuntimeSnapshot struct {
+	HeartbeatIntervalMS   int64                 `json:"heartbeat_interval_ms,omitempty"`
 	Revision              uint64                `json:"revision"`
 	SupervisorStartedAtMS int64                 `json:"supervisor_started_at_ms"`
 	ProtocolVersion       int                   `json:"protocol_version"`

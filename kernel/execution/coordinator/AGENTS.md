@@ -16,6 +16,9 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
 
 # Local Contracts
 
+- `SetMaximumWorkers` atomically updates future placement checks; existing
+  allocations keep their identities and Workers.
+
 - Public API: `New`, `Coordinator.Ensure`, `Coordinator.Release`, and `Request`.
 - Service and job requests use the same path. Matching keys reuse only healthy
   profile-compatible same-type groups and add a new shared owner; otherwise a

@@ -15,6 +15,9 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
 
 # Local Contracts
 
+- `SetAllocationPolicy` updates future pool creation through one policy
+  snapshot. Existing pools and Workers retain their sandbox/profile and routes.
+
 - Services inherit dependency and egress policy from the ordinary runtime
   profile. Never add a hidden service-specific cache-only override or an
   authentication dependency preload path; dynamic package imports use that same

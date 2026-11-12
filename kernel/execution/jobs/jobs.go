@@ -187,6 +187,9 @@ func (m *Manager) setDefaults(policy Policy) {
 type submission struct {
 	record         Record
 	profile        model.RuntimeProfile
+	strategy       model.GroupingStrategy
+	resources      model.ResourceLimits
+	lifecycle      model.LifecyclePolicy
 	groupKey       string
 	placementGroup *string
 	namespace      string
@@ -270,6 +273,9 @@ func (m *Manager) Run(ctx context.Context, jobID, entrypoint string, options Opt
 }
 
 func (m *Manager) prepare(jobID, entrypoint string, options Options) (submission, error) {
+	m.mu.Lock()
+	policy := m.policy
+	m.mu.Unlock()
 	if jobID == "" || entrypoint == "" {
 		return submission{}, errors.New("job ID and entrypoint are required")
 	}
@@ -277,15 +283,15 @@ func (m *Manager) prepare(jobID, entrypoint string, options Options) (submission
 	if ownerID == "" {
 		ownerID = jobID
 	}
-	profile, err := executionprofile.ForWorkerWithWorkspace(m.policy.Profile, options.Permissions, executionprofile.Workspace{Source: options.Workspace, OwnerID: ownerID, Writable: options.WorkspaceWritable}, m.policy.WorkspaceMounts)
+	profile, err := executionprofile.ForWorkerWithWorkspace(policy.Profile, options.Permissions, executionprofile.Workspace{Source: options.Workspace, OwnerID: ownerID, Writable: options.WorkspaceWritable}, policy.WorkspaceMounts)
 	if err != nil {
 		return submission{}, err
 	}
 	for _, requested := range options.Mounts {
-		if m.policy.WorkspaceMounts == nil {
+		if policy.WorkspaceMounts == nil {
 			return submission{}, errors.New("job mounts are unavailable")
 		}
-		mount, err := m.policy.WorkspaceMounts.Validate(requested)
+		mount, err := policy.WorkspaceMounts.Validate(requested)
 		if err != nil {
 			return submission{}, fmt.Errorf("job mount: %w", err)
 		}
@@ -320,9 +326,7 @@ func (m *Manager) prepare(jobID, entrypoint string, options Options) (submission
 	if options.Parallelism < 0 {
 		return submission{}, errors.New("job parallelism must not be negative")
 	}
-	m.mu.Lock()
-	maximumParallel, reuse, defaultTimeout := m.policy.MaximumParallel, m.policy.Reuse, m.policy.ExecutionTimeout
-	m.mu.Unlock()
+	maximumParallel, reuse, defaultTimeout := policy.MaximumParallel, policy.Reuse, policy.ExecutionTimeout
 	parallelism := options.Parallelism
 	if parallelism == 0 || parallelism > maximumParallel {
 		parallelism = maximumParallel
@@ -365,7 +369,7 @@ func (m *Manager) prepare(jobID, entrypoint string, options Options) (submission
 		placementGroup = &value
 	}
 	record := Record{
-		NodeID:      m.policy.NodeID,
+		NodeID:      policy.NodeID,
 		ExecutionID: executionID, ContextID: contextID, JobID: jobID, OwnerID: ownerID, User: user, Origin: origin,
 		ProfileHash: profileHash, Entrypoint: entrypoint, WorkerID: workerID,
 		ReleaseID: options.ReleaseID, State: "STARTING", Detached: options.Detached,
@@ -373,7 +377,7 @@ func (m *Manager) prepare(jobID, entrypoint string, options Options) (submission
 		DatabaseAccess: databaseAccess, DependencyModules: append([]string(nil), options.DependencyModules...),
 	}
 	return submission{
-		record: record, profile: profile, groupKey: options.GroupKey, placementGroup: placementGroup,
+		record: record, profile: profile, strategy: policy.Strategy, resources: policy.Resources, lifecycle: policy.Lifecycle, groupKey: options.GroupKey, placementGroup: placementGroup,
 		namespace: options.Namespace, arguments: arguments, secrets: copySecrets(options.Secrets),
 	}, nil
 }
@@ -418,8 +422,8 @@ func (m *Manager) start(ctx context.Context, prepared submission) (Record, error
 		WorkloadType: model.WorkloadJob, OwnerID: record.OwnerID,
 		AllocationID: record.WorkerID, RequestedWorkers: 1,
 		ExecutionID: record.ExecutionID, Namespace: prepared.namespace,
-		ExplicitGroupKey: prepared.groupKey, PlacementGroup: prepared.placementGroup, Strategy: m.policy.Strategy,
-		Profile: prepared.profile, ResourceLimits: m.policy.Resources, Lifecycle: m.policy.Lifecycle,
+		ExplicitGroupKey: prepared.groupKey, PlacementGroup: prepared.placementGroup, Strategy: prepared.strategy,
+		Profile: prepared.profile, ResourceLimits: prepared.resources, Lifecycle: prepared.lifecycle,
 	})
 	record.SandboxID = group.Spec.SandboxID
 	if err != nil {
@@ -960,4 +964,11 @@ func permissionsFor(value model.Permissions) supervisor.WorkerPermissions {
 		Net: append([]string(nil), value.NetworkHosts...), Import: append([]string(nil), value.ImportHosts...),
 		Env: append([]string(nil), value.Environment...), Sys: sys,
 	}
+}
+
+// SetAllocationPolicy affects future submissions, including their compatibility hash.
+func (m *Manager) SetAllocationPolicy(strategy model.GroupingStrategy, profile model.RuntimeProfile, resources model.ResourceLimits, lifecycle model.LifecyclePolicy) {
+	m.mu.Lock()
+	m.policy.Strategy, m.policy.Profile, m.policy.Resources, m.policy.Lifecycle = strategy, profile, resources, lifecycle
+	m.mu.Unlock()
 }

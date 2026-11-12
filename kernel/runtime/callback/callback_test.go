@@ -665,3 +665,44 @@ func callbackFixtureForWorkload(t testing.TB, store *state.Store, workload model
 	}
 	return spec, status
 }
+
+func TestHeartbeatAcknowledgementPublishesLiveTimingPolicy(t *testing.T) {
+	store, _ := state.New(t.TempDir())
+	spec, _ := callbackFixture(t, store)
+	server := newCallbackTestServer(t, store, nil)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 100; i++ {
+			server.SetRuntimePolicy(200*time.Millisecond, 30*time.Millisecond)
+		}
+	}()
+	payload := statusPayload{Revision: 2, SupervisorStartedAtMS: 1, ProtocolVersion: protocol.ProtocolVersion, SandboxID: spec.SandboxID, WorkloadType: string(spec.WorkloadType), HeartbeatIntervalMS: 5000}
+	for i := 0; i < 100; i++ {
+		response := runtimeControlCall(t, server, spec, "/v1/runtime/heartbeat", protocol.MessageHeartbeat, payload)
+		if response.Code != http.StatusOK {
+			t.Fatal(response.Body.String())
+		}
+	}
+	<-done
+	response := runtimeControlCall(t, server, spec, "/v1/runtime/heartbeat", protocol.MessageHeartbeat, payload)
+	var policy struct {
+		Accepted bool  `json:"accepted"`
+		Interval int64 `json:"heartbeat_interval_ms"`
+		Grace    int64 `json:"worker_stop_grace_ms"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &policy); err != nil {
+		t.Fatal(err)
+	}
+	if !policy.Accepted || policy.Interval != 200 || policy.Grace != 30 {
+		t.Fatalf("timing ack: %+v", policy)
+	}
+	observed, _ := store.Snapshot(spec.SandboxID)
+	if observed.HeartbeatIntervalMS != 5000 {
+		t.Fatal("desired cadence overwrote observed cadence", observed)
+	}
+	payload.HeartbeatIntervalMS = 60001
+	if response := runtimeControlCall(t, server, spec, "/v1/runtime/heartbeat", protocol.MessageHeartbeat, payload); response.Code != http.StatusBadRequest {
+		t.Fatal("invalid observed cadence accepted")
+	}
+}
