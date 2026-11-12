@@ -1,5 +1,20 @@
 # 80|20 kernel
 
+## 0.10.9: live PostgreSQL password rotation
+
+`database.password` now applies to future PostgreSQL connections without a kernel
+restart. Change the password at PostgreSQL, then apply it on each affected node
+through `kernel.config.set`; this command does not alter the database login.
+Existing connections and transactions keep running. A separate connection validates
+the candidate against the active database and username before saving; rejected
+credentials or failed persistence leave active settings unchanged. Unset validates
+the revealed fallback too. Native credential repair is available even when startup
+cannot log in. SQLite continues to ignore this setting.
+
+Backend, location and username changes retain their restart boundary because they
+can change database identity or SQL authority. The setting contract now lists
+thirteen restart settings. Application recommendations and schemas are unchanged.
+
 ## 0.10.8: live runtime policy
 
 Twenty-four more settings now apply through ordinary `kernel.config.set` and
@@ -14,7 +29,7 @@ acknowledgements; warm capacity and maintenance use their existing background
 owners. Failed validation or persistence preserves active policy.
 
 The [setting contract](kernel/settings/definitions/AGENTS.md#runtime-application)
-spells out timing, existing-work semantics, and the fourteen retained restart
+spells out timing, existing-work semantics, and the retained restart
 boundaries. Image settings validate installer-pinned artifacts; they do not
 select arbitrary images. The legacy `sandbox.network.egress_enabled` setting is
 **unenforced**: mutations are now rejected, and restarting does not enforce it.

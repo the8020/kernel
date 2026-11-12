@@ -15,6 +15,8 @@ Parent DOX: [kernel/kernel/cbus/commands/settings DOX](../AGENTS.md).
   `MapError` for the sibling unset handler.
 - Accept only node-local setting definitions. Network binding, logging
   preparation, validation, and persistence remain in their owners.
+- Map the database owner's credential-free password-validation failure to
+  `invalid_setting_value` for both set and unset; never expose driver errors.
 
 # Work Guidance
 

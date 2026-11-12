@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -40,6 +41,9 @@ const (
 	StateInitializationFailed = "INITIALIZATION_FAILED"
 	StateUnavailable          = "UNAVAILABLE"
 )
+
+// ErrPasswordValidation is safe to expose without driver/server credential details.
+var ErrPasswordValidation = errors.New("PostgreSQL password validation failed; verify credentials and database reachability")
 
 // Config selects the one system database used by this kernel.
 type Config struct {
@@ -104,6 +108,8 @@ type Manager struct {
 	fileModeMu           sync.Mutex
 	fileModeReady        bool
 	db                   *sql.DB
+	postgresConfig       *pgx.ConnConfig
+	postgresPassword     atomic.Value
 	openErr              error
 	statusMu             sync.RWMutex
 	status               Status
@@ -190,10 +196,15 @@ func New(config Config) *Manager {
 			manager.openErr = fmt.Errorf("configure PostgreSQL database: %w", err)
 			return manager
 		}
-		connection.User, connection.Password = config.Username, config.Password
+		connection.User, connection.Password = config.Username, ""
 		// Schema changes can be published by another node while pooled connections live.
 		connection.DefaultQueryExecMode = pgx.QueryExecModeDescribeExec
-		manager.db = stdlib.OpenDB(*connection)
+		manager.postgresConfig = connection
+		manager.postgresPassword.Store(config.Password)
+		manager.db = stdlib.OpenDB(*connection, stdlib.OptionBeforeConnect(func(_ context.Context, candidate *pgx.ConnConfig) error {
+			candidate.Password = manager.postgresPassword.Load().(string)
+			return nil
+		}))
 	default:
 		manager.openErr = fmt.Errorf("unsupported database backend %q", config.Backend)
 	}
@@ -328,9 +339,13 @@ type preparedPool struct {
 	policy             poolPolicy
 	maximumResultRows  int
 	maximumResultBytes int
+	password           *string
 }
 
 func (p preparedPool) Commit() {
+	if p.password != nil {
+		p.manager.postgresPassword.Store(*p.password)
+	}
 	p.manager.applyPool(p.policy)
 	p.manager.statusMu.Lock()
 	p.manager.status.MaximumResultRows = p.maximumResultRows
@@ -339,8 +354,9 @@ func (p preparedPool) Commit() {
 }
 func (preparedPool) Discard() {}
 
-// Prepare validates a live connection-pool policy change.
-func (m *Manager) Prepare(_ context.Context, values settings.Values) (settings.Prepared, error) {
+// Prepare validates pool policy and authenticates changed PostgreSQL credentials
+// without touching pooled connections or in-flight transactions.
+func (m *Manager) Prepare(ctx context.Context, values settings.Values) (settings.Prepared, error) {
 	policy, err := poolPolicyFromValues(values)
 	if err != nil {
 		return nil, err
@@ -354,10 +370,30 @@ func (m *Manager) Prepare(_ context.Context, values settings.Values) (settings.P
 	if err != nil {
 		return nil, err
 	}
-	return preparedPool{
+	prepared := preparedPool{
 		manager: m, policy: policy,
 		maximumResultRows: maximumRows, maximumResultBytes: maximumBytes,
-	}, nil
+	}
+	if value, exists := values["database.password"]; exists && status.Backend == BackendPostgreSQL {
+		password, ok := value.(string)
+		if !ok || m.postgresConfig == nil {
+			return nil, errors.New("PostgreSQL password configuration is unavailable")
+		}
+		if password != m.postgresPassword.Load().(string) {
+			candidate := m.postgresConfig.Copy()
+			candidate.Password = password
+			validationContext, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			connection, err := pgx.ConnectConfig(validationContext, candidate)
+			if err != nil {
+				// Driver/server errors can contain credentials; expose only a safe diagnostic.
+				return nil, ErrPasswordValidation
+			}
+			_ = connection.Close(validationContext)
+			prepared.password = &password
+		}
+	}
+	return prepared, nil
 }
 
 func resultLimit(values settings.Values, key string, current int) (int, error) {

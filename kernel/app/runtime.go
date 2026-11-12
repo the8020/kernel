@@ -510,13 +510,6 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
 	}
-	if err := settingManager.RegisterApplier([]string{
-		"database.maximum_open_connections", "database.maximum_idle_connections",
-		"database.maximum_result_rows", "database.maximum_result_bytes",
-	}, systemDatabase); err != nil {
-		runtimeServices.Failure = err.Error()
-		return runtimeServices, closeRuntime
-	}
 	secretManager := &packageSecrets{context: ctx}
 	packageStore, err := workspacepackages.New(workspacepackages.Config{
 		WorkspaceRoot: root, PackagesRoot: paths.Packages,

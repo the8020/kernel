@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"the8020/kernel/cbus/core"
+	"the8020/kernel/database"
 	"the8020/kernel/logging"
 	"the8020/kernel/network"
 	"the8020/kernel/services"
@@ -47,6 +48,9 @@ func MapError(err error) error {
 		case settingservice.ErrorPersistence:
 			return core.NewError(core.CodePersistence, err.Error())
 		case settingservice.ErrorApplication:
+			if errors.Is(err, database.ErrPasswordValidation) {
+				return core.NewError(core.CodeInvalidSettingValue, err.Error())
+			}
 			if errors.Is(err, network.ErrPortUnavailable) || errors.Is(err, sshserver.ErrPortUnavailable) {
 				return core.NewError(core.CodePortUnavailable, err.Error())
 			}

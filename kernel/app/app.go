@@ -268,6 +268,12 @@ func Run(parent context.Context, config Config) error {
 		MaximumResultBytes:     activeInt(settingManager, "database.maximum_result_bytes", database.DefaultMaximumResultBytes),
 	})
 	defer databaseManager.Close()
+	if err := settingManager.RegisterApplier([]string{
+		"database.password", "database.maximum_open_connections", "database.maximum_idle_connections",
+		"database.maximum_result_rows", "database.maximum_result_bytes",
+	}, databaseManager); err != nil {
+		return err
+	}
 	repositoryMu := &sync.RWMutex{}
 	registry := core.NewRegistry(logger)
 	lifecycleManager := lifecycle.New()

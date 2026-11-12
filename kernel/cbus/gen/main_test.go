@@ -415,7 +415,8 @@ func TestRepositoryCatalogContainsEveryRequiredPlatformSetting(t *testing.T) {
 	}
 	for _, key := range []string{"database.username", "database.password"} {
 		definition := found[key]
-		if definition.Default != "" || definition.Storage != settings.StorageNode || !definition.RestartRequired || definition.RuntimeMutable {
+		live := key == "database.password"
+		if definition.Default != "" || definition.Storage != settings.StorageNode || definition.RestartRequired == live || definition.RuntimeMutable != live {
 			t.Fatalf("database credential setting %s = %#v", key, definition)
 		}
 	}

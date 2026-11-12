@@ -96,15 +96,26 @@ Parent DOX: [kernel/kernel/settings DOX](../AGENTS.md).
   preserves established connections. Zero disables the listener; changing the
   port does not enable package HTTPS policy.
 
+- `database.password` authenticates the candidate on a separate, five-second-bounded
+  connection to the active PostgreSQL database and username before saving. Commit
+  changes credentials for future physical connections; existing pooled connections
+  and in-flight transactions retain their identity. Failed authentication or
+  persistence preserves active credentials; unset validates the revealed fallback
+  in the same way. SQLite ignores the password. Database-side password changes are
+  an operator action; update this node-local setting on each affected node after
+  provisioning the password. Pending backend/location/username changes do not alter
+  the validation target. Native credential repair is available before application
+  initialization, including when the initial login fails.
+
 ## Restart boundaries
 
-These fourteen settings retain restart metadata. None is excluded merely for
+These thirteen settings retain restart metadata. None is excluded merely for
 lacking a setter. The operational transitions below cross durable identity,
 installed isolation artifacts, or infrastructure ownership.
 
 | Settings | Verified constraint and required transition |
 | --- | --- |
-| `database.backend`, `database.location`, `database.username`, `database.password` | `app.Run` and `database.Manager` establish one authoritative pool used by settings, topology, package stores and deployment locks. A location/backend switch can select a different system identity/schema while old transactions still publish to the old store. Changing these requires quiescing transactions, validating the target database and restarting against it; cross-database migration is outside settings mutation. Credentials stay with that same pool transition. |
+| `database.backend`, `database.location`, `database.username` | `app.Run` and `database.Manager` establish one authoritative pool used by settings, topology, package stores and deployment locks. A location/backend switch can select a different system identity/schema while old transactions still publish to the old store. A username switch changes SQL grants, row-level security and object ownership while existing transactions retain the original authority. These transitions require quiescing transactions, validating the target database/authority and restarting against it; cross-database migration is outside settings mutation. Password-only rotation does not cross this boundary. |
 | `sandbox.containerd.socket`, `sandbox.runtime.mode`, `sandbox.runtime.name`, `sandbox.enabled` | `app.initializeRuntime` selects the isolation authority and composes shared managers, callbacks, development execution and inherited cleanup. Moving to another daemon/backend or disabling that owner while its tasks run loses the authority needed for stop/reap/reconcile. Drain and clean up the old authority before restart; enabling from disabled requires the normal complete runtime-readiness path. Admission limits remain independently live. |
 | `sandbox.image.reference`, `sandbox.image.digest` | These are assertions about the installer-pinned image, not an arbitrary image-selection API. `app.validateConfiguredRuntimeIdentity` rejects a name/digest inconsistent with the verified manifest/image record. Rootless OCI roots share the canonical installed rootfs (`rootless.Backend.ociSpec`); full mode resolves the verified imported digest. Installing another image changes the runtime source/protocol and verified smoke artifacts, so use the ordinary staged kernel installer/updater and its restart. Merely changing either setting cannot materialize or qualify an image. Future PID/tmpfs defaults are independently live. |
 | `sandbox.network.bridge`, `sandbox.network.name`, `sandbox.network.subnet` | CNI `network.Manager` uses the same conflist for ADD/CHECK/DEL; allocation records do not retain a separate conflist generation. nftables derives bridge/subnet routing from that same topology. Replacing it under live namespaces can misroute traffic or make DEL release the wrong network/IPAM allocation. Drain/delete old namespaces under their original CNI policy, provision the replacement network and restart; parallel network migration is an infrastructure change. |

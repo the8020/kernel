@@ -167,7 +167,8 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   service HTTP request or authenticated user. Signing and verification use this
   same bridge for both workloads.
 - The kernel owns one dynamically opened `database/sql` pool. Backend, location,
-  and PostgreSQL credentials are restart-required node-local policy; maximum
+  and PostgreSQL username are restart-required node-local policy; passwords apply
+  to future connections after authentication and persistence. Maximum
   open and retained-idle connections are runtime-mutable node policy, defaulting
   to 32 and 8. SQLite uses WAL in its private local database directory;
   PostgreSQL remains the shared multi-node backend.

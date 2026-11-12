@@ -106,9 +106,11 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   evaluator batches and becomes `READY` only after all schemas and package
   activation hooks succeed. A normal boot trusts the initialized marker and does
   not scan definitions or repeat completed hooks.
-- Database pool limits are node-local runtime settings applied transactionally
-  to the already running pool; backend, location, and credentials remain
-  node-local restart settings.
+- Database pool limits and passwords are node-local runtime settings registered
+  before administration and asynchronous initialization, including failed database
+  startup. Passwords authenticate separately before persistence and affect future
+  physical connections without replacing the pool. Backend, location and username
+  remain node-local restart settings.
 - The companion logd starts independently of runtime/database readiness. Kernel
   stdout/stderr capture is enabled by `Main`; embedded `Run` callers do not
   replace their host process descriptors. Tests supply a real companion binary.
@@ -366,7 +368,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   controller cleanup.
 - `TestDatabaseFailureDoesNotBlockControlPlane` also verifies that actual kernel
   startup persists the environment-provisioned signing key before database
-  availability. Run it with
+  availability and that pool settings and password validation already have their
+  owner during failed login. Run it with
   `go test ./kernel/app -run
   '^TestDatabaseFailureDoesNotBlockControlPlane$'`.
 - `runtime_test.go` also verifies shared-cache retention across service/job

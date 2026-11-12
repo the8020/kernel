@@ -49,6 +49,7 @@ func definitions() []settings.Definition {
 		{Key: "logging.split_period", Type: settings.TypeEnum, Storage: settings.StorageNode, Default: "day", Environment: "THE8020_LOGGING_SPLIT_PERIOD", Allowed: []string{"none", "minute", "hour", "day", "week", "month", "year"}, RuntimeMutable: true, Description: "Split period."},
 		{Key: "logging.max_file_size", Type: settings.TypeByteSize, Storage: settings.StorageNode, Default: "128MiB", Environment: "THE8020_LOGGING_MAX_FILE_SIZE", RuntimeMutable: true, Description: "File size."},
 		{Key: "logging.max_total_size", Type: settings.TypeByteSize, Storage: settings.StorageNode, Default: "10GiB", Environment: "THE8020_LOGGING_MAX_TOTAL_SIZE", RuntimeMutable: true, Description: "Total size."},
+		{Key: "database.password", Type: settings.TypeString, Storage: settings.StorageNode, Default: "", Environment: "THE8020_DATABASE_PASSWORD", RuntimeMutable: true, Description: "Database password."},
 		{Key: "database.maximum_open_connections", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(32), Environment: "THE8020_DATABASE_MAXIMUM_OPEN_CONNECTIONS", Minimum: pointer(1), RuntimeMutable: true, Description: "Maximum open database connections."},
 		{Key: "database.maximum_idle_connections", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(8), Environment: "THE8020_DATABASE_MAXIMUM_IDLE_CONNECTIONS", Minimum: pointer(0), RuntimeMutable: true, Description: "Maximum idle database connections."},
 		{Key: "database.maximum_result_rows", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(10_000), Environment: "THE8020_DATABASE_MAXIMUM_RESULT_ROWS", Minimum: pointer(1), RuntimeMutable: true, Description: "Maximum database result rows."},
@@ -170,12 +171,6 @@ func initializeIntegrationRuntime(ctx context.Context, settingManager *settings.
 		return fail(err)
 	}
 	if err := settingManager.AttachGlobal(ctx, global); err != nil {
-		return fail(err)
-	}
-	if err := settingManager.RegisterApplier([]string{
-		"database.maximum_open_connections", "database.maximum_idle_connections",
-		"database.maximum_result_rows", "database.maximum_result_bytes",
-	}, databaseManager); err != nil {
 		return fail(err)
 	}
 	mainPort, _ := settingManager.Active("network.main_port")

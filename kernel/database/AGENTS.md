@@ -29,6 +29,13 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   share the native publication key and skip acquisition only when the native
   request already owns it; installed activation does not retain a schema
   transaction while awaiting package hooks.
+- PostgreSQL password changes authenticate independently against the active
+  database/username before settings persistence, then atomically update future
+  physical connections through pgx BeforeConnect. Existing connections and
+  transactions survive; no pool replacement or server-side ALTER ROLE occurs.
+  Validation has a five-second bound and returns credential-free errors. Failed
+  validation/persistence discards the candidate; unset validates its fallback.
+  Backend/location/username changes still require a quiesced restart.
 - PostgreSQL describes statements on each execution instead of caching prepared
   result shapes across calls. This preserves parameter typing and permits schema
   changes from any node without stale `SELECT *` plans or retries, at the cost
@@ -133,6 +140,14 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   `THE8020_TEST_POSTGRES_USERNAME` to a disposable PostgreSQL database; the test
   creates and removes its own uniquely named table. SQLite tests also verify
   short lock waits and restoration of pooled connection settings.
+
+- `password_test.go` covers ignored SQLite passwords and opt-in real PostgreSQL
+  rotation, authentication failure, persistence rollback, concurrent mutations and
+  new connections, retained transaction/backend identity, pending username isolation,
+  unset and reload. Set `THE8020_TEST_POSTGRES_PASSWORD_ROTATION=true` plus the
+  existing PostgreSQL location/username and optional
+  `THE8020_TEST_POSTGRES_PASSWORD` for a disposable admin connection with CREATE
+  ROLE authority; the test creates and drops its own login role.
 
 # Child DOX Index
 

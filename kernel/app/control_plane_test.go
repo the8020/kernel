@@ -8,12 +8,14 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"the8020/kernel/auth"
 	"the8020/kernel/cbus/client"
 	databasecheck "the8020/kernel/cbus/commands/database/check"
+	setcommand "the8020/kernel/cbus/commands/settings/set"
 	shutdowncommand "the8020/kernel/cbus/commands/system/shutdown"
 	statuscommand "the8020/kernel/cbus/commands/system/status"
 	"the8020/kernel/cbus/core"
@@ -39,7 +41,7 @@ func controlPlaneDefinitions() []settings.Definition {
 		{Key: "database.backend", Type: settings.TypeEnum, Storage: settings.StorageNode, Default: "sqlite", Environment: "THE8020_TEST_CONTROL_DATABASE_BACKEND", Allowed: []string{"sqlite", "postgresql"}, RestartRequired: true, Description: "Test database backend."},
 		{Key: "database.location", Type: settings.TypeString, Storage: settings.StorageNode, Default: "${INSTANCE_ROOT}/database/system.db", Environment: "THE8020_TEST_CONTROL_DATABASE_LOCATION", RestartRequired: true, Description: "Test database location."},
 		{Key: "database.username", Type: settings.TypeString, Storage: settings.StorageNode, Default: "", Environment: "THE8020_TEST_CONTROL_DATABASE_USERNAME", RestartRequired: true, Description: "Test database username."},
-		{Key: "database.password", Type: settings.TypeString, Storage: settings.StorageNode, Default: "", Environment: "THE8020_TEST_CONTROL_DATABASE_PASSWORD", RestartRequired: true, Description: "Test database password."},
+		{Key: "database.password", Type: settings.TypeString, Storage: settings.StorageNode, Default: "", Environment: "THE8020_TEST_CONTROL_DATABASE_PASSWORD", RuntimeMutable: true, Description: "Test database password."},
 		{Key: "database.maximum_open_connections", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(32), Environment: "THE8020_TEST_CONTROL_DATABASE_MAXIMUM_OPEN_CONNECTIONS", Minimum: &minimum, RuntimeMutable: true, Description: "Test maximum open database connections."},
 		{Key: "database.maximum_idle_connections", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(8), Environment: "THE8020_TEST_CONTROL_DATABASE_MAXIMUM_IDLE_CONNECTIONS", Minimum: &zero, RuntimeMutable: true, Description: "Test maximum idle database connections."},
 		{Key: "database.maximum_result_rows", Type: settings.TypeInteger, Storage: settings.StorageNode, Default: int64(10_000), Environment: "THE8020_TEST_CONTROL_DATABASE_MAXIMUM_RESULT_ROWS", Minimum: &minimum, RuntimeMutable: true, Description: "Test maximum database result rows."},
@@ -55,6 +57,7 @@ func registerControlPlaneCommands(registry *core.Registry, serviceSet *services.
 		{core.Command{Version: 1, ID: "kernel.status", Path: []string{"kernel.status"}}, statuscommand.New(serviceSet)},
 		{core.Command{Version: 1, ID: "kernel.shutdown", Path: []string{"kernel.shutdown"}}, shutdowncommand.New(serviceSet)},
 		{core.Command{Version: 1, ID: "database.check", Path: []string{"database", "check"}}, databasecheck.New(serviceSet)},
+		{core.Command{Version: 1, ID: "kernel.config.set", Path: []string{"kernel.config.set"}, Parameters: []core.Parameter{{Name: "key", Type: "string", Required: true}, {Name: "value", Type: "string", Position: 1, Required: true}}}, setcommand.New(serviceSet)},
 	}
 	for _, command := range commands {
 		if err := registry.Register(command.definition, command.handler); err != nil {
@@ -121,6 +124,13 @@ func TestDatabaseFailureDoesNotBlockControlPlane(t *testing.T) {
 	check, err := commandClient.Execute(context.Background(), core.Request{CommandID: "database.check"})
 	if err != nil || check.Success || check.Error == nil || check.Error.Code != core.CodeDatabaseUnavailable {
 		t.Fatalf("database check=%#v error=%v", check, err)
+	}
+	change := execute(t, commandClient, "kernel.config.set", map[string]any{"key": "database.password", "value": "replacement"})
+	if change.Success || change.Error == nil || change.Error.Code != core.CodeInvalidSettingValue || !strings.Contains(change.Error.Message, "password validation failed") || strings.Contains(change.Error.Message, "replacement") {
+		t.Fatalf("degraded credential validation = %#v", change)
+	}
+	if change := execute(t, commandClient, "kernel.config.set", map[string]any{"key": "database.maximum_open_connections", "value": "40"}); !change.Success {
+		t.Fatalf("degraded pool change = %#v", change)
 	}
 	shutdown, err := commandClient.Execute(context.Background(), core.Request{CommandID: "kernel.shutdown"})
 	if err != nil || !shutdown.Success {
