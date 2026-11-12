@@ -159,7 +159,9 @@ func (r *routeTable) ServeHTTP(writer http.ResponseWriter, request *http.Request
 		return
 	}
 	if request.URL.Path == "/" {
+		r.mu.RLock()
 		target := r.rootAlias
+		r.mu.RUnlock()
 		if request.URL.RawQuery != "" {
 			target += "?" + request.URL.RawQuery
 		}
@@ -205,7 +207,7 @@ func rootAliasTarget(value string) (string, error) {
 	return "/" + value, nil
 }
 
-// Prepare binds a replacement while the current listener remains active.
+// Prepare binds replacements and validates the root alias before persistence.
 func (m *Manager) Prepare(_ context.Context, values settings.Values) (settings.Prepared, error) {
 	raw, ok := values["network.main_port"].(int64)
 	if !ok {
@@ -215,7 +217,62 @@ func (m *Manager) Prepare(_ context.Context, values settings.Values) (settings.P
 	if port < 1 || port > 65535 {
 		return nil, fmt.Errorf("%w: invalid port %d", ErrPortUnavailable, port)
 	}
-	return m.prepareHTTP(port, &m.active)
+	m.router.mu.RLock()
+	target := m.router.rootAlias
+	m.router.mu.RUnlock()
+	if alias, exists := values["network.root_alias"]; exists {
+		value, ok := alias.(string)
+		if !ok {
+			return nil, errors.New("network.root_alias is not a string")
+		}
+		var err error
+		target, err = rootAliasTarget(value)
+		if err != nil {
+			return nil, err
+		}
+	}
+	main, err := m.prepareHTTP(port, &m.active)
+	if err != nil {
+		return nil, err
+	}
+	additional := settings.Prepared(noopPrepared{})
+	if raw, exists := values["network.additional_http_port"]; exists {
+		port, ok := raw.(int64)
+		if !ok || port < 0 || port > 65535 {
+			main.Discard()
+			return nil, errors.New("network.additional_http_port must be an integer from 0 to 65535")
+		}
+		additional, err = m.PrepareAdditionalHTTP(int(port))
+		if err != nil {
+			main.Discard()
+			return nil, err
+		}
+	}
+	return &preparedSettings{manager: m, main: main, additional: additional, rootAlias: target}, nil
+}
+
+type preparedSettings struct {
+	manager          *Manager
+	main, additional settings.Prepared
+	rootAlias        string
+	once             sync.Once
+}
+
+func (p *preparedSettings) Commit() {
+	p.once.Do(func() {
+		p.main.Commit()
+		p.additional.Commit()
+		p.manager.router.mu.Lock()
+		p.manager.router.rootAlias = p.rootAlias
+		p.manager.router.mu.Unlock()
+	})
+}
+
+func (p *preparedSettings) Discard() {
+	p.once.Do(func() {
+		p.main.Discard()
+		p.additional.Discard()
+	})
 }
 
 // PrepareAdditionalHTTP publishes another port on the same router; zero disables it.

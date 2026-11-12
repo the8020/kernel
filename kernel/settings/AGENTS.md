@@ -37,8 +37,13 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   global runtime owners. Later global changes use revision refresh.
 - Restart-required settings persist configured values without changing active
   values and report restart pending until the next kernel start.
-- Global settings refresh from the shared revision and remain restart-required
-  unless their owner supplies safe cross-node live application.
+- Global settings refresh from the shared revision through registered runtime
+  owners. Local writes apply before returning; other nodes converge through the
+  existing one-second monitor when shared storage and owners are healthy.
+- Snapshot refresh and local mutations serialize so a loaded older snapshot
+  cannot overwrite a later local write.
+- A global write advances the local observed revision only when no intervening
+  revision was missed; otherwise the next refresh reloads the shared snapshot.
 - `logging.max_total_size` is never below `logging.max_file_size`.
 - Database maximum-idle connections never exceed maximum-open connections. Both
   are runtime-mutable node settings because every kernel owns its own dynamic

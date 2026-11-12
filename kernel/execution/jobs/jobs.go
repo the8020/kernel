@@ -159,11 +159,16 @@ func New(groupCoordinator GroupCoordinator, workerManager WorkerManager, policy 
 	}, nil
 }
 
-// SetDefaults installs the startup defaults after global settings attach.
+// SetDefaults installs defaults without changing already submitted executions.
 func (m *Manager) SetDefaults(policy Policy) error {
-	if policy.MaximumParallel <= 0 || policy.QueuedExecutionLimit <= 0 || policy.ExecutionTimeout <= 0 || policy.IdleRuntimeTimeout <= 0 {
-		return errors.New("job defaults must be positive")
+	if err := validateDefaults(policy); err != nil {
+		return err
 	}
+	m.setDefaults(policy)
+	return nil
+}
+
+func (m *Manager) setDefaults(policy Policy) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.policy.MaximumParallel = policy.MaximumParallel
@@ -177,7 +182,6 @@ func (m *Manager) SetDefaults(policy Policy) error {
 		}
 	}
 	m.signalQueueLocked()
-	return nil
 }
 
 type submission struct {

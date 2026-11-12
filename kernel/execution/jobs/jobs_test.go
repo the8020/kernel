@@ -563,6 +563,15 @@ func TestSetDefaultsUpdatesAdmissionAndPreservesInflightWork(t *testing.T) {
 	if current, err := manager.Inspect(first.ExecutionID); err != nil || current.Reuse || current.Parallelism != 1 {
 		t.Fatalf("bootstrap changed: %#v %v", current, err)
 	}
+	updated.MaximumParallel = 1
+	if err := manager.SetDefaults(updated); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{first.ExecutionID, queued.ExecutionID} {
+		if current, err := manager.Inspect(id); err != nil || current.State != "RUNNING" {
+			t.Fatalf("lower limit interrupted running work: %#v, %v", current, err)
+		}
+	}
 }
 
 func TestSetDefaultsReschedulesIdleAndIgnoresOldTimer(t *testing.T) {

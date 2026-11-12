@@ -434,7 +434,7 @@ relevant child AGENTS.md
   pending-capacity retries; service commands and cold requests reconcile their
   selected service directly.
 - The kernel HTTP root `/` redirects to the safe relative 80|20 application path
-  selected by the restart-required global `network.root_alias` setting,
+  selected by the runtime-mutable global `network.root_alias` setting,
   defaulting to `the8020/uui/shell/`; `/health` remains the independent plain
   kernel health endpoint.
 - The kernel main HTTP listener binds all IPv4 interfaces so Docker and host

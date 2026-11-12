@@ -14,6 +14,55 @@ import (
 
 const testRootAlias = "the8020/uui/shell/"
 
+func TestLiveRootAliasAndAdditionalListenerAreTransactional(t *testing.T) {
+	main, additional := freePort(t), freePort(t)
+	manager, err := New(main, testRootAlias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(manager.Close)
+	values := settings.Values{"network.main_port": int64(main), "network.additional_http_port": int64(additional), "network.root_alias": "example/app/"}
+	change, err := manager.Prepare(context.Background(), values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	getRootRedirect(t, main, "", "/"+testRootAlias)
+	change.Discard()
+	change, err = manager.Prepare(context.Background(), values)
+	if err != nil {
+		t.Fatal("discard retained listener:", err)
+	}
+	change.Commit()
+	getRootRedirect(t, main, "?next=1", "/example/app/?next=1")
+	getRootRedirect(t, additional, "", "/example/app/")
+	getOK(t, additional, "/health")
+
+	values["network.additional_http_port"] = int64(main)
+	values["network.root_alias"] = "example/rejected/"
+	if _, err := manager.Prepare(context.Background(), values); err == nil {
+		t.Fatal("occupied port accepted")
+	}
+	getRootRedirect(t, main, "", "/example/app/")
+	values["network.additional_http_port"] = int64(0)
+	values["network.root_alias"] = "../unsafe"
+	if _, err := manager.Prepare(context.Background(), values); err == nil {
+		t.Fatal("unsafe alias accepted")
+	}
+	getRootRedirect(t, additional, "", "/example/app/")
+	values["network.root_alias"] = testRootAlias
+	change, err = manager.Prepare(context.Background(), values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	change.Commit()
+	getRootRedirect(t, main, "", "/"+testRootAlias)
+	listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(additional)))
+	if err != nil {
+		t.Fatal("disabled listener retained port:", err)
+	}
+	_ = listener.Close()
+}
+
 func TestAdditionalHTTPUsesSameRouterAndLifecycle(t *testing.T) {
 	main, additional := freePort(t), freePort(t)
 	manager, err := New(main, testRootAlias)

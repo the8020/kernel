@@ -224,7 +224,8 @@ func (m *Manager) AttachGlobal(ctx context.Context, store GlobalStore) error {
 // pending; runtime-mutable values use the same prepare/commit boundary as a
 // local settings command.
 func (m *Manager) RefreshGlobal(ctx context.Context) (bool, error) {
-	m.mu.RLock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	store, currentRevision := m.global, m.revision
 	definitions := make([]Definition, 0)
 	for _, key := range m.ordered {
@@ -232,7 +233,6 @@ func (m *Manager) RefreshGlobal(ctx context.Context) (bool, error) {
 			definitions = append(definitions, definition)
 		}
 	}
-	m.mu.RUnlock()
 	if store == nil {
 		return false, errors.New("global settings database is unavailable")
 	}
@@ -249,8 +249,6 @@ func (m *Manager) RefreshGlobal(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	if revision <= m.revision {
 		return false, nil
 	}
@@ -448,7 +446,11 @@ func (m *Manager) applyLocked(ctx context.Context, changed string, sources map[s
 		if m.global == nil {
 			persistErr = errors.New("global settings database is unavailable")
 		} else {
-			m.revision, persistErr = m.global.Set(ctx, definition, sources[changed].persisted)
+			var revision uint64
+			revision, persistErr = m.global.Set(ctx, definition, sources[changed].persisted)
+			if persistErr == nil && revision == m.revision+1 {
+				m.revision = revision
+			}
 		}
 	} else {
 		persistErr = persist(m.files.Node, m.definitions, sources, StorageNode)

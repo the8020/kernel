@@ -703,7 +703,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	}
 	additionalHTTP.Commit()
 	https.attach(publicNetwork)
-	if err := settingManager.RegisterApplier([]string{"network.main_port"}, publicNetwork); err != nil {
+	if err := settingManager.RegisterApplier([]string{"network.main_port", "network.root_alias", "network.additional_http_port"}, publicNetwork); err != nil {
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
 	}
@@ -1364,7 +1364,10 @@ func attachGlobalJobDefaults(ctx context.Context, manager *settings.Manager, sto
 	if err := jobManager.SetDefaults(jobDefaults(manager)); err != nil {
 		return fmt.Errorf("initialize job defaults: %w", err)
 	}
-	return nil
+	return manager.RegisterApplier([]string{
+		"job.default.maximum_parallel_workers", "job.default.queued_execution_limit",
+		"job.default.execution_timeout", "job.default.worker_reuse", "job.default.idle_runtime_timeout",
+	}, jobManager)
 }
 
 func jobDefaults(manager *settings.Manager) jobs.Policy {

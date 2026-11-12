@@ -40,7 +40,7 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   policy, and certificate changes use prepare/commit without restarting work.
 - Zero `network.https_port` keeps native TLS closed for external termination or
   migration. `network.additional_http_port` optionally serves the same router at
-  a second node-local port after restart, preserving public Docker mappings.
+  a second runtime-mutable node-local port, preserving public Docker mappings.
 - Supply the existing node capacity provider with the public network manager's
   HTTPS status so local and remote node diagnostics expose publication
   revisions.
@@ -83,7 +83,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   visible in database and runtime status without shutting down native execution.
 - The bootstrap job manager starts with provisional defaults; immediately after
   global settings attach, install the database-backed job defaults on that same
-  manager before continuing application initialization.
+  manager and register its live applier before continuing application
+  initialization.
 - Before database startup, load or generate the signing key under
   `node/kernel/keys/signing.key`. Publish its primitive directly to the existing
   command bus; status and replacement remain available during database failure.
@@ -264,9 +265,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Database-backed topology initializes before runtime composition. The
   configured local recipient listener starts only after the service router and
   capacity provider exist and forwards both HTTP and WebSocket traffic.
-- Main-listener composition reads the restart-required global
+- Main-listener composition reads the runtime-mutable global
   `network.root_alias` value and supplies it to the network owner before the
-  listener starts.
+  listener starts. Register root alias, main port and additional HTTP port
+  together with the network owner for transactional live updates.
 - Graceful shutdown has eight completed-stage progress units rather than an
   elapsed-time estimate: public HTTP, runtime initialization join, runtime
   controllers, runtime ports, runtime sandboxes, runtime backends,

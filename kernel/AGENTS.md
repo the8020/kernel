@@ -133,7 +133,7 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   Signed route descriptors contain exact node/sandbox/Worker/execution IDs and
   can never recreate lost bindings. There is no routing database or duplicate
   kernel lease bookkeeping.
-- The restart-required global `network.root_alias` setting selects the relative
+- The runtime-mutable global `network.root_alias` setting selects the relative
   80|20 application path receiving temporary redirects from `/`; it defaults to
   `the8020/uui/shell/`, while `/health` remains an unaliased kernel endpoint.
 - The main HTTP listener binds all IPv4 interfaces so container and host port

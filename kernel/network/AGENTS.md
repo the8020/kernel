@@ -22,7 +22,11 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Replacement binds the candidate while the old listener remains active; commit
   serves/switches then gracefully closes the old server; discard closes only the
   candidate.
-- Reapplying the active port is a no-op.
+- Reapplying the active port is a no-op. `Prepare` covers the main port,
+  additional HTTP port and root alias as one settings binding. Both candidate
+  listeners bind before persistence; any failure discards all prepared resources.
+  Root alias publication and request reads share the route lock. Existing
+  connections and dynamic service routes survive these settings changes.
 - `PrepareAdditionalHTTP(port)` uses the same router and prepare/commit/discard
   lifecycle for one additional HTTP port; zero disables it. This preserves
   existing public Docker HTTP mappings while retaining the internal main port.

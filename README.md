@@ -1,5 +1,28 @@
 # 80|20 kernel
 
+## 0.10.7: live job defaults and HTTP settings
+
+All five global `job.default.*` settings and `network.root_alias` now apply
+without restarting the kernel. Change them through `system.settings.set` or
+`system.settings.unset`; other nodes converge through the existing shared
+settings monitor. Node-local `network.additional_http_port` is also live through
+`kernel.config.set`/`unset`: it binds the replacement before saving and accepts
+zero to disable the extra listener. A rejected or failed write preserves the
+active runtime. Existing HTTP connections and services keep running.
+
+Submitted jobs, including queued work, retain their timeout, reuse choice and
+per-job parallel limit. Global parallelism controls future starts without
+cancelling active work; reducing queue capacity retains already queued jobs.
+Timeout and reuse defaults apply to new submissions. Idle Worker deadlines are
+recalculated from the last completion and can expire immediately when overdue.
+Explicit per-invocation options keep their usual admission rules.
+
+Use the ordinary updater to install this release; upgrading the kernel itself
+still restarts it. Subsequent changes to these settings need no restart.
+Application package recommendations are unchanged. The complete remaining
+[restart-setting audit](kernel/settings/definitions/AGENTS.md#restart-boundaries)
+records the owner and safety boundary for every setting retained at restart.
+
 ## 0.10.3: selected-set deployment and exact activation recovery
 
 Kernel **0.10.3** recommends **packages 0.10.2** and **deployments 0.10.2**;

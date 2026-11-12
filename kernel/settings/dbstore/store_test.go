@@ -3,12 +3,48 @@ package dbstore
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"the8020/kernel/database"
 	"the8020/kernel/settings"
 )
+
+type writeBeforeRevisionRead struct {
+	database.Store
+	write func()
+}
+
+func (s *writeBeforeRevisionRead) QueryRowContext(ctx context.Context, query string, args ...any) database.Row {
+	if strings.HasPrefix(query, `SELECT "revision"`) && s.write != nil {
+		write := s.write
+		s.write = nil
+		write()
+	}
+	return s.Store.QueryRowContext(ctx, query, args...)
+}
+
+func TestLoadCannotHideAWriteBetweenValuesAndRevision(t *testing.T) {
+	store, db := testStore(t)
+	def := testDefinition("first")
+	if _, _, err := store.Load(context.Background(), []settings.Definition{def}); err != nil {
+		t.Fatal(err)
+	}
+	wrapper := &writeBeforeRevisionRead{Store: db, write: func() {
+		if _, err := store.Set(context.Background(), def, "second"); err != nil {
+			t.Fatal(err)
+		}
+	}}
+	reader, err := New(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values, revision, err := reader.Load(context.Background(), []settings.Definition{def})
+	if err != nil || values[def.Key] != "second" || revision != 1 {
+		t.Fatalf("load hid a concurrent write: %#v, %d, %v", values, revision, err)
+	}
+}
 
 func TestDurationStorageUsesItsTypedValue(t *testing.T) {
 	store, _ := testStore(t)

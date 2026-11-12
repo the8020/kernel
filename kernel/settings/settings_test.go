@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func integerPointer(value int64) *int64 { return &value }
@@ -249,6 +250,13 @@ func TestGlobalWritersMergeUnrelatedOverrides(t *testing.T) {
 	if rootAlias != "example/demo/shell/" || displayName != "Example Platform" {
 		t.Fatalf("global values = %#v, %#v", rootAlias, displayName)
 	}
+	if changed, err := second.RefreshGlobal(context.Background()); err != nil || !changed {
+		t.Fatalf("refresh after concurrent write: changed=%v err=%v", changed, err)
+	}
+	info, err := second.Get("network.root_alias")
+	if err != nil || info.ConfiguredValue != "example/demo/shell/" {
+		t.Fatalf("missed earlier global write: %#v err=%v", info, err)
+	}
 	if _, err := first.Unset(context.Background(), "network.root_alias"); err != nil {
 		t.Fatal(err)
 	}
@@ -311,6 +319,99 @@ func TestRefreshGlobalCommitsRuntimeMutableValues(t *testing.T) {
 	info, _ := manager.Get("platform.banner")
 	if info.ConfiguredValue != "second" || info.ActiveValue != "second" || info.RestartPending {
 		t.Fatalf("runtime refreshed setting=%#v", info)
+	}
+}
+
+func TestGlobalRuntimeFailuresPreserveActiveStateAndCanRetry(t *testing.T) {
+	defs := []Definition{{Key: "platform.banner", Type: TypeString, Storage: StorageGlobal, Default: "first", Environment: "THE8020_PLATFORM_BANNER", RuntimeMutable: true, Description: "banner"}}
+	store := &memoryGlobalStore{}
+	m, err := New(defs, newPersistencePaths(t), nil, func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachGlobal(t, m, store)
+	applier := &testApplier{}
+	if err := m.RegisterApplier([]string{"platform.banner"}, applier); err != nil {
+		t.Fatal(err)
+	}
+	store.fail = errors.New("database unavailable")
+	if _, err := m.Set(context.Background(), "platform.banner", "second"); err == nil || !applier.discarded || applier.committed {
+		t.Fatalf("persistence failure: %v, %#v", err, applier)
+	}
+	info, _ := m.Get("platform.banner")
+	if info.ActiveValue != "first" || info.ConfiguredValue != "first" {
+		t.Fatalf("failed write published: %#v", info)
+	}
+	store.fail = nil
+	store.values["platform.banner"] = "second"
+	store.revision++
+	applier.fail = errors.New("prepare failed")
+	if changed, err := m.RefreshGlobal(context.Background()); err == nil || changed {
+		t.Fatalf("failed preparation published: %v, %v", changed, err)
+	}
+	info, _ = m.Get("platform.banner")
+	if info.ActiveValue != "first" || m.revision != 0 {
+		t.Fatalf("failed refresh advanced state: %#v, %v", info, m.revision)
+	}
+	applier.fail = nil
+	if changed, err := m.RefreshGlobal(context.Background()); err != nil || !changed || !applier.committed {
+		t.Fatalf("refresh retry: %v, %v", changed, err)
+	}
+}
+
+type blockedGlobalLoad struct {
+	*memoryGlobalStore
+	loaded, release chan struct{}
+}
+
+func (s *blockedGlobalLoad) Load(ctx context.Context, defs []Definition) (map[string]any, uint64, error) {
+	values, revision, err := s.memoryGlobalStore.Load(ctx, defs)
+	if s.loaded != nil {
+		close(s.loaded)
+		<-s.release
+	}
+	return values, revision, err
+}
+
+func TestGlobalRefreshCannotOverwriteALaterLocalWrite(t *testing.T) {
+	defs := []Definition{{Key: "platform.banner", Type: TypeString, Storage: StorageGlobal, Default: "first", Environment: "THE8020_PLATFORM_BANNER", RuntimeMutable: true, Description: "banner"}}
+	store := &blockedGlobalLoad{memoryGlobalStore: &memoryGlobalStore{}}
+	m, err := New(defs, newPersistencePaths(t), nil, func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachGlobal(t, m, store)
+	if err := m.RegisterApplier([]string{"platform.banner"}, &testApplier{}); err != nil {
+		t.Fatal(err)
+	}
+	store.values["platform.banner"], store.revision = "remote", 1
+	store.loaded, store.release = make(chan struct{}), make(chan struct{})
+	refreshed := make(chan error, 1)
+	go func() { _, err := m.RefreshGlobal(context.Background()); refreshed <- err }()
+	<-store.loaded
+	written := make(chan error, 1)
+	go func() { _, err := m.Set(context.Background(), "platform.banner", "local"); written <- err }()
+	// Give an incorrectly unserialized writer time to overtake the loaded snapshot.
+	var writeErr error
+	writeFinished := false
+	select {
+	case writeErr = <-written:
+		writeFinished = true
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(store.release)
+	if err := <-refreshed; err != nil {
+		t.Fatal(err)
+	}
+	if !writeFinished {
+		writeErr = <-written
+	}
+	if writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	info, _ := m.Get("platform.banner")
+	if info.ActiveValue != "local" || info.ConfiguredValue != "local" {
+		t.Fatalf("older refresh overwrote local write: %#v", info)
 	}
 }
 

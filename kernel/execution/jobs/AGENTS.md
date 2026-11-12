@@ -15,7 +15,7 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
 
 # Local Contracts
 
-- Public API: `New`, `Manager.SetDefaults`, `Run`, `List`, `Inspect`, `Cancel`, `FailSandbox`,
+- Public API: `New`, `Manager.SetDefaults`, `Prepare`, `Run`, `List`, `Inspect`, `Cancel`, `FailSandbox`,
   `Close`, and policy/options/record types.
 - `Options.Arguments` is the positional array spread into the job's default
   export. `Options.Secrets` travels separately and is cleared after every path.
@@ -93,9 +93,19 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
   waiting job parent from global admission, but no other active work.
 - Queue admission is event-driven. State changes broadcast one shared wake-up;
   do not add per-job tickers or polling scans.
-- The composition owner installs persisted restart-required defaults once after
-  global settings attach. Existing submissions retain their captured defaults;
-  admission limits and idle retirement use the newly installed values.
+- The composition owner installs persisted defaults after global settings attach
+  and registers all five with this owner. Prepare validates without changing
+  policy; persistence failure discards it. Commit installs the policy under the
+  job lock and wakes queue admission.
+- Existing submissions, including queued jobs, retain timeout, reuse and per-job
+  parallelism. The current global parallel limit applies to future starts;
+  lowering it never cancels active work. A lower queue limit retains queued work
+  and rejects new queue entries until space is available. Explicit invocation
+  options retain their normal admission rules.
+- Idle timeout changes reschedule reusable idle Workers from their last completion,
+  including immediate expiry when overdue. Stale timer callbacks cannot retire
+  a reused Worker. Disabling default reuse affects future submissions; existing
+  reusable Workers retire normally.
 
 # Verification
 

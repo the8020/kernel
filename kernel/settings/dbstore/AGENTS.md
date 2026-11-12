@@ -11,6 +11,8 @@ Parent DOX: [kernel/kernel/settings DOX](../AGENTS.md).
 - A later definition/default change updates metadata but never replaces the
   stored value.
 - Value changes and revision increments commit in one transaction.
+- Snapshot loads read the revision before values so concurrent writes remain
+  eligible for a later refresh.
 - This package contains no setting definitions and never handles node-local
   configuration.
 - JSON parameters use the shared kernel database encoder; this repository does

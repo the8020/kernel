@@ -67,6 +67,11 @@ func (s *Store) Load(ctx context.Context, definitions []settings.Definition) (ma
 	if err := tx.Commit(); err != nil {
 		return nil, 0, err
 	}
+	// Reading the revision first ensures a concurrent write is refreshed later.
+	revision, err := s.Revision(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
 	rows, err := s.database.QueryContext(ctx, `SELECT "key", "value" FROM `+settingsTable+` ORDER BY "key"`)
 	if err != nil {
 		return nil, 0, err
@@ -93,14 +98,7 @@ func (s *Store) Load(ctx context.Context, definitions []settings.Definition) (ma
 	if err := rows.Close(); err != nil {
 		return nil, 0, err
 	}
-	var revision int64
-	if err := s.database.QueryRowContext(ctx, `SELECT "revision" FROM `+revisionsTable+` WHERE "domain" = $1`, settingsDomain).Scan(&revision); err != nil {
-		return nil, 0, err
-	}
-	if revision < 0 {
-		return nil, 0, errors.New("settings revision cannot be negative")
-	}
-	return values, uint64(revision), nil
+	return values, revision, nil
 }
 
 func (s *Store) Set(ctx context.Context, definition settings.Definition, value any) (uint64, error) {

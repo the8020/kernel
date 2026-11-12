@@ -55,7 +55,7 @@ func TestPersistedJobDefaultsAttachToBootstrapManager(t *testing.T) {
 	}
 	for i := range defs {
 		defs[i].Storage = settings.StorageGlobal
-		defs[i].RestartRequired = true
+		defs[i].RuntimeMutable = true
 		defs[i].Description = "Job default."
 	}
 	db := database.New(database.Config{Backend: database.BackendSQLite, Location: filepath.Join(t.TempDir(), "system.db"), MaximumOpenConnections: 8, MaximumIdleConnections: 2})
@@ -207,11 +207,34 @@ func TestPersistedJobDefaultsAttachToBootstrapManager(t *testing.T) {
 		t.Fatalf("override=%#v err=%v", override, err)
 	}
 	updated, err := settingsManager.Set(ctx, "job.default.maximum_parallel_workers", "3")
-	if err != nil || !updated.RestartPending || updated.ActiveValue != int64(2) {
+	if err != nil || updated.RestartPending || updated.ActiveValue != int64(3) {
 		t.Fatalf("restart setting=%#v err=%v", updated, err)
 	}
 	record, err = jobManager.Run(ctx, "after-change", "file:///programs/job.ts", jobs.Options{User: execution.SystemUser()})
-	if err != nil || record.Parallelism != 2 {
-		t.Fatalf("restart setting applied early: %#v err=%v", record, err)
+	if err != nil || record.Parallelism != 3 {
+		t.Fatalf("live setting not applied: %#v err=%v", record, err)
+	}
+	for key, value := range map[string]string{
+		"job.default.queued_execution_limit": "2", "job.default.execution_timeout": "21000",
+		"job.default.worker_reuse": "false", "job.default.idle_runtime_timeout": "1000",
+	} {
+		if info, err := settingsManager.Set(ctx, key, value); err != nil || info.RestartPending || info.ConfiguredValue != info.ActiveValue {
+			t.Fatalf("live %s: %#v, %v", key, info, err)
+		}
+	}
+	record, err = jobManager.Run(ctx, "live", "file:///programs/job.ts", jobs.Options{User: execution.SystemUser()})
+	if err != nil || record.State != "SUCCEEDED" || record.Timeout != 21*time.Second {
+		t.Fatalf("live timeout/reuse: %#v, %v", record, err)
+	}
+	// This node has missed the other node's writes; its own write must not hide them.
+	if _, err := freshSettings.Set(ctx, "job.default.worker_reuse", "true"); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := freshSettings.RefreshGlobal(ctx); err != nil || !changed {
+		t.Fatalf("cross-node refresh: %v, %v", changed, err)
+	}
+	record, err = freshJobs.Run(ctx, "follower", "file:///programs/job.ts", jobs.Options{User: execution.SystemUser()})
+	if err != nil || record.Parallelism != 3 || record.Timeout != 21*time.Second || record.State != "IDLE" {
+		t.Fatalf("cross-node job defaults: %#v, %v", record, err)
 	}
 }
