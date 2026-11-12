@@ -159,6 +159,27 @@ func New(groupCoordinator GroupCoordinator, workerManager WorkerManager, policy 
 	}, nil
 }
 
+// SetDefaults installs the startup defaults after global settings attach.
+func (m *Manager) SetDefaults(policy Policy) error {
+	if policy.MaximumParallel <= 0 || policy.QueuedExecutionLimit <= 0 || policy.ExecutionTimeout <= 0 || policy.IdleRuntimeTimeout <= 0 {
+		return errors.New("job defaults must be positive")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.policy.MaximumParallel = policy.MaximumParallel
+	m.policy.QueuedExecutionLimit = policy.QueuedExecutionLimit
+	m.policy.ExecutionTimeout = policy.ExecutionTimeout
+	m.policy.Reuse = policy.Reuse
+	m.policy.IdleRuntimeTimeout = policy.IdleRuntimeTimeout
+	for _, record := range m.records {
+		if record.State == "IDLE" {
+			m.scheduleIdleTimerLocked(record)
+		}
+	}
+	m.signalQueueLocked()
+	return nil
+}
+
 type submission struct {
 	record         Record
 	profile        model.RuntimeProfile
@@ -294,11 +315,13 @@ func (m *Manager) prepare(jobID, entrypoint string, options Options) (submission
 	if options.Parallelism < 0 {
 		return submission{}, errors.New("job parallelism must not be negative")
 	}
+	m.mu.Lock()
+	maximumParallel, reuse, defaultTimeout := m.policy.MaximumParallel, m.policy.Reuse, m.policy.ExecutionTimeout
+	m.mu.Unlock()
 	parallelism := options.Parallelism
-	if parallelism == 0 || parallelism > m.policy.MaximumParallel {
-		parallelism = m.policy.MaximumParallel
+	if parallelism == 0 || parallelism > maximumParallel {
+		parallelism = maximumParallel
 	}
-	reuse := m.policy.Reuse
 	if options.Reuse != nil {
 		reuse = *options.Reuse
 	}
@@ -321,7 +344,7 @@ func (m *Manager) prepare(jobID, entrypoint string, options Options) (submission
 	}
 	timeout := options.Timeout
 	if timeout <= 0 {
-		timeout = m.policy.ExecutionTimeout
+		timeout = defaultTimeout
 	}
 	databaseAccess := options.DatabaseAccess
 	if databaseAccess == "" {
@@ -682,7 +705,12 @@ func (m *Manager) scheduleIdleTimerLocked(record Record) {
 	if delay < 0 {
 		delay = 0
 	}
-	m.timers[record.ExecutionID] = time.AfterFunc(delay, func() { m.retireIdle(record.ExecutionID) })
+	var timer *time.Timer
+	timer = time.AfterFunc(delay, func() {
+		m.mu.Lock()
+		m.retireIdleLocked(record.ExecutionID, timer)
+	})
+	m.timers[record.ExecutionID] = timer
 }
 
 func (m *Manager) stopIdleTimerLocked(executionID string) {
@@ -692,8 +720,11 @@ func (m *Manager) stopIdleTimerLocked(executionID string) {
 	}
 }
 
-func (m *Manager) retireIdle(executionID string) {
-	m.mu.Lock()
+func (m *Manager) retireIdleLocked(executionID string, timer *time.Timer) {
+	if m.timers[executionID] != timer {
+		m.mu.Unlock()
+		return
+	}
 	delete(m.timers, executionID)
 	record, ok := m.records[executionID]
 	if !ok || record.State != "IDLE" || !record.Reuse {

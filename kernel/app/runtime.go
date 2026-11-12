@@ -440,14 +440,11 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
 	}
-	jobManager, err := jobs.New(groupCoordinator, workerManager, jobs.Policy{
-		NodeID: instanceUUID, LogPosition: serviceSet.Logging.ReadPosition,
-		Strategy: grouping(settingManager, "execution.grouping.job"), Profile: jobProfile, Resources: jobResources, Lifecycle: lifecycle,
-		MaximumParallel: activeInt(settingManager, "job.default.maximum_parallel_workers", 4), QueuedExecutionLimit: activeInt(settingManager, "job.default.queued_execution_limit", 1024),
-		ExecutionTimeout: activeDuration(settingManager, "job.default.execution_timeout", 5*time.Minute),
-		Reuse:            activeBoolDefault(settingManager, "job.default.worker_reuse", false), IdleRuntimeTimeout: activeDuration(settingManager, "job.default.idle_runtime_timeout", time.Minute),
-		WorkspaceMounts: workspaceMounts, Logger: logger,
-	})
+	jobPolicy := jobDefaults(settingManager)
+	jobPolicy.NodeID, jobPolicy.LogPosition = instanceUUID, serviceSet.Logging.ReadPosition
+	jobPolicy.Strategy, jobPolicy.Profile, jobPolicy.Resources, jobPolicy.Lifecycle = grouping(settingManager, "execution.grouping.job"), jobProfile, jobResources, lifecycle
+	jobPolicy.WorkspaceMounts, jobPolicy.Logger = workspaceMounts, logger
+	jobManager, err := jobs.New(groupCoordinator, workerManager, jobPolicy)
 	if err != nil {
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
@@ -506,8 +503,8 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		runtimeServices.Failure = "initialize global settings: " + err.Error()
 		return runtimeServices, closeRuntime
 	}
-	if err := settingManager.AttachGlobal(ctx, globalSettings); err != nil {
-		runtimeServices.Failure = "load global settings: " + err.Error()
+	if err := attachGlobalJobDefaults(ctx, settingManager, globalSettings, jobManager); err != nil {
+		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
 	}
 	if err := settingManager.RegisterApplier([]string{
@@ -1360,6 +1357,26 @@ func activeString(manager *settings.Manager, key, fallback string) string {
 	}
 	return fallback
 }
+func attachGlobalJobDefaults(ctx context.Context, manager *settings.Manager, store settings.GlobalStore, jobManager *jobs.Manager) error {
+	if err := manager.AttachGlobal(ctx, store); err != nil {
+		return fmt.Errorf("load global settings: %w", err)
+	}
+	if err := jobManager.SetDefaults(jobDefaults(manager)); err != nil {
+		return fmt.Errorf("initialize job defaults: %w", err)
+	}
+	return nil
+}
+
+func jobDefaults(manager *settings.Manager) jobs.Policy {
+	return jobs.Policy{
+		MaximumParallel:      activeInt(manager, "job.default.maximum_parallel_workers", 4),
+		QueuedExecutionLimit: activeInt(manager, "job.default.queued_execution_limit", 1024),
+		ExecutionTimeout:     activeDuration(manager, "job.default.execution_timeout", 5*time.Minute),
+		Reuse:                activeBoolDefault(manager, "job.default.worker_reuse", false),
+		IdleRuntimeTimeout:   activeDuration(manager, "job.default.idle_runtime_timeout", time.Minute),
+	}
+}
+
 func activeInt(manager *settings.Manager, key string, fallback int) int {
 	if value, ok := manager.Active(key); ok {
 		if typed, valid := value.(int64); valid {

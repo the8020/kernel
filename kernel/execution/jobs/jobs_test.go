@@ -518,3 +518,102 @@ func TestReusedWorkerGetsANewLogPosition(t *testing.T) {
 		t.Fatalf("reused Worker reference: first=%#v, second=%#v", first, second)
 	}
 }
+
+func TestSetDefaultsUpdatesAdmissionAndPreservesInflightWork(t *testing.T) {
+	gate := make(chan struct{})
+	started := make(chan struct{}, 3)
+	workersFake := &fakeWorkers{gate: gate, runStarted: started}
+	policy := testPolicy()
+	policy.MaximumParallel = 1
+	manager, err := New(&fakeCoordinator{}, workersFake, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	defer close(gate)
+	first, err := manager.Run(context.Background(), "bootstrap", "file:///programs/job.ts", Options{User: execution.SystemUser(), Detached: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("bootstrap did not start")
+	}
+	queued, err := manager.Run(context.Background(), "queued", "file:///programs/job.ts", Options{User: execution.SystemUser(), Detached: true})
+	if err != nil || queued.State != "QUEUED" {
+		t.Fatalf("queued=%#v err=%v", queued, err)
+	}
+	updated := Policy{MaximumParallel: 2, QueuedExecutionLimit: 1, ExecutionTimeout: 42 * time.Second, Reuse: true, IdleRuntimeTimeout: time.Hour}
+	if err := manager.SetDefaults(updated); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("queued job did not wake after limit increased")
+	}
+	third, err := manager.Run(context.Background(), "third", "file:///programs/job.ts", Options{User: execution.SystemUser(), Detached: true})
+	if err != nil || third.State != "QUEUED" || !third.Reuse || third.Timeout != updated.ExecutionTimeout || third.Parallelism != 2 {
+		t.Fatalf("third=%#v err=%v", third, err)
+	}
+	if _, err := manager.Run(context.Background(), "overflow", "file:///programs/job.ts", Options{User: execution.SystemUser(), Detached: true}); err == nil {
+		t.Fatal("updated queue limit not enforced")
+	}
+	if current, err := manager.Inspect(first.ExecutionID); err != nil || current.Reuse || current.Parallelism != 1 {
+		t.Fatalf("bootstrap changed: %#v %v", current, err)
+	}
+}
+
+func TestSetDefaultsReschedulesIdleAndIgnoresOldTimer(t *testing.T) {
+	policy := testPolicy()
+	policy.Reuse = true
+	policy.IdleRuntimeTimeout = time.Hour
+	manager, _ := New(&fakeCoordinator{}, &fakeWorkers{}, policy)
+	defer manager.Close()
+	record, err := manager.Run(context.Background(), "bootstrap", "file:///programs/job.ts", Options{User: execution.SystemUser()})
+	if err != nil || record.State != "IDLE" {
+		t.Fatalf("record=%#v err=%v", record, err)
+	}
+	manager.mu.Lock()
+	oldTimer := manager.timers[record.ExecutionID]
+	manager.mu.Unlock()
+	if err := manager.SetDefaults(Policy{MaximumParallel: 2, QueuedExecutionLimit: 3, ExecutionTimeout: time.Minute, Reuse: true, IdleRuntimeTimeout: 20 * time.Millisecond}); err != nil {
+		t.Fatal(err)
+	}
+	manager.mu.Lock()
+	manager.retireIdleLocked(record.ExecutionID, oldTimer)
+	if _, err := manager.Inspect(record.ExecutionID); err != nil {
+		t.Fatal("stale timer retired worker", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := manager.Inspect(record.ExecutionID); err != nil {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("updated idle timeout did not retire worker")
+}
+
+func TestSetDefaultsConcurrentWithSubmissions(t *testing.T) {
+	manager, _ := New(&fakeCoordinator{}, &fakeWorkers{}, testPolicy())
+	defer manager.Close()
+	var wait sync.WaitGroup
+	wait.Add(1)
+	go func() {
+		defer wait.Done()
+		for i := 0; i < 50; i++ {
+			if _, err := manager.Run(context.Background(), "job", "file:///programs/job.ts", Options{User: execution.SystemUser()}); err != nil {
+				t.Error(err)
+				return
+			}
+		}
+	}()
+	for i := 0; i < 50; i++ {
+		if err := manager.SetDefaults(Policy{MaximumParallel: 2, QueuedExecutionLimit: 3, ExecutionTimeout: time.Minute, Reuse: i%2 == 0, IdleRuntimeTimeout: time.Second}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wait.Wait()
+}

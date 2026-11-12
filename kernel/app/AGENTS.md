@@ -81,6 +81,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   exist. Schema jobs have ordinary SQL access; table evaluation remains a
   separate restricted Worker. Catalog failures gate the service plane and remain
   visible in database and runtime status without shutting down native execution.
+- The bootstrap job manager starts with provisional defaults; immediately after
+  global settings attach, install the database-backed job defaults on that same
+  manager before continuing application initialization.
 - Before database startup, load or generate the signing key under
   `node/kernel/keys/signing.key`. Publish its primitive directly to the existing
   command bus; status and replacement remain available during database failure.
