@@ -1,8 +1,31 @@
 import type { KernelBridge } from "../kernel/bridge.ts";
 import {
+  type AuthContext,
   canonicalExecutionUser,
   type ServiceRequestMetadata,
 } from "./contracts.ts";
+
+type Authentication = NonNullable<ServiceRequestMetadata["authentication"]>;
+
+/** The kernel already chose the method; services see it without credentials. */
+function authenticationMethod(
+  authentication: Authentication,
+): Pick<AuthContext, "method" | "tokenSource"> {
+  if (authentication.approved === true) return { method: "native" };
+  const input = authentication.input as
+    | { method?: unknown; fromCookie?: unknown }
+    | undefined;
+  if (input?.method === "password" || input?.method === "certificate") {
+    return { method: input.method };
+  }
+  if (input?.method === "token") {
+    return {
+      method: "token",
+      tokenSource: input.fromCookie === true ? "cookie" : "header",
+    };
+  }
+  return {};
+}
 
 // Only the composition-selected hook sees credentials; the handler gets its approved scope.
 export async function authenticateRequest(
@@ -44,7 +67,12 @@ export async function authenticateRequest(
     const approved: ServiceRequestMetadata = {
       ...meta,
       user,
-      auth: { authenticated: true, realm: "user", ...user },
+      auth: {
+        authenticated: true,
+        realm: "user",
+        ...user,
+        ...authenticationMethod(authentication),
+      },
     };
     signal.throwIfAborted();
     if (

@@ -74,7 +74,11 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   unchallenged 503. Approval confirms the principal with the supervisor before
   publishing `auth.authenticated`; streaming bodies and WebSocket callbacks
   restore that approved request context. Context getters do not perform I/O.
-  Never introduce a second auth Worker, service, or sandbox.
+  Approved `auth` also carries the method the kernel already chose: `password`
+  (HTTP Basic), `certificate` (TLS client certificate), `token` with
+  `tokenSource` `cookie` or `header`, or `native` for kernel requests approved
+  on a user's behalf. Credentials and fingerprints stay out of it. Never
+  introduce a second auth Worker, service, or sandbox.
 - Trusted native-transport approval in authentication metadata skips the package
   hook already performed by that transport. The signed/approved subject must
   still match the execution principal before publishing authenticated context.

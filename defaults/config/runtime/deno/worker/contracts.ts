@@ -123,11 +123,25 @@ export interface CurrentExecutionMetadata {
   persistentExecutionId?: string;
 }
 
+/**
+ * How the kernel authenticated the request: HTTP Basic password, TLS client
+ * certificate, a signed token, or an internal kernel request on the user's
+ * behalf.
+ */
+export type AuthenticationMethod =
+  | "password"
+  | "certificate"
+  | "token"
+  | "native";
+
 export interface AuthContext {
   authenticated: boolean;
   realm?: "user";
   userId?: string;
   username?: string;
+  method?: AuthenticationMethod;
+  /** Where a token came from: the authentication cookie or a request header. */
+  tokenSource?: "cookie" | "header";
 }
 
 export type KernelOperation =
