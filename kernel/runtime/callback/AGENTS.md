@@ -38,6 +38,10 @@ Parent DOX: [kernel/kernel/runtime DOX](../AGENTS.md).
   Applying a snapshot and refreshing heartbeat freshness are memory-only; stale
   revisions cannot replace newer state, and restart recovery obtains fresh truth
   from the supervisor heartbeat.
+- Registration/heartbeat snapshot payloads ignore unknown additive fields,
+  including nested Worker/resource/failure metadata. Known field decoding,
+  identity, protocol and freshness checks still apply. Outer envelopes and
+  command payloads remain strict; malformed or trailing JSON is rejected.
 - Administration, typed operations, database access, and Worker invocation are
   available to both job and service Workers after cached sandbox token
   validation and shared canonical Worker/context identity validation. They do
@@ -104,6 +108,12 @@ Parent DOX: [kernel/kernel/runtime DOX](../AGENTS.md).
 
 - `administration_test.go` covers catalog/line dispatch, native validation,
   trusted caller retention, secure-input rejection and bounded output.
+- `heartbeat_test.go` covers additive snapshot fields, freshness and unchanged
+  malformed-field, envelope and command rejection.
+  With pinned Deno on PATH, `TestDenoSupervisorSnapshotsReachCallback`
+  sends actual service/job supervisor and Worker samples through the Unix
+  callback with additive metadata, equal revisions, stale epochs and
+  malformed/token rejects.
 - Unit tests cover Unix listener lifecycle/reconnect, token/protocol and
   terminal-state rejection, memory-only revisioned snapshots, job/service
   runtime identity, administration and typed operations, concurrent database

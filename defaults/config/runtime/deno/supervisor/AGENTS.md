@@ -169,6 +169,11 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 
 # Verification
 
+- The Go callback's `TestDenoSupervisorSnapshotsReachCallback` invokes
+  `heartbeat_fixture_test.ts` with pinned Deno on PATH. It verifies actual
+  service/job snapshots and Worker resources with additive metadata through the
+  authenticated Unix callback, equal-revision freshness and stale/invalid/token
+  rejection.
 - Supervisor tests cover strict operation-specific kernel callback envelopes,
   authentication, lifecycle, stateless/persistent scheduling, strict
   bound-session follow-ups, initial ID collisions, exact reuse and completion,

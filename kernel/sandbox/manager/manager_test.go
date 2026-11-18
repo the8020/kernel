@@ -24,6 +24,7 @@ import (
 
 type fakeBackend struct {
 	beforeCreate                      func(model.SandboxSpec)
+	beforeObserve                     func()
 	rawPaths                          records.RawPaths
 	observations                      map[string]backend.Observation
 	created, stopped, killed, deleted []string
@@ -107,6 +108,9 @@ func (f *fakeBackend) UpdateLabels(_ context.Context, id string, labels map[stri
 }
 func (f *fakeBackend) Observe(_ context.Context, id string) (backend.Observation, error) {
 	f.observeCalls.Add(1)
+	if f.beforeObserve != nil {
+		f.beforeObserve()
+	}
 	observation, ok := f.observations[id]
 	if !ok {
 		return observation, os.ErrNotExist
@@ -808,6 +812,32 @@ func TestHealthCheckDetectsSupervisorHeartbeatTimeout(t *testing.T) {
 	archived := historyForSandbox(t, manager, spec.SandboxID)
 	if archived.Record.Status.ObservedState != model.StateFailed || len(runtimeBackend.killed) != 1 {
 		t.Fatalf("history=%#v killed=%#v", archived, runtimeBackend.killed)
+	}
+}
+
+func TestHealthCheckPreservesHeartbeatAcceptedDuringBackendObservation(t *testing.T) {
+	manager, store, runtimeBackend, _, _ := testManager(t)
+	spec := testSandboxSpec(t, "sandbox-heartbeat-race")
+	if _, err := manager.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	_, status, _ := store.Load(spec.SandboxID)
+	now := status.LastHeartbeat.Add(16 * time.Second)
+	manager.now = func() time.Time { return now }
+	runtimeBackend.beforeObserve = func() {
+		if _, err := store.Observe(spec.SandboxID, model.RuntimeSnapshot{
+			Revision: 2, SupervisorStartedAtMS: 1, SandboxID: spec.SandboxID, WorkloadType: spec.WorkloadType,
+		}, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report, err := manager.CheckHealth(t.Context(), 15*time.Second)
+	if err != nil || len(report.Failures) != 0 || runtimeBackend.observeCalls.Load() == 0 || len(runtimeBackend.killed) != 0 || len(runtimeBackend.deleted) != 0 {
+		t.Fatalf("fresh callback lost to stale health observation: %+v %v", report, err)
+	}
+	_, current, err := store.Load(spec.SandboxID)
+	if err != nil || !current.LastHeartbeat.Equal(now) || !current.SupervisorHealthy {
+		t.Fatalf("fresh sandbox was not preserved: %+v %v", current, err)
 	}
 }
 

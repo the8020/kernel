@@ -19,7 +19,7 @@
     "/p/": "file:///workspace/packages/"
   },
   "tasks": {
-    "check": "deno fmt --check . ../protocol/generated.ts && deno lint . ../protocol/generated.ts && deno check context/mod.ts supervisor/main.ts worker/runtime_worker_test.ts supervisor/supervisor_test.ts",
+    "check": "deno fmt --check . ../protocol/generated.ts && deno lint . ../protocol/generated.ts && deno check context/mod.ts supervisor/main.ts worker/runtime_worker_test.ts supervisor/supervisor_test.ts supervisor/heartbeat_fixture_test.ts",
     "test": "deno test --unstable-worker-options --allow-read=.,../protocol --allow-net --allow-import ."
   }
 }

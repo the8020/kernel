@@ -314,7 +314,7 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	var payload statusPayload
-	if err := decodePayload(message.Payload, &payload); err != nil {
+	if err := json.Unmarshal(message.Payload, &payload); err != nil {
 		http.Error(writer, "invalid runtime payload", http.StatusBadRequest)
 		return
 	}

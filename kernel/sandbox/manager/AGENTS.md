@@ -123,7 +123,8 @@ Parent DOX: [kernel/kernel/sandbox DOX](../AGENTS.md).
   disabled, failure archival, lifecycle transitions, sandbox-scoped port release,
   Worker-count and raw CPU/RAM
   metrics, cache-only healthy monitoring, heartbeat timeout, stale-sandbox OOM
-  evidence preservation/full cleanup, deletion, reconstruction, cached versus
+  evidence preservation/full cleanup, fresh heartbeat arrival during stale
+  backend observation, deletion, reconstruction, cached versus
   targeted live inspection, parallel unrelated creations, missing sandboxes,
   owned orphans, and startup/shutdown policies.
 
