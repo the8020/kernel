@@ -34,6 +34,11 @@ Parent DOX: [kernel/kernel/runtime DOX](../AGENTS.md).
   sandbox identity must agree, constant-time bearer validation uses the state
   store's preloaded token cache, unknown identities remain cache-only misses,
   and terminal groups cannot be revived by late callbacks.
+- Terminal HTTP 409 rejections keep `sandbox is not accepting callbacks` and the
+  cached state. After token validation, include a recorded failure reason when
+  present, quoted and bounded by the existing log-text codec to 1024 escaped
+  bytes, with the sandbox token redacted. A state alone does not imply a failure
+  cause. The supervisor's existing error path logs this detail.
 - Registration and heartbeat carry one absolute revisioned supervisor snapshot.
   Applying a snapshot and refreshing heartbeat freshness are memory-only; stale
   revisions cannot replace newer state, and restart recovery obtains fresh truth
@@ -109,11 +114,10 @@ Parent DOX: [kernel/kernel/runtime DOX](../AGENTS.md).
 - `administration_test.go` covers catalog/line dispatch, native validation,
   trusted caller retention, secure-input rejection and bounded output.
 - `heartbeat_test.go` covers additive snapshot fields, freshness and unchanged
-  malformed-field, envelope and command rejection.
-  With pinned Deno on PATH, `TestDenoSupervisorSnapshotsReachCallback`
-  sends actual service/job supervisor and Worker samples through the Unix
-  callback with additive metadata, equal revisions, stale epochs and
-  malformed/token rejects.
+  malformed-field, envelope and command rejection. With pinned Deno on PATH,
+  `TestDenoSupervisorSnapshotsReachCallback` sends actual service/job supervisor
+  and Worker samples through the Unix callback with additive metadata, equal
+  revisions, stale epochs and malformed/token rejects.
 - Unit tests cover Unix listener lifecycle/reconnect, token/protocol and
   terminal-state rejection, memory-only revisioned snapshots, job/service
   runtime identity, administration and typed operations, concurrent database

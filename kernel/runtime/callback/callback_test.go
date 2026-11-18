@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -182,26 +183,56 @@ func TestCallbackRejectsTokenAndProtocolMismatch(t *testing.T) {
 }
 
 func TestCallbackCannotReviveTerminalSandbox(t *testing.T) {
-	store, _ := state.New(t.TempDir())
-	spec, status := callbackFixture(t, store)
-	status.ObservedState = model.StateFailed
-	status.SupervisorHealthy = false
-	if err := store.SaveStatus(spec.SandboxID, status); err != nil {
-		t.Fatal(err)
-	}
-	server := newCallbackTestServer(t, store, nil)
-	body := callbackMessage(t, protocol.MessageHeartbeat, spec, statusPayload{ProtocolVersion: protocol.ProtocolVersion, SandboxID: spec.SandboxID, WorkloadType: string(spec.WorkloadType)})
-	request := httptest.NewRequest(http.MethodPost, "http://callback/v1/runtime/heartbeat", bytes.NewReader(body))
-	request.RemoteAddr = "10.88.0.2:1"
-	request.Header.Set("Authorization", "Bearer "+spec.InternalToken)
-	response := httptest.NewRecorder()
-	server.serveHTTP(response, request)
-	if response.Code != http.StatusConflict {
-		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
-	}
-	_, updated, _ := store.Load(spec.SandboxID)
-	if updated.SupervisorHealthy || updated.ObservedState != model.StateFailed {
-		t.Fatalf("updated=%#v", updated)
+	for _, test := range []struct {
+		state        model.SandboxState
+		reason, want string
+	}{
+		{model.StateFailed, "supervisor heartbeat exceeded 15s", `, reason="supervisor heartbeat exceeded 15s"`},
+		{model.StateStopping, "", ""},
+		{model.StateStopped, " \n ", ""},
+		{model.StateDeleting, "cleanup failed", `, reason="cleanup failed"`},
+		{model.StateFailed, "line one\n\tline two", `, reason="line one\n\tline two"`},
+		{model.StateFailed, "token 0123456789abcdef0123456789abcdef", `, reason="token [redacted]"`},
+		{model.StateFailed, strings.Repeat("x", 2048), ""},
+	} {
+		t.Run(string(test.state)+"/"+test.want, func(t *testing.T) {
+			store, _ := state.New(t.TempDir())
+			spec, status := callbackFixture(t, store)
+			status.ObservedState, status.FailureReason = test.state, test.reason
+			status.SupervisorHealthy = false
+			if err := store.SaveStatus(spec.SandboxID, status); err != nil {
+				t.Fatal(err)
+			}
+			server := newCallbackTestServer(t, store, nil)
+			body := callbackMessage(t, protocol.MessageHeartbeat, spec, statusPayload{ProtocolVersion: protocol.ProtocolVersion, SandboxID: spec.SandboxID, WorkloadType: string(spec.WorkloadType)})
+			for _, token := range []string{"wrong", spec.InternalToken} {
+				request := httptest.NewRequest(http.MethodPost, "/v1/runtime/heartbeat", bytes.NewReader(body))
+				request.Header.Set("Authorization", "Bearer "+token)
+				response := httptest.NewRecorder()
+				server.serveHTTP(response, request)
+				if token != spec.InternalToken {
+					if response.Code != http.StatusUnauthorized || response.Body.String() != "unauthorized\n" {
+						t.Fatalf("private terminal detail disclosed: %d %s", response.Code, response.Body.String())
+					}
+					continue
+				}
+				want := fmt.Sprintf("sandbox is not accepting callbacks (state=%s%s)\n", test.state, test.want)
+				if len(test.reason) > 1024 {
+					if !strings.Contains(response.Body.String(), "[middle omitted]") || response.Body.Len() > 1150 {
+						t.Fatalf("unbounded terminal detail: %d bytes", response.Body.Len())
+					}
+				} else if response.Body.String() != want {
+					t.Fatalf("body=%q want=%q", response.Body.String(), want)
+				}
+				if response.Code != http.StatusConflict {
+					t.Fatalf("status=%d", response.Code)
+				}
+			}
+			_, updated, _ := store.Load(spec.SandboxID)
+			if updated.SupervisorHealthy || updated.ObservedState != test.state {
+				t.Fatalf("updated=%#v", updated)
+			}
+		})
 	}
 }
 

@@ -22,6 +22,7 @@ import (
 	"the8020/kernel/database"
 	"the8020/kernel/execution"
 	"the8020/kernel/identity"
+	"the8020/kernel/logging/records"
 	"the8020/kernel/nodes"
 	"the8020/kernel/runtime/protocol"
 	"the8020/kernel/sandbox/model"
@@ -292,7 +293,12 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	if status.ObservedState == model.StateFailed || status.ObservedState == model.StateStopping || status.ObservedState == model.StateStopped || status.ObservedState == model.StateDeleting {
-		http.Error(writer, "sandbox is not accepting callbacks", http.StatusConflict)
+		detail := fmt.Sprintf("sandbox is not accepting callbacks (state=%s", status.ObservedState)
+		if reason := strings.TrimSpace(status.FailureReason); reason != "" {
+			reason = strings.ReplaceAll(reason, spec.InternalToken, "[redacted]")
+			detail += fmt.Sprintf(", reason=%q", records.Text(reason, 1024))
+		}
+		http.Error(writer, detail+")", http.StatusConflict)
 		return
 	}
 	if wantType == protocol.MessageAdminCommand {
