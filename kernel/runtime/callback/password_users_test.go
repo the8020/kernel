@@ -40,7 +40,7 @@ func TestPasswordUsersWorkerAndRecovery(t *testing.T) {
 	db := database.New(database.Config{Backend: database.BackendSQLite, Location: filepath.Join(root, "system.db"), MaximumOpenConnections: 8, MaximumIdleConnections: 4})
 	defer db.Close()
 	for _, sql := range []string{
-		`CREATE TABLE the8020__users__users (username TEXT PRIMARY KEY, fullName TEXT NOT NULL DEFAULT '', passwordHash TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1, authVersion INTEGER NOT NULL DEFAULT 1, createdAt TEXT NOT NULL DEFAULT '2026-01-01T00:00:00Z', updatedAt TEXT NOT NULL DEFAULT '2026-01-01T00:00:00Z')`,
+		`CREATE TABLE the8020__users__users (username TEXT PRIMARY KEY, fullName TEXT NOT NULL DEFAULT '', language TEXT, passwordHash TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1, technical INTEGER NOT NULL DEFAULT 0, authVersion INTEGER NOT NULL DEFAULT 1, createdAt TEXT NOT NULL DEFAULT '2026-01-01T00:00:00Z', updatedAt TEXT NOT NULL DEFAULT '2026-01-01T00:00:00Z')`,
 		`CREATE TABLE the8020__users__sessions (sessionId TEXT PRIMARY KEY, username TEXT NOT NULL, authVersion INTEGER NOT NULL, createdAt TEXT NOT NULL, expiresAt TEXT NOT NULL, type TEXT NOT NULL, transport TEXT NOT NULL)`,
 		`CREATE TABLE the8020__system__settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
 		`INSERT INTO the8020__system__settings VALUES ('system.profile','{"id":"sys-aaaaaaaaaa","name":"fixture","role":"test"}')`,
