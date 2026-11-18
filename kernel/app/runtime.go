@@ -718,18 +718,18 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	}
 	cleanup.console = consoleManager
 	for _, owner := range []struct {
-		key     string
+		keys    []string
 		applier settings.Applier
 	}{
-		{"terminal.idle_timeout", consoleManager},
-		{"development.idle_timeout", developmentManager},
+		{[]string{"terminal.idle_timeout"}, consoleManager},
+		{[]string{"development.idle_timeout", "development.activation_allowed"}, developmentManager},
 	} {
 		prepared, err := owner.applier.Prepare(ctx, settingManager.Snapshot())
 		if err != nil {
 			runtimeServices.Failure = err.Error()
 			return runtimeServices, closeRuntime
 		}
-		if err := settingManager.RegisterApplier([]string{owner.key}, owner.applier); err != nil {
+		if err := settingManager.RegisterApplier(owner.keys, owner.applier); err != nil {
 			prepared.Discard()
 			runtimeServices.Failure = err.Error()
 			return runtimeServices, closeRuntime

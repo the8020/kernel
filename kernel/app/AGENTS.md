@@ -199,8 +199,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   The node manager receives the same operation dispatcher's physical terminal
   closer so authenticated exact-node cleanup survives display-Worker loss.
 - Console composition reserves development lifetime through the development
-  manager. It applies initial terminal/development idle settings and registers
-  their runtime appliers before publishing console or SSH admission.
+  manager. It applies initial terminal/development idle settings and the
+  development activation override, registering their runtime appliers before
+  publishing console or SSH admission.
 - SSH composition reads runtime-mutable `network.ssh_port`, registers the SSH
   manager as its transactional runtime applier, uses the private
   `node/kernel/ssh/host_ed25519` key, and starts only after authentication,

@@ -1342,6 +1342,9 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 	if len(options.ForceColumns) > 0 && len(options.SelectedPackages) == 0 {
 		return result, errors.New("--force requires an explicit package selection")
 	}
+	if options.Action != "status" && options.Action != "abort" && m.activationDisabled.Load() {
+		return result, errors.New("sandbox activation is disabled by development.activation_allowed=false")
+	}
 	ctx = deployment.WithSchemaOptions(ctx, deployment.SchemaOptions{ForceColumns: options.ForceColumns, ApprovedPlan: options.ApprovedPlan})
 	unlock := m.lockUser(userID)
 	defer unlock()

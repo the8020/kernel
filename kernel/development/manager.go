@@ -66,6 +66,8 @@ type Manager struct {
 	idleTimeout    atomic.Int64
 	closed         atomic.Bool
 	idleContext    context.Context
+
+	activationDisabled atomic.Bool
 }
 
 func (m *Manager) SetSchemaDeployment(hook deployment.SchemaHook) {

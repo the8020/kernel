@@ -19,8 +19,10 @@ Parent DOX: [kernel/kernel/settings DOX](../AGENTS.md).
   connection-pool, and result-limit settings required before shared state can be
   loaded.
 - `terminal/` owns retained-PTY idle expiry and `development/` owns idle
-  development-sandbox shutdown. Both are node-local, runtime mutable durations
-  with a one-millisecond minimum, applied by their existing kernel owners.
+  development-sandbox shutdown plus `development.activation_allowed`. Idle
+  durations have a one-millisecond minimum. The activation enum accepts `auto`
+  (default, application role policy), `true` (allow), or `false` (deny). All
+  are node-local and apply live through their existing native owners.
 - No definition subtree or setting may describe an application protocol,
   application program, application state schema, or UUI behavior.
 

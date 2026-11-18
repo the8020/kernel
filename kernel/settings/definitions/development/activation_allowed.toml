@@ -1,0 +1,9 @@
+key = "development.activation_allowed"
+type = "enum"
+storage = "node"
+default = "auto"
+environment = "THE8020_DEVELOPMENT_ACTIVATION_ALLOWED"
+allowed = ["auto", "true", "false"]
+runtime_mutable = true
+restart_required = false
+description = "Allow sandbox package activation: auto follows the system role, true permits activation on any role, false blocks publication. Sandbox use, preview, status and abort remain available."

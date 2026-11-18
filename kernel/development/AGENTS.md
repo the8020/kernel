@@ -20,6 +20,14 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 # Local Contracts
 
+- Sandbox lifecycle and shells are independent of the application system role.
+  Live node setting `development.activation_allowed` defaults to `auto`; the
+  dev-core activation entrypoint then requires the development role. `true`
+  bypasses that role lookup; `false` also blocks native activation admission.
+  Preview, status, and abort remain available. Changes affect new admission,
+  not an activation already in progress. Native `auto`/`true` recovery remains
+  independent of application policy; the kernel never reads the system profile.
+
 - The private `logs` operation authenticates the loaded sandbox owner's bearer
   token, like `sql`, and delegates to composition's `Config.Logs`. The log owner
   pins reads to this hosting node, returns its identity even for empty pages and
@@ -345,6 +353,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Run heavy native and browser fixtures in a separate environment with explicit
   CPU, memory, and runtime limits. Keep checks on shared development instances
   small and sequential; stop if responsiveness degrades.
+- `TestActivationOverride` covers live admission, discarded policy changes,
+  sandbox availability, and status/abort under a publication block.
 - Unit tests cover identity collisions, user isolation, lifecycle and idle
   admission, independent shutdown, bounded diagnostics, authorized-key
   confinement, reset boundaries, mount policy, and helper guidance.

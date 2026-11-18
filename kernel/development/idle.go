@@ -110,8 +110,9 @@ func (m *Manager) forgetSandbox(id string) {
 }
 
 type idlePolicy struct {
-	manager *Manager
-	timeout time.Duration
+	manager            *Manager
+	timeout            time.Duration
+	activationDisabled bool
 }
 
 func (m *Manager) Prepare(_ context.Context, values settings.Values) (settings.Prepared, error) {
@@ -119,10 +120,15 @@ func (m *Manager) Prepare(_ context.Context, values settings.Values) (settings.P
 	if !ok || value <= 0 {
 		return nil, errors.New("development.idle_timeout must be a positive duration")
 	}
-	return idlePolicy{m, time.Duration(value)}, nil
+	activation, ok := values["development.activation_allowed"].(string)
+	if !ok || (activation != "auto" && activation != "true" && activation != "false") {
+		return nil, errors.New("development.activation_allowed must be auto, true or false")
+	}
+	return idlePolicy{m, time.Duration(value), activation == "false"}, nil
 }
 func (p idlePolicy) Discard() {}
 func (p idlePolicy) Commit() {
+	p.manager.activationDisabled.Store(p.activationDisabled)
 	p.manager.idleTimeout.Store(int64(p.timeout))
 	p.manager.owned.Range(func(_, value any) bool {
 		use := value.(*sandboxUse)

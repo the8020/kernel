@@ -11,7 +11,10 @@ import (
 
 func setDevelopmentIdle(t *testing.T, m *Manager, duration time.Duration) {
 	t.Helper()
-	p, err := m.Prepare(context.Background(), settings.Values{"development.idle_timeout": settings.Duration(duration)})
+	p, err := m.Prepare(context.Background(), settings.Values{
+		"development.idle_timeout":       settings.Duration(duration),
+		"development.activation_allowed": "auto",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

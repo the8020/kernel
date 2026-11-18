@@ -1,5 +1,26 @@
 # 80|20 kernel
 
+## 0.10.14: diagnostic sandboxes on every system
+
+Development sandboxes now work on development, test, and production systems.
+Kernel 0.10.14 recommends dev-core 0.10.2. Install the kernel before that package.
+Sandbox package activation defaults to development systems only. The live,
+node-local `development.activation_allowed` setting accepts `auto`, `true`,
+or `false`. Use Kernel Calls to permit an emergency production repair:
+
+```text
+kernel.config.set development.activation_allowed true
+```
+
+Restore role-based admission with `kernel.config.set development.activation_allowed auto`,
+or block activation on any role with `kernel.config.set development.activation_allowed false`.
+`kernel.config.get development.activation_allowed` shows the active value. No
+restart is needed. Set it on the node hosting the sandbox. Previews, status,
+abort, and sandbox terminals remain available; an activation already admitted
+finishes under its original decision. The override controls sandbox activation,
+not Deployments or unrelated package administration. Native recovery retains
+its existing authority in `auto`/`true`; `false` blocks native publication too.
+
 ## 0.10.9: live PostgreSQL password rotation
 
 `database.password` now applies to future PostgreSQL connections without a kernel
