@@ -1,12 +1,11 @@
 # 80|20 kernel
 
-## Development-sourced recommendations
+## 0.10.15: development-sourced recommendations
 
-The current source resolves `kernel.packages.recommended` transports through
-`the8020/deployments/recommended-sources`. Install the updated deployments
-package before adopting this kernel; published `0.10.14` does not include this
-behavior. Fresh releases must include that deployments program in their
-bootstrap set.
+Kernel `0.10.15` resolves `kernel.packages.recommended` transports through
+`the8020/deployments/recommended-sources`. Install deployments `0.10.6` or newer
+before updating an existing system to this kernel. Fresh installations include
+the matching deployments version in the shipped bootstrap set.
 
 Development systems retain the shipped upstream URLs. Test and production use
 each package's connected development source, or the sole development connection

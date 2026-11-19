@@ -6,12 +6,13 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 
 # Ownership
 
-- `bootstrap-packages.toml` owns the initial and recommended package
-  source list, shipped at `node/kernel/scripts/bootstrap-packages.toml`. Entries
-  declare `id`, `source`, and an optional numeric `version` Git tag. The complete selected source set is staged before
-  schema/import/hook validation; declaration order is reporting order, not a
-  dependency order. It includes `the8020/dev-skills` so fresh deployments install the
-  shipped agent guidance through the ordinary package release path.
+- `bootstrap-packages.toml` owns the initial and recommended package source
+  list, shipped at `node/kernel/scripts/bootstrap-packages.toml`. Entries
+  declare `id`, `source`, and an optional numeric `version` Git tag. The
+  complete selected source set is staged before schema/import/hook validation;
+  declaration order is reporting order, not a dependency order. It includes
+  `the8020/dev-skills` so fresh deployments install the shipped agent guidance
+  through the ordinary package release path.
 - `config/runtime/` owns platform-maintained runtime versions, protocol source,
   Deno supervisor/Worker source, generic SDKs, and service/development image
   construction.

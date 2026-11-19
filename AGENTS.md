@@ -652,6 +652,11 @@ below.
 
 ## Development Workflow
 
+- Release `0.10.15` uses deployments `0.10.6` source selection for recommended
+  updates and pins the reconciled application releases in
+  `defaults/bootstrap-packages.toml`. Existing systems install that deployments
+  program before upgrading; fresh installations include it in bootstrap.
+
 - Release `0.10.3` recommends packages and deployments `0.10.2`, retaining
   other `0.10.1` pins. The existing recommendation activation installs their
   additive schema together before the new deployment protocol is admitted.
