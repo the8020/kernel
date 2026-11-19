@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -143,6 +144,101 @@ func TestRecommendedPackagesPreserveWorkAndOnlyAdvance(t *testing.T) {
 	}
 	if _, exists, _ := store.index.Get(t.Context(), "acme/unreached"); exists {
 		t.Fatal("continued after failed recommendation")
+	}
+}
+
+func TestRecommendedSourcesUseAuthenticatedMirrorAndPreserveProtection(t *testing.T) {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteRoot, working := t.TempDir(), t.TempDir()
+	runTestGit(t, git, working, "init", "-q", "-b", "main")
+	writeFile(t, filepath.Join(working, "package.toml"), "schema = 1\ndescription = 'Mirror fixture'\n")
+	runTestGit(t, git, working, "add", ".")
+	runTestGit(t, git, working, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-qm", "first")
+	runTestGit(t, git, working, "tag", "0.10.1")
+	first := runTestGit(t, git, working, "rev-parse", "HEAD")
+	bare := filepath.Join(remoteRoot, "acme/demo.git")
+	if err := os.MkdirAll(filepath.Dir(bare), 0755); err != nil {
+		t.Fatal(err)
+	}
+	runTestGit(t, git, "", "clone", "-q", "--bare", working, bare)
+	runTestGit(t, git, bare, "update-server-info")
+	var upstreamRequests, mirrorRequests atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamRequests.Add(1)
+		http.Error(w, "upstream must not be used", 500)
+	}))
+	defer upstream.Close()
+	mirror := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mirrorRequests.Add(1)
+		username, password, ok := r.BasicAuth()
+		if !ok || username != "deployer" || password != "peer-password" {
+			http.Error(w, "unauthorized", 401)
+			return
+		}
+		http.FileServer(http.Dir(remoteRoot)).ServeHTTP(w, r)
+	}))
+	defer mirror.Close()
+	root := t.TempDir()
+	store := newTestStore(t, root)
+	store.SetSchemaDeployment(&recordingSchemaHook{})
+	store.secrets = testSecretResolver{"peer": "peer-password", "old": "upstream-password"}
+	path := filepath.Join(root, "node/kernel/scripts/bootstrap-packages.toml")
+	writeFile(t, path, fmt.Sprintf("schema = 1\n[[packages]]\nid = 'acme/demo'\nsource = '%s/acme/demo.git'\nversion = '0.10.1'\n", upstream.URL))
+	sources := []RecommendedSource{{PackageID: "acme/demo", Source: mirror.URL + "/acme/demo.git", Secret: "peer", Username: "deployer"}}
+	installed := filepath.Join(root, "packages/acme/demo")
+	if err := os.MkdirAll(filepath.Dir(installed), 0755); err != nil {
+		t.Fatal(err)
+	}
+	runTestGit(t, git, "", "clone", "-q", bare, installed)
+	runTestGit(t, git, installed, "remote", "set-url", "origin", upstream.URL+"/acme/demo.git")
+	entry, err := store.SetPackageIndex(t.Context(), PackageIndex{Author: "acme", Repository: "demo", Source: upstream.URL + "/acme/demo.git", Secret: "old"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry.State, entry.ActiveCommit = "ready", first
+	if err := store.index.Put(t.Context(), entry); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := store.InstallRecommendedPackagesFrom(t.Context(), sources)
+	if err != nil || len(rows) != 1 || rows[0].Status != "updated" || rows[0].Commit != first {
+		t.Fatalf("mirror migration = %+v, %v", rows, err)
+	}
+	entry, _ = store.InspectPackageIndex("acme/demo")
+	if entry.Source != sources[0].Source || entry.Secret != "" || runTestGit(t, git, installed, "remote", "get-url", "origin") != sources[0].Source {
+		t.Fatal("source did not migrate or retained upstream credentials")
+	}
+	if upstreamRequests.Load() != 0 || mirrorRequests.Load() == 0 {
+		t.Fatal("incorrect Git transport")
+	}
+	writeFile(t, filepath.Join(installed, "local.txt"), "private work")
+	rows, err = store.InstallRecommendedPackagesFrom(t.Context(), sources)
+	if err != nil || rows[0].Status != "skipped" || rows[0].Reason != "uncommitted changes" {
+		t.Fatalf("local work = %+v, %v", rows, err)
+	}
+	if err := os.Remove(filepath.Join(installed, "local.txt")); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range [][]RecommendedSource{nil, {}, {{PackageID: "acme/other", Source: sources[0].Source}}, {{PackageID: "acme/demo", Source: sources[0].Source, Secret: "missing", Username: "deployer"}}} {
+		rows, err := store.InstallRecommendedPackagesFrom(t.Context(), bad)
+		if err == nil {
+			t.Fatal("invalid/missing transport accepted")
+		}
+		if len(bad) == 1 && bad[0].Secret == "missing" && (len(rows) != 1 || rows[0].Status != "failed") {
+			t.Fatalf("credential failure lost package result: %+v", rows)
+		}
+	}
+	if upstreamRequests.Load() != 0 {
+		t.Fatal("failed mirror selection fell back to upstream")
+	}
+	if err := os.RemoveAll(installed); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = store.InstallRecommendedPackagesFrom(t.Context(), sources)
+	if err != nil || rows[0].Status != "installed" {
+		t.Fatalf("missing package = %+v, %v", rows, err)
 	}
 }
 

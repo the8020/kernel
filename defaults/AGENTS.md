@@ -56,9 +56,13 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   evaluation/synchronization and activation-hook run. Existing databases and
   ordinary restarts never reapply the bootstrap list or rescan all tables.
 - `kernel.packages.recommended` explicitly applies the installed list through
-  one native staged-set activation. Kernel updates invoke it after startup;
-  unversioned recommendations follow the remote default branch. Existing local
-  work, custom sources, and newer versions are preserved.
+  deployments-owned source selection and one native staged-set activation.
+  Test/production routes use authenticated development Git, never upstream
+  fallback. Release bootstrap lists must include a deployments version providing
+  `recommended-sources`; existing systems install it before adopting this
+  kernel. Kernel updates invoke recommendations after startup; unversioned
+  recommendations follow the remote default branch. Existing local work, custom
+  sources, and newer versions are preserved.
 - Materialized images, build caches, downloads, smoke records, and temporary
   construction output belong under `node/kernel/runtime/` or source
   `.development/`, never in this tree.

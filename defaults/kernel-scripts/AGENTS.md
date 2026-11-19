@@ -15,7 +15,10 @@ Parent DOX: [kernel defaults](../AGENTS.md).
   seeding reuse it.
 - Docker owns initial seeding. After installing a new kernel, the updater
   invokes `kernel.packages.recommended` against that kernel's shipped package
-  list.
+  list. The command resolves transport through the installed deployments
+  `recommended-sources` program: test/production fetch through development Git.
+  Install that program before adopting the requiring kernel; unavailable source
+  selection keeps completion pending, without falling back to upstream.
 
 # Local Contracts
 

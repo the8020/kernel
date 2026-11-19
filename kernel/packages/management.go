@@ -349,7 +349,7 @@ func (s *Store) synchronizePackages(ctx context.Context, packageIDs []string, to
 	return results, nil
 }
 
-func (s *Store) synchronizePackage(ctx context.Context, packageID, transientToken, username string, recommendation *recommendedPackage) (result PackageSynchronization, err error) {
+func (s *Store) synchronizePackage(ctx context.Context, packageID, transientToken, username string, recommendation *RecommendedPackage) (result PackageSynchronization, err error) {
 	unlock, err := s.lockPackage(ctx, packageID)
 	if err != nil {
 		return result, err
@@ -445,7 +445,7 @@ type stagedSynchronization struct {
 }
 
 // The caller holds the source lock; staging never publishes source or desired state.
-func (s *Store) stagePackageSynchronization(ctx context.Context, packageID, transientToken, username string, recommendation *recommendedPackage) (result stagedSynchronization, err error) {
+func (s *Store) stagePackageSynchronization(ctx context.Context, packageID, transientToken, username string, recommendation *RecommendedPackage) (result stagedSynchronization, err error) {
 	entry, exists, err := s.index.Get(ctx, packageID)
 	if err != nil {
 		return result, err
@@ -455,9 +455,13 @@ func (s *Store) stagePackageSynchronization(ctx context.Context, packageID, tran
 	}
 	result.PackageSynchronization = PackageSynchronization{PackageID: packageID, Source: entry.Source, Requested: entry.selector(), Local: entry.Local}
 	if recommendation != nil {
-		if exists && (entry.Local || entry.Source != recommendation.Source) {
+		if exists && (entry.Local || (entry.Source != recommendation.Source && (recommendation.originalSource == "" || entry.Source != recommendation.originalSource))) {
 			result.skipped = "local package or custom source"
 			return result, nil
+		}
+		recommendation.sourceChanged = exists && entry.Source != recommendation.Source
+		if recommendation.originalSource != "" && recommendation.Source != recommendation.originalSource {
+			entry.Secret = ""
 		}
 		identity, _ := ParsePackageID(packageID)
 		entry.Author, entry.Repository = identity.Namespace, identity.Repository
@@ -470,7 +474,7 @@ func (s *Store) stagePackageSynchronization(ctx context.Context, packageID, tran
 }
 
 // The caller validates the selected record and holds its source lock; this does not publish it.
-func (s *Store) stagePackageIndex(ctx context.Context, entry PackageIndex, transientToken, username string, recommendation *recommendedPackage) (result stagedSynchronization, err error) {
+func (s *Store) stagePackageIndex(ctx context.Context, entry PackageIndex, transientToken, username string, recommendation *RecommendedPackage) (result stagedSynchronization, err error) {
 	packageID := entry.PackageID
 	result.PackageSynchronization = PackageSynchronization{PackageID: packageID, Source: entry.Source, Requested: entry.selector(), Local: entry.Local}
 	destination, exists, err := s.packageDestination(packageID)
@@ -562,7 +566,7 @@ func (s *Store) stagePackageIndex(ctx context.Context, entry PackageIndex, trans
 		if err != nil || result.skipped != "" {
 			return result, err
 		}
-		if commit == result.PreviousCommit && entry.State == "ready" && entry.ActiveCommit == commit {
+		if commit == result.PreviousCommit && entry.State == "ready" && entry.ActiveCommit == commit && !recommendation.sourceChanged {
 			result.Commit = commit
 			return result, nil
 		}

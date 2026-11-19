@@ -2,7 +2,7 @@ version = 1
 id = "kernel.packages.recommended"
 path = ["kernel.packages.recommended"]
 summary = "Install or update the kernel's recommended packages"
-description = "Reads node/kernel/scripts/bootstrap-packages.toml from the installed kernel. Stages the compatible candidate set before schema/import/hook validation and publishes through one activation, independent of list order. Installs missing packages and advances older versions by fast-forward only; unversioned entries follow the remote default branch. Preserves local commits, uncommitted edits, custom sources and newer versions, which must remain compatible with the candidates. Reports installed, updated, unchanged, skipped, not_applied or failed packages. Explicit retries recover unfinished activations without repeating completed phases."
+description = "Reads node/kernel/scripts/bootstrap-packages.toml from the installed kernel. The deployments recommended-sources program selects upstream Git on development and authenticated development Git on test/production; unavailable source selection fails without upstream fallback. Stages the compatible candidate set before schema/import/hook validation and publishes through one activation, independent of list order. Installs missing packages and advances older versions by fast-forward only; unversioned entries follow the remote default branch. Preserves local commits, uncommitted edits, custom sources and newer versions, which must remain compatible with the candidates. Reports installed, updated, unchanged, skipped, not_applied or failed packages. Explicit retries recover unfinished activations without repeating completed phases. Native set/synchronize commands remain available for repair."
 mutates_state = true
 restart_behavior = "none"
 [handler]

@@ -15,10 +15,21 @@ import (
 
 var packageVersionPattern = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
 
-type recommendedPackage struct {
-	ID      string `toml:"id"`
-	Source  string `toml:"source"`
-	Version string `toml:"version"`
+type RecommendedPackage struct {
+	ID             string `toml:"id" json:"id"`
+	Source         string `toml:"source" json:"source"`
+	Version        string `toml:"version" json:"version"`
+	originalSource string
+	sourceChanged  bool
+}
+
+// RecommendedSource contains transport references, never credential values.
+type RecommendedSource struct {
+	PackageID string `json:"package_id"`
+	Source    string `json:"source"`
+	Secret    string `json:"secret,omitempty"`
+	Username  string `json:"username,omitempty"`
+	Skip      string `json:"skip,omitempty"`
 }
 
 type RecommendedPackageResult struct {
@@ -28,9 +39,8 @@ type RecommendedPackageResult struct {
 	Reason    string `json:"reason,omitempty"`
 }
 
-// InstallRecommendedPackages stages the active kernel's compatible recommendations
-// before evaluating and publishing one activation. List order affects reporting only.
-func (s *Store) InstallRecommendedPackages(ctx context.Context) (results []RecommendedPackageResult, err error) {
+// RecommendedPackages reads the installed list for application source selection.
+func (s *Store) RecommendedPackages() ([]RecommendedPackage, error) {
 	path := filepath.Join(s.workspaceRoot, "node/kernel/scripts/bootstrap-packages.toml")
 	info, err := os.Stat(path)
 	if err != nil {
@@ -41,8 +51,9 @@ func (s *Store) InstallRecommendedPackages(ctx context.Context) (results []Recom
 	}
 	var config struct {
 		Schema   int                  `toml:"schema"`
-		Packages []recommendedPackage `toml:"packages"`
+		Packages []RecommendedPackage `toml:"packages"`
 	}
+	config.Packages = []RecommendedPackage{}
 	if err := decodeTOMLFile(path, &config); err != nil {
 		return nil, fmt.Errorf("read recommended packages: %w", err)
 	}
@@ -69,8 +80,60 @@ func (s *Store) InstallRecommendedPackages(ctx context.Context) (results []Recom
 		}
 		seen[item.ID] = true
 	}
-	ids := make([]string, len(config.Packages))
-	for i, item := range config.Packages {
+	return config.Packages, nil
+}
+
+// InstallRecommendedPackages retains the direct native installation mechanism.
+func (s *Store) InstallRecommendedPackages(ctx context.Context) ([]RecommendedPackageResult, error) {
+	return s.installRecommendedPackages(ctx, nil)
+}
+
+// InstallRecommendedPackagesFrom applies a complete application-selected transport map.
+func (s *Store) InstallRecommendedPackagesFrom(ctx context.Context, sources []RecommendedSource) ([]RecommendedPackageResult, error) {
+	if sources == nil {
+		return nil, errors.New("recommended package sources are required")
+	}
+	return s.installRecommendedPackages(ctx, sources)
+}
+
+func (s *Store) installRecommendedPackages(ctx context.Context, sources []RecommendedSource) (results []RecommendedPackageResult, err error) {
+	items, err := s.RecommendedPackages()
+	if err != nil {
+		return nil, err
+	}
+	routes := make(map[string]RecommendedSource, len(sources))
+	if sources != nil {
+		if len(sources) != len(items) {
+			return nil, errors.New("recommended sources must match the complete installed list")
+		}
+		for _, route := range sources {
+			if _, exists := routes[route.PackageID]; exists || len(route.Skip) > 300 {
+				return nil, errors.New("invalid or duplicate recommended source")
+			}
+			identity, parseErr := ParsePackageID(route.PackageID)
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			if route.Skip == "" {
+				entry := PackageIndex{Author: identity.Namespace, Repository: identity.Repository, Source: route.Source, Secret: route.Secret}
+				if err := validatePackageIndex(&entry); err != nil {
+					return nil, err
+				}
+				route.Source, route.Secret = entry.Source, entry.Secret
+				if route.Username != "" && route.Secret == "" {
+					return nil, errors.New("recommended source username requires a named secret")
+				}
+			}
+			routes[route.PackageID] = route
+		}
+		for _, item := range items {
+			if _, exists := routes[item.ID]; !exists {
+				return nil, fmt.Errorf("missing recommended source for %s", item.ID)
+			}
+		}
+	}
+	ids := make([]string, len(items))
+	for i, item := range items {
 		ids[i] = item.ID
 	}
 	if len(ids) == 0 {
@@ -100,10 +163,33 @@ func (s *Store) InstallRecommendedPackages(ctx context.Context) (results []Recom
 			err = errors.Join(err, os.RemoveAll(stage.stageRoot))
 		}
 	}()
-	results = make([]RecommendedPackageResult, 0, len(config.Packages))
+	results = make([]RecommendedPackageResult, 0, len(items))
 	candidates := []deployment.Candidate{}
-	for _, item := range config.Packages {
-		stage, stageErr := s.stagePackageSynchronization(ctx, item.ID, "", "", &item)
+	for _, item := range items {
+		route, routed := routes[item.ID]
+		if route.Skip != "" {
+			results = append(results, RecommendedPackageResult{PackageID: item.ID, Status: "skipped", Reason: route.Skip})
+			continue
+		}
+		var token string
+		var stage stagedSynchronization
+		var stageErr error
+		if routed {
+			item.originalSource, item.Source = item.Source, route.Source
+			if route.Secret != "" {
+				if s.secrets == nil {
+					stageErr = errors.New("recommended source credentials are unavailable")
+				} else {
+					token, stageErr = s.secrets.SecretValue(route.Secret)
+					if stageErr != nil || token == "" {
+						stageErr = errors.New("recommended source credentials are unavailable")
+					}
+				}
+			}
+		}
+		if stageErr == nil {
+			stage, stageErr = s.stagePackageSynchronization(ctx, item.ID, token, route.Username, &item)
+		}
 		row := RecommendedPackageResult{PackageID: item.ID, Commit: stage.Commit, Status: "unchanged"}
 		switch {
 		case stageErr != nil:

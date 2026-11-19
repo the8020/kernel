@@ -428,6 +428,12 @@ relevant child AGENTS.md
   explicit retry, and restart. After startup and migrations, it invokes
   `kernel.packages.recommended` from the installed kernel; package failures keep
   completion pending for explicit retry. Local work and newer versions survive.
+- Recommended-package source selection belongs to the ordinary deployments
+  `recommended-sources` program, which must be installed before adopting this
+  kernel. Test and production fetch through development Git with stored
+  connection credentials; missing source policy/connections fail without
+  upstream fallback. Native set/synchronize repair remains available
+  independently of deployments.
 - Service configuration discovery belongs to Deno indexing at boot, activation,
   edits, or explicit reindex. Kernel reconciliation consumes the memory index.
   The maintenance timer touches only services with live runtime capacity or

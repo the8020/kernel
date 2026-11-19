@@ -1,5 +1,26 @@
 # 80|20 kernel
 
+## Development-sourced recommendations
+
+The current source resolves `kernel.packages.recommended` transports through
+`the8020/deployments/recommended-sources`. Install the updated deployments
+package before adopting this kernel; published `0.10.14` does not include this
+behavior. Fresh releases must include that deployments program in their
+bootstrap set.
+
+Development systems retain the shipped upstream URLs. Test and production use
+each package's connected development source, or the sole development connection
+for missing/upstream-sourced packages. With multiple choices, deploy the package
+from the selected development system first. The source system must have the
+package installed and be able to fetch its recommended version. HTTP and HTTPS
+connections use their saved account credentials.
+
+Missing programs, ambiguous/disconnected sources, authentication failures, and
+unavailable versions leave the update pending; there is no upstream fallback.
+Local/custom packages and newer/local work remain protected. Explicit native
+`kernel.packages.set` and `kernel.packages.synchronize` remain available for
+repair.
+
 ## 0.10.14: diagnostic sandboxes on every system
 
 Development sandboxes now work on development, test, and production systems.

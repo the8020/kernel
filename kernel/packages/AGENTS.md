@@ -236,6 +236,14 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   imports. Declaration order controls reporting only. Unchanged/skipped peers
   remain installed and must be compatible; failures identify the invalid source
   or import and direct the operator to repair and explicitly retry.
+- `RecommendedPackages` exposes that validated list;
+  `InstallRecommendedPackagesFrom` accepts one application-selected transport or
+  explicit skip for every entry. Resolve named credentials transiently with the
+  selected Basic username, never into durable package settings. Rerouting may
+  replace only the shipped upstream source or the selected source; unrelated
+  sources and local work remain protected. A changed source is published even
+  when its commit is unchanged. Missing routes or credentials fail without
+  upstream fallback; the store owns no system-role policy.
 - Fetch/validation failures before source switching publish no candidate roots
   or ready commits. Results distinguish `not_applied` candidates from unchanged
   or skipped packages when staging stops. Durable schema receipts and partial
