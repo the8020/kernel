@@ -24,6 +24,7 @@ type SchemaHook interface {
 
 // Schema policy stays opaque here; source owners bind consent to one candidate.
 type SchemaOptions struct {
+	PinVersions  bool     `json:"-"`
 	ForceColumns []string `json:"force_columns,omitempty"`
 	ApprovedPlan string   `json:"approved_plan,omitempty"`
 	Preview      bool     `json:"schema_preview,omitempty"`
@@ -83,3 +84,14 @@ func Unavailable(message string) SchemaHook {
 
 func (hook unavailableHook) Prepare(context.Context, string, []Candidate) error { return hook.err }
 func (hook unavailableHook) Complete(context.Context, string, bool) error       { return hook.err }
+
+type NodeSelection struct {
+	Restore   bool   `json:"restore,omitempty"`
+	CheckOnly bool   `json:"check_only,omitempty"`
+	PackageID string `json:"package_id"`
+	Before    string `json:"before"`
+	Commit    string `json:"commit"`
+	Source    string `json:"source"`
+	Username  string `json:"transport_username,omitempty"`
+	Secret    string `json:"transport_secret,omitempty"`
+}

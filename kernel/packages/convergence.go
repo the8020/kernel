@@ -11,8 +11,7 @@ import (
 	"sync"
 )
 
-// PackageSetUpdate is the targeted local work caused by one published shared
-// revision. Every node observes the same mutable package filesystem.
+// PackageSetUpdate is the targeted local work caused by a publication on this node.
 type PackageSetUpdate struct {
 	Revision uint64
 	Packages []string
@@ -20,7 +19,7 @@ type PackageSetUpdate struct {
 	Restarts []string
 }
 
-// PackageRevisionFollower observes commits published into the shared filesystem.
+// PackageRevisionFollower observes this node's published commits.
 // It never fetches or replaces node-local source copies. The common no-change path is
 // one scalar query; package rows are read only after revision
 // advancement.
@@ -40,7 +39,7 @@ func NewPackageRevisionFollower(ctx context.Context, store *Store) (*PackageRevi
 	if store == nil {
 		return nil, errors.New("package store is required")
 	}
-	revision, commits, err := store.index.Published(ctx)
+	revision, commits, err := store.runtimeIndex.Published(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("read published package set: %w", err)
 	}
@@ -50,7 +49,7 @@ func NewPackageRevisionFollower(ctx context.Context, store *Store) (*PackageRevi
 func (f *PackageRevisionFollower) Poll(ctx context.Context) (PackageSetUpdate, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	revision, err := f.store.index.Revision(ctx)
+	revision, err := f.store.runtimeIndex.Revision(ctx)
 	if err != nil {
 		return PackageSetUpdate{}, fmt.Errorf("read package-set revision: %w", err)
 	}
@@ -60,7 +59,7 @@ func (f *PackageRevisionFollower) Poll(ctx context.Context) (PackageSetUpdate, e
 	if revision == f.revision {
 		return PackageSetUpdate{}, nil
 	}
-	publishedRevision, target, err := f.store.index.Published(ctx)
+	publishedRevision, target, err := f.store.runtimeIndex.Published(ctx)
 	if err != nil {
 		return PackageSetUpdate{}, fmt.Errorf("read published package set: %w", err)
 	}
@@ -138,7 +137,7 @@ func (s *Store) installedCommit(ctx context.Context, path string) (string, error
 	return FingerprintPackage(path)
 }
 
-// changedSourcePaths reads bounded Git metadata from the authoritative shared
+// changedSourcePaths reads bounded Git metadata from the local
 // repository. Deletions and both sides of renames must intersect old imports.
 func (s *Store) changedSourcePaths(ctx context.Context, packageID, previous, current string) ([]string, error) {
 	if _, err := ParsePackageID(packageID); err != nil {

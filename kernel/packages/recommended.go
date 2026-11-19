@@ -189,6 +189,19 @@ func (s *Store) installRecommendedPackages(ctx context.Context, sources []Recomm
 		}
 		if stageErr == nil {
 			stage, stageErr = s.stagePackageSynchronization(ctx, item.ID, token, route.Username, &item)
+			if stageErr == nil && routed && route.Source != item.originalSource && stage.root != "" {
+				existing, found, readErr := s.index.Get(ctx, item.ID)
+				if readErr != nil {
+					return results, readErr
+				}
+				stage.entry.Source = item.originalSource
+				if found && (s.nodeID == "" || existing.Source != route.Source) {
+					stage.entry.Source, stage.entry.Secret = existing.Source, existing.Secret
+				}
+				if s.nodeID != "" {
+					stage.entry.Commit, stage.entry.Tag = stage.Commit, ""
+				}
+			}
 		}
 		row := RecommendedPackageResult{PackageID: item.ID, Commit: stage.Commit, Status: "unchanged"}
 		switch {
@@ -212,9 +225,25 @@ func (s *Store) installRecommendedPackages(ctx context.Context, sources []Recomm
 	if hook == nil {
 		return results, errors.New("recommended package activation requires a schema coordinator")
 	}
-	for _, stage := range stages {
-		if err := s.index.Put(ctx, stage.entry); err != nil {
-			return results, err
+	if coordinator, ok := hook.(*ActivationCoordinator); ok && s.NodeInstallations() {
+		intents := make([]synchronizationIntent, 0, len(stages))
+		for _, stage := range stages {
+			previous, _, err := coordinator.synchronizationConfiguration(ctx, stage.PackageID)
+			if err != nil {
+				return results, err
+			}
+			intent := synchronizationIntent{PackageID: stage.PackageID, Previous: previous, Desired: configuration(stage.entry)}
+			if route := routes[stage.PackageID]; route.Source != "" && route.Source != stage.entry.Source {
+				intent.Transport = route.Source
+			}
+			intents = append(intents, intent)
+		}
+		ctx = context.WithValue(ctx, synchronizationKey{}, intents)
+	} else {
+		for _, stage := range stages {
+			if err := s.index.Put(ctx, stage.entry); err != nil {
+				return results, err
+			}
 		}
 	}
 	transactionID, err = activationID()

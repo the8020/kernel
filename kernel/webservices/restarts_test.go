@@ -141,6 +141,20 @@ func TestSourceRestartAcrossNodesDrainsOnceAndHardRestartKillsEveryGeneration(t 
 			t.Fatalf("replayed hard restart: %#v", after)
 		}
 	}
+	nodes[0].nodeID = "nod-aaaaaaaaaa"
+	nodes[1].nodeID = "nod-bbbbbbbbbb"
+	if err := nodes[0].RequestNodeSourceRestart(ctx, unrelated, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := nodes[1].loadRestarts(ctx); err != nil {
+		t.Fatal(err)
+	}
+	local, _ := nodes[0].index.ReadService(unrelated)
+	peer, _ := nodes[1].index.ReadService(unrelated)
+	if local.RestartRevision == 0 || peer.RestartRevision != 0 {
+		t.Fatalf("node-only restart leaked: local=%d peer=%d", local.RestartRevision, peer.RestartRevision)
+	}
+
 }
 
 func TestSoftRestartRetainsOldCapacityOnStartupFailure(t *testing.T) {

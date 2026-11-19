@@ -40,7 +40,7 @@ func (s *Store) RunHookChain(ctx context.Context, runner JobRunner, ownerID, hoo
 		}
 		references = append(references, HookReference{ID: handler.ID, Entrypoint: handler.Program.EntrypointURL, Commit: handler.Program.Commit})
 	}
-	revision, err := s.index.Revision(ctx)
+	revision, err := s.runtimeIndex.Revision(ctx)
 	if err != nil {
 		return jobs.Record{}, err
 	}

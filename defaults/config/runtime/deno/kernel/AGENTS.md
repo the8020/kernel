@@ -144,6 +144,11 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   ID/commit/success synchronization results, and local creation through one
   generic private runtime-operation bridge; the supervisor interprets no package
   semantics.
+- `kernel.packages.transport` accepts an invocation-scoped Git URL and named
+  credential. Fetch and version inspection keep this transport independent of
+  the checkout origin. Resolve accepts a commit prefix or a `tag:<name>`.
+  `versions.subject` reads one local commit subject without fetching. `syncNode`
+  applies a reviewed before/desired pair on the specified node.
 - `kernel.packages.repository.fetch(id)` refreshes remote branches and tags
   without activating code or changing the selected version. Commit checkout
   applies a version while keeping the repository's branch attached.

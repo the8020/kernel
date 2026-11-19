@@ -20,7 +20,7 @@ version = "0.10.4"
 [[packages]]
 id = "the8020/services"
 source = "https://github.com/the8020/services.git"
-version = "0.10.4"
+version = "0.10.5"
 
 [[packages]]
 id = "the8020/auth"
@@ -30,7 +30,7 @@ version = "0.10.4"
 [[packages]]
 id = "the8020/packages"
 source = "https://github.com/the8020/packages.git"
-version = "0.10.10"
+version = "0.10.11"
 
 [[packages]]
 id = "the8020/secrets"
@@ -40,7 +40,7 @@ version = "0.10.4"
 [[packages]]
 id = "the8020/jobs"
 source = "https://github.com/the8020/jobs.git"
-version = "0.10.4"
+version = "0.10.5"
 
 [[packages]]
 id = "the8020/users"
@@ -60,7 +60,7 @@ version = "0.10.6"
 [[packages]]
 id = "the8020/admin-core"
 source = "https://github.com/the8020/admin-core.git"
-version = "0.10.7"
+version = "0.10.8"
 
 [[packages]]
 id = "the8020/admin-db"
@@ -70,7 +70,7 @@ version = "0.10.5"
 [[packages]]
 id = "the8020/deployments"
 source = "https://github.com/the8020/deployments.git"
-version = "0.10.6"
+version = "0.10.7"
 
 [[packages]]
 id = "the8020/dev-core"

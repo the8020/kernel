@@ -136,7 +136,8 @@ func (c *ActivationCoordinator) Prepare(ctx context.Context, transactionID strin
 	}
 	run.handlers = handlers
 	if stage == "staged" {
-		if err := c.schema.Prepare(ctx, run.id, candidates); err != nil {
+		err = c.prepareSharedSchema(ctx, run)
+		if err != nil {
 			rollbackErr := c.rollback(context.WithoutCancel(ctx), run, err)
 			return errors.Join(err, rollbackErr)
 		}
@@ -156,6 +157,20 @@ func (c *ActivationCoordinator) Prepare(ctx context.Context, transactionID strin
 	// Existing packages retain their published availability. The activation row
 	// owns pending work; shared source remains mutable during publication.
 	return nil
+}
+
+func (c *ActivationCoordinator) prepareSharedSchema(ctx context.Context, run *activationRun) error {
+	var candidates []deployment.Candidate
+	opts := deployment.Options(ctx)
+	for _, candidate := range run.candidates {
+		if c.packages.nodeID == "" || candidate.Commit != candidate.previous || len(opts.ForceColumns) > 0 || opts.ApprovedPlan != "" {
+			candidates = append(candidates, candidate.Candidate)
+		}
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	return c.schema.Prepare(ctx, run.id, candidates)
 }
 
 func (c *ActivationCoordinator) Plan(ctx context.Context, candidates []deployment.Candidate) (json.RawMessage, error) {
@@ -344,6 +359,10 @@ func (c *ActivationCoordinator) RecoverPackages(ctx context.Context, packageIDs 
 		}
 		selection = ` AND EXISTS (SELECT 1 FROM ` + activationPackagesTable + ` p WHERE p."activationId" = a."activationId" AND p."packageId" IN (` + strings.Join(parameters, ",") + `))`
 	}
+	if c.packages.nodeID != "" {
+		arguments = append(arguments, c.packages.nodeID)
+		selection += fmt.Sprintf(` AND (a."nodeId" IS NULL OR a."nodeId"=$%d)`, len(arguments))
+	}
 	rows, err := c.database.QueryContext(ctx, `SELECT "activationId" FROM `+activationsTable+` a WHERE "stage" IN `+unfinishedActivationStages+selection+` ORDER BY "startedAt", "activationId" LIMIT 257`, arguments...)
 	if err != nil {
 		return err
@@ -484,7 +503,7 @@ func (c *ActivationCoordinator) recoverActivation(ctx context.Context, id string
 	if !codeSwitched {
 		if forward && len(switched) < len(run.candidates) {
 			if stage == "staged" {
-				if err := c.schema.Prepare(ctx, run.id, candidates); err != nil {
+				if err := c.prepareSharedSchema(ctx, run); err != nil {
 					c.incomplete(ctx, run, err)
 					return err
 				}
@@ -536,11 +555,7 @@ func (c *ActivationCoordinator) recoverActivation(ctx context.Context, id string
 		// preceded a durable phase update, resume the missing schema/pre work
 		// from those exact candidate commits before exposing them.
 		if stage == "staged" {
-			candidates := make([]deployment.Candidate, len(run.candidates))
-			for index := range run.candidates {
-				candidates[index] = run.candidates[index].Candidate
-			}
-			if err := c.schema.Prepare(ctx, run.id, candidates); err != nil {
+			if err := c.prepareSharedSchema(ctx, run); err != nil {
 				c.incomplete(ctx, run, err)
 				return err
 			}
@@ -611,7 +626,20 @@ func (c *ActivationCoordinator) Pending(ctx context.Context) (bool, error) {
 	return run != nil, err
 }
 
+// Until publication the node receipt still identifies its local rollback source.
+func (c *ActivationCoordinator) localPrevious(ctx context.Context, candidate activationCandidate) (string, error) {
+	if c.packages.nodeID == "" {
+		return candidate.previous, nil
+	}
+	entry, _, err := c.packages.runtimeIndex.Get(ctx, candidate.PackageID)
+	return entry.ActiveCommit, err
+}
+
 func (c *ActivationCoordinator) sourceIsCandidate(ctx context.Context, candidate activationCandidate) (bool, error) {
+	previous, err := c.localPrevious(ctx, candidate)
+	if err != nil {
+		return false, err
+	}
 	path := c.packages.packagePath(candidate.PackageID)
 	if candidate.Commit == "" {
 		_, err := os.Lstat(path)
@@ -635,12 +663,12 @@ func (c *ActivationCoordinator) sourceIsCandidate(ctx context.Context, candidate
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return false, err
 	}
-	if candidate.previous == "" {
+	if previous == "" {
 		if removed, err := removeEmptyPackagePlaceholder(path); err != nil || removed {
 			return false, err
 		}
 	}
-	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) && candidate.previous == "" {
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) && previous == "" {
 		return false, nil
 	} else if err != nil {
 		return false, err
@@ -652,15 +680,20 @@ func (c *ActivationCoordinator) sourceIsCandidate(ctx context.Context, candidate
 	if commit == candidate.Commit {
 		return true, nil
 	}
-	if commit == candidate.previous {
+	if commit == previous {
 		return false, nil
 	}
-	return false, fmt.Errorf("package %s is at commit %s, expected %s or %s", candidate.PackageID, commit, candidate.previous, candidate.Commit)
+	return false, fmt.Errorf("package %s is at commit %s, expected %s or %s", candidate.PackageID, commit, previous, candidate.Commit)
 }
 
 func (c *ActivationCoordinator) restoreSources(ctx context.Context, candidates []activationCandidate) error {
 	var joined error
 	for _, candidate := range candidates {
+		previous, err := c.localPrevious(ctx, candidate)
+		if err != nil {
+			joined = errors.Join(joined, err)
+			continue
+		}
 		path := c.packages.packagePath(candidate.PackageID)
 		if _, err := os.Lstat(path + ".previous"); err == nil {
 			joined = errors.Join(joined, rollbackPackageDirectory(path))
@@ -669,11 +702,11 @@ func (c *ActivationCoordinator) restoreSources(ctx context.Context, candidates [
 			joined = errors.Join(joined, err)
 			continue
 		}
-		if candidate.previous == "" {
+		if previous == "" {
 			joined = errors.Join(joined, fmt.Errorf("cannot restore first activation of %s", candidate.PackageID))
 			continue
 		}
-		if output, err := c.packages.runGit(ctx, path, nil, "reset", "--hard", candidate.previous); err != nil {
+		if output, err := c.packages.runGit(ctx, path, nil, "reset", "--hard", previous); err != nil {
 			joined = errors.Join(joined, fmt.Errorf("restore %s: %w: %s", candidate.PackageID, err, cleanGitOutput(output)))
 		}
 	}
@@ -719,6 +752,11 @@ func (c *ActivationCoordinator) begin(ctx context.Context, id string, raw []depl
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
+	if selected, ok := ctx.Value(nodeSelectionKey{}).(NodeSelection); ok {
+		if err := c.packages.checkSelection(ctx, selected); err != nil {
+			return nil, err
+		}
+	}
 	candidates := make([]activationCandidate, 0, len(raw))
 	for _, item := range raw {
 		entry, exists, err := c.packages.index.Get(ctx, item.PackageID)
@@ -756,6 +794,11 @@ func (c *ActivationCoordinator) begin(ctx context.Context, id string, raw []depl
 	if _, err := tx.ExecContext(ctx, `INSERT INTO `+activationsTable+` ("activationId", "stage", "error", "previousPackageSetHash", "candidatePackageSetHash", "startedAt", "updatedAt", "completedAt") VALUES ($1, 'staged', NULL, $2, $3, $4, $4, NULL)`, id, database.PackageSetHash(previousSet), database.PackageSetHash(candidateSet), now); err != nil {
 		return nil, err
 	}
+	if c.packages.nodeID != "" {
+		if _, err := tx.ExecContext(ctx, `UPDATE `+activationsTable+` SET "nodeId"=$1,"pinVersions"=$3 WHERE "activationId"=$2`, c.packages.nodeID, id, deployment.Options(ctx).PinVersions); err != nil {
+			return nil, err
+		}
+	}
 	for _, item := range candidates {
 		if item.first && item.Commit != "" {
 			identity, _ := ParsePackageID(item.PackageID)
@@ -770,7 +813,11 @@ func (c *ActivationCoordinator) begin(ctx context.Context, id string, raw []depl
 			return nil, err
 		}
 		for _, hook := range []string{"pre-activate", "post-activate"} {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO `+hookRunsTable+` ("activationId", "packageId", "hook", "state", "attempts", "error", "startedAt", "completedAt") VALUES ($1, $2, $3, 'pending', 0, NULL, NULL, NULL)`, id, item.PackageID, hook); err != nil {
+			initial := "pending"
+			if c.packages.nodeID != "" && item.Commit == item.previous {
+				initial = "succeeded"
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO `+hookRunsTable+` ("activationId", "packageId", "hook", "state", "attempts", "error", "startedAt", "completedAt") VALUES ($1, $2, $3, $4, 0, NULL, NULL, NULL)`, id, item.PackageID, hook, initial); err != nil {
 				return nil, err
 			}
 		}
@@ -995,6 +1042,11 @@ func (c *ActivationCoordinator) publish(ctx context.Context, run *activationRun)
 	now := database.EncodeTime(c.database, c.now().UTC())
 	for _, intent := range intents {
 		desired, previous := intent.Desired, intent.Previous
+		if intent.Transport != "" {
+			if _, err := tx.ExecContext(ctx, `UPDATE `+packagesTable+` SET "transportSource"=$1 WHERE "packageId"=$2`, intent.Transport, intent.PackageID); err != nil {
+				return err
+			}
+		}
 		result, err := tx.ExecContext(ctx, `UPDATE `+packagesTable+` SET "source" = $1, "requestedCommit" = $2, "requestedTag" = $3, "local" = $4
 			WHERE "packageId" = $5 AND COALESCE("source", '') = $6 AND COALESCE("requestedCommit", '') = $7
 			AND COALESCE("requestedTag", '') = $8 AND COALESCE("secretName", '') = $9 AND "local" = $10`,
@@ -1030,7 +1082,27 @@ func (c *ActivationCoordinator) publish(ctx context.Context, run *activationRun)
 			return fmt.Errorf("package %s disappeared during activation", candidate.PackageID)
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO "the8020__system__revisions" ("domain", "revision", "updatedAt") VALUES ('packages', 1, $1) ON CONFLICT ("domain") DO UPDATE SET "revision" = "the8020__system__revisions"."revision" + 1, "updatedAt" = excluded."updatedAt"`, now); err != nil {
+	domain := "packages"
+	if c.packages.nodeID != "" {
+		domain += ":" + c.packages.nodeID
+		var pin bool
+		if err := tx.QueryRowContext(ctx, `SELECT "pinVersions" FROM `+activationsTable+` WHERE "activationId"=$1`, run.id).Scan(&pin); err != nil {
+			return err
+		}
+		if pin {
+			for _, candidate := range run.candidates {
+				if _, err := tx.ExecContext(ctx, `UPDATE `+packagesTable+` SET "requestedCommit"=$1,"requestedTag"=NULL WHERE "packageId"=$2`, nullableText(candidate.Commit), candidate.PackageID); err != nil {
+					return err
+				}
+			}
+		}
+		for _, candidate := range run.candidates {
+			if err := writeNodeCommit(ctx, tx, c.packages.nodeID, candidate.PackageID, candidate.Commit); err != nil {
+				return err
+			}
+		}
+	}
+	if err := bumpPackageRevision(ctx, tx, domain, now); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE `+activationsTable+` SET "stage" = 'published', "error" = NULL,
@@ -1074,6 +1146,15 @@ func (c *ActivationCoordinator) loadPending(ctx context.Context) (*activationRun
 }
 
 func (c *ActivationCoordinator) loadActivation(ctx context.Context, id string) (*activationRun, error) {
+	if c.packages.nodeID != "" {
+		var owner string
+		if err := c.database.QueryRowContext(ctx, `SELECT COALESCE("nodeId",'') FROM `+activationsTable+` WHERE "activationId"=$1`, id).Scan(&owner); err != nil {
+			return nil, err
+		}
+		if owner != "" && owner != c.packages.nodeID {
+			return nil, fmt.Errorf("activation %s belongs to node %s", id, owner)
+		}
+	}
 	rows, err := c.database.QueryContext(ctx, `SELECT "packageId", "previousCommit", "candidateCommit", "firstActivation" FROM `+activationPackagesTable+` WHERE "activationId" = $1 ORDER BY "packageId"`, id)
 	if err != nil {
 		return nil, err

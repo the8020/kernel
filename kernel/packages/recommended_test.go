@@ -194,6 +194,7 @@ func TestRecommendedSourcesUseAuthenticatedMirrorAndPreserveProtection(t *testin
 	}
 	runTestGit(t, git, "", "clone", "-q", bare, installed)
 	runTestGit(t, git, installed, "remote", "set-url", "origin", upstream.URL+"/acme/demo.git")
+	runTestGit(t, git, installed, "config", "--replace-all", "remote.origin.fetch", "+refs/tags/old-only:refs/tags/old-only")
 	entry, err := store.SetPackageIndex(t.Context(), PackageIndex{Author: "acme", Repository: "demo", Source: upstream.URL + "/acme/demo.git", Secret: "old"})
 	if err != nil {
 		t.Fatal(err)
@@ -207,8 +208,12 @@ func TestRecommendedSourcesUseAuthenticatedMirrorAndPreserveProtection(t *testin
 		t.Fatalf("mirror migration = %+v, %v", rows, err)
 	}
 	entry, _ = store.InspectPackageIndex("acme/demo")
-	if entry.Source != sources[0].Source || entry.Secret != "" || runTestGit(t, git, installed, "remote", "get-url", "origin") != sources[0].Source {
-		t.Fatal("source did not migrate or retained upstream credentials")
+	if entry.Source != upstream.URL+"/acme/demo.git" || entry.Secret != "old" || runTestGit(t, git, installed, "remote", "get-url", "origin") != sources[0].Source {
+		t.Fatal("configured upstream or development Git origin changed")
+	}
+	rows, err = store.InstallRecommendedPackagesFrom(t.Context(), sources)
+	if err != nil || rows[0].Status != "unchanged" {
+		t.Fatalf("repeated recommendation = %+v, %v", rows, err)
 	}
 	if upstreamRequests.Load() != 0 || mirrorRequests.Load() == 0 {
 		t.Fatal("incorrect Git transport")
@@ -239,6 +244,10 @@ func TestRecommendedSourcesUseAuthenticatedMirrorAndPreserveProtection(t *testin
 	rows, err = store.InstallRecommendedPackagesFrom(t.Context(), sources)
 	if err != nil || rows[0].Status != "installed" {
 		t.Fatalf("missing package = %+v, %v", rows, err)
+	}
+	entry, _ = store.InspectPackageIndex("acme/demo")
+	if entry.Source != upstream.URL+"/acme/demo.git" || entry.Secret != "old" {
+		t.Fatal("reinstall lost the configured upstream")
 	}
 }
 

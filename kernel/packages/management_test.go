@@ -173,6 +173,13 @@ func TestPackageIndexRemoteInspectionSynchronizationAndVersionSelection(t *testi
 		t.Fatalf("source inspection = %#v", inspection)
 	}
 
+	pending, err := store.ListPackageVersions(ctx, entry.PackageID, 1)
+	if err != nil || pending.CurrentCommit != "" || pending.DefaultCommit != firstCommit || len(pending.Versions) != 1 {
+		t.Fatalf("versions before installation = %#v, %v", pending, err)
+	}
+	if _, exists, err := store.packageDestination(entry.PackageID); err != nil || exists {
+		t.Fatal("version selection installed a checkout", err)
+	}
 	results, err := store.SynchronizePackages(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -290,6 +297,8 @@ func TestPackageIndexRemoteInspectionSynchronizationAndVersionSelection(t *testi
 		t.Fatal(err)
 	}
 	hook.prepared, hook.completed = nil, nil
+	// A saved fork must take effect on the next fetch, even with an old checkout origin.
+	runTestGit(t, gitPath, installed, "remote", "set-url", "origin", "http://127.0.0.1:1/old/demo.git")
 	fetched, err := store.FetchPackageRepository(ctx, "the8020/demo")
 	if err != nil || fetched.Branch != "main" || fetched.Head != firstCommit {
 		t.Fatalf("fetch changed installed version = %#v, %v", fetched, err)
@@ -412,7 +421,6 @@ func TestPackageIndexValidationRejectsUnsafeSourcesAndSelectors(t *testing.T) {
 		"query":                {Author: "the8020", Repository: "demo", Source: "http://example.test/the8020/demo.git?token=value"},
 		"fragment":             {Author: "the8020", Repository: "demo", Source: "http://example.test/the8020/demo.git#main"},
 		"credentials":          {Author: "the8020", Repository: "demo", Source: "https://token@example.test/the8020/demo.git"},
-		"identity mismatch":    {Author: "the8020", Repository: "demo", Source: "https://example.test/other/demo.git"},
 		"commit and tag":       {Author: "the8020", Repository: "demo", Source: "https://example.test/the8020/demo.git", Commit: "abcdef1", Tag: "v1"},
 		"unsafe tag":           {Author: "the8020", Repository: "demo", Source: "https://example.test/the8020/demo.git", Tag: "../main"},
 		"unsafe secret":        {Author: "the8020", Repository: "demo", Source: "https://example.test/the8020/demo.git", Secret: "../token"},

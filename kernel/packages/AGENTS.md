@@ -33,11 +33,20 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   targeted reindex or generic restart entry point. Deno publishes those markers
   with desired configuration. No application table scan or parallel service
   revision poller is permitted.
-- `PackageRevisionFollower` observes the shared `packages` revision and ready
-  commits without fetching, cloning, or replacing sources on another node.
-  Bounded Git diffs yield resolved sandbox file paths, including deletions and
-  both sides of renames. All nodes read the same authoritative mutable checkout;
-  commit metadata must remain available for the pending revision comparison.
+- `PackageRevisionFollower` observes the node's `packages:<nodeId>` revision and
+  ready receipts. Bounded Git diffs yield resolved sandbox file paths, including
+  deletions and both sides of renames. Each node has a separate checkout. Its
+  Git objects must remain available for revision comparison.
+- Startup registers clean checkouts at previously published commits. Unknown
+  commits require sync before serving. A node may run an earlier accepted commit
+  while another tests a new kernel. Node sync checks the reviewed HEAD and
+  desired commit, stages from the selected transport, and publishes only on the
+  recipient. Catch-up skips shared schema and hooks. Recovery belongs to the
+  activating node. Retirement leaves other nodes serving until selected.
+- The node-aware schema must be installed before starting nodes in this mode.
+  Kernels started against the legacy schema use the system-wide active index
+  until restarted. Align all serving nodes before the first mixed-version
+  rollout.
 - A removed package produces its sandbox directory with a trailing slash for
   observed-import matching. Removal does not require retaining its Git objects.
 - On a source update, `ReactToSourceUpdate` requests an observed-import scan of
@@ -46,13 +55,15 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   Worker-owned and jobs are never restarted or replayed. Unobserved late
   imports, stale caches, and failures in old work remain accepted shared-source
   tradeoffs.
-- The database package record is the sole desired/active package source of truth
+- The database package record owns the desired and system-published versions
   after first initialization. Bootstrap TOML supplies fresh-database sources and
-  explicit recommendations; ordinary boots trust database state and never
+  explicit recommendations; ordinary boots register node receipts and never
   reapply recommendations or rescan all definitions. Release-staged repositories
   carry their resolved requested tag in local Git metadata; bootstrap verifies
-  that it names the evaluated commit, then records the tag as desired identity
-  and the exact commit as active identity.
+  that it names the evaluated commit. Node-aware bootstrap pins the exact commit
+  as both desired and installed. Legacy schemas retain the tag selector. At
+  node-aware startup, a legacy tag that resolves locally to the active commit is
+  pinned to that commit. Other legacy tags remain selected for explicit sync.
 - A fresh database stages every bootstrap package and performs one batched
   evaluation and synchronization before publishing the package set. Normal
   activation evaluates only candidate package tables in one batch.
@@ -239,11 +250,13 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - `RecommendedPackages` exposes that validated list;
   `InstallRecommendedPackagesFrom` accepts one application-selected transport or
   explicit skip for every entry. Resolve named credentials transiently with the
-  selected Basic username, never into durable package settings. Rerouting may
-  replace only the shipped upstream source or the selected source; unrelated
-  sources and local work remain protected. A changed source is published even
-  when its commit is unchanged. Missing routes or credentials fail without
-  upstream fallback; the store owns no system-role policy.
+  selected Basic username, never into durable package settings. Rerouting
+  preserves the configured upstream and its credential on legacy and node-aware
+  schemas. Unrelated sources and local work remain protected. A changed Git
+  checkout origin is published even when its commit is unchanged.
+  Recommendations set the standard branch fetch refspec on the staged checkout
+  and fetch tags from the selected source. Missing routes or credentials fail
+  without upstream fallback; the store owns no system-role policy.
 - Fetch/validation failures before source switching publish no candidate roots
   or ready commits. Results distinguish `not_applied` candidates from unchanged
   or skipped packages when staging stops. Durable schema receipts and partial
@@ -274,6 +287,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   applied version without detaching; branch tracking does not advance that
   version. Git owns branch state; the database continues to own the exact active
   commit.
+- Direct Git operations on an indexed upstream package use the upstream saved in
+  the database, including when the node still has a previous origin.
 - Repository fetch updates remote references and tags without changing HEAD,
   worktree files, desired/active versions, or running services; dirty worktrees
   remain fetchable. Pull explicitly fast-forwards a clean attached branch; push
@@ -294,6 +309,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   inspection confirms absence or an empty placeholder. Active-source mismatch,
   unsettled activation, corrupt source and unindexed installed packages still
   prevent application readiness.
+- A pending installation can inspect versions in a temporary bare repository.
+  Opening Versions leaves its checkout absent.
 - Bounded version listings include exact commit parent IDs. Local repositories
   select their current HEAD and never require or fetch an upstream reference.
 - Kernel repository SQL remains portable across SQLite and PostgreSQL. Bind

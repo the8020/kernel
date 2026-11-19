@@ -94,7 +94,7 @@ func TestHandlerReindexAllowsConcurrentInspectionAndKeepsNewReferences(t *testin
 		t.Fatal(err)
 	}
 	paused := &pausedHandlerLookup{PackageIndexStore: store.index, started: make(chan struct{}), release: make(chan struct{})}
-	store.index = paused
+	store.runtimeIndex = paused
 	release := sync.OnceFunc(func() { close(paused.release) })
 	var work sync.WaitGroup
 	defer func() { release(); cancel(); work.Wait() }()

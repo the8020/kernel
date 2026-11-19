@@ -61,6 +61,7 @@ import (
 	servicerequest "the8020/kernel/cbus/commands/service/request"
 	servicevalidate "the8020/kernel/cbus/commands/service/validate"
 	commandcore "the8020/kernel/cbus/core"
+	"the8020/kernel/packages"
 	"the8020/kernel/services"
 	"the8020/kernel/settings"
 )
@@ -171,6 +172,52 @@ func (d *Dispatcher) Execute(ctx context.Context, operation string, input map[st
 			return nil, errors.New("program catalog is unavailable")
 		}
 		return runtime.ListPrograms(ctx)
+	}
+	if operation == "package.version.cached" {
+		ctx = packages.CachedVersions(ctx)
+		operation = "package.version.list"
+	}
+	if operation == "package.node.sync" {
+		nodes := d.services.PlatformSnapshot().Nodes
+		if nodes == nil {
+			return nil, errors.New("node topology unavailable")
+		}
+		field := func(key string) string { v, _ := input[key].(string); return v }
+		check, _ := input["check_only"].(bool)
+		restore, _ := input["restore"].(bool)
+		return nil, nodes.SyncPackage(ctx, field("node"), packages.NodeSelection{Restore: restore, CheckOnly: check, PackageID: field("package_id"), Before: field("before"), Commit: field("commit"), Source: field("source"), Username: field("transport_username"), Secret: field("transport_secret")})
+	}
+	if operation == "package.transport.resolve" || operation == "package.version.subject" {
+		store := d.services.PackageManagementSnapshot()
+		if store == nil {
+			return nil, errors.New("package management unavailable")
+		}
+		field := func(k string) string { v, _ := input[k].(string); return v }
+		if operation == "package.version.subject" {
+			return store.DescribePackageCommit(ctx, field("package_id"), field("commit"))
+		}
+		return store.ResolveTransportCommit(ctx, packages.GitTransport{Source: field("source"), Username: field("transport_username"), Secret: field("transport_secret")}, field("commit"))
+	}
+	if strings.HasPrefix(operation, "package.transport.") {
+		switch strings.TrimPrefix(operation, "package.transport.") {
+		case "fetch":
+			operation = "package.repository.fetch"
+		case "versions":
+			operation = "package.version.list"
+		case "inspect":
+			operation = "package.source.inspect"
+		case "sync":
+			operation = "package.synchronize"
+		default:
+			return nil, errors.New("unknown package transport operation")
+		}
+		source, _ := input["source"].(string)
+		secret, _ := input["transport_secret"].(string)
+		username, _ := input["transport_username"].(string)
+		ctx, err = packages.WithGitTransport(ctx, packages.GitTransport{Source: source, Secret: secret, Username: username})
+		if err != nil {
+			return nil, err
+		}
 	}
 	handler := d.handlers[operation]
 	if handler == nil {

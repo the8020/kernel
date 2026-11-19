@@ -91,6 +91,7 @@ type PackageFile struct {
 }
 
 type Config struct {
+	NodeID        string
 	WorkspaceRoot string
 	PackagesRoot  string
 	GitPath       string
@@ -101,6 +102,8 @@ type Config struct {
 }
 
 type Store struct {
+	nodeID        string
+	runtimeIndex  PackageIndexStore
 	catalog       *Catalog
 	workspaceRoot string
 	packagesRoot  string
@@ -139,8 +142,20 @@ func New(config Config) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	runtimeIndex := indexStore
+	nodeID := ""
+	if databaseIndex && config.NodeID != "" {
+		available, err := database.RelationExists(context.Background(), config.Database, "the8020__packages__node_packages")
+		if err != nil {
+			return nil, err
+		}
+		if available {
+			nodeID = config.NodeID
+			runtimeIndex = &DatabasePackageIndexStore{database: config.Database, node: nodeID}
+		}
+	}
 	return &Store{
-		catalog:       catalog,
+		catalog: catalog, nodeID: nodeID, runtimeIndex: runtimeIndex,
 		workspaceRoot: workspace, packagesRoot: packagesRoot,
 		index:   indexStore,
 		gitPath: gitPath, secrets: config.Secrets,
@@ -171,7 +186,7 @@ func (s *Store) ListPackages() ([]Package, error) {
 	if !s.databaseIndex {
 		return s.catalog.ListPackages()
 	}
-	entries, err := s.index.List(context.Background())
+	entries, err := s.runtimeIndex.List(context.Background())
 	if err != nil {
 		return nil, err
 	}
@@ -221,7 +236,7 @@ func (s *Store) ResolvePackage(packageID string) (Package, error) {
 // clean commit currently published as ready. Database table evaluation uses
 // this proof before allowing activated source to change shared schema.
 func (s *Store) ActivatedPackageCommit(ctx context.Context, packageID string) (string, error) {
-	entry, exists, err := s.index.Get(ctx, packageID)
+	entry, exists, err := s.runtimeIndex.Get(ctx, packageID)
 	if err != nil {
 		return "", err
 	}
@@ -249,7 +264,7 @@ func (s *Store) requireReadyPackage(ctx context.Context, packageID string) error
 	if !s.databaseIndex {
 		return nil
 	}
-	entry, exists, err := s.index.Get(ctx, packageID)
+	entry, exists, err := s.runtimeIndex.Get(ctx, packageID)
 	if err != nil {
 		return err
 	}

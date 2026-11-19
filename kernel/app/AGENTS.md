@@ -20,8 +20,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 - `runtime_settings.go` composes synchronized admission, future allocation and
   resource profiles, warm templates, timer/deadline, history, debug and shutdown
-  updates through one settings applier. Install initial policy before registering
-  mutations. Preserve admitted work and captured job policy; see the complete
+  updates through one settings applier. Install initial policy before
+  registering mutations. Preserve admitted work and captured job policy; see the
+  complete
   [application semantics](../settings/definitions/AGENTS.md#runtime-application).
 
 - Development `Config.Logs` is the existing log-query adapter's narrow HTTP
@@ -107,10 +108,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   activation hooks succeed. A normal boot trusts the initialized marker and does
   not scan definitions or repeat completed hooks.
 - Database pool limits and passwords are node-local runtime settings registered
-  before administration and asynchronous initialization, including failed database
-  startup. Passwords authenticate separately before persistence and affect future
-  physical connections without replacing the pool. Backend, location and username
-  remain node-local restart settings.
+  before administration and asynchronous initialization, including failed
+  database startup. Passwords authenticate separately before persistence and
+  affect future physical connections without replacing the pool. Backend,
+  location and username remain node-local restart settings.
 - The companion logd starts independently of runtime/database readiness. Kernel
   stdout/stderr capture is enabled by `Main`; embedded `Run` callers do not
   replace their host process descriptors. Tests supply a real companion binary.
@@ -308,11 +309,13 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   unrelated services offline.
 - Local activation and the shared-state monitor use the same revision consumer.
   A source update scans current service Worker imports and publishes
-  deduplicated soft-restart intent before reindexing changed package fragments;
-  the generic index follower then applies restart markers on every node.
-  Scan/publication failures retain the update for retry without gating unrelated
-  traffic. Composition injects Worker inspection and generic lifecycle methods;
-  package code owns source-update orchestration. Followers never copy sources.
+  deduplicated soft-restart intent before reindexing changed package fragments.
+  Node-aware kernels replace affected Workers on the node whose checkout
+  changed. Legacy package revisions and manual service restart markers remain
+  system-wide. Scan/publication failures retain the update for retry without
+  gating unrelated traffic. Composition injects Worker inspection and generic
+  lifecycle methods; package code owns source-update orchestration. Followers
+  never copy sources.
 - The transaction owner claims selected package IDs under short memory locks,
   performs indexing outside them, and retains later requests. Synchronous
   callers wait only for selected busy owners after releasing other claims. The

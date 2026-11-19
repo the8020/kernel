@@ -45,13 +45,27 @@ func (m *Manager) RequestRestart(ctx context.Context, serviceID, mode string, up
 	if m.database == nil {
 		return errors.New("shared restart revisions are unavailable")
 	}
-	if err := m.publishRestart(ctx, serviceID, mode, updateRevision); err != nil {
+	if err := m.publishRestart(ctx, serviceID, mode, updateRevision, "restart:"); err != nil {
 		return err
 	}
 	return m.readRestart(ctx, serviceID)
 }
 
-func (m *Manager) publishRestart(ctx context.Context, serviceID, mode string, updateRevision uint64) error {
+// Source changes on independent checkouts replace only this node's matching Workers.
+func (m *Manager) RequestNodeSourceRestart(ctx context.Context, serviceID string, revision uint64) error {
+	if _, err := m.index.ReadService(serviceID); err != nil {
+		return err
+	}
+	if revision == 0 {
+		return errors.New("missing node package revision")
+	}
+	if err := m.publishRestart(ctx, serviceID, "soft", revision, "node-restart:"+m.nodeID+":"); err != nil {
+		return err
+	}
+	return m.readRestart(ctx, serviceID)
+}
+
+func (m *Manager) publishRestart(ctx context.Context, serviceID, mode string, updateRevision uint64, prefix string) error {
 	tx, err := m.database.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -67,9 +81,13 @@ func (m *Manager) publishRestart(ctx context.Context, serviceID, mode string, up
 	if err != nil {
 		return err
 	}
+	updateKey := "restart-update:" + serviceID
+	if prefix != "restart:" {
+		updateKey = "node-restart-update:" + m.nodeID + ":" + serviceID
+	}
 	if updateRevision > 0 {
 		var previous uint64
-		err := tx.QueryRowContext(ctx, `SELECT "revision" FROM `+revisionsTable+` WHERE "domain" = $1`, "restart-update:"+serviceID).Scan(&previous)
+		err := tx.QueryRowContext(ctx, `SELECT "revision" FROM `+revisionsTable+` WHERE "domain" = $1`, updateKey).Scan(&previous)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
@@ -78,12 +96,12 @@ func (m *Manager) publishRestart(ctx context.Context, serviceID, mode string, up
 		}
 	}
 	revision++
-	markers := map[string]uint64{"indexes": revision, "restart:" + serviceID: revision}
+	markers := map[string]uint64{"indexes": revision, prefix + serviceID: revision}
 	if mode == "hard" {
 		markers["restart-hard:"+serviceID] = revision
 	}
 	if updateRevision > 0 {
-		markers["restart-update:"+serviceID] = updateRevision
+		markers[updateKey] = updateRevision
 	}
 	for domain, value := range markers {
 		_, err = tx.ExecContext(ctx, `INSERT INTO `+revisionsTable+` ("domain", "revision", "updatedAt") VALUES ($1, $2, $3)
@@ -96,7 +114,8 @@ func (m *Manager) publishRestart(ctx context.Context, serviceID, mode string, up
 }
 
 func (m *Manager) loadRestarts(ctx context.Context) error {
-	rows, err := m.database.QueryContext(ctx, `SELECT "domain", "revision" FROM `+revisionsTable+` WHERE "domain" LIKE 'restart:%' OR "domain" LIKE 'restart-hard:%'`)
+	local := "node-restart:" + m.nodeID + ":"
+	rows, err := m.database.QueryContext(ctx, `SELECT "domain", "revision" FROM `+revisionsTable+` WHERE "domain" LIKE 'restart:%' OR "domain" LIKE 'restart-hard:%' OR "domain" LIKE $1`, local+"%")
 	if err != nil {
 		return err
 	}
@@ -109,6 +128,9 @@ func (m *Manager) loadRestarts(ctx context.Context) error {
 			return err
 		}
 		_, id, _ := strings.Cut(domain, ":")
+		if strings.HasPrefix(domain, local) {
+			id = strings.TrimPrefix(domain, local)
+		}
 		if _, err := packages.ParseServiceID(id); err != nil {
 			return err
 		}
@@ -116,7 +138,7 @@ func (m *Manager) loadRestarts(ctx context.Context) error {
 		if strings.HasPrefix(domain, "restart-hard:") {
 			restart.Hard = value
 		} else {
-			restart.Revision = value
+			restart.Revision = max(restart.Revision, value)
 		}
 		restarts[id] = restart
 	}
@@ -143,9 +165,9 @@ func (m *Manager) readRestart(ctx context.Context, serviceID string) error {
 		return err
 	}
 	var restart RestartRevision
-	err := m.database.QueryRowContext(ctx, `SELECT r."revision", COALESCE(h."revision", 0)
-		FROM `+revisionsTable+` r LEFT JOIN `+revisionsTable+` h ON h."domain" = $2 WHERE r."domain" = $1`,
-		"restart:"+serviceID, "restart-hard:"+serviceID).Scan(&restart.Revision, &restart.Hard)
+	err := m.database.QueryRowContext(ctx, `SELECT COALESCE(MAX(CASE WHEN "domain" <> $2 THEN "revision" END),0), COALESCE(MAX(CASE WHEN "domain"=$2 THEN "revision" END),0)
+ FROM `+revisionsTable+` WHERE "domain" IN ($1,$2,$3)`,
+		"restart:"+serviceID, "restart-hard:"+serviceID, "node-restart:"+m.nodeID+":"+serviceID).Scan(&restart.Revision, &restart.Hard)
 	if err != nil {
 		return err
 	}

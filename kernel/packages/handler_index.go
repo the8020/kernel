@@ -83,10 +83,10 @@ func (s *Store) ReindexHandlers(ctx context.Context, packageIDs ...string) (Hand
 		indexed, revision := s.handlerSnapshot()
 		if len(packageIDs) == 0 {
 			indexed = map[string]packageHandlers{}
-			entries, err = s.index.List(ctx)
+			entries, err = s.runtimeIndex.List(ctx)
 		} else {
 			for _, id := range uniqueSorted(packageIDs) {
-				entry, exists, getErr := s.index.Get(ctx, id)
+				entry, exists, getErr := s.runtimeIndex.Get(ctx, id)
 				if getErr != nil {
 					return HandlerReport{}, getErr
 				}

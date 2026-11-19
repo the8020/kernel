@@ -1,5 +1,21 @@
 # 80|20 kernel
 
+## 0.10.16: node-aware package management
+
+Each app server has its own package checkouts. The shared database records the
+desired commit and what each node is running. Save a version in Packages and use
+Package Sync to apply it to selected nodes. Test and production fetch and deploy
+through the connected development Git server. Confirmed upstream repair uses the
+configured upstream independently of development.
+
+Update development first so it can serve the recommended package versions to
+test and production. On an existing system, restart each serving node once after
+the recommended packages install the new schema. That startup registers the
+node's installed checkouts. Complete this transition on all serving nodes before
+running different package versions against the same database. For a rolling
+kernel update after the transition, sync and test the replacement node before
+switching traffic. Schema changes must work with both running versions.
+
 ## 0.10.15: development-sourced recommendations
 
 Kernel `0.10.15` resolves `kernel.packages.recommended` transports through

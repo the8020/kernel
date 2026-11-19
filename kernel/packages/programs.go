@@ -21,7 +21,7 @@ const packageSandboxRoot = "/workspace/packages"
 // ListPrograms reads only ready package program manifests for an explicit
 // selector. It does not inspect services, Git status, or package file trees.
 func (s *Store) ListPrograms(ctx context.Context) ([]ProgramDefinition, error) {
-	entries, err := s.index.List(ctx)
+	entries, err := s.runtimeIndex.List(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +112,7 @@ func (s *Store) ResolveProgramWithCandidates(ctx context.Context, programID stri
 		}
 		return ValidateProgram(candidate.Root, identity.PackageID(), name, candidate.Commit)
 	}
-	entry, found, err := s.index.Get(ctx, identity.PackageID())
+	entry, found, err := s.runtimeIndex.Get(ctx, identity.PackageID())
 	if err != nil {
 		return ProgramDefinition{}, err
 	}

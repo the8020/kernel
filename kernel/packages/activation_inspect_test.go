@@ -10,8 +10,8 @@ func TestInspectExactActivation(t *testing.T) {
 	db := packageDatabase(t)
 	ctx := context.Background()
 	statements := []string{
-		`INSERT INTO "the8020__packages__activations" VALUES ('act-0123456789', 'code_switched', 'hook failed', 'before', 'after', 'now', 'now', NULL)`,
-		`INSERT INTO "the8020__packages__activations" VALUES ('act-abcdefghij', 'complete', NULL, 'before', 'after', 'now', 'now', 'now')`,
+		`INSERT INTO "the8020__packages__activations" ("activationId","stage","error","previousPackageSetHash","candidatePackageSetHash","startedAt","updatedAt","completedAt") VALUES ('act-0123456789', 'code_switched', 'hook failed', 'before', 'after', 'now', 'now', NULL)`,
+		`INSERT INTO "the8020__packages__activations" ("activationId","stage","error","previousPackageSetHash","candidatePackageSetHash","startedAt","updatedAt","completedAt") VALUES ('act-abcdefghij', 'complete', NULL, 'before', 'after', 'now', 'now', 'now')`,
 		`INSERT INTO "the8020__packages__activation_packages" VALUES ('act-0123456789', 'acme/a', 'old', 'new', false)`,
 		`INSERT INTO "the8020__packages__activation_packages" VALUES ('act-0123456789', 'acme/b', NULL, 'new-b', true)`,
 		`INSERT INTO "the8020__packages__hook_runs" VALUES ('act-0123456789', 'acme/a', 'pre-activate', 'succeeded', 1, NULL, NULL, NULL)`,

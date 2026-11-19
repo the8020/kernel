@@ -18,12 +18,12 @@ Parent DOX: [kernel/kernel/database DOX](../AGENTS.md).
 - Use ordinary configured job grouping and profile compatibility, without a
   dedicated evaluator group. Restricted evaluator permissions belong to its
   Worker; compatible jobs may share the same supervisor.
-- Mount and read only the activated shared package tree. Private development
+- Mount and read only the node’s activated package tree. Private development
   overlays are never schema sources; staged activation roots temporarily replace
   only their matching package mounts.
 - Explicit inspection and synchronization accept activated source only when its
-  checkout is clean and exactly matches the ready commit in the shared package
-  index. Candidate activation evaluates its isolated staged root instead.
+  checkout is clean and exactly matches the ready commit for that node.
+  Candidate activation evaluates its isolated staged root instead.
 - Depend only on the read-only package catalog. Database-backed desired package
   and service state is composed after initial table synchronization.
 - Definition-evaluator Workers have no database access, writes, imports,

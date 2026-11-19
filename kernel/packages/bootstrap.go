@@ -46,7 +46,9 @@ func (s *Store) stageInstalled(ctx context.Context, commits map[string]string) (
 					if tagCommit != commit {
 						return nil, fmt.Errorf("bootstrap package %s requested tag %s resolves to %s instead of %s", item.ID, requestedTag, tagCommit, commit)
 					}
-					entry.Tag, entry.Commit = requestedTag, ""
+					if !s.NodeInstallations() {
+						entry.Tag, entry.Commit = requestedTag, ""
+					}
 				}
 			}
 		}
@@ -63,6 +65,9 @@ func (s *Store) stageInstalled(ctx context.Context, commits map[string]string) (
 // ValidateInstalled proves that the node-local checkouts exactly implement
 // the package set the shared database marked active.
 func (s *Store) ValidateInstalled(ctx context.Context, commits map[string]string) error {
+	if s.nodeID != "" {
+		return s.validateNodeInstalled(ctx, commits)
+	}
 	entries, err := s.index.List(ctx)
 	if err != nil {
 		return err

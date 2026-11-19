@@ -50,6 +50,8 @@ export type {
 export type TokenClaims = Readonly<Record<string, unknown>>;
 
 export interface PackageIndex {
+  state?: string;
+  error?: string;
   author: string;
   repository: string;
   source?: string;
@@ -63,6 +65,12 @@ export interface PackageIndex {
   validation_error?: string;
 }
 
+export interface PackageTransport {
+  source: string;
+  transport_secret?: string;
+  transport_username?: string;
+}
+
 export interface PackageSourceReference {
   kind: "branch" | "tag";
   name: string;
@@ -70,6 +78,7 @@ export interface PackageSourceReference {
 }
 
 export interface PackageSourceInspection {
+  default_commit?: string;
   source: string;
   author: string;
   repository: string;
@@ -91,6 +100,8 @@ export interface PackageVersion {
 }
 
 export interface PackageVersions {
+  default_commit?: string;
+  update_commit?: string;
   package_id: string;
   source?: string;
   current_commit?: string;
@@ -987,6 +998,81 @@ export const kernel = Object.freeze({
         "package",
       );
     },
+    waitForNodePackage(node: string, packageId: string): Promise<void> {
+      return executeRuntimeOperation("package.node.sync", {
+        node,
+        package_id: packageId,
+        check_only: true,
+      });
+    },
+    syncNode(
+      node: string,
+      packageId: string,
+      before: string,
+      commit: string,
+      route: PackageTransport,
+      restore = false,
+    ): Promise<void> {
+      return executeRuntimeOperation("package.node.sync", {
+        node,
+        package_id: packageId,
+        before,
+        commit,
+        ...route,
+        restore,
+      });
+    },
+    transport: Object.freeze({
+      resolve(route: PackageTransport, commit: string): Promise<string> {
+        return executeRuntimeOperation("package.transport.resolve", {
+          ...route,
+          commit,
+        });
+      },
+      inspect(route: PackageTransport): Promise<PackageSourceInspection> {
+        return runtimeOperationField(
+          "package.transport.inspect",
+          { ...route },
+          "source",
+        );
+      },
+      fetch(
+        packageId: string,
+        route: PackageTransport,
+      ): Promise<PackageRepository> {
+        return runtimeOperationField("package.transport.fetch", {
+          package_id: packageId,
+          ...route,
+        }, "repository");
+      },
+      versions(
+        packageId: string,
+        route: PackageTransport,
+        limit?: number,
+      ): Promise<PackageVersions> {
+        return runtimeOperationField(
+          "package.transport.versions",
+          optionalArguments({ package_id: packageId, limit, ...route }),
+          "package",
+        );
+      },
+      sync(
+        packageId: string,
+        route: PackageTransport,
+        schema: SchemaActivationOptions = {},
+      ): Promise<PackageSynchronization[]> {
+        return runtimeOperationField(
+          "package.transport.sync",
+          optionalArguments({
+            packages: packageId,
+            ...route,
+            ...schema,
+            force_columns: schema.force_columns?.join(","),
+          }),
+          "packages",
+        );
+      },
+    }),
     index: Object.freeze({
       async list(): Promise<PackageIndex[]> {
         const result = await executeRuntimeOperation<
@@ -1028,6 +1114,19 @@ export const kernel = Object.freeze({
       },
     }),
     versions: Object.freeze({
+      subject(packageId: string, commit: string): Promise<string> {
+        return executeRuntimeOperation("package.version.subject", {
+          package_id: packageId,
+          commit,
+        });
+      },
+      cached(packageId: string, limit?: number): Promise<PackageVersions> {
+        return runtimeOperationField(
+          "package.version.cached",
+          optionalArguments({ package_id: packageId, limit }),
+          "package",
+        );
+      },
       async list(packageId: string, limit?: number): Promise<PackageVersions> {
         const result = await executeRuntimeOperation<
           { package: PackageVersions }

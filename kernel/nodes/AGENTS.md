@@ -34,6 +34,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 # Local Contracts
 
+- Exact-node package sync uses the mutually authenticated recipient listener.
+  The destination verifies its node ID and applies the reviewed package change
+  to its own checkout. Failed communication requires checking the recipient.
+
 - Every node has one stable canonical `nod-` ID, public URL, recipient address
   and port, and enabled state. Local construction and catalog writes use the
   shared identity validator.

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -512,7 +513,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	}
 	secretManager := &packageSecrets{context: ctx}
 	packageStore, err := workspacepackages.New(workspacepackages.Config{
-		WorkspaceRoot: root, PackagesRoot: paths.Packages,
+		NodeID: instanceUUID, WorkspaceRoot: root, PackagesRoot: paths.Packages,
 		Secrets: secretManager, Database: systemDatabase, Logger: logger,
 	})
 	if err != nil {
@@ -586,6 +587,28 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	}
 	packageStore.SetSchemaDeployment(activationCoordinator)
 	serviceSet.PublishPackageManagement(packageStore)
+	nodeManager, err := nodes.New(systemDatabase, instanceUUID, serviceSet.Signing)
+	if err != nil {
+		runtimeServices.Failure = "initialize node topology: " + err.Error()
+		return runtimeServices, closeRuntime
+	}
+	workerManager.SetNodeRouter(nodeManager)
+	nodeManager.SetWorkerInvoker(workerManager)
+	nodeManager.SetTerminalCloser(operationDispatcher)
+	nodeManager.SetLogReader(serviceSet.Logging)
+	nodeManager.SetExecutionReader(operationDispatcher)
+	cleanup.nodes = nodeManager
+	var sandboxServices atomic.Pointer[webservices.Manager]
+	nodeManager.SetPackageSync(packageStore.SyncNodePackage)
+	startNodeListener := func() error {
+		return nodeManager.Start(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if target := sandboxServices.Load(); target != nil {
+				target.ServeHTTP(w, r)
+			} else {
+				http.Error(w, "application starting", http.StatusServiceUnavailable)
+			}
+		}))
+	}
 	if !freshDatabase {
 		// Activation finalization can outlive its pending schema record.
 		if err := activationCoordinator.Recover(ctx); err != nil {
@@ -624,7 +647,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		}
 	} else {
 		if err := packageStore.ValidateInstalled(ctx, packageCommits); err != nil {
-			runtimeServices.Failure = "validate installed package set: " + err.Error()
+			runtimeServices.Failure = "validate installed package set: " + errors.Join(err, startNodeListener()).Error()
 			return runtimeServices, closeRuntime
 		}
 	}
@@ -644,19 +667,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		}
 	}
 	authentication := &packageAuthentication{context: ctx, programs: programRunner, signing: serviceSet.Signing}
-	nodeManager, err := nodes.New(systemDatabase, instanceUUID, serviceSet.Signing)
-	if err != nil {
-		runtimeServices.Failure = "initialize node topology: " + err.Error()
-		return runtimeServices, closeRuntime
-	}
-	workerManager.SetNodeRouter(nodeManager)
-	nodeManager.SetWorkerInvoker(workerManager)
-	nodeManager.SetTerminalCloser(operationDispatcher)
-	nodeManager.SetLogReader(serviceSet.Logging)
-	nodeManager.SetExecutionReader(operationDispatcher)
-	cleanup.nodes = nodeManager
 	developmentRunsc := developmentRunscConfig(ctx, root, paths, settingManager)
-	var sandboxServices atomic.Pointer[webservices.Manager]
 	developmentManager, err := development.New(development.Config{
 		Root: root, PackagesRoot: paths.Packages, UsersRoot: paths.Users,
 		RuntimeRoot: paths.RuntimeDevelopment, ImageRoot: filepath.Join(paths.DevelopmentImage, "rootfs"),
@@ -811,10 +822,6 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		return runtimeServices, closeRuntime
 	}
 	nodeManager.SetCapacityProvider(&runtimeNodeCapacityProvider{sandboxes: sandboxManager, workers: workerManager, services: serviceManager, network: publicNetwork})
-	if err := nodeManager.Start(webServiceManager); err != nil {
-		runtimeServices.Failure = err.Error()
-		return runtimeServices, closeRuntime
-	}
 	serviceSet.PublishPlatform(services.PlatformServices{
 		Network: publicNetwork, Nodes: nodeManager,
 		Packages: packageStore, Development: developmentManager, Consoles: consoleManager,
@@ -825,6 +832,9 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	sharedState = &runtimeSharedState{packages: packageFollower, indexes: indexFollower, reindex: indexer.Reindex, retry: indexer.RetryPending, queue: indexer.Queue, queuePending: indexer.QueuePending, logger: logger, topology: nodeManager, nextTopology: time.Now().Add(30 * time.Second),
 		sourceUpdate: func(ctx context.Context, update workspacepackages.PackageSetUpdate) error {
 			return workspacepackages.ReactToSourceUpdate(ctx, update, webServiceManager.MatchingImports, func(ctx context.Context, id string, revision uint64) error {
+				if packageStore.NodeInstallations() {
+					return webServiceManager.RequestNodeSourceRestart(ctx, id, revision)
+				}
 				return webServiceManager.RequestRestart(ctx, id, "soft", revision)
 			})
 		},
@@ -834,6 +844,10 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		},
 	}
 	indexer.reportFailure = sharedState.recordPublicationFailure
+	if err := startNodeListener(); err != nil {
+		runtimeServices.Failure = err.Error()
+		return runtimeServices, closeRuntime
+	}
 	startRuntimeMonitor(cleanup, sandboxManager, serviceManager, jobManager, systemDatabase, settingManager, sharedState, publicNetwork, heartbeatInterval, heartbeatTimeout, logger)
 	return runtimeServices, closeRuntime
 }

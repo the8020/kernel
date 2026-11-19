@@ -25,11 +25,14 @@ type SynchronizationSet struct {
 }
 
 type SynchronizationSelection struct {
-	PackageID string `json:"package_id"`
-	Source    string `json:"source"`
-	Commit    string `json:"commit"`
-	Tag       string `json:"tag"`
-	Before    string `json:"before"`
+	TemporarySource bool   `json:"temporary_source,omitempty"`
+	KeepUpstream    bool   `json:"keep_upstream,omitempty"`
+	AllowLocal      bool   `json:"allow_local,omitempty"`
+	PackageID       string `json:"package_id"`
+	Source          string `json:"source"`
+	Commit          string `json:"commit"`
+	Tag             string `json:"tag"`
+	Before          string `json:"before"`
 }
 
 type sourceConfiguration struct {
@@ -44,6 +47,7 @@ type synchronizationIntent struct {
 	PackageID string              `json:"package_id"`
 	Desired   sourceConfiguration `json:"desired"`
 	Previous  sourceConfiguration `json:"previous"`
+	Transport string              `json:"transport,omitempty"`
 }
 
 type synchronizationKey struct{}
@@ -137,10 +141,14 @@ func (s *Store) SynchronizeSet(ctx context.Context, input, token, username strin
 		if err != nil {
 			return nil, err
 		}
-		if found && (previous.Local || previous.Secret != "" || (previous.Source != "" && previous.Source != entry.Source)) {
+		keep := request.Packages[i].KeepUpstream
+		if keep && s.nodeID == "" {
+			return nil, errors.New("preserving source settings requires the node package schema")
+		}
+		if found && ((previous.Local && !(keep && request.Packages[i].AllowLocal)) || (!keep && (previous.Secret != "" || (previous.Source != "" && previous.Source != entry.Source)))) {
 			return nil, fmt.Errorf("%s has a local or custom source configuration; review it before deployment", entry.PackageID)
 		}
-		current, exists, err := s.index.Get(ctx, entry.PackageID)
+		current, exists, err := s.runtimeIndex.Get(ctx, entry.PackageID)
 		if err != nil {
 			return nil, err
 		}
@@ -164,7 +172,17 @@ func (s *Store) SynchronizeSet(ctx context.Context, input, token, username strin
 		if actual != request.Packages[i].Before || (actual != "" && (!exists || current.State != "ready" || current.ActiveCommit != actual)) || (actual == "" && current.ActiveCommit != "") {
 			return nil, fmt.Errorf("%s changed from the reviewed baseline or has an unindexed/unready source", entry.PackageID)
 		}
-		intents[i] = synchronizationIntent{entry.PackageID, configuration(entry), previous}
+		desired := configuration(entry)
+		transport := ""
+		if keep {
+			if !request.Packages[i].TemporarySource {
+				transport = entry.Source
+			}
+			if previous.Source != "" {
+				desired.Source, desired.Secret = previous.Source, previous.Secret
+			}
+		}
+		intents[i] = synchronizationIntent{PackageID: entry.PackageID, Desired: desired, Previous: previous, Transport: transport}
 	}
 	encoded, err := json.Marshal(intents)
 	if err != nil {
@@ -200,9 +218,33 @@ func (s *Store) SynchronizeSet(ctx context.Context, input, token, username strin
 		}
 	}()
 	for _, entry := range entries {
-		stage, err := s.stagePackageIndex(ctx, entry, token, username, nil)
+		staging := ctx
+		if request.Packages[len(stages)].KeepUpstream {
+			staging = context.WithValue(ctx, reviewedSourceKey{}, true)
+		}
+		stage, err := s.stagePackageIndex(staging, entry, token, username, nil)
 		if err != nil {
 			return results, fmt.Errorf("stage %s: %w", entry.PackageID, err)
+		}
+		if request.Packages[len(stages)].TemporarySource && stage.exists {
+			// Restore the configured origin after fetching the explicitly named repair source.
+			old, readErr := s.gitValue(ctx, stage.destination, "remote", "get-url", "origin")
+			if readErr == nil {
+				err = s.setPackageOrigin(ctx, stage.root, old)
+			} else {
+				names, listErr := s.gitValue(ctx, stage.destination, "remote")
+				if listErr != nil || containsLine(names, "origin") {
+					err = errors.Join(listErr, readErr)
+				} else {
+					_, err = s.runGit(ctx, stage.root, nil, "remote", "remove", "origin")
+				}
+			}
+			if err != nil {
+				return results, errors.Join(err, os.RemoveAll(stage.stageRoot))
+			}
+		}
+		if request.Packages[len(stages)].KeepUpstream {
+			intents[len(stages)].Desired.Tag, intents[len(stages)].Desired.Commit = "", stage.Commit
 		}
 		stages = append(stages, stage)
 		results = append(results, stage.PackageSynchronization)

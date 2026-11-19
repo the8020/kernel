@@ -23,7 +23,10 @@ type PackageIndexStore interface {
 	Published(context.Context) (uint64, map[string]string, error)
 }
 
-type DatabasePackageIndexStore struct{ database database.Store }
+type DatabasePackageIndexStore struct {
+	database database.Store
+	node     string
+}
 
 func NewDatabasePackageIndexStore(store database.Store) (*DatabasePackageIndexStore, error) {
 	if store == nil {
@@ -36,7 +39,7 @@ func NewDatabasePackageIndexStore(store database.Store) (*DatabasePackageIndexSt
 // set. Package rows are loaded only after this value advances.
 func (s *DatabasePackageIndexStore) Revision(ctx context.Context) (uint64, error) {
 	var revision int64
-	err := s.database.QueryRowContext(ctx, `SELECT "revision" FROM "the8020__system__revisions" WHERE "domain" = 'packages'`).Scan(&revision)
+	err := s.database.QueryRowContext(ctx, `SELECT "revision" FROM "the8020__system__revisions" WHERE "domain" = $1`, s.revisionDomain()).Scan(&revision)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
 	}
@@ -52,10 +55,16 @@ func (s *DatabasePackageIndexStore) Revision(ctx context.Context) (uint64, error
 // Published reads one database snapshot. Preparing an activation does not
 // unpublish the previous active commit; only publication or retirement changes it.
 func (s *DatabasePackageIndexStore) Published(ctx context.Context) (uint64, map[string]string, error) {
-	rows, err := s.database.QueryContext(ctx, `SELECT r.revision, p."packageId", p."activeCommit"
-		FROM (SELECT COALESCE((SELECT "revision" FROM "the8020__system__revisions"
-			WHERE "domain" = 'packages'), 0) AS revision) r
-		LEFT JOIN `+packagesTable+` p ON p."state" <> 'retired' AND p."activeCommit" <> ''`)
+	query := `SELECT r.revision, p."packageId", p."activeCommit" FROM
+		(SELECT COALESCE((SELECT "revision" FROM "the8020__system__revisions" WHERE "domain" = $1),0) AS revision) r LEFT JOIN `
+	args := []any{s.revisionDomain()}
+	if s.node == "" {
+		query += packagesTable + ` p ON p."state" <> 'retired' AND p."activeCommit" <> ''`
+	} else {
+		query += nodePackagesTable + ` p ON p."nodeId" = $2 AND p."ready"`
+		args = append(args, s.node)
+	}
+	rows, err := s.database.QueryContext(ctx, query, args...)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -77,10 +86,26 @@ func (s *DatabasePackageIndexStore) Published(ctx context.Context) (uint64, map[
 	return uint64(revision), commits, rows.Err()
 }
 
+const nodePackagesTable = `"the8020__packages__node_packages"`
+
+func (s *DatabasePackageIndexStore) revisionDomain() string {
+	if s.node != "" {
+		return "packages:" + s.node
+	}
+	return "packages"
+}
+
+func (s *DatabasePackageIndexStore) indexQuery() (string, []any) {
+	columns := `SELECT p."packageId",p."author",p."repository",p."source",p."requestedCommit",p."requestedTag",p."secretName",p."local",`
+	if s.node == "" {
+		return columns + `p."activeCommit",p."state",p."error",p."revision" FROM ` + packagesTable + ` p WHERE p."state" <> 'retired'`, nil
+	}
+	return columns + `n."activeCommit", CASE WHEN n."activeCommit" IS NOT NULL THEN 'ready' WHEN p."state"='ready' THEN 'desired' ELSE p."state" END, p."error", p."revision" FROM ` + packagesTable + ` p LEFT JOIN ` + nodePackagesTable + ` n ON n."packageId"=p."packageId" AND n."nodeId"=$1 AND n."ready" WHERE (p."state"<>'retired' OR n."activeCommit" IS NOT NULL)`, []any{s.node}
+}
+
 func (s *DatabasePackageIndexStore) List(ctx context.Context) ([]PackageIndex, error) {
-	rows, err := s.database.QueryContext(ctx, `SELECT "packageId", "author", "repository", "source",
-		"requestedCommit", "requestedTag", "secretName", "local", "activeCommit", "state", "error", "revision"
-		FROM `+packagesTable+` WHERE "state" <> 'retired' ORDER BY "packageId"`)
+	query, args := s.indexQuery()
+	rows, err := s.database.QueryContext(ctx, query+` ORDER BY p."packageId"`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -100,9 +125,9 @@ func (s *DatabasePackageIndexStore) Get(ctx context.Context, packageID string) (
 	if _, err := ParsePackageID(packageID); err != nil {
 		return PackageIndex{}, false, err
 	}
-	entry, err := scanPackageIndex(s.database.QueryRowContext(ctx, `SELECT "packageId", "author", "repository", "source",
-		"requestedCommit", "requestedTag", "secretName", "local", "activeCommit", "state", "error", "revision"
-		FROM `+packagesTable+` WHERE "packageId" = $1 AND "state" <> 'retired'`, packageID))
+	query, args := s.indexQuery()
+	args = append(args, packageID)
+	entry, err := scanPackageIndex(s.database.QueryRowContext(ctx, query+fmt.Sprintf(` AND p."packageId"=$%d`, len(args)), args...))
 	if errors.Is(err, sql.ErrNoRows) {
 		return PackageIndex{}, false, nil
 	}

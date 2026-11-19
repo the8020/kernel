@@ -24,8 +24,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   Live node setting `development.activation_allowed` defaults to `auto`; the
   dev-core activation entrypoint then requires the development role. `true`
   bypasses that role lookup; `false` also blocks native activation admission.
-  Preview, status, and abort remain available. Changes affect new admission,
-  not an activation already in progress. Native `auto`/`true` recovery remains
+  Preview, status, and abort remain available. Changes affect new admission, not
+  an activation already in progress. Native `auto`/`true` recovery remains
   independent of application policy; the kernel never reads the system profile.
 
 - The private `logs` operation authenticates the loaded sandbox owner's bearer
@@ -152,6 +152,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   and sanitized technical metadata.
 - Repository locking is independent of the per-user lifecycle lock. Never hold
   the lifecycle lock merely to inspect a shared repository.
+- A fresh activation acquires the publication locks for its changed packages
+  before starting the staging journal or capturing private edits. If a package
+  is busy, report the conflict immediately. The developer can activate again
+  once publication finishes. Git then reports any conflicting files.
 - Source reset discards private workspace changes and recorded bases while
   preserving the recorded system root and image provenance. Factory reset is the
   sole path that removes exactly `users/<user>/dev-sandbox/` and initializes a

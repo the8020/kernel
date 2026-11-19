@@ -167,6 +167,8 @@ type PackageManagementService interface {
 	ListPackageIndexes() ([]workspacepackages.PackageIndex, error)
 	InspectPackageIndex(string) (workspacepackages.PackageIndex, error)
 	SetPackageIndex(context.Context, workspacepackages.PackageIndex) (workspacepackages.PackageIndex, error)
+	DescribePackageCommit(context.Context, string, string) (string, error)
+	ResolveTransportCommit(context.Context, workspacepackages.GitTransport, string) (string, error)
 	InspectPackageSource(context.Context, string, string) (workspacepackages.SourceInspection, error)
 	ListPackageVersions(context.Context, string, int) (workspacepackages.PackageVersions, error)
 	SynchronizePackages(context.Context, []string) ([]workspacepackages.PackageSynchronization, error)

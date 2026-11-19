@@ -18,12 +18,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	secretstore "the8020/kernel/secrets"
 
 	"github.com/pelletier/go-toml/v2"
 	"golang.org/x/sys/unix"
 
+	"the8020/kernel/database"
 	"the8020/kernel/deployment"
 )
 
@@ -58,6 +60,7 @@ type SourceReference struct {
 }
 
 type SourceInspection struct {
+	DefaultCommit string            `json:"default_commit,omitempty"`
 	Source        string            `json:"source"`
 	Author        string            `json:"author"`
 	Repository    string            `json:"repository"`
@@ -79,6 +82,8 @@ type PackageVersion struct {
 }
 
 type PackageVersions struct {
+	DefaultCommit  string           `json:"default_commit,omitempty"`
+	UpdateCommit   string           `json:"update_commit,omitempty"`
 	PackageID      string           `json:"package_id"`
 	Source         string           `json:"source,omitempty"`
 	CurrentCommit  string           `json:"current_commit,omitempty"`
@@ -110,11 +115,11 @@ type LocalPackage struct {
 }
 
 func (s *Store) ListPackageIndexes() ([]PackageIndex, error) {
-	return s.index.List(context.Background())
+	return s.runtimeIndex.List(context.Background())
 }
 
 func (s *Store) InspectPackageIndex(packageID string) (PackageIndex, error) {
-	entry, exists, err := s.index.Get(context.Background(), packageID)
+	entry, exists, err := s.runtimeIndex.Get(context.Background(), packageID)
 	if err != nil {
 		return PackageIndex{}, err
 	}
@@ -147,15 +152,19 @@ func (s *Store) InspectPackageSource(ctx context.Context, source, secret string)
 	if err != nil {
 		return SourceInspection{}, err
 	}
-	environment, token, err := s.sourceAuthentication(normalized, secret)
+	route, routed := ctx.Value(gitTransportKey{}).(GitTransport)
+	if !routed {
+		route = GitTransport{Source: normalized, Secret: secret}
+	}
+	environment, token, err := s.transportAuthentication(route)
 	if err != nil {
 		return SourceInspection{}, err
 	}
 	output, err := s.runGit(ctx, "", environment, "ls-remote", "--symref", normalized, "HEAD", "refs/heads/*", "refs/tags/*")
 	if err != nil {
-		return SourceInspection{}, fmt.Errorf("inspect Git source: %w: %s", err, redactGitCredential(cleanGitOutput(output), token, ""))
+		return SourceInspection{}, fmt.Errorf("inspect Git source: %w: %s", err, redactGitCredential(cleanGitOutput(output), token, route.Username))
 	}
-	defaultBranch := ""
+	defaultBranch, defaultCommit := "", ""
 	references := map[string]SourceReference{}
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
@@ -176,6 +185,9 @@ func (s *Store) InspectPackageSource(ctx context.Context, source, secret string)
 		commit, reference := fields[0], fields[1]
 		kind, name := "", ""
 		switch {
+		case reference == "HEAD":
+			defaultCommit = commit
+			continue
 		case strings.HasPrefix(reference, "refs/heads/"):
 			kind, name = "branch", strings.TrimPrefix(reference, "refs/heads/")
 		case strings.HasPrefix(reference, "refs/tags/"):
@@ -201,7 +213,7 @@ func (s *Store) InspectPackageSource(ctx context.Context, source, secret string)
 	if len(items) > maximumSourceRefs {
 		items = items[:maximumSourceRefs]
 	}
-	return SourceInspection{Source: normalized, Author: author, Repository: repository, PackageID: author + "/" + repository, DefaultBranch: defaultBranch, References: items}, nil
+	return SourceInspection{DefaultCommit: defaultCommit, Source: normalized, Author: author, Repository: repository, PackageID: author + "/" + repository, DefaultBranch: defaultBranch, References: items}, nil
 }
 
 func (s *Store) sourceAuthentication(source, secret string) ([]string, string, error) {
@@ -224,6 +236,13 @@ func (s *Store) sourceAuthentication(source, secret string) ([]string, string, e
 	return environment, token, err
 }
 
+type cachedVersionsKey struct{}
+
+// CachedVersions inspects the development node's advertised refs without requiring its upstream.
+func CachedVersions(ctx context.Context) context.Context {
+	return context.WithValue(ctx, cachedVersionsKey{}, true)
+}
+
 func (s *Store) ListPackageVersions(ctx context.Context, packageID string, limit int) (PackageVersions, error) {
 	if limit <= 0 {
 		limit = 100
@@ -243,35 +262,75 @@ func (s *Store) ListPackageVersions(ctx context.Context, packageID string, limit
 	if !exists {
 		return PackageVersions{}, os.ErrNotExist
 	}
-	repositoryPath, err := s.installedPackagePath(packageID)
+	repositoryPath, installed, err := s.versionCheckout(packageID)
 	if err != nil {
 		return PackageVersions{}, err
 	}
-	if !entry.Local {
+	route, routed := ctx.Value(gitTransportKey{}).(GitTransport)
+	if !installed {
+		if ctx.Value(cachedVersionsKey{}) == true || entry.Local && !routed {
+			return PackageVersions{}, fmt.Errorf("package is not installed: %s", packageID)
+		}
+		// Inspect available versions before a node is selected for installation.
+		repositoryPath, err = os.MkdirTemp("", "8020-versions-")
+		if err != nil {
+			return PackageVersions{}, err
+		}
+		defer os.RemoveAll(repositoryPath)
+		if _, err := s.runGit(ctx, repositoryPath, nil, "init", "--quiet", "--bare"); err != nil {
+			return PackageVersions{}, err
+		}
+		if !routed {
+			route, routed = GitTransport{Source: entry.Source, Secret: entry.Secret}, true
+		}
+	}
+	refs := []string{"refs/remotes/origin", "refs/tags"}
+	history := []string{"--all"}
+	defaultRef := "refs/remotes/origin/HEAD"
+	if routed {
+		if err := s.fetchTransport(ctx, repositoryPath, route); err != nil {
+			return PackageVersions{}, err
+		}
+		refs = []string{"refs/8020"}
+		history = []string{"--glob=refs/8020/*", "--decorate=full", "--decorate-refs=refs/8020/tags/*"}
+		defaultRef = "refs/8020/head"
+	} else if !entry.Local && ctx.Value(cachedVersionsKey{}) != true {
 		authentication, authErr := s.repositoryAuthentication(packageID, entry.Source)
 		if authErr != nil {
 			return PackageVersions{}, authErr
 		}
-		if output, commandErr := s.runGit(ctx, repositoryPath, nil, "remote", "set-url", "origin", entry.Source); commandErr != nil {
-			return PackageVersions{}, fmt.Errorf("configure package source: %w: %s", commandErr, cleanGitOutput(output))
+		if err := s.setPackageOrigin(ctx, repositoryPath, entry.Source); err != nil {
+			return PackageVersions{}, err
 		}
 		if output, commandErr := s.runGit(ctx, repositoryPath, authentication, "fetch", "--quiet", "--prune", "--tags", "origin"); commandErr != nil {
 			return PackageVersions{}, fmt.Errorf("fetch package versions: %w: %s", commandErr, cleanGitOutput(output))
 		}
 	}
-	current, err := s.gitValue(ctx, repositoryPath, "rev-parse", "--verify", "HEAD^{commit}")
-	if err != nil {
-		return PackageVersions{}, fmt.Errorf("read installed package commit: %w", err)
-	}
-	selected := current
-	if !entry.Local {
-		selected, err = s.resolveDesiredCommit(ctx, repositoryPath, entry, false, nil)
+	var current string
+	if installed {
+		current, err = s.gitValue(ctx, repositoryPath, "rev-parse", "--verify", "HEAD^{commit}")
 		if err != nil {
-			return PackageVersions{}, err
+			return PackageVersions{}, fmt.Errorf("read installed package commit: %w", err)
 		}
 	}
+	defaultCommit, _ := s.gitValue(ctx, repositoryPath, "rev-parse", "--verify", "--quiet", defaultRef+"^{commit}")
+	if entry.Local && !routed && defaultCommit == "" {
+		defaultCommit = current
+	}
+	selected := entry.Commit
+	if entry.Tag != "" {
+		tagRef := "refs/tags/"
+		if routed {
+			tagRef = "refs/8020/tags/"
+		}
+		selected, _ = s.gitValue(ctx, repositoryPath, "rev-parse", "--verify", "--quiet", tagRef+entry.Tag+"^{commit}")
+	}
+	if selected == "" {
+		selected = defaultCommit
+	}
 	format := "%H%x1f%h%x1f%aI%x1f%an%x1f%s%x1f%D%x1f%P%x1e"
-	output, err := s.runGit(ctx, repositoryPath, nil, "log", "--all", "--max-count="+strconv.Itoa(limit), "--date=iso-strict", "--pretty=format:"+format)
+	args := append([]string{"log", "--max-count=" + strconv.Itoa(limit), "--date=iso-strict", "--pretty=format:" + format}, history...)
+	output, err := s.runGit(ctx, repositoryPath, nil, args...)
 	if err != nil {
 		return PackageVersions{}, fmt.Errorf("list package versions: %w: %s", err, cleanGitOutput(output))
 	}
@@ -284,14 +343,23 @@ func (s *Store) ListPackageVersions(ctx context.Context, packageID string, limit
 		tags := []string{}
 		for _, decoration := range strings.Split(fields[5], ",") {
 			decoration = strings.TrimSpace(decoration)
-			if strings.HasPrefix(decoration, "tag: ") {
+			if routed && strings.HasPrefix(decoration, "refs/8020/tags/") {
+				tags = append(tags, strings.TrimPrefix(decoration, "refs/8020/tags/"))
+			} else if !routed && strings.HasPrefix(decoration, "tag: ") {
 				tags = append(tags, strings.TrimPrefix(decoration, "tag: "))
 			}
 		}
 		sort.Strings(tags)
 		versions = append(versions, PackageVersion{Commit: fields[0], Parents: append([]string{}, strings.Fields(fields[6])...), ShortCommit: fields[1], AuthoredAt: fields[2], Author: fields[3], Subject: fields[4], Tags: tags, Current: fields[0] == current, Selected: fields[0] == selected})
 	}
-	return PackageVersions{PackageID: packageID, Source: entry.Source, CurrentCommit: current, SelectedCommit: selected, Versions: versions}, nil
+	var update string
+	if installed {
+		update, err = s.updateCommit(ctx, repositoryPath, current, refs...)
+		if err != nil {
+			return PackageVersions{}, err
+		}
+	}
+	return PackageVersions{DefaultCommit: defaultCommit, UpdateCommit: update, PackageID: packageID, Source: entry.Source, CurrentCommit: current, SelectedCommit: selected, Versions: versions}, nil
 }
 
 func (s *Store) SynchronizePackages(ctx context.Context, packageIDs []string) ([]PackageSynchronization, error) {
@@ -361,6 +429,14 @@ func (s *Store) synchronizePackage(ctx context.Context, packageID, transientToke
 		return result, err
 	}
 	stage, stageRoot, destination, exists, entry := staged.root, staged.stageRoot, staged.destination, staged.exists, staged.entry
+	if selected, ok := ctx.Value(nodeSelectionKey{}).(NodeSelection); ok {
+		if result.PreviousCommit != selected.Before && result.PreviousCommit != selected.Commit {
+			return result, errors.Join(os.RemoveAll(stageRoot), fmt.Errorf("%s checkout changed since review", packageID))
+		}
+		if err := s.checkSelection(ctx, selected); err != nil {
+			return result, errors.Join(err, os.RemoveAll(stageRoot))
+		}
+	}
 	hook := s.schemaDeployment()
 	var transactionID string
 	sourceSwitched := false
@@ -388,6 +464,20 @@ func (s *Store) synchronizePackage(ctx context.Context, packageID, transientToke
 		}
 		result.SchemaPlan, err = planner.Plan(ctx, []deployment.Candidate{{PackageID: packageID, Root: stage, Commit: result.Commit}})
 		return result, err
+	}
+	selected, _ := ctx.Value(nodeSelectionKey{}).(NodeSelection)
+	if s.nodeID != "" && (entry.ActiveCommit == result.Commit || selected.Restore) && len(deployment.Options(ctx).ForceColumns) == 0 && deployment.Options(ctx).ApprovedPlan == "" {
+		done, err := s.installPublished(ctx, staged)
+		if err != nil {
+			return result, err
+		}
+		if done {
+			result.Changed, result.Cloned = result.PreviousCommit != result.Commit, !exists
+			if c, ok := hook.(*ActivationCoordinator); ok && c.reindex != nil {
+				err = c.reindex(ctx, []string{packageID})
+			}
+			return result, err
+		}
 	}
 	if exists && result.PreviousCommit == result.Commit && entry.State == "ready" && entry.ActiveCommit == result.Commit && len(deployment.Options(ctx).ForceColumns) == 0 && deployment.Options(ctx).ApprovedPlan == "" {
 		if _, err := replacePackageDirectory(destination, stage); err != nil {
@@ -437,6 +527,8 @@ func (s *Store) synchronizePackage(ctx context.Context, packageID, transientToke
 	return result, nil
 }
 
+type reviewedSourceKey struct{}
+
 type stagedSynchronization struct {
 	PackageSynchronization
 	entry                        PackageIndex
@@ -451,7 +543,10 @@ func (s *Store) stagePackageSynchronization(ctx context.Context, packageID, tran
 		return result, err
 	}
 	if !exists && recommendation == nil {
-		return result, os.ErrNotExist
+		if selected, _ := ctx.Value(nodeSelectionKey{}).(NodeSelection); !selected.Restore {
+			return result, os.ErrNotExist
+		}
+		entry.PackageID = packageID
 	}
 	result.PackageSynchronization = PackageSynchronization{PackageID: packageID, Source: entry.Source, Requested: entry.selector(), Local: entry.Local}
 	if recommendation != nil {
@@ -459,7 +554,6 @@ func (s *Store) stagePackageSynchronization(ctx context.Context, packageID, tran
 			result.skipped = "local package or custom source"
 			return result, nil
 		}
-		recommendation.sourceChanged = exists && entry.Source != recommendation.Source
 		if recommendation.originalSource != "" && recommendation.Source != recommendation.originalSource {
 			entry.Secret = ""
 		}
@@ -469,6 +563,12 @@ func (s *Store) stagePackageSynchronization(ctx context.Context, packageID, tran
 		if err := validatePackageIndex(&entry); err != nil {
 			return result, err
 		}
+	}
+	if selected, ok := ctx.Value(nodeSelectionKey{}).(NodeSelection); ok {
+		if err := s.checkSelection(ctx, selected); err != nil {
+			return result, err
+		}
+		entry.Commit, entry.Tag = selected.Commit, ""
 	}
 	return s.stagePackageIndex(ctx, entry, transientToken, username, recommendation)
 }
@@ -500,6 +600,10 @@ func (s *Store) stagePackageIndex(ctx context.Context, entry PackageIndex, trans
 			return result, err
 		}
 	}
+	route, routed := ctx.Value(gitTransportKey{}).(GitTransport)
+	if routed {
+		entry.Source, entry.Secret, entry.Local = route.Source, "", false
+	}
 	if entry.Local {
 		if !exists {
 			return result, errors.New("local package repository does not exist")
@@ -523,7 +627,15 @@ func (s *Store) stagePackageIndex(ctx context.Context, entry PackageIndex, trans
 	}()
 	stage := filepath.Join(stageRoot, "repository")
 	var authentication []string
-	if transientToken != "" || username != "" {
+	if routed {
+		defer func() {
+			if err != nil && transientToken != "" {
+				err = errors.New(redactGitCredential(err.Error(), transientToken, username))
+			}
+		}()
+		authentication, transientToken, err = s.transportAuthentication(route)
+		username = route.Username
+	} else if transientToken != "" || username != "" {
 		authentication, err = s.repositoryAuthenticationWithCredential(packageID, entry.Source, transientToken, username)
 	} else {
 		authentication, _, err = s.sourceAuthentication(entry.Source, entry.Secret)
@@ -535,29 +647,54 @@ func (s *Store) stagePackageIndex(ctx context.Context, entry PackageIndex, trans
 		if err := copyRepository(destination, stage); err != nil {
 			return result, fmt.Errorf("stage package repository: %w", err)
 		}
-		remotes, err := s.gitValue(ctx, stage, "remote")
-		if err != nil {
+		if recommendation != nil {
+			origin, _ := s.gitValue(ctx, stage, "remote", "get-url", "origin")
+			recommendation.sourceChanged = origin != entry.Source
+		}
+		if err := s.setPackageOrigin(ctx, stage, entry.Source); err != nil {
 			return result, err
 		}
-		operation := "add"
-		if slices.Contains(strings.Fields(remotes), "origin") {
-			operation = "set-url"
-		}
-		if output, err := s.runGit(ctx, stage, nil, "remote", operation, "origin", entry.Source); err != nil {
-			return result, fmt.Errorf("configure package source: %w: %s", err, cleanGitOutput(output))
-		}
-		if output, err := s.runGit(ctx, stage, authentication, "fetch", "--quiet", "--prune", "--tags", "origin"); err != nil {
-			return result, fmt.Errorf("fetch package source: %w: %s", err, cleanGitOutput(output))
-		}
-		if entry.Tag == "" && entry.Commit == "" {
-			if output, err := s.runGit(ctx, stage, authentication, "remote", "set-head", "origin", "--auto"); err != nil {
-				return result, fmt.Errorf("resolve package default branch: %w: %s", err, cleanGitOutput(output))
+		if recommendation != nil {
+			if output, err := s.runGit(ctx, stage, nil, "config", "--local", "--replace-all", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"); err != nil {
+				return result, fmt.Errorf("configure recommended package refs: %w: %s", err, cleanGitOutput(output))
 			}
 		}
 	} else if output, commandErr := s.runGit(ctx, "", authentication, "clone", "--quiet", "--no-checkout", "--origin", "origin", entry.Source, stage); commandErr != nil {
 		return result, fmt.Errorf("clone package: %w: %s", commandErr, cleanGitOutput(output))
 	}
-	commit, err := s.resolveDesiredCommit(ctx, stage, entry, true, authentication)
+	var commit string
+	if routed || ctx.Value(reviewedSourceKey{}) == true {
+		if err = s.fetchTransportRefs(ctx, stage, entry.Source, authentication); err != nil {
+			return result, err
+		}
+		ref := "refs/8020/head"
+		if entry.Tag != "" {
+			ref = "refs/8020/tags/" + entry.Tag
+		}
+		if entry.Commit != "" {
+			ref = entry.Commit
+		}
+		commit, err = s.gitValue(ctx, stage, "rev-parse", "--verify", ref+"^{commit}")
+		if err == nil && entry.Commit != "" {
+			var advertised string
+			advertised, err = s.gitValue(ctx, stage, "for-each-ref", "--count=1", "--contains="+commit, "--format=%(refname)", "refs/8020")
+			if err == nil && advertised == "" {
+				err = fmt.Errorf("selected commit %s is unavailable from %s", commit, entry.Source)
+			}
+		}
+	} else {
+		if exists {
+			if output, err := s.runGit(ctx, stage, authentication, "fetch", "--quiet", "--prune", "--tags", "origin"); err != nil {
+				return result, fmt.Errorf("fetch package source: %w: %s", err, cleanGitOutput(output))
+			}
+			if entry.Tag == "" && entry.Commit == "" {
+				if output, err := s.runGit(ctx, stage, authentication, "remote", "set-head", "origin", "--auto"); err != nil {
+					return result, fmt.Errorf("resolve package default branch: %w: %s", err, cleanGitOutput(output))
+				}
+			}
+		}
+		commit, err = s.resolveDesiredCommit(ctx, stage, entry, true, authentication)
+	}
 	if err != nil {
 		return result, err
 	}
@@ -728,7 +865,26 @@ func (s *Store) CreateLocalPackage(ctx context.Context, author, repository, desc
 		_ = os.RemoveAll(destination)
 		return LocalPackage{}, fmt.Errorf("write local package index: %w", writeErr)
 	}
-	if err := s.index.SetActivation(ctx, entry.PackageID, "ready", commit, nil); err != nil {
+	if s.nodeID != "" {
+		db := s.index.(*DatabasePackageIndexStore).database
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return LocalPackage{}, err
+		}
+		defer tx.Rollback()
+		if _, err = tx.ExecContext(ctx, `UPDATE `+packagesTable+` SET "activeCommit"=$1,"requestedCommit"=$1,"state"='ready' WHERE "packageId"=$2`, commit, entry.PackageID); err != nil {
+			return LocalPackage{}, err
+		}
+		if err = writeNodeCommit(ctx, tx, s.nodeID, entry.PackageID, commit); err != nil {
+			return LocalPackage{}, err
+		}
+		if err = bumpPackageRevision(ctx, tx, "packages:"+s.nodeID, database.EncodeTime(db, time.Now())); err != nil {
+			return LocalPackage{}, err
+		}
+		if err = tx.Commit(); err != nil {
+			return LocalPackage{}, err
+		}
+	} else if err := s.index.SetActivation(ctx, entry.PackageID, "ready", commit, nil); err != nil {
 		return LocalPackage{}, err
 	}
 	indexed, err := s.InspectPackageIndex(entry.PackageID)
@@ -768,17 +924,14 @@ func validatePackageIndex(entry *PackageIndex) error {
 		return errors.New("package tag is not a safe Git tag name")
 	}
 	if entry.Local {
-		if entry.Source != "" || entry.Commit != "" || entry.Tag != "" {
-			return errors.New("local package indexes cannot declare a source, commit, or tag")
+		if entry.Source != "" || entry.Tag != "" {
+			return errors.New("local package indexes cannot declare a source or tag")
 		}
 		return nil
 	}
-	normalized, author, repository, err := normalizePackageSource(entry.Source)
+	normalized, _, _, err := normalizePackageSource(entry.Source)
 	if err != nil {
 		return err
-	}
-	if author != entry.Author || repository != entry.Repository {
-		return fmt.Errorf("Git source resolves to %s/%s instead of %s", author, repository, entry.PackageID)
 	}
 	entry.Source = normalized
 	return nil
@@ -871,18 +1024,28 @@ func (s *Store) packageDestination(packageID string) (string, bool, error) {
 	return destination, true, nil
 }
 
-func (s *Store) installedPackagePath(packageID string) (string, error) {
+func (s *Store) versionCheckout(packageID string) (string, bool, error) {
 	path, exists, err := s.packageDestination(packageID)
-	if err != nil {
-		return "", err
+	if err != nil || !exists {
+		return path, false, err
 	}
-	if !exists {
-		return "", fmt.Errorf("package is not installed: %s", packageID)
+	info, err := os.Lstat(filepath.Join(path, ".git"))
+	if errors.Is(err, os.ErrNotExist) {
+		dir, err := os.Open(path)
+		if err != nil {
+			return "", false, err
+		}
+		defer dir.Close()
+		if _, err := dir.ReadDir(1); errors.Is(err, io.EOF) {
+			return path, false, nil
+		} else if err != nil {
+			return "", false, err
+		}
 	}
-	if info, err := os.Stat(filepath.Join(path, ".git")); err != nil || !info.IsDir() {
-		return "", errors.New("installed package is not a Git repository")
+	if err != nil || !info.IsDir() {
+		return "", false, errors.New("installed package is not a Git repository")
 	}
-	return path, nil
+	return path, true, nil
 }
 
 func (s *Store) cleanRepositoryHead(ctx context.Context, path string) (string, error) {
@@ -1040,6 +1203,21 @@ func lockSources(ctx context.Context, packagesRoot string, packageIDs []string, 
 		return ctx.Err()
 	}
 	return validate, release, nil
+}
+
+func (s *Store) setPackageOrigin(ctx context.Context, root, source string) error {
+	remotes, err := s.gitValue(ctx, root, "remote")
+	if err != nil {
+		return err
+	}
+	operation := "add"
+	if slices.Contains(strings.Fields(remotes), "origin") {
+		operation = "set-url"
+	}
+	if output, err := s.runGit(ctx, root, nil, "remote", operation, "origin", source); err != nil {
+		return fmt.Errorf("configure package source: %w: %s", err, cleanGitOutput(output))
+	}
+	return nil
 }
 
 func (s *Store) gitValue(ctx context.Context, path string, arguments ...string) (string, error) {

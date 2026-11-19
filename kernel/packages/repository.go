@@ -249,18 +249,44 @@ func (s *Store) ConfigurePackageRemote(ctx context.Context, packageID, name, rem
 	return s.inspectPackageRepositoryUnlocked(ctx, packageID)
 }
 
+// The desired upstream can be edited on another node. Align this checkout
+// before a direct Git operation; routed fetches keep their independent refs.
+func (s *Store) repositoryForGit(ctx context.Context, packageID string) (Repository, error) {
+	repository, err := s.inspectPackageRepositoryUnlocked(ctx, packageID)
+	if err != nil || !repository.ActivationReady || ctx.Value(gitTransportKey{}) != nil {
+		return repository, err
+	}
+	entry, exists, err := s.index.Get(ctx, packageID)
+	if err != nil || !exists || entry.Local || entry.Source == "" || repository.RemoteName == "origin" && repository.remoteURL == entry.Source {
+		return repository, err
+	}
+	if parsed, err := url.Parse(repository.remoteURL); err != nil || parsed.User != nil {
+		return Repository{}, errors.New("Git remote URL must not contain credentials")
+	}
+	if err := s.setPackageOrigin(ctx, repository.Path, entry.Source); err != nil {
+		return Repository{}, err
+	}
+	return s.inspectPackageRepositoryUnlocked(ctx, packageID)
+}
+
 func (s *Store) FetchPackageRepository(ctx context.Context, packageID string) (Repository, error) {
 	unlock, err := s.lockPackage(ctx, packageID)
 	if err != nil {
 		return Repository{}, err
 	}
 	defer unlock()
-	repository, err := s.inspectPackageRepositoryUnlocked(ctx, packageID)
+	repository, err := s.repositoryForGit(ctx, packageID)
 	if err != nil {
 		return Repository{}, err
 	}
 	if !repository.ActivationReady {
 		return Repository{}, errors.New("package repository is not initialized")
+	}
+	if route, ok := ctx.Value(gitTransportKey{}).(GitTransport); ok {
+		if err := s.fetchTransport(ctx, repository.Path, route); err != nil {
+			return Repository{}, err
+		}
+		return s.inspectPackageRepositoryUnlocked(ctx, packageID)
 	}
 	if repository.RemoteName == "" {
 		return Repository{}, errors.New("package repository has no Git remote")
@@ -334,7 +360,7 @@ func (s *Store) PushPackageRepository(ctx context.Context, packageID string) (Re
 		return Repository{}, err
 	}
 	defer unlock()
-	repository, err := s.inspectPackageRepositoryUnlocked(ctx, packageID)
+	repository, err := s.repositoryForGit(ctx, packageID)
 	if err != nil {
 		return Repository{}, err
 	}
@@ -424,7 +450,7 @@ func (s *Store) mutatePackageRepository(ctx context.Context, packageID string, m
 		return RepositoryMutation{}, err
 	}
 	defer unlock()
-	repository, err := s.inspectPackageRepositoryUnlocked(ctx, packageID)
+	repository, err := s.repositoryForGit(ctx, packageID)
 	if err != nil {
 		return RepositoryMutation{}, err
 	}
@@ -467,6 +493,9 @@ func (s *Store) mutatePackageRepository(ctx context.Context, packageID string, m
 		return RepositoryMutation{}, err
 	}
 	if changed && hook != nil {
+		options := deployment.Options(ctx)
+		options.PinVersions = true
+		ctx = deployment.WithSchemaOptions(ctx, options)
 		if err := hook.Prepare(ctx, transactionID, []deployment.Candidate{{PackageID: packageID, Root: updated.Path, Commit: updated.Head}}); err != nil {
 			return RepositoryMutation{}, fmt.Errorf("prepare package database schema: %w", err)
 		}
@@ -556,7 +585,7 @@ func (s *Store) repositoryAuthenticationWithCredential(packageID, remoteURL, tra
 	if err != nil {
 		return nil, err
 	}
-	if entry.Secret == "" {
+	if entry.Secret == "" || entry.Source != remoteURL {
 		return nil, nil
 	}
 	if s.secrets == nil {

@@ -1345,7 +1345,7 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 	if options.Action != "status" && options.Action != "abort" && m.activationDisabled.Load() {
 		return result, errors.New("sandbox activation is disabled by development.activation_allowed=false")
 	}
-	ctx = deployment.WithSchemaOptions(ctx, deployment.SchemaOptions{ForceColumns: options.ForceColumns, ApprovedPlan: options.ApprovedPlan})
+	ctx = deployment.WithSchemaOptions(ctx, deployment.SchemaOptions{ForceColumns: options.ForceColumns, ApprovedPlan: options.ApprovedPlan, PinVersions: true})
 	unlock := m.lockUser(userID)
 	defer unlock()
 	sandbox, err := m.loadSandbox(userID)
@@ -1588,16 +1588,34 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 		if inventory.InventoryTruncated {
 			return result, errors.New("retained activation inventory exceeds 128 entries; inspect and recover/export it in the terminal before starting more work")
 		}
+		ordered, state, err := packageSelection(ctx, d, options.SelectedPackages)
+		if err != nil {
+			return result, err
+		}
+		var changedIDs []string
+		for _, id := range ordered {
+			changed, err := packageChanged(ctx, d, id)
+			if err != nil {
+				return result, err
+			}
+			if changed {
+				changedIDs = append(changedIDs, id)
+			}
+		}
+		// Admit the whole change set before staging creates anything to recover.
+		releaseSources, err = workspacepackages.LockSources(ctx, m.config.PackagesRoot, changedIDs)
+		if errors.Is(err, unix.EWOULDBLOCK) {
+			return result, fmt.Errorf("activation conflict: %w; retry after publication finishes", err)
+		}
+		if err != nil {
+			return result, err
+		}
 		attempt.ID, err = randomHex(12)
 		if err != nil {
 			return result, err
 		}
 		attempt.Phase, attempt.SandboxID = "staging", sandbox.SandboxID
 		attempt.CommitTime = time.Now().UTC()
-		ordered, state, err := packageSelection(ctx, d, options.SelectedPackages)
-		if err != nil {
-			return result, err
-		}
 		if err := saveAttempt(journal, &attempt); err != nil {
 			return result, err
 		}
@@ -1628,44 +1646,40 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 			}
 			attempt.Namespaces = append(attempt.Namespaces, capturedPath{Path: namespace, ID: captureID})
 		}
-		for _, id := range ordered {
-			_, err := func() (activationPackage, error) {
-				if changed, err := packageChanged(ctx, d, id); err != nil || !changed {
-					return activationPackage{}, err
-				}
-				release, err := workspacepackages.LockSources(ctx, m.config.PackagesRoot, []string{id})
-				if err != nil {
-					return activationPackage{}, err
-				}
-				defer release()
-				head, err := m.sharedHead(id)
-				if err != nil {
-					return activationPackage{}, err
-				}
-				if eligible, err := activationEligible(ctx, d, id, head); err != nil || !eligible {
-					return activationPackage{}, err
-				}
-				if err := ensurePackageGit(ctx, d, sandbox, id, head, nil); err != nil {
-					return activationPackage{}, err
-				}
-				item, err := m.capturePackage(ctx, d, sandbox, id, attempt.ID, head, true)
-				if err != nil || len(item.Captures) == 0 && len(item.Directories) == 0 {
-					return item, err
-				}
-				item.Previous = head
-				if head == "" {
-					item.Origin = state.Moves[id]
-				}
-				message := activationCommitMessage(options.Description, sandbox.SandboxID, options.Metadata)
-				attempt.Packages = append(attempt.Packages, item)
-				if err := saveAttempt(journal, &attempt); err != nil {
-					return item, err
-				}
-				err = prepareGit(ctx, d, sandbox, &item, attempt.ID, head, author, email, message)
-				attempt.Packages[len(attempt.Packages)-1] = item
-				return item, errors.Join(err, saveAttempt(journal, &attempt))
-			}()
+		for _, id := range changedIDs {
+			head, err := m.sharedHead(id)
 			if err != nil {
+				return result, err
+			}
+			eligible, err := activationEligible(ctx, d, id, head)
+			if err != nil {
+				return result, err
+			}
+			if !eligible {
+				continue
+			}
+			if err := ensurePackageGit(ctx, d, sandbox, id, head, nil); err != nil {
+				return result, err
+			}
+			item, err := m.capturePackage(ctx, d, sandbox, id, attempt.ID, head, true)
+			if err != nil {
+				return result, err
+			}
+			if len(item.Captures) == 0 && len(item.Directories) == 0 {
+				continue
+			}
+			item.Previous = head
+			if head == "" {
+				item.Origin = state.Moves[id]
+			}
+			message := activationCommitMessage(options.Description, sandbox.SandboxID, options.Metadata)
+			attempt.Packages = append(attempt.Packages, item)
+			if err := saveAttempt(journal, &attempt); err != nil {
+				return result, err
+			}
+			err = prepareGit(ctx, d, sandbox, &item, attempt.ID, head, author, email, message)
+			attempt.Packages[len(attempt.Packages)-1] = item
+			if err := errors.Join(err, saveAttempt(journal, &attempt)); err != nil {
 				return result, err
 			}
 		}
@@ -1703,11 +1717,11 @@ func (m *Manager) Activate(ctx context.Context, userID string, options Activatio
 			}
 		}
 	}
-	packageIDs := make([]string, 0, len(attempt.Packages))
-	for _, item := range attempt.Packages {
-		packageIDs = append(packageIDs, item.PackageID)
-	}
 	if releaseSources == nil {
+		packageIDs := make([]string, 0, len(attempt.Packages))
+		for _, item := range attempt.Packages {
+			packageIDs = append(packageIDs, item.PackageID)
+		}
 		releaseSources, err = workspacepackages.LockSources(ctx, m.config.PackagesRoot, packageIDs)
 		if err != nil {
 			return result, err

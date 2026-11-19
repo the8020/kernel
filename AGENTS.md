@@ -351,13 +351,11 @@ relevant child AGENTS.md
   tracking, atomically switch source, and refresh only affected services. Hook
   and deployment phases are durable and recoverable; PostgreSQL serializes
   deployment through an advisory lock.
-- All nodes observe the same mutable shared package sources. Published package
-  revisions trigger scans of imports actually loaded by current service Workers;
-  the package/update layer requests one soft restart per affected logical
-  service and update across nodes. Generic soft/hard restart uses existing
-  generation placement, replacement, and drain paths. Old connections and
-  bindings survive soft replacement; hard restart terminates all generations of
-  that service. Running jobs retain their identity and execution.
+- Each node serves its own checkout and observes its own published package
+  revision. Shared activation applies schema and hooks once for a published
+  version. Catch-up to that version updates only the selected node. Source
+  changes scan imports actually loaded by service Workers and use normal
+  generation replacement and draining. Running jobs retain their identity.
 - The Deno secrets package encrypts global named secrets in
   `the8020__secrets__secrets` through the kernel's purpose-separated AES-GCM
   primitive. Master/derived keys remain private. Package records may retain one
@@ -657,16 +655,17 @@ below.
   `defaults/bootstrap-packages.toml`. Existing systems install that deployments
   program before upgrading; fresh installations include it in bootstrap.
 
-- Release `0.10.3` recommends packages and deployments `0.10.2`, retaining
-  other `0.10.1` pins. The existing recommendation activation installs their
-  additive schema together before the new deployment protocol is admitted.
-  The README owns ordinary update and exact recovery guidance and its limits.
+- Release `0.10.3` recommends packages and deployments `0.10.2`, retaining other
+  `0.10.1` pins. The existing recommendation activation installs their additive
+  schema together before the new deployment protocol is admitted. The README
+  owns ordinary update and exact recovery guidance and its limits.
 
 - Release `0.10.2` stages compatible recommended candidates together before
   schema/import/hook validation and publishes through the existing activation
   coordinator. Bootstrap list order is reporting-only; retain the compatible
   `0.10.1` application tags. The README owns direct old-version adoption,
-  explicit retry, and the tested recovery boundary for a pending `0.10.1` update.
+  explicit retry, and the tested recovery boundary for a pending `0.10.1`
+  update.
 
 - Release `0.10.1` recommends the seventeen `0.10.1` application packages, which
   ship all 43 curated languages. The invocation-local language SDK remains
@@ -741,13 +740,13 @@ below.
 - The installed updater fetches an exact kernel Git tag and runs its ordinary
   installer in a separate initialized staging instance. No bootstrap packages
   are installed there. The installed `scripts/bootstrap-packages.toml` also
-  supplies set-based package recommendations to the native command after startup.
-  Build and smoke checks complete before the old kernel is stopped. Limit Go to
-  two processors, 512 MiB runtime memory, and a 30-minute preparation deadline.
-  The updater needs 6 GiB of free temporary disk space; successful completion
-  removes its build source, toolchain, and caches. Kernel preparation requires
-  no prebuilt archive or CI; the bundled-Caddy conversion uses deploy's pinned
-  migration artifact.
+  supplies set-based package recommendations to the native command after
+  startup. Build and smoke checks complete before the old kernel is stopped.
+  Limit Go to two processors, 512 MiB runtime memory, and a 30-minute
+  preparation deadline. The updater needs 6 GiB of free temporary disk space;
+  successful completion removes its build source, toolchain, and caches. Kernel
+  preparation requires no prebuilt archive or CI; the bundled-Caddy conversion
+  uses deploy's pinned migration artifact.
 - The installer needs `bzip2` to unpack the portable runtime. On root Debian
   installations it installs this missing OS prerequisite through apt, including
   when full runtime host setup is skipped. Application packages are unaffected.

@@ -22,6 +22,7 @@ import (
 
 	"the8020/kernel/auth"
 	"the8020/kernel/database"
+	"the8020/kernel/deployment"
 	"the8020/kernel/execution"
 	"the8020/kernel/identity"
 	"the8020/kernel/network"
@@ -122,19 +123,20 @@ type Status struct {
 }
 
 type Manager struct {
-	mu         sync.RWMutex
-	database   database.Store
-	signing    *auth.Signer
-	localID    string
-	nodes      map[string]Node
-	server     *http.Server
-	listener   net.Listener
-	http       *http.Client
-	capacity   CapacityProvider
-	workers    WorkerInvoker
-	logs       LogReader
-	terminals  TerminalCloser
-	executions ExecutionReader
+	packageSync func(context.Context, deployment.NodeSelection) error
+	mu          sync.RWMutex
+	database    database.Store
+	signing     *auth.Signer
+	localID     string
+	nodes       map[string]Node
+	server      *http.Server
+	listener    net.Listener
+	http        *http.Client
+	capacity    CapacityProvider
+	workers     WorkerInvoker
+	logs        LogReader
+	terminals   TerminalCloser
+	executions  ExecutionReader
 }
 
 func New(store database.Store, localID string, signing *auth.Signer) (*Manager, error) {
@@ -526,6 +528,10 @@ func (m *Manager) availableNodes(ctx context.Context, visited map[string]bool) [
 
 func (m *Manager) recipientHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodPost && request.URL.Path == packageSyncPath {
+			m.servePackageSync(writer, request)
+			return
+		}
 		if request.Method == http.MethodPost && request.URL.Path == terminalClosePath {
 			m.serveTerminalClose(writer, request)
 			return

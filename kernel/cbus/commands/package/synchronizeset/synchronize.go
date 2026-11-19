@@ -29,7 +29,8 @@ func New(serviceSet *services.Services) core.Handler {
 		}
 		input := commandutil.String(request, "input")
 		if input == "" {
-			return core.Result{"protocol": 1, "maximum": 256}, nil
+			supported, ok := management.(interface{ NodeInstallations() bool })
+			return core.Result{"protocol": 1, "maximum": 256, "node_installations": ok && supported.NodeInstallations()}, nil
 		}
 		ctx = deployment.WithSchemaOptions(ctx, deployment.SchemaOptions{ForceColumns: commandutil.CSV(request, "force_columns"), ApprovedPlan: commandutil.String(request, "approved_plan")})
 		result, err := owner.SynchronizeSet(ctx, input, commandutil.String(request, "git_token"), commandutil.String(request, "git_username"))

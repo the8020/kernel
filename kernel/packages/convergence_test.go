@@ -64,7 +64,7 @@ func TestPackageRevisionFollowerUsesCheapNoChangePathAndTargetsChangedPackage(t 
 	}
 
 	counter := &countingPackageIndex{PackageIndexStore: store.index}
-	store.index = counter
+	store.runtimeIndex = counter
 	follower, err := NewPackageRevisionFollower(context.Background(), store)
 	if err != nil {
 		t.Fatal(err)

@@ -172,9 +172,11 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   forced drain timeout. Startup rejection retains the healthy loaded version.
 - `Restart` publishes soft or hard intent through the existing `indexes`
   revision transaction. A positive source-update revision deduplicates soft
-  requests across nodes; zero creates a manual request. The latest hard marker
-  survives subsequent soft requests so a delayed node still terminates every
-  older allocation. Persisted pool restart revisions prevent replay on recovery.
+  requests for the same published source. Independent checkouts retain a
+  separate source-restart marker per node and service. Manual restarts remain
+  cluster-wide. The latest hard marker survives subsequent soft requests so a
+  delayed node still terminates every older allocation. Persisted pool restart
+  revisions prevent replay on recovery.
 - Runtime generation combines the application policy version and shared restart
   revision. Release hashing happens only when publishing the immutable index;
   source/provider commit changes alone never replace service capacity. Both
