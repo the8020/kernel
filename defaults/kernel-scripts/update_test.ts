@@ -133,6 +133,7 @@ elif [[ "$*" == *kernel.packages.recommended* ]]; then
   echo '{"success":true,"result":{"packages":[]}}'
 elif [[ "$*" == *"runtime eval"* ]]; then
   if [[ "$*" == *recommended-sources* ]]; then
+    [[ "$*" == *"--read /workspace/packages/the8020/packages"* ]] || { echo 'preflight parser read permission missing'; exit 6; }
     echo preflight >> "$FIXTURE_ROOT/preflights"
     if [[ -f "$FIXTURE_ROOT/fail-prerequisites" ]]; then echo 'selector or node schema unavailable'; exit 5; fi
     echo '{"success":true,"result":{"result":true}}'

@@ -302,6 +302,8 @@ export default async function() {
           "runtime",
           "eval",
           code,
+          "--read",
+          "/workspace/packages/the8020/packages",
           "--timeout-ms",
           "310000",
         ],

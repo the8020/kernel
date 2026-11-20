@@ -354,7 +354,7 @@ Deno.test({
             "run",
             "-A",
             "--no-config",
-            `${source}/defaults/kernel-scripts/update.ts`,
+            `${fresh}/node/kernel/scripts/update.ts`,
             instance,
             "--preflight",
             "0.10.17",
@@ -364,7 +364,8 @@ Deno.test({
       try {
         await preflight();
       } catch (error) {
-        rejected = String(error).includes("before kernel switching");
+        rejected = String(error).includes("before kernel switching") &&
+          String(error).includes("recommended-sources");
       }
       assert(rejected, "old set unexpectedly passed selector admission");
       assert(
