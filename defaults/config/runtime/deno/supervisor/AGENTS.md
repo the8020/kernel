@@ -35,6 +35,8 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   Worker import sets, returns deduplicated Worker IDs, and rejects malformed or
   oversized selections. It is called only for updates; heartbeats and status
   never include dependency sets.
+- A selected starting Worker makes import inspection retryable until readiness;
+  an empty scan must not acknowledge its partially loaded imports.
 - `Supervisor.serve` owns the HTTP listener used by `main.ts`. Deno's native
   automatic compression runs once when a response leaves that listener, after
   the Worker transfers its body stream. Services control exclusions through

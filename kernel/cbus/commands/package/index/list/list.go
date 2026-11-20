@@ -17,6 +17,7 @@ func New(serviceSet *services.Services) core.Handler {
 			return nil, err
 		}
 		entries, err := management.ListPackageIndexes()
+		packagecommands.AnnotatePublication(serviceSet, entries)
 		return core.Result{"packages": entries}, commandutil.OperationError(err)
 	}
 }

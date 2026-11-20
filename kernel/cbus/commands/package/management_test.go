@@ -18,6 +18,25 @@ type synchronizationManagement struct {
 	err     error
 }
 
+func TestPublicationDiagnosticsDoNotChangeSourceReadiness(t *testing.T) {
+	pending := map[string]string{"acme/pending": "", "acme/failed": "missing included role"}
+	set := &services.Services{Runtime: &services.RuntimeServices{PublicationStatus: func() map[string]string { return pending }}}
+	entries := []workspacepackages.PackageIndex{
+		{PackageID: "acme/pending", State: "ready"},
+		{PackageID: "acme/failed", State: "ready"},
+		{PackageID: "acme/healthy", State: "ready"},
+	}
+	AnnotatePublication(set, entries)
+	if entries[0].PublicationState != "pending" || entries[0].Error == "" || entries[1].PublicationState != "failed" || entries[1].Error != "missing included role" || entries[2].PublicationState != "ready" {
+		t.Fatalf("entries=%+v", entries)
+	}
+	for _, entry := range entries {
+		if entry.State != "ready" {
+			t.Fatal("source readiness changed")
+		}
+	}
+}
+
 func (management synchronizationManagement) SynchronizePackages(context.Context, []string) ([]workspacepackages.PackageSynchronization, error) {
 	return append([]workspacepackages.PackageSynchronization(nil), management.results...), management.err
 }

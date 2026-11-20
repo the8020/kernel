@@ -10,6 +10,32 @@ import (
 	"the8020/kernel/services"
 )
 
+// AnnotatePublication keeps source readiness separate from application readiness.
+func AnnotatePublication(serviceSet *services.Services, entries []workspacepackages.PackageIndex) {
+	runtime := serviceSet.RuntimeSnapshot()
+	if runtime == nil || runtime.PublicationStatus == nil {
+		return
+	}
+	pending := runtime.PublicationStatus()
+	for n := range entries {
+		entries[n].PublicationState = "ready"
+		entries[n].PublicationError = ""
+		if failure, ok := pending[entries[n].PackageID]; ok {
+			entries[n].PublicationState = "pending"
+			if entries[n].Error == "" {
+				entries[n].Error = "application publication pending"
+				if failure != "" {
+					entries[n].Error = failure
+				}
+			}
+			if failure != "" {
+				entries[n].PublicationState = "failed"
+				entries[n].PublicationError = failure
+			}
+		}
+	}
+}
+
 // SynchronizationResult is the complete public result for one synchronized
 // package. Detailed Git and service-refresh state remains internal.
 type SynchronizationResult struct {

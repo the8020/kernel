@@ -1139,8 +1139,13 @@ export class Supervisor {
     const changed = new Set(paths);
     return [...new Set(workerIds)].filter((id) => {
       const worker = this.#workers.get(id);
+      if (worker?.starting && !worker.closed && !worker.draining) {
+        throw new Error(
+          "Worker is starting; retry import scan after readiness",
+        );
+      }
       return worker !== undefined && !worker.closed && !worker.draining &&
-        !worker.starting && worker.importsAny(changed);
+        worker.importsAny(changed);
     });
   }
 

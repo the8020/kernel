@@ -267,6 +267,7 @@ type RuntimeServices struct {
 	Isolation          runtimehost.IsolationReport
 	Failure            string
 	ApplicationFailure string
+	PublicationStatus  func() map[string]string
 	Sandboxes          SandboxService
 	Workers            WorkerService
 	Services           WebServiceService

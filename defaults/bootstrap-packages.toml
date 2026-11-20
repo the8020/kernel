@@ -25,7 +25,7 @@ version = "0.10.5"
 [[packages]]
 id = "the8020/auth"
 source = "https://github.com/the8020/auth.git"
-version = "0.10.4"
+version = "0.10.5"
 
 [[packages]]
 id = "the8020/packages"

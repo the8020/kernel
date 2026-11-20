@@ -2,7 +2,7 @@ version = 1
 id = "kernel.packages.inspect"
 path = ["kernel.packages.inspect"]
 summary = "Inspect desired package"
-description = "Reads one exact desired and active package record."
+description = "Reads one exact desired and active package record with node-local application publication status."
 mutates_state = false
 restart_behavior = "none"
 [handler]

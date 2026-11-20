@@ -39,6 +39,21 @@ Parent DOX: [kernel defaults](../AGENTS.md).
   reports elapsed time every ten seconds. Report active-kernel inspection before
   querying the control plane. Keep JSON/control-command stdout captured for
   parsing; preparation output must remain live.
+- Child commands concurrently drain stderr and stdout, tee progress, and retain
+  at most 4,096 characters of failure detail; successful structured stdout
+  retains its separate 16 MiB limit. No shared log reconstructs errors.
+- Before shutdown for `0.10.17` or newer, run the installed deployments selector
+  against the target list and verify the node-packages relation through an
+  ordinary Worker. A missing selector, coupled package dependency, schema or
+  authorized route blocks switching. Install the complete compatible
+  prerequisite set with existing native synchronization first; never update
+  deployments alone or silently substitute upstream. Legacy transport capability
+  can require an explicitly reviewed bridge rather than source conversion.
+- The private candidate-specific prerequisite receipt admits the `0.10.17`
+  offline migration. Older updaters without it stop before pointer replacement.
+  The target helper's `--preflight <target>` action can check an already
+  prepared candidate against the original running kernel without rewriting
+  either journal.
 - `node/kernel/current` atomically selects `releases/<version>`. Existing bin,
   runtime definition/image paths link through it. Development helpers are copied
   into the real instance `scripts/` directory while offline, outside protected
@@ -99,6 +114,14 @@ Parent DOX: [kernel defaults](../AGENTS.md).
 
 # Verification
 
+- `THE8020_NATIVE_PREREQUISITES_ROOT=/root/8020/test<N>` and
+  `THE8020_NATIVE_FRESH_ROOT=<fresh-candidate-instance>` enable
+  `deno test --no-config -A update_prerequisites_native_test.ts`. The bounded
+  isolated environment must support rootless gVisor. It builds real `0.10.14`,
+  installs that release's actual package tags, and verifies old-set admission,
+  one complete authenticated development set, partial fetch preservation and
+  same-target retry. It also executes a Worker and probes fresh candidate login.
+  Kernel replacement and committed-activation recovery have separate coverage.
 - `deno fmt --check`, `deno lint --no-config`, and `deno check --no-config`
   cover `update.ts` and `update_test.ts`;
   `deno test --no-config -A update_test.ts` exercises the production updater

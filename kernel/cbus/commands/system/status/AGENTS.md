@@ -31,6 +31,9 @@ Parent DOX: [kernel/kernel/cbus/commands/system DOX](../AGENTS.md).
   progress. Application initialization and failures use
   `runtime_application_failure` independently, preserving native execution for
   repair.
+- After startup, `runtime_application_failure` also reports pending application
+  publication from the runtime indexer's cached owner; it does not change
+  `runtime_ready`, the HTTP liveness endpoint or container restart policy.
 - Database status is the cached result of the kernel startup or explicit
   connectivity check. Its pool limits and open/in-use/idle/wait counters come
   from local `database/sql` state; reading kernel status performs no database

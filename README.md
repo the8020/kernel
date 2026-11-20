@@ -1,5 +1,21 @@
 # 80|20 kernel
 
+## 0.10.17: upgrade and publication fixes
+
+Updates check the complete installed package/source prerequisites before kernel
+shutdown. Old package sets require one compatible native set activation first;
+see [in-place updates](#in-place-development-updates) for the source-capability
+and recovery limits. Streamed updater errors retain a bounded diagnostic tail.
+
+Source publication waits for overlapping service Worker starts before accepting
+an import scan. Affected services use ordinary soft replacement and draining;
+running jobs and live persistent bindings retain their existing lifetimes.
+Package diagnostics expose pending/failed application publication separately
+from native source readiness, and unchanged declaration failures have bounded
+retries without repeated identical failure logs. Auth `0.10.5` resolves included
+roles across the complete selected package set without weakening missing-role
+errors.
+
 ## 0.10.16: node-aware package management
 
 Each app server has its own package checkouts. The shared database records the
@@ -19,8 +35,9 @@ switching traffic. Schema changes must work with both running versions.
 ## 0.10.15: development-sourced recommendations
 
 Kernel `0.10.15` resolves `kernel.packages.recommended` transports through
-`the8020/deployments/recommended-sources`. Install deployments `0.10.6` or newer
-before updating an existing system to this kernel. Fresh installations include
+`the8020/deployments/recommended-sources`. Install a complete compatible package
+set including deployments `0.10.6` or newer and its i18n dependencies before
+updating an existing system to this kernel. Fresh installations include
 the matching deployments version in the shipped bootstrap set.
 
 Development systems retain the shipped upstream URLs. Test and production use
@@ -402,17 +419,60 @@ is upgraded or reset by this publication.
 
 ## In-place development updates
 
+For `0.10.17` and newer, use the target tag's Docker update helper when the
+installed updater predates the online prerequisite check. It fetches that exact
+tag's updater before starting work. Preparation checks the target list through
+the installed deployments policy and checks the node-packages schema before
+shutdown. Missing policy, coupled i18n support, schema or approved development
+transport stops the update while the original kernel is running.
+
+An old installed set needs a complete compatible prerequisite set first, not an
+isolated deployments update. Use the existing reviewed native set operation
+with exact commits and observed baselines, including all required packages from
+the candidate bootstrap list:
+
+```bash
+admin --root /8020 kernel.packages.synchronize.set \
+  --input "$(cat /private/approved-package-set.json)" \
+  --git-username DEVELOPMENT_USER --git-token-stdin
+```
+
+The JSON is the existing native set format, not an updater-specific manifest.
+Use only approved sources and supply the credential through stdin. Legacy
+kernels reject upstream-to-peer transport with protected source settings; that
+case needs an explicitly reviewed compatible bridge. Never change configured
+upstreams, secrets or protected work to bypass this guard. Inspect/resume a
+retained activation with its exact candidates before retrying the same target.
+Installing the additive node schema before replacement startup lets the new
+kernel select node-aware storage; the current legacy process stays legacy.
+
+The `0.10.17` offline guard also protects invocations of older installed
+updaters. It retains the journal and old pointer when online preflight evidence
+is absent. For a `0.10.14`–`0.10.16` source with no completed mutating migration,
+the original kernel can be run under the existing instance lock for prerequisite
+repair and the prepared target's check:
+
+```bash
+THE8020_INSTANCE_ROOT=/8020 bash \
+  /8020/node/kernel/releases/0.10.17/scripts/update.sh --preflight 0.10.17
+```
+
+Stop that original kernel before resuming the existing launcher/update attempt.
+The check does not rewrite the update or activation journal. Other offline
+migration failures require their own recovery assessment; do not clear journals
+or automatically restore an old kernel after migrations have changed data.
+
 Run it as root **inside the existing container** to update to
-`0.10.3`. It supports rootless development containers at `/8020` running kernel
+`0.10.17`. It supports rootless development containers at `/8020` running kernel
 `0.7.4` or newer:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/the8020/kernel/0.10.3/docker/update.sh \
-  -o /tmp/update.sh && bash /tmp/update.sh 0.10.3
+curl -fsSL https://raw.githubusercontent.com/the8020/kernel/0.10.17/docker/update.sh \
+  -o /tmp/update.sh && bash /tmp/update.sh 0.10.17
 ```
 
-An instance already using the managed launcher can instead request
-`admin --root /8020 kernel.update 0.10.3` through its ordinary native CBus.
+Once the installed updater includes the online preflight, a managed instance can
+instead request `admin --root /8020 kernel.update 0.10.17` through native CBus.
 
 After printing `Bootstrap started` or `Update started`, the updater continues in
 the background. Follow its progress with:
@@ -421,7 +481,7 @@ the background. Follow its progress with:
 tail -F /8020/node/kernel/update.log
 ```
 
-Completion is reported as `update: completed 0.10.3`. Ctrl-C stops following the
+Completion is reported as `update: completed 0.10.17`. Ctrl-C stops following the
 log while the updater keeps running. Confirm the running version and startup
 status with:
 

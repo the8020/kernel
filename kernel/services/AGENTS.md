@@ -38,6 +38,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Infrastructure `Failure` prevents runtime commands; `ApplicationFailure`
   reports application initialization separately and does not revoke native jobs,
   eval/run, or SQL repair. Unavailable application dependencies remain nil.
+- `PublicationStatus` supplies a synchronized snapshot of unfinished package
+  application fragments for native package/instance diagnostics, with empty
+  failure text meaning pending. The runtime indexer owns that state.
 - Runtime initialization publishes a complete immutable infrastructure snapshot
   before schema work, then replaces it with the completed application snapshot.
   Published structs are never mutated; both publications use synchronization.

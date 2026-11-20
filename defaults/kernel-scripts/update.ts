@@ -66,10 +66,30 @@ async function command(
     env,
     stdin: "null",
     stdout: "piped",
-    stderr: "inherit",
+    stderr: "piped",
     signal: AbortSignal.any([interrupted.signal, AbortSignal.timeout(timeout)]),
   }).spawn();
-  const decoder = new TextDecoder(), output: string[] = [];
+  const output: string[] = [];
+  let tail = "";
+  const drain = async (stream: ReadableStream<Uint8Array>, stderr: boolean) => {
+    const decoder = new TextDecoder();
+    for await (const chunk of stream) {
+      const text = decoder.decode(chunk, { stream: true });
+      tail = (tail + text).slice(-4096);
+      if (stderr || progress) {
+        await (stderr ? Deno.stderr : Deno.stdout).write(chunk);
+      } else {
+        size += chunk.length;
+        if (size > 16 * 1024 * 1024) {
+          throw new Error(`${program} output exceeds 16 MiB`);
+        }
+        output.push(text);
+      }
+    }
+    const final = decoder.decode();
+    tail = (tail + final).slice(-4096);
+    if (!stderr && !progress) output.push(final);
+  };
   let size = 0;
   const started = Date.now();
   const heartbeat = progress
@@ -82,22 +102,12 @@ async function command(
     }, 10_000)
     : undefined;
   try {
-    for await (const chunk of child.stdout) {
-      if (progress) {
-        await Deno.stdout.write(chunk);
-        continue;
-      }
-      size += chunk.length;
-      if (size > 16 * 1024 * 1024) {
-        throw new Error(`${program} output exceeds 16 MiB`);
-      }
-      output.push(decoder.decode(chunk, { stream: true }));
-    }
+    await Promise.all([drain(child.stdout, false), drain(child.stderr, true)]);
     const result = await child.status;
-    const response = (output.join("") + decoder.decode()).trim();
+    const response = output.join("").trim();
     if (!result.success) {
       throw new Error(
-        `${program} failed (${result.code}): ${response.slice(-4096)}`,
+        `${program} failed (${result.code}): ${tail.trim()}`,
       );
     }
     return response;
@@ -259,6 +269,62 @@ async function status(root: string): Promise<Record<string, unknown>> {
   return response.result;
 }
 
+async function prerequisites(root: string, target: string) {
+  if (compareVersions(target, "0.10.17") < 0) return;
+  const kernel = `${root}/node/kernel`;
+  const release = `${kernel}/releases/${target}`;
+  const manifest = `${release}/scripts/bootstrap-packages.toml`;
+  if ((await Deno.stat(manifest)).size > 1024 * 1024) {
+    throw new Error("Oversized recommended package list");
+  }
+  console.log("update: checking package/source prerequisites before shutdown");
+  // Execute installed application policy through the ordinary Worker runtime.
+  const code = `import kernel from "@the8020/kernel";
+import { parse } from "/p/the8020/packages/toml.ts";
+export default async function() {
+  const list = parse(${JSON.stringify(await Deno.readTextFile(manifest))});
+  const selected = await kernel.programs.run({
+    programId: "the8020/deployments/recommended-sources",
+    arguments: [list.packages], timeoutMs: 300000
+  });
+  if (selected.state !== "succeeded") throw new Error(selected.failure);
+  await kernel.database.execute('SELECT "packageId" FROM "the8020__packages__node_packages" WHERE 1=0');
+  return true;
+}`;
+  try {
+    const result = JSON.parse(
+      await command(
+        `${kernel}/bin/admin`,
+        [
+          "--root",
+          root,
+          "--json",
+          "runtime",
+          "eval",
+          code,
+          "--timeout-ms",
+          "310000",
+        ],
+        undefined,
+        undefined,
+        320_000,
+      ),
+    );
+    if (result.success !== true || result.result?.result !== true) {
+      throw new Error(JSON.stringify(result));
+    }
+  } catch (error) {
+    throw new Error(
+      `Package upgrade prerequisites failed before kernel switching: ${error}. Install one complete compatible candidate set, including deployments, i18n and packages, through approved sources with kernel.packages.synchronize.set; inspect/resume any retained activation and retry this target. Do not convert protected sources or fall back to upstream when the installed kernel lacks the required transport capability.`,
+    );
+  }
+  const metadata = await json<Release>(`${release}/release.json`);
+  await save(`${kernel}/update/prerequisites.json`, {
+    target,
+    commit: metadata.commit,
+  });
+}
+
 async function prepare(root: string, target: string) {
   const kernel = `${root}/node/kernel`,
     stateFile = `${kernel}/update/state.json`;
@@ -283,6 +349,9 @@ async function prepare(root: string, target: string) {
       throw new Error(`Finish the pending update to ${pending.target} first`);
     }
     if (pending.phase === "installed") return await finish(root, pending);
+    if (pending.phase === "prepared") {
+      await prerequisites(root, target);
+    }
     await save(`${kernel}/update/request`, target);
     if (pending.phase === "prepared") {
       await command(`${kernel}/bin/admin`, ["--root", root, "kernel.shutdown"]);
@@ -425,6 +494,7 @@ async function prepare(root: string, target: string) {
   });
   await Deno.rename(unpack, destination);
   await Deno.remove(stage, { recursive: true });
+  await prerequisites(root, target);
   await save(
     stateFile,
     {
@@ -602,7 +672,10 @@ async function finish(root: string, state: Update) {
 
 if (import.meta.main) {
   const [root, action, ...extra] = Deno.args;
-  if (!root || !action || extra.length) {
+  if (
+    !root || !action ||
+    (action === "--preflight" ? extra.length !== 1 : extra.length > 0)
+  ) {
     throw new Error("usage: update.sh <major.minor.patch>");
   }
   const kernel = `${await Deno.realPath(root)}/node/kernel`;
@@ -620,7 +693,9 @@ if (import.meta.main) {
     Deno.exit(75);
   }
   try {
-    if (action === "--apply") {
+    if (action === "--preflight") {
+      await prerequisites(root, extra[0]!);
+    } else if (action === "--apply") {
       await apply(root, await json<Update>(`${kernel}/update/state.json`));
     } else if (action === "--finish") {
       await finish(root, await json<Update>(`${kernel}/update/state.json`));

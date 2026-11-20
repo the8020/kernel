@@ -541,6 +541,7 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	runtimeServices.ListPrograms = packageStore.ListPrograms
 	serviceIndex := webservices.NewIndex()
 	indexer := &runtimeIndexer{handlers: packageStore, commands: commandIndexer, packages: packageStore, jobs: jobManager, services: serviceIndex}
+	runtimeServices.PublicationStatus = indexer.PublicationStatus
 	https := newHTTPSPublication(ctx, programRunner, int(activeInt(settingManager, "network.https_port", 8443)))
 	indexer.https = https.publish
 	indexer.background, indexer.cancel = context.WithCancel(ctx)
@@ -843,7 +844,11 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 			return err
 		},
 	}
-	indexer.reportFailure = sharedState.recordPublicationFailure
+	indexer.reportFailure = func(err error) {
+		if err != nil || len(indexer.PublicationStatus()) == 0 {
+			sharedState.recordPublicationFailure(err)
+		}
+	}
 	if err := startNodeListener(); err != nil {
 		runtimeServices.Failure = err.Error()
 		return runtimeServices, closeRuntime
@@ -1162,7 +1167,9 @@ func (s *runtimeSharedState) refresh(ctx context.Context, reindex func(context.C
 		return err
 	}
 	if retry != nil {
-		s.recordPublicationFailure(retry(ctx))
+		if err := retry(ctx); err != nil {
+			s.recordPublicationFailure(err)
+		}
 	}
 	return nil
 }
@@ -1187,7 +1194,9 @@ func (s *runtimeSharedState) refreshIndexSource(ctx context.Context, follower pa
 		if err != nil && !errors.As(err, &publication) {
 			return err
 		}
-		s.recordPublicationFailure(err)
+		if err != nil {
+			s.recordPublicationFailure(err)
+		}
 	}
 	if s.restart != nil {
 		for _, id := range update.Restarts {

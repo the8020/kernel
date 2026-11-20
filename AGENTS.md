@@ -653,7 +653,10 @@ below.
 - Release `0.10.15` uses deployments `0.10.6` source selection for recommended
   updates and pins the reconciled application releases in
   `defaults/bootstrap-packages.toml`. Existing systems install that deployments
-  program before upgrading; fresh installations include it in bootstrap.
+  program and its coupled dependencies as a complete compatible set before
+  upgrading; fresh installations include them in bootstrap. The `0.10.17`
+  updater checks policy and additive node schema before switching kernels and
+  preserves legacy source-capability failures for explicit native repair.
 
 - Release `0.10.3` recommends packages and deployments `0.10.2`, retaining other
   `0.10.1` pins. The existing recommendation activation installs their additive

@@ -7,7 +7,10 @@ Parent DOX: [kernel DOX](../AGENTS.md).
 # Ownership
 
 - `update.sh` runs inside an existing single-system Docker container as root,
-  adopts the kernel launcher, and starts the installed updater detached.
+  adopts the kernel launcher, and starts the exact target updater detached.
+  Managed instances fetch and verify that tag's helpers before launch so online
+  prerequisite checks also run when the installed updater predates them. Its
+  private helper checkout is removed when the detached updater exits.
 - `rootfs/` is the complete Docker runtime payload, copied to `/` by both the
   kernel and deploy Dockerfiles. Its entrypoint starts the kernel, creates the
   first login user, and waits for the public login service.

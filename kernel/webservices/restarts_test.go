@@ -13,6 +13,38 @@ import (
 	"the8020/kernel/packages"
 )
 
+func TestImportScanRetainsPublicationAcrossCapacityStarts(t *testing.T) {
+	const id = "acme/consumer/api"
+	root := t.TempDir()
+	index := newTestServiceIndex(t, root, id, nil)
+	m := newTestManager(t, index, newFakePools(), &fakeRouter{}, filepath.Join(root, "observed"))
+	ctx := t.Context()
+	if _, err := m.Reconcile(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	paths := []string{"/workspace/packages/acme/shared/value.ts"}
+	m.matchImports = func(_ context.Context, _ string, ids, _ []string) ([]string, error) { return ids, nil }
+	// Even a first start not yet present in the routed snapshot must retain the revision.
+	finish := m.lockServiceCapacity("acme/new/api")
+	if _, err := m.MatchingImports(ctx, paths); err == nil {
+		t.Fatal("acknowledged while a Worker could still be loading old source")
+	}
+	finish()
+	m.matchImports = func(_ context.Context, _ string, ids, _ []string) ([]string, error) {
+		finish := m.lockServiceCapacity("acme/new/api")
+		finish()
+		return ids, nil
+	}
+	if _, err := m.MatchingImports(ctx, paths); err == nil {
+		t.Fatal("acknowledged a start between snapshot and scan completion")
+	}
+	m.matchImports = func(_ context.Context, _ string, ids, _ []string) ([]string, error) { return ids, nil }
+	matched, err := m.MatchingImports(ctx, paths)
+	if err != nil || !slices.Equal(matched, []string{id}) {
+		t.Fatalf("ready scan = %v, %v", matched, err)
+	}
+}
+
 func TestSourceRestartAcrossNodesDrainsOnceAndHardRestartKillsEveryGeneration(t *testing.T) {
 	ctx := context.Background()
 	db := database.New(database.Config{Backend: database.BackendSQLite, Location: filepath.Join(t.TempDir(), "system.db"), MaximumOpenConnections: 4})

@@ -2,7 +2,7 @@ version = 1
 id = "kernel.packages.list"
 path = ["kernel.packages.list"]
 summary = "List desired packages"
-description = "Lists the fixed-depth package index, including source and optional commit or tag selection."
+description = "Lists the fixed-depth package index, including source, optional commit or tag selection, and application publication status."
 mutates_state = false
 restart_behavior = "none"
 [handler]

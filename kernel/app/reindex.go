@@ -34,7 +34,7 @@ type runtimeIndexer struct {
 	runtime        targetedServiceReconciler
 	https          func(context.Context, bool) error
 	chainRevision  string
-	pending        map[string]bool
+	pending        map[string]*pendingPublication
 	running        map[string]*serviceIndexRun
 	background     context.Context
 	cancel         context.CancelFunc
@@ -42,6 +42,28 @@ type runtimeIndexer struct {
 	backgroundJobs int
 	backgroundWait sync.WaitGroup
 	reportFailure  func(error)
+}
+
+type pendingPublication struct {
+	failure string
+	retryAt time.Time
+}
+
+type declarationPublicationError struct{ message string }
+
+func (e *declarationPublicationError) Error() string {
+	return "index-services provider failed: " + e.message
+}
+
+// PublicationStatus reports only unfinished node-local application fragments.
+func (i *runtimeIndexer) PublicationStatus() map[string]string {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	result := make(map[string]string, len(i.pending))
+	for id, pending := range i.pending {
+		result[id] = pending.failure
+	}
+	return result
 }
 
 type serviceIndexRun struct {
@@ -68,6 +90,12 @@ func (i *runtimeIndexer) Queue(ctx context.Context, packageIDs []string) (core.R
 }
 
 func (i *runtimeIndexer) reindex(ctx context.Context, packageIDs []string, background bool) (core.Result, error) {
+	// Source/configuration changes can supply a previously missing declaration.
+	i.mu.Lock()
+	for _, pending := range i.pending {
+		pending.retryAt = time.Time{}
+	}
+	i.mu.Unlock()
 	handlers, err := i.handlers.ReindexHandlers(ctx, packageIDs...)
 	if err != nil {
 		return nil, fmt.Errorf("index package handlers: %w", err)
@@ -92,10 +120,12 @@ func (i *runtimeIndexer) reindex(ctx context.Context, packageIDs []string, backg
 func (i *runtimeIndexer) indexServices(ctx context.Context, packageIDs []string, background bool) ([]string, []string, error) {
 	var applied, diagnostics []string
 	var failures []error
+	packageFailures := map[string]error{}
 	fail := func(packageID string, err error) {
 		failure := fmt.Errorf("%s: %w", packageID, err)
 		failures = append(failures, failure)
 		diagnostics = append(diagnostics, failure.Error())
+		packageFailures[packageID] = err
 	}
 refresh:
 	// Application-owned indexes participate in the same publication, retry, and
@@ -130,13 +160,15 @@ refresh:
 	waiting := map[string]<-chan struct{}{}
 	i.mu.Lock()
 	if i.pending == nil {
-		i.pending = map[string]bool{}
+		i.pending = map[string]*pendingPublication{}
 		i.running = map[string]*serviceIndexRun{}
 	}
 	changed := i.chainRevision != previousRevision && i.chainRevision != revision
 	claimed := make([]string, 0, len(packageIDs))
 	for _, id := range packageIDs {
-		i.pending[id] = true
+		if i.pending[id] == nil {
+			i.pending[id] = &pendingPublication{}
+		}
 		if running := i.running[id]; running != nil {
 			running.newer = true
 			if background {
@@ -163,13 +195,32 @@ refresh:
 			running := i.running[id]
 			if completed[id] && !running.newer {
 				delete(i.pending, id)
+			} else if failure := packageFailures[id]; failure != nil {
+				message := failure.Error()
+				if len(message) > 2048 {
+					message = message[:2048]
+				}
+				i.pending[id].failure = message
+				var declaration *declarationPublicationError
+				if !running.newer && errors.As(failure, &declaration) {
+					i.pending[id].retryAt = time.Now().Add(30 * time.Second)
+				}
 			}
 			delete(i.running, id)
 			close(running.done)
 		}
 	}
 	run := func(ctx context.Context) ([]string, []string, error) {
-		defer release()
+		defer func() {
+			release()
+			if i.reportFailure != nil {
+				if len(failures) > 0 {
+					i.reportFailure(&indexPublicationError{failures})
+				} else if len(i.PublicationStatus()) == 0 {
+					i.reportFailure(nil)
+				}
+			}
+		}()
 		scope := serviceIndexScope{Packages: []serviceIndexPackage{}}
 		for _, packageID := range claimed {
 			entry, err := i.packages.InspectPackageIndex(packageID)
@@ -275,10 +326,7 @@ refresh:
 		}()
 		jobContext, cancel := context.WithTimeout(i.background, 5*time.Minute)
 		defer cancel()
-		_, _, err := run(jobContext)
-		if i.reportFailure != nil {
-			i.reportFailure(err)
-		}
+		_, _, _ = run(jobContext)
 	}()
 	return nil, queuedDiagnostics, queuedError
 }
@@ -296,8 +344,8 @@ func (i *runtimeIndexer) QueuePending(ctx context.Context) error {
 func (i *runtimeIndexer) retryPending(ctx context.Context, background bool) error {
 	i.mu.Lock()
 	ids := make([]string, 0, len(i.pending))
-	for id := range i.pending {
-		if _, running := i.running[id]; !running {
+	for id, pending := range i.pending {
+		if _, running := i.running[id]; !running && !time.Now().Before(pending.retryAt) {
 			ids = append(ids, id)
 		}
 	}
@@ -382,7 +430,7 @@ func (i *runtimeIndexer) publishServicePackage(ctx context.Context, selected ser
 		return nil, fmt.Errorf("decode runtime specifications: %w", err)
 	}
 	if result.Error != nil {
-		return nil, fmt.Errorf("index-services provider failed: %s", *result.Error)
+		return nil, &declarationPublicationError{*result.Error}
 	}
 	if result.Services == nil {
 		return nil, errors.New("index-services package result must contain a services array")

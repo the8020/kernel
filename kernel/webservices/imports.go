@@ -23,6 +23,11 @@ func (m *Manager) MatchingImports(ctx context.Context, paths []string) ([]string
 		workers          []string
 	}
 	m.mu.Lock()
+	if m.activeCapacity > 0 {
+		m.mu.Unlock()
+		return nil, errors.New("service capacity is changing; source import scan remains pending")
+	}
+	revision := m.capacityRevision
 	var selections []selection
 	for id, service := range m.services {
 		if service.status.State == StateDraining || !service.definition.Enabled {
@@ -48,6 +53,12 @@ func (m *Manager) MatchingImports(ctx context.Context, paths []string) ([]string
 			return nil, err
 		}
 		matched[selected.service] = len(matches) > 0
+	}
+	m.mu.Lock()
+	changed := m.activeCapacity > 0 || m.capacityRevision != revision
+	m.mu.Unlock()
+	if changed {
+		return nil, errors.New("service capacity changed during source import scan; retry after readiness")
 	}
 	var result []string
 	for id, match := range matched {

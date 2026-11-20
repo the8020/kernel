@@ -236,7 +236,7 @@ func TestHTTPSPublicationUsesExistingPendingRetry(t *testing.T) {
 		return nil
 	}}
 	_, _, err = indexer.indexServices(t.Context(), nil, false)
-	if err == nil || !indexer.pending["the8020/https"] || indexer.pending["acme/other"] {
+	if err == nil || indexer.pending["the8020/https"] == nil || indexer.pending["acme/other"] != nil {
 		t.Fatalf("pending=%v, err=%v", indexer.pending, err)
 	}
 	failed = false

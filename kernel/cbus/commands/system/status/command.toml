@@ -2,7 +2,7 @@ version = 1
 id = "kernel.status"
 path = ["kernel.status"]
 summary = "Show kernel status"
-description = "Returns identity, process, listeners, logging, database readiness and pool pressure, runtime isolation mode, uptime, graceful shutdown/restart progress, and build information for the running kernel."
+description = "Returns identity, process, listeners, logging, database readiness and pool pressure, runtime isolation mode, application publication failure, uptime, graceful shutdown/restart progress, and build information for the running kernel."
 mutates_state = false
 restart_behavior = "none"
 [handler]

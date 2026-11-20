@@ -191,6 +191,11 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   logical services. Package/update code owns when to scan and request restarts;
   routing, snapshots, and maintenance never scan imports or keep reverse
   indexes.
+- Capacity operations bracket starts with a synchronized count/revision. Import
+  scans retain source publication when capacity is in flight or changes during
+  inspection, including starts absent from the routing snapshot. Retry uses the
+  existing publication follower after readiness, without a global I/O lock or job
+  restart. A start after a stable scan reads published sources.
 - `Index.ReplacePackage` validates the entire fragment, then replaces it under
   one short publication lock and reports removed IDs for retirement. Hook or
   specification failure leaves the old fragment untouched. The owning reindex

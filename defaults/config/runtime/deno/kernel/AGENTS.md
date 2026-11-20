@@ -48,6 +48,9 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 
 - Package version rows include exact Git parent commit IDs; ancestry-based
   interpretation belongs to application packages.
+- Package index reads include node-local `publication_state` and bounded
+  `publication_error`. The existing `error` also surfaces unfinished application
+  publication when there is no source error; source `state` remains independent.
 
 - `kernel.services.restart(serviceId, mode = "soft")` publishes a generic
   restart across existing node placements. `hard` also terminates draining

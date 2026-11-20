@@ -35,22 +35,24 @@ const (
 	maximumVersions   = 200
 )
 
-// PackageIndex is the durable desired and active state of one package.
+// PackageIndex contains desired/active state and optional publication diagnostics.
 type PackageIndex struct {
-	Author          string `json:"author"`
-	Repository      string `json:"repository"`
-	Source          string `json:"source,omitempty"`
-	Commit          string `json:"commit,omitempty"`
-	Tag             string `json:"tag,omitempty"`
-	Secret          string `json:"secret,omitempty"`
-	Local           bool   `json:"local"`
-	ActiveCommit    string `json:"active_commit,omitempty"`
-	State           string `json:"state"`
-	Error           string `json:"error,omitempty"`
-	Revision        uint64 `json:"revision"`
-	PackageID       string `json:"package_id"`
-	Valid           bool   `json:"valid"`
-	ValidationError string `json:"validation_error,omitempty"`
+	Author           string `json:"author"`
+	Repository       string `json:"repository"`
+	Source           string `json:"source,omitempty"`
+	Commit           string `json:"commit,omitempty"`
+	Tag              string `json:"tag,omitempty"`
+	Secret           string `json:"secret,omitempty"`
+	Local            bool   `json:"local"`
+	ActiveCommit     string `json:"active_commit,omitempty"`
+	State            string `json:"state"`
+	Error            string `json:"error,omitempty"`
+	Revision         uint64 `json:"revision"`
+	PackageID        string `json:"package_id"`
+	Valid            bool   `json:"valid"`
+	ValidationError  string `json:"validation_error,omitempty"`
+	PublicationState string `json:"publication_state,omitempty"`
+	PublicationError string `json:"publication_error,omitempty"`
 }
 
 type SourceReference struct {

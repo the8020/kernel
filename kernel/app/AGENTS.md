@@ -321,6 +321,12 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   callers wait only for selected busy owners after releasing other claims. The
   monitor queues at most 16 bounded background batches; shutdown cancels and
   joins them. `reindex.go` and its ordinary tests own these contracts.
+- Pending application fragments retain bounded failures independently of ready
+  source records. Queue admission never clears publication failure. Deterministic
+  provider declaration failures retry at most every 30 seconds unless a source or
+  configuration reindex resets that delay; successful publication alone clears
+  the owner. Native package inspection and kernel status read this same pending
+  owner without database I/O or changing container liveness.
 - The runtime monitor uses cheap scalar package/index revisions on its normal
   cadence. Shared node topology refresh is independently bounded and never
   becomes a per-request or one-second full-table dependency; runtime callbacks

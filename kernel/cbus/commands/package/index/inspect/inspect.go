@@ -7,6 +7,7 @@ import (
 	"the8020/kernel/cbus/commands/internal/commandutil"
 	packagecommands "the8020/kernel/cbus/commands/package"
 	"the8020/kernel/cbus/core"
+	"the8020/kernel/packages"
 	"the8020/kernel/services"
 )
 
@@ -17,6 +18,9 @@ func New(serviceSet *services.Services) core.Handler {
 			return nil, err
 		}
 		entry, err := management.InspectPackageIndex(commandutil.String(request, "package_id"))
+		entries := []packages.PackageIndex{entry}
+		packagecommands.AnnotatePublication(serviceSet, entries)
+		entry = entries[0]
 		return core.Result{"package": entry}, commandutil.OperationError(err)
 	}
 }

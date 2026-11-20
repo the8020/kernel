@@ -63,6 +63,8 @@ export interface PackageIndex {
   package_id: string;
   valid: boolean;
   validation_error?: string;
+  publication_state?: "ready" | "pending" | "failed";
+  publication_error?: string;
 }
 
 export interface PackageTransport {

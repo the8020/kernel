@@ -3,6 +3,8 @@ package status
 
 import (
 	"context"
+	"fmt"
+	"slices"
 	"time"
 
 	"the8020/kernel/cbus/core"
@@ -39,6 +41,17 @@ func New(serviceSet *services.Services) core.Handler {
 			result["runtime_mode"] = runtimeServices.Isolation.SelectedMode
 			result["runtime_failure"] = runtimeServices.Failure
 			result["runtime_application_failure"] = runtimeServices.ApplicationFailure
+			if runtimeServices.PublicationStatus != nil {
+				pending := runtimeServices.PublicationStatus()
+				if len(pending) > 0 {
+					ids := make([]string, 0, len(pending))
+					for id := range pending {
+						ids = append(ids, id)
+					}
+					slices.Sort(ids)
+					result["runtime_application_failure"] = fmt.Sprintf("application publication pending for %d packages: %s: %s", len(ids), ids[0], pending[ids[0]])
+				}
+			}
 		}
 		if serviceSet.Database != nil {
 			database := serviceSet.Database.Status()

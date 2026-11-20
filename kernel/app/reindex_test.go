@@ -1,9 +1,11 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -20,6 +22,71 @@ import (
 	"the8020/kernel/packages"
 	"the8020/kernel/webservices"
 )
+
+func TestFailedApplicationPublicationRetainsStatusAndThrottlesUntilChange(t *testing.T) {
+	root := t.TempDir()
+	source := &runtimePackageIndex{entries: map[string]packages.PackageIndex{
+		"acme/bad":     {PackageID: "acme/bad", State: "ready", ActiveCommit: "first"},
+		"acme/healthy": {PackageID: "acme/healthy", State: "ready", ActiveCommit: "first"},
+	}}
+	store, err := packages.New(packages.Config{WorkspaceRoot: root, PackagesRoot: root, IndexStore: source})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failure, calls := true, 0
+	indexer := &runtimeIndexer{handlers: &handlerIndexerStub{}, commands: &commandIndexerStub{}, packages: store, services: webservices.NewIndex(), jobs: indexJobFunc(func(_ context.Context, _, _ string, options jobs.Options) (jobs.Record, error) {
+		calls++
+		fragments := map[string]any{}
+		for _, selected := range options.Arguments[1].(serviceIndexScope).Packages {
+			fragment := map[string]any{"services": []any{}}
+			if failure && selected.PackageID == "acme/bad" {
+				fragment["error"] = "Role acme.bad.admin includes missing role acme.provider.admin"
+			}
+			fragments[selected.PackageID] = fragment
+		}
+		return jobs.Record{State: "SUCCEEDED", Result: map[string]any{"packages": fragments}}, nil
+	})}
+	var logs bytes.Buffer
+	shared := &runtimeSharedState{queuePending: indexer.QueuePending, logger: slog.New(slog.NewTextHandler(&logs, nil))}
+	indexer.reportFailure = shared.recordPublicationFailure
+	if _, err := indexer.Reindex(t.Context(), nil); err == nil {
+		t.Fatal("invalid include accepted")
+	}
+	if status := indexer.PublicationStatus(); len(status) != 1 || !strings.Contains(status["acme/bad"], "missing role") {
+		t.Fatalf("status=%v", status)
+	}
+	for range 3 {
+		if err := shared.Poll(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls != 1 || strings.Count(logs.String(), "service index publication failed") != 1 || shared.lastFailure == "" {
+		t.Fatalf("calls=%d logs=%s failure=%s", calls, &logs, shared.lastFailure)
+	}
+	// An unchanged deterministic failure may retry after the bounded delay, but logs once.
+	indexer.pending["acme/bad"].retryAt = time.Time{}
+	if err := indexer.RetryPending(t.Context()); err == nil {
+		t.Fatal("unchanged error lost")
+	}
+	if strings.Count(logs.String(), "service index publication failed") != 1 {
+		t.Fatal(logs.String())
+	}
+	// A newly supplied package resets the delay; the next pending pass recovers.
+	failure = false
+	source.entries["acme/provider"] = packages.PackageIndex{PackageID: "acme/provider", State: "ready", ActiveCommit: "new"}
+	if _, err := indexer.Reindex(t.Context(), []string{"acme/provider"}); err != nil {
+		t.Fatal(err)
+	}
+	if indexer.PublicationStatus()["acme/bad"] == "" {
+		t.Fatal("independent success cleared failure")
+	}
+	if err := indexer.RetryPending(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(indexer.PublicationStatus()) != 0 || shared.lastFailure != "" {
+		t.Fatalf("recovery retained failure: %v %s", indexer.PublicationStatus(), shared.lastFailure)
+	}
+}
 
 type handlerIndexerStub struct {
 	mu    sync.Mutex
@@ -486,7 +553,7 @@ func TestQueuedIndexingBoundsWorkRetainsOverflowAndJoinsOnClose(t *testing.T) {
 	}
 	close(waiting)
 	indexer.backgroundWait.Wait()
-	if len(indexer.pending) != 1 || !indexer.pending["acme/package16"] {
+	if len(indexer.pending) != 1 || indexer.pending["acme/package16"] == nil {
 		t.Fatalf("overflow request was lost: %v", indexer.pending)
 	}
 	if err := indexer.QueuePending(ctx); err != nil {
@@ -511,7 +578,7 @@ func TestQueuedIndexingBoundsWorkRetainsOverflowAndJoinsOnClose(t *testing.T) {
 	if err := indexer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if len(indexer.running) != 0 || indexer.backgroundJobs != 0 || !indexer.pending["acme/package0"] {
+	if len(indexer.running) != 0 || indexer.backgroundJobs != 0 || indexer.pending["acme/package0"] == nil {
 		t.Fatal("shutdown failed to join work and retain its unfinished owner")
 	}
 	if _, err := indexer.Queue(ctx, []string{"acme/package0"}); err == nil {

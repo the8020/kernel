@@ -44,8 +44,15 @@ chmod 0600 "$KERNEL_ROOT/update.log"
 exec > >(tee -a "$KERNEL_ROOT/update.log") 2>&1
 echo "update: requested $TARGET; log: $KERNEL_ROOT/update.log"
 if [[ -L "$KERNEL_ROOT/current" ]]; then
-  echo 'update: launching the installed updater in the background'
-  nohup bash "$KERNEL_ROOT/scripts/update.sh" "$TARGET" </dev/null >> "$KERNEL_ROOT/update.log" 2>&1 &
+  echo "update: fetching update helpers for $TARGET"
+  WORK=$(mktemp -d "$KERNEL_ROOT/update/helpers.XXXXXX")
+  if ! git clone --depth 1 --single-branch --branch "$TARGET" https://github.com/the8020/kernel.git "$WORK/source" ||
+      [[ $(git -C "$WORK/source" rev-parse HEAD) != "$(git -C "$WORK/source" rev-parse "refs/tags/$TARGET^{commit}")" ]]; then
+    rm -rf -- "$WORK"
+    exit 1
+  fi
+  echo 'update: launching the target updater in the background'
+  THE8020_INSTANCE_ROOT="$ROOT" nohup bash -c 'trap '\''rm -rf -- "$1"'\'' EXIT; bash "$1/source/defaults/kernel-scripts/update.sh" "$2"' update "$WORK" "$TARGET" </dev/null >> "$KERNEL_ROOT/update.log" 2>&1 &
   printf 'Update started (PID %s). Follow %s/update.log\n' "$!" "$KERNEL_ROOT"
   exit
 fi

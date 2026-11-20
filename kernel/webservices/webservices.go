@@ -241,6 +241,8 @@ type Manager struct {
 	mu               sync.Mutex
 	services         map[string]*runtimeService
 	capacityLocks    sync.Map
+	capacityRevision uint64
+	activeCapacity   int
 	maintenanceMu    sync.Mutex
 	maintenanceQueue []string
 	maintenanceHead  int
@@ -2065,11 +2067,18 @@ func (m *Manager) triggerCapacityReconcile(runtime *runtimeService, definition S
 		return
 	}
 	background := m.background
+	m.capacityRevision++
+	m.activeCapacity++
 	m.wait.Add(1)
 	m.mu.Unlock()
 	go func() {
 		defer m.wait.Done()
-		defer lock.Unlock()
+		defer func() {
+			m.mu.Lock()
+			m.activeCapacity--
+			m.mu.Unlock()
+			lock.Unlock()
+		}()
 		_, startup := m.runtimePolicy()
 		ctx, cancel := context.WithTimeout(background, startup)
 		defer cancel()
@@ -2158,7 +2167,16 @@ func (m *Manager) addCapacitySandboxLocked(ctx context.Context, runtime *runtime
 func (m *Manager) lockServiceCapacity(serviceID string) func() {
 	lock := m.serviceCapacityLock(serviceID)
 	lock.Lock()
-	return lock.Unlock
+	m.mu.Lock()
+	m.capacityRevision++
+	m.activeCapacity++
+	m.mu.Unlock()
+	return func() {
+		m.mu.Lock()
+		m.activeCapacity--
+		m.mu.Unlock()
+		lock.Unlock()
+	}
 }
 
 func (m *Manager) serviceCapacityLock(serviceID string) *sync.Mutex {

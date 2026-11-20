@@ -273,6 +273,56 @@ Deno.test("hard stop interrupts an existing graceful drain and expires imports",
   }
 });
 
+Deno.test("import scans remain pending until an already loaded Worker becomes ready", async () => {
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const server = Deno.serve(
+    { hostname: "127.0.0.1", port: 0, onListen() {} },
+    async () => {
+      entered.resolve();
+      await release.promise;
+      return new Response("ready");
+    },
+  );
+  const supervisor = new Supervisor({
+    nodeId: "nod-0000000001",
+    sandboxId: "sbx-0000000001",
+    workloadType: "service",
+    token,
+    supervisorVersion: "test",
+  });
+  const definition = metadata("wrk-0000000001");
+  const module = new URL("../examples/service_starting.ts", import.meta.url);
+  module.searchParams.set("gate", `http://127.0.0.1:${server.addr.port}`);
+  definition.entrypoint = module.href;
+  const starting = supervisor.startWorker({
+    metadata: definition,
+    permissions: { read: [examples] },
+  });
+  const paths = [new URL("../examples/service.ts", import.meta.url).pathname];
+  try {
+    await entered.promise;
+    await assertRejects(
+      () =>
+        Promise.resolve().then(() =>
+          supervisor.matchingImports([definition.workerId], paths)
+        ),
+      Error,
+      "starting",
+    );
+    release.resolve();
+    await starting;
+    assertEquals(supervisor.matchingImports([definition.workerId], paths), [
+      definition.workerId,
+    ]);
+  } finally {
+    release.resolve();
+    await starting.catch(() => {});
+    await supervisor.stopWorker(definition.workerId, true);
+    await server.shutdown();
+  }
+});
+
 Deno.test("supervisor tracks Workers, service pools, and drain", async () => {
   const supervisor = new Supervisor({
     nodeId: "nod-0000000001",

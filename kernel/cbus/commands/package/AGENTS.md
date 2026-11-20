@@ -20,6 +20,12 @@ Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
 
 - Package source inspection delegates to the filesystem catalog; desired and
   active package state comes from the system database.
+- Index list/inspection annotate `publication_state` and `publication_error`
+  from the runtime indexer's pending application fragments. Source `state` and
+  authorization eligibility remain separate; inspection never retries indexing.
+- Existing `error` also reports an unfinished application publication when the
+  source record has no error, so existing package administration shows the
+  failure without requiring a new diagnostics path.
 - `package list` exposes only package identity, description, validity, and any
   validation failure. `package inspect` owns filesystem paths, complete package
   metadata, fixed-depth program metadata, and the bounded non-Git file inventory

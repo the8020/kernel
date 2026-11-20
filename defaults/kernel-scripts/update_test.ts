@@ -132,7 +132,11 @@ elif [[ "$*" == *kernel.packages.recommended* ]]; then
   [[ ! -f "$FIXTURE_ROOT/fail-recommendations" ]] || exit 3
   echo '{"success":true,"result":{"packages":[]}}'
 elif [[ "$*" == *"runtime eval"* ]]; then
-  if [[ -f "$FIXTURE_ROOT/fail-worker" ]]; then echo '{"success":true,"result":{"state":"FAILED"}}';
+  if [[ "$*" == *recommended-sources* ]]; then
+    echo preflight >> "$FIXTURE_ROOT/preflights"
+    if [[ -f "$FIXTURE_ROOT/fail-prerequisites" ]]; then echo 'selector or node schema unavailable'; exit 5; fi
+    echo '{"success":true,"result":{"result":true}}'
+  elif [[ -f "$FIXTURE_ROOT/fail-worker" ]]; then echo '{"success":true,"result":{"state":"FAILED"}}';
   else echo '{"success":true,"result":{"result":42}}'; fi
 else
   application=''
@@ -421,6 +425,134 @@ Deno.test("runtime ready cannot complete an update when ordinary Workers fail", 
     assert((await f.state()).phase === "installed");
     await Deno.remove(`${f.temp}/fail-worker`);
     assert((await f.update("--finish")).code === 0);
+    assert((await f.state()).phase === "complete");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("progress failures retain a bounded stdout and stderr tail in installed state", async () => {
+  for (const stream of ["stdout", "stderr"]) {
+    const f = await fixture();
+    try {
+      await f.version("0.8.1");
+      assert((await f.update("0.8.1")).code === 0);
+      assert((await f.update("--apply")).code === 0);
+      const admin = `${f.kernel}/bin/admin`;
+      await Deno.writeTextFile(
+        admin,
+        (await read(admin)).replace(
+          "echo recommended >>",
+          `printf '%10000s\\n' '' ${
+            stream === "stderr" ? ">&2" : ""
+          }\necho 'original ${stream} failure' ${
+            stream === "stderr" ? ">&2" : ""
+          }\nexit 9\necho recommended >>`,
+        ),
+      );
+      const result = await f.update("--finish");
+      assert(result.code !== 0, result.output);
+      const state = await f.state();
+      assert(state.phase === "installed");
+      assert(state.error.includes(`original ${stream} failure`), state.error);
+      assert(state.error.includes("failed (9)"), state.error);
+      assert(state.error.length < 4300, "failure tail is unbounded");
+      assert(
+        result.output.includes(`original ${stream} failure`),
+        result.output,
+      );
+    } finally {
+      await f.cleanup();
+    }
+  }
+});
+
+Deno.test("old package prerequisites fail before shutdown and same-target retry checks again", async () => {
+  const f = await fixture("0.10.14");
+  try {
+    await f.version("0.10.17", {
+      "0.10.17/010-package-prerequisites.sh": await read(
+        `${source}/update/0.10.17/010-package-prerequisites.sh`,
+      ),
+    });
+    await Deno.writeTextFile(`${f.temp}/fail-prerequisites`, "");
+    const failed = await f.update("0.10.17");
+    assert(
+      failed.code !== 0 &&
+        failed.output.includes("prerequisites failed before kernel switching"),
+      failed.output,
+    );
+    assert(await Deno.readLink(`${f.kernel}/current`) === "releases/0.10.14");
+    await assertMissing(`${f.root}/stops`);
+    await assertMissing(`${f.kernel}/update/request`);
+    // The existing native set owner supplies the coupled set; preflight never
+    // installs deployments alone or invents source authority.
+    await Deno.remove(`${f.temp}/fail-prerequisites`);
+    for (const action of ["0.10.17", "--apply", "--finish"]) {
+      const result = await f.update(action);
+      assert(result.code === 0, result.output);
+    }
+    assert((await f.state()).phase === "complete");
+    assert(
+      (await read(`${f.temp}/preflights`)).trim().split("\n").length === 2,
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+async function assertMissing(path: string) {
+  let found = true;
+  try {
+    await Deno.stat(path);
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+    found = false;
+  }
+  assert(!found, `unexpected ${path}`);
+}
+
+Deno.test("published 0.10.14 updater stops before switching without preflight and retains exact retry", async () => {
+  const f = await fixture("0.10.14");
+  try {
+    await f.version("0.10.17", {
+      "0.10.17/010-package-prerequisites.sh": await read(
+        `${source}/update/0.10.17/010-package-prerequisites.sh`,
+      ),
+    });
+    const old = await run("git", [
+      "-C",
+      source,
+      "show",
+      "0.10.14:defaults/kernel-scripts/update.ts",
+    ]);
+    assert(old.code === 0, old.output);
+    await Deno.writeTextFile(`${f.kernel}/scripts/update.ts`, old.output);
+    assert((await f.update("0.10.17")).code === 0);
+    const stopped = await f.update("--apply");
+    assert(
+      stopped.code !== 0 &&
+        stopped.output.includes("prerequisites were not checked online"),
+      stopped.output,
+    );
+    assert(await Deno.readLink(`${f.kernel}/current`) === "releases/0.10.14");
+    const before = await f.state();
+    assert(before.phase === "offline" && before.completed.length === 0);
+    // The original control plane is represented by the admin fixture here.
+    const checked = await run("bash", [
+      `${f.kernel}/releases/0.10.17/scripts/update.sh`,
+      "--preflight",
+      "0.10.17",
+    ], f.env);
+    assert(checked.code === 0, checked.output);
+    assert(
+      JSON.stringify(await f.state()) === JSON.stringify(before),
+      "preflight rewrote the journal",
+    );
+    for (const action of ["0.10.17", "--apply", "--finish"]) {
+      const result = await f.update(action);
+      assert(result.code === 0, result.output);
+    }
     assert((await f.state()).phase === "complete");
   } finally {
     await f.cleanup();

@@ -38,6 +38,9 @@ Parent DOX: [host kernel scripts](../AGENTS.md).
   failure halts that phase and retains completed steps for an explicit retry.
 - Data-changing scripts back up the state they change. Package activation uses
   package-owned commands after startup; never edit its catalog manually.
+- `0.10.17` checks the candidate-specific online prerequisite receipt before
+  pointer replacement. Old updaters must use the target helper to obtain it;
+  missing evidence never installs a kernel requiring unavailable source policy.
 
 # Work Guidance
 

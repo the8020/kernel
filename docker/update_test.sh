@@ -22,6 +22,17 @@ set -euo pipefail
 echo 'managed updater called'
 SCRIPT
 export THE8020_USERNAME=private THE8020_PASSWORD=private
+mkdir -p "$FIXTURE_ROOT/tools"
+cat > "$FIXTURE_ROOT/tools/git" <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == clone ]]; then
+  mkdir -p "${!#}/defaults/kernel-scripts"
+  cp "$THE8020_INSTANCE_ROOT/node/kernel/scripts/update.sh" "${!#}/defaults/kernel-scripts/update.sh"
+else printf '%040d\n' 0; fi
+SCRIPT
+chmod +x "$FIXTURE_ROOT/tools/git"
+export PATH="$FIXTURE_ROOT/tools:$PATH"
 bash "$SOURCE_ROOT/docker/update.sh" 0.8.4 > "$FIXTURE_ROOT/output"
 for _ in {1..100}; do
   if grep -Fq 'managed updater called' "$KERNEL_ROOT/update.log" &&

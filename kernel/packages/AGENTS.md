@@ -12,6 +12,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Own database adapters for `the8020/packages` desired/active package records,
   activation history, and hook phase checkpoints. Application service tables,
   declarations, defaults, and overrides belong exclusively to Deno services.
+- Package-index publication diagnostics are read-only annotations supplied by
+  native command composition from the application indexer's pending owner;
+  they are not persisted source state or source-readiness gates.
 - Own package Git source/ref inspection, clean worktree staging/replacement,
   local repository initialization, package deletion, pull/push/checkout, and
   transient named-secret authentication.
