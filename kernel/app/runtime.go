@@ -539,6 +539,10 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 	cleanup.events, runtimeServices.Events = eventManager, eventManager
 	runtimeServices.Programs = programRunner
 	runtimeServices.ListPrograms = packageStore.ListPrograms
+	// Bootstrap index providers discover programs through the ordinary callback.
+	catalogInfrastructure := infrastructure
+	catalogInfrastructure.Programs, catalogInfrastructure.ListPrograms = programRunner, packageStore.ListPrograms
+	serviceSet.PublishRuntime(&catalogInfrastructure)
 	serviceIndex := webservices.NewIndex()
 	indexer := &runtimeIndexer{handlers: packageStore, commands: commandIndexer, packages: packageStore, jobs: jobManager, services: serviceIndex}
 	runtimeServices.PublicationStatus = indexer.PublicationStatus

@@ -79,6 +79,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   infrastructure snapshot, then invoke db catalog bootstrap and restricted table
   evaluation, compose package stores/programs/hooks, recover pending
   publication, and start application services, listeners, and monitoring.
+  Publish the ready program runner/catalog in a replacement infrastructure
+  snapshot before bootstrap indexing, while retaining initialization status;
+  index providers use that same ordinary program-discovery callback.
 - Infrastructure `Failure` gates generic runtime operations.
   `ApplicationFailure` records pending or failed application initialization
   while native eval/run, SQL, signing, and recovery remain available.
@@ -322,11 +325,12 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   monitor queues at most 16 bounded background batches; shutdown cancels and
   joins them. `reindex.go` and its ordinary tests own these contracts.
 - Pending application fragments retain bounded failures independently of ready
-  source records. Queue admission never clears publication failure. Deterministic
-  provider declaration failures retry at most every 30 seconds unless a source or
-  configuration reindex resets that delay; successful publication alone clears
-  the owner. Native package inspection and kernel status read this same pending
-  owner without database I/O or changing container liveness.
+  source records. Queue admission never clears publication failure.
+  Deterministic provider declaration failures retry at most every 30 seconds
+  unless a source or configuration reindex resets that delay; successful
+  publication alone clears the owner. Native package inspection and kernel
+  status read this same pending owner without database I/O or changing container
+  liveness.
 - The runtime monitor uses cheap scalar package/index revisions on its normal
   cadence. Shared node topology refresh is independently bounded and never
   becomes a per-request or one-second full-table dependency; runtime callbacks

@@ -120,8 +120,10 @@ Parent DOX: [kernel defaults](../AGENTS.md).
   isolated environment must support rootless gVisor. It builds real `0.10.14`,
   installs that release's actual package tags, and verifies old-set admission,
   one complete authenticated development set, partial fetch preservation and
-  same-target retry. It also executes a Worker and probes fresh candidate login.
-  Kernel replacement and committed-activation recovery have separate coverage.
+  same-target retry. It exercises the real first-user Docker entrypoint, direct
+  replacement startup, node-aware recommendations, private-work preservation,
+  ordinary Workers and login. Detached launcher/migration and
+  committed-activation recovery have separate coverage.
 - `deno fmt --check`, `deno lint --no-config`, and `deno check --no-config`
   cover `update.ts` and `update_test.ts`;
   `deno test --no-config -A update_test.ts` exercises the production updater
