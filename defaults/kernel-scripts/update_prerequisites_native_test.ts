@@ -146,6 +146,10 @@ Deno.test({
         `${fresh}/node/kernel/bin/.`,
         `${instance}/node/kernel/bin`,
       ]);
+      await Deno.copyFile(
+        `${root}/old-kernel`,
+        `${instance}/node/kernel/bin/kernel`,
+      );
       await run("cp", [
         "-a",
         `${fresh}/node/kernel/runtime/images/.`,
@@ -171,6 +175,15 @@ Deno.test({
       await run("cp", [
         `${oldSource}/defaults/config/runtime/image/deno.json`,
         `${runtime}/deno.json`,
+      ]);
+      const oldImage = `${instance}/node/kernel/runtime/images/rootless`;
+      await run("bash", [
+        `${oldSource}/defaults/config/runtime/smoke-portable.sh`,
+        `${instance}/node/kernel/bin/runsc`,
+        `${oldImage}/rootfs`,
+        `${oldImage}/image.json`,
+        `${oldImage}/smoke.json`,
+        `${instance}/node/kernel/runtime/smoke-upgrade`,
       ]);
       await run("bash", [
         `${oldSource}/install-development-assets.sh`,
@@ -305,7 +318,7 @@ Deno.test({
       const login = await fetch(`${origin}/the8020/uui/login/`);
       await login.arrayBuffer();
       assert(login.status === 200, "fresh login");
-      start(instance, `${root}/old-kernel`, oldPort);
+      start(instance, `${instance}/node/kernel/bin/kernel`, oldPort);
       await waitReady(instance);
       await evaluate(
         instance,
@@ -437,7 +450,7 @@ Deno.test({
           ) ===
             await run(
               "git",
-              ["rev-parse", item.tag],
+              ["rev-parse", `${item.tag}^{commit}`],
               `${fresh}/packages/${item.package_id}`,
             ),
           `target commit: ${item.package_id}`,
