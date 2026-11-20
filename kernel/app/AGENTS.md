@@ -81,7 +81,9 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   publication, and start application services, listeners, and monitoring.
   Publish the ready program runner/catalog in a replacement infrastructure
   snapshot before bootstrap indexing, while retaining initialization status;
-  index providers use that same ordinary program-discovery callback.
+  index providers use that same ordinary program-discovery callback. Publishing
+  topology and ingress releases bootstrap publication retry delays; providers
+  can immediately retry against those newly available dependencies.
 - Infrastructure `Failure` gates generic runtime operations.
   `ApplicationFailure` records pending or failed application initialization
   while native eval/run, SQL, signing, and recovery remain available.

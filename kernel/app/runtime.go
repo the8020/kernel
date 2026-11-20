@@ -831,6 +831,12 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		Network: publicNetwork, Nodes: nodeManager,
 		Packages: packageStore, Development: developmentManager, Consoles: consoleManager,
 	})
+	// Bootstrap providers can depend on the just-published topology and ingress.
+	indexer.mu.Lock()
+	for _, pending := range indexer.pending {
+		pending.retryAt = time.Time{}
+	}
+	indexer.mu.Unlock()
 	cleanup.webservices, runtimeServices.Services = webServiceManager, webServiceManager
 	indexer.runtime = webServiceManager
 	webServiceManager.StartReconciler(ctx)

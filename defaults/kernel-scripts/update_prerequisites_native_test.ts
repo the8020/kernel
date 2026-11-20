@@ -503,7 +503,9 @@ Deno.test({
         try {
           await admin(child.instance, "kernel.shutdown");
         } catch {
-          child.process.kill("SIGTERM");
+          try {
+            child.process.kill("SIGTERM");
+          } catch { /* Already exited; preserve the qualification error. */ }
         }
         await child.process.status;
       }
