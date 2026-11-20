@@ -36,9 +36,10 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   `initial-user.done`. Retries preserve an already-created account and repeat
   idempotent role grants. Existing completed volumes are not regranted.
 
-- Before first-user commands, require `kernel.status` to report `runtime_ready`
-  with no `runtime_application_failure`. Native commands can be reachable while
-  application initialization has not yet published its event dispatcher.
+- Before first-user commands, require `runtime_ready` and completion of the
+  application initialization attempt. Unrelated publication failures do not
+  restart the container; actual user commands and HTTP login determine bootstrap
+  readiness. Native commands can be reachable before event dispatch is ready.
 - Shutdown waits for the launcher to drain its kernel. EXIT cleanup ignores
   repeated stop signals so a failed bootstrap cannot return before that wait.
 

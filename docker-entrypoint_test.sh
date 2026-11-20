@@ -362,7 +362,7 @@ done
 [[ -f "$CASE_ROOT/status-probed" ]]
 [[ ! -f "$CASE_ROOT/users-calls" && ! -f "$CASE_ROOT/user-created" ]]
 [[ ! -f "$CASE_ROOT/instance/node/docker/initial-user.done" ]]
-printf '%s\n' '{"success":true,"result":{"runtime_ready":true,"runtime_application_failure":""}}' > "$CASE_ROOT/status.json"
+printf '%s\n' '{"success":true,"result":{"runtime_ready":true,"runtime_application_failure":"application publication pending for acme/bad: includes missing role"}}' > "$CASE_ROOT/status.json"
 wait_for '80|20 is ready' "$CASE_ROOT/output"
 [[ -f "$CASE_ROOT/user-created" && -f "$CASE_ROOT/instance/node/docker/initial-user.done" ]]
 kill -TERM "$entrypoint_pid"

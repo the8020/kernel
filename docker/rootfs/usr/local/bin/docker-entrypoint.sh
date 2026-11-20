@@ -144,7 +144,8 @@ if [[ ! -f "$BOOTSTRAP_DONE" ]]; then
         "$DENO" eval --quiet --no-config '
           const response = JSON.parse(await new Response(Deno.stdin.readable).text());
           Deno.exit(response.success && response.result?.runtime_ready &&
-              !response.result?.runtime_application_failure ? 0 : 1);
+              response.result?.runtime_application_failure !==
+                  "application initialization is in progress" ? 0 : 1);
         ' 2>/dev/null &&
         users_json=$("$ADMIN" --root "$INSTANCE_ROOT" --json users.list 2>&1); then
       users_ready=true
