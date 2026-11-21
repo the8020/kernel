@@ -40,6 +40,34 @@ func TestImportScanSurvivesUnchangedMaintenance(t *testing.T) {
 			t.Fatalf("scan across unchanged maintenance = %v, %v", matched, err)
 		}
 	}
+	m.matchImports = func(_ context.Context, _ string, ids, _ []string) ([]string, error) { return ids, nil }
+	maintained := make(chan error, 1)
+	go func() {
+		for range 32 {
+			if err := m.reconcileMaintained(t.Context()); err != nil {
+				maintained <- err
+				return
+			}
+		}
+		maintained <- nil
+	}()
+	for range 10000 {
+		if _, err := m.MatchingImports(t.Context(), []string{"/workspace/packages/acme/shared/value.ts"}); err != nil {
+			t.Error(err)
+			break
+		}
+		select {
+		case err := <-maintained:
+			if err != nil {
+				t.Fatal(err)
+			}
+			return
+		default:
+		}
+	}
+	if err := <-maintained; err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestImportScanRetainsPublicationAcrossCapacityStarts(t *testing.T) {

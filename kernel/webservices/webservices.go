@@ -842,10 +842,12 @@ func (m *Manager) refreshVersion(ctx context.Context, definition Specification, 
 	}
 
 	present := make(map[int]bool, len(sandboxes))
+	m.mu.Lock()
 	for _, sandbox := range sandboxes {
 		sandbox.status = refreshed[sandbox]
 		present[sandbox.status.Index] = true
 	}
+	m.mu.Unlock()
 	var preparationErrors []error
 	for _, index := range minimumIndexes {
 		if present[index] {
