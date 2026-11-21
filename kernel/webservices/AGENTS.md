@@ -191,11 +191,13 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   logical services. Package/update code owns when to scan and request restarts;
   routing, snapshots, and maintenance never scan imports or keep reverse
   indexes.
-- Capacity operations bracket starts with a synchronized count/revision. Import
-  scans retain source publication when capacity is in flight or changes during
+- Capacity operations observe actual Worker-start attempts from the pool owner,
+  keeping their synchronized count/revision active until routing publication.
+  Unchanged maintenance and lock acquisition do not invalidate import scans.
+  Scans retain source publication when a start is in flight or overlaps
   inspection, including starts absent from the routing snapshot. Retry uses the
-  existing publication follower after readiness, without a global I/O lock or job
-  restart. A start after a stable scan reads published sources.
+  existing publication follower after readiness, without a global I/O lock or
+  job restart. A start after a stable scan reads published sources.
 - `Index.ReplacePackage` validates the entire fragment, then replaces it under
   one short publication lock and reports removed IDs for retirement. Hook or
   specification failure leaves the old fragment untouched. The owning reindex
@@ -266,7 +268,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - `restarts_test.go` verifies selective import scans, concurrent duplicate
   updates across nodes, soft draining, zero-minimum replacement, rejected
   replacement retention, hard termination of all generations, and recovery
-  without repeating an applied hard restart.
+  without repeating an applied hard restart. Import scans tolerate unchanged
+  maintenance and retain publication across in-flight or overlapping starts.
 
 # Child DOX Index
 

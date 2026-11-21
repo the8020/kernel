@@ -442,7 +442,7 @@ func (m *Manager) Retire(ctx context.Context, serviceID string) error {
 	if _, err := workspacepackages.ParseServiceID(serviceID); err != nil {
 		return err
 	}
-	unlockCapacity := m.lockServiceCapacity(serviceID)
+	ctx, unlockCapacity := m.lockServiceCapacity(ctx, serviceID)
 	defer unlockCapacity()
 	return m.retireService(ctx, serviceID)
 }
@@ -508,7 +508,7 @@ func (m *Manager) reconcileOne(ctx context.Context, serviceID string) (Status, e
 }
 
 func (m *Manager) reconcileService(ctx context.Context, serviceID string, provision bool) (Status, error) {
-	unlockCapacity := m.lockServiceCapacity(serviceID)
+	ctx, unlockCapacity := m.lockServiceCapacity(ctx, serviceID)
 	defer unlockCapacity()
 	defer m.scheduleMaintenanceIfNeeded(serviceID)
 	definition, err := m.index.ReadService(serviceID)
@@ -1972,7 +1972,7 @@ func (m *Manager) reserveCachedCapacity(ctx context.Context, runtime *runtimeSer
 }
 
 func (m *Manager) selectCapacitySandboxSlow(ctx context.Context, runtime *runtimeService, definition Specification) (*runtimeSandbox, error) {
-	unlockCapacity := m.lockServiceCapacity(definition.Identity.ServiceID())
+	ctx, unlockCapacity := m.lockServiceCapacity(ctx, definition.Identity.ServiceID())
 	defer unlockCapacity()
 	return m.selectCapacitySandboxLocked(ctx, runtime, definition, true)
 }
@@ -2067,16 +2067,13 @@ func (m *Manager) triggerCapacityReconcile(runtime *runtimeService, definition S
 		return
 	}
 	background := m.background
-	m.capacityRevision++
-	m.activeCapacity++
 	m.wait.Add(1)
 	m.mu.Unlock()
+	background, finishStarts := m.trackWorkerStarts(background)
 	go func() {
 		defer m.wait.Done()
 		defer func() {
-			m.mu.Lock()
-			m.activeCapacity--
-			m.mu.Unlock()
+			finishStarts()
 			lock.Unlock()
 		}()
 		_, startup := m.runtimePolicy()
@@ -2094,7 +2091,7 @@ func (m *Manager) localWorkerMaximum(definition Specification) int {
 }
 
 func (m *Manager) addCapacitySandbox(ctx context.Context, runtime *runtimeService, definition Specification) (*runtimeSandbox, error) {
-	unlockCapacity := m.lockServiceCapacity(definition.Identity.ServiceID())
+	ctx, unlockCapacity := m.lockServiceCapacity(ctx, definition.Identity.ServiceID())
 	defer unlockCapacity()
 	return m.addCapacitySandboxLocked(ctx, runtime, definition)
 }
@@ -2164,18 +2161,33 @@ func (m *Manager) addCapacitySandboxLocked(ctx context.Context, runtime *runtime
 	return sandbox, nil
 }
 
-func (m *Manager) lockServiceCapacity(serviceID string) func() {
+func (m *Manager) lockServiceCapacity(ctx context.Context, serviceID string) (context.Context, func()) {
 	lock := m.serviceCapacityLock(serviceID)
 	lock.Lock()
-	m.mu.Lock()
-	m.capacityRevision++
-	m.activeCapacity++
-	m.mu.Unlock()
-	return func() {
-		m.mu.Lock()
-		m.activeCapacity--
-		m.mu.Unlock()
+	ctx, finishStarts := m.trackWorkerStarts(ctx)
+	return ctx, func() {
+		finishStarts()
 		lock.Unlock()
+	}
+}
+
+func (m *Manager) trackWorkerStarts(ctx context.Context) (context.Context, func()) {
+	started := false
+	ctx = executionservices.WithWorkerStartObserver(ctx, func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if !started {
+			started = true
+			m.capacityRevision++
+			m.activeCapacity++
+		}
+	})
+	return ctx, func() {
+		m.mu.Lock()
+		if started {
+			m.activeCapacity--
+		}
+		m.mu.Unlock()
 	}
 }
 

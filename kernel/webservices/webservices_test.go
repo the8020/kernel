@@ -214,7 +214,10 @@ func (p *fakePools) ListForService(logicalServiceID string) ([]executionservices
 	return result, nil
 }
 
-func (p *fakePools) Start(_ context.Context, serviceID, entrypoint string, options executionservices.Options) (executionservices.Record, error) {
+func (p *fakePools) Start(ctx context.Context, serviceID, entrypoint string, options executionservices.Options) (executionservices.Record, error) {
+	if options.MinimumWorkers > 0 {
+		executionservices.NotifyWorkerStart(ctx)
+	}
 	p.mu.Lock()
 	startEntered, startRelease := p.startEntered, p.startRelease
 	p.mu.Unlock()
@@ -306,7 +309,7 @@ func (p *fakePools) Capacity(_ context.Context, serviceID string) (executionserv
 	return record, nil
 }
 
-func (p *fakePools) Scale(_ context.Context, serviceID string, count int) (executionservices.Record, error) {
+func (p *fakePools) Scale(ctx context.Context, serviceID string, count int) (executionservices.Record, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	record, exists := p.records[serviceID]
@@ -319,6 +322,9 @@ func (p *fakePools) Scale(_ context.Context, serviceID string, count int) (execu
 	}
 	if err := p.failScale[serviceID]; err != nil {
 		return record, err
+	}
+	if count > len(record.WorkerIDs) {
+		executionservices.NotifyWorkerStart(ctx)
 	}
 	record.WorkerIDs = make([]string, count)
 	for index := range record.WorkerIDs {

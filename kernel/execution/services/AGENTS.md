@@ -16,7 +16,8 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
 # Local Contracts
 
 - `SetAllocationPolicy` updates future resource/profile defaults through one
-  policy snapshot; the services package always supplies the explicit group. Existing pools and Workers retain their sandbox/profile and routes.
+  policy snapshot; the services package always supplies the explicit group.
+  Existing pools and Workers retain their sandbox/profile and routes.
 
 - Services inherit dependency and egress policy from the ordinary runtime
   profile. Never add a hidden service-specific cache-only override or an
@@ -76,6 +77,10 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
   `ready` Workers as usable, exclude failed/draining/missing Worker IDs before
   dispatch, reap pool-owned orphans, and replace lost capacity to the requested
   count.
+- `WithWorkerStartObserver` attaches an operation-scoped synchronous callback.
+  The pool calls `NotifyWorkerStart` immediately before each actual start
+  attempt, including failed-Worker replacement. Unchanged reconciliation never
+  calls it; the caller retains admission tracking through routing publication.
 - Target-utilization growth is best-effort when an existing Worker still has a
   permitted execution slot: a failed headroom start returns typed capacity
   evidence so the kernel may try another sandbox and then safely use that slot.
@@ -149,6 +154,8 @@ Parent DOX: [kernel/kernel/execution DOX](../AGENTS.md).
   valid/corrupt recovery, isolated restoration, occupied-Worker draining,
   missing-group retirement, terminal-record removal, rejected-definition
   cleanup, idempotent already-absent group release, and rollback.
+- Worker-start observation covers initial creation, replacement, growth and
+  failed starts while excluding unchanged reconciliation and capacity reads.
 - Lifecycle log regressions cover stable service/user attribution, allocated
   sandbox identity after failed-start cleanup, observed native exit reasons,
   recovery/quarantine metadata, and suppression of repeated drain/stop/failure

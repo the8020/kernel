@@ -3,7 +3,9 @@ package webservices
 import (
 	"context"
 	"errors"
+	"maps"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sync"
 	"testing"
@@ -13,26 +15,79 @@ import (
 	"the8020/kernel/packages"
 )
 
-func TestImportScanRetainsPublicationAcrossCapacityStarts(t *testing.T) {
+func TestImportScanSurvivesUnchangedMaintenance(t *testing.T) {
 	const id = "acme/consumer/api"
 	root := t.TempDir()
 	index := newTestServiceIndex(t, root, id, nil)
-	m := newTestManager(t, index, newFakePools(), &fakeRouter{}, filepath.Join(root, "observed"))
+	pools := newFakePools()
+	m := newTestManager(t, index, pools, &fakeRouter{}, filepath.Join(root, "observed"))
+	if _, err := m.Reconcile(t.Context(), id); err != nil {
+		t.Fatal(err)
+	}
+	before := maps.Clone(pools.records)
+	m.matchImports = func(ctx context.Context, _ string, ids, _ []string) ([]string, error) {
+		if err := m.reconcileMaintained(ctx); err != nil {
+			t.Fatal(err)
+		}
+		return ids, nil
+	}
+	for range 3 {
+		matched, err := m.MatchingImports(t.Context(), []string{"/workspace/packages/acme/shared/value.ts"})
+		if !reflect.DeepEqual(pools.records, before) {
+			t.Fatal("unchanged maintenance altered pool or Worker identity")
+		}
+		if err != nil || !slices.Equal(matched, []string{id}) {
+			t.Fatalf("scan across unchanged maintenance = %v, %v", matched, err)
+		}
+	}
+}
+
+func TestImportScanRetainsPublicationAcrossCapacityStarts(t *testing.T) {
+	const id, startingID, lateID = "acme/consumer/api", "acme/new/api", "acme/late/api"
+	root := t.TempDir()
+	index := newTestServiceIndex(t, root, id, nil)
+	newTestServiceIndex(t, root, startingID, nil)
+	newTestServiceIndex(t, root, lateID, nil)
+	pools := newFakePools()
+	m := newTestManager(t, index, pools, &fakeRouter{}, filepath.Join(root, "observed"))
 	ctx := t.Context()
 	if _, err := m.Reconcile(ctx, id); err != nil {
 		t.Fatal(err)
 	}
 	paths := []string{"/workspace/packages/acme/shared/value.ts"}
 	m.matchImports = func(_ context.Context, _ string, ids, _ []string) ([]string, error) { return ids, nil }
+	// A lock alone does not indicate a Worker start.
+	_, finish := m.lockServiceCapacity(ctx, startingID)
+	_, err := m.MatchingImports(ctx, paths)
+	finish()
+	if err != nil {
+		t.Fatal(err)
+	}
 	// Even a first start not yet present in the routed snapshot must retain the revision.
-	finish := m.lockServiceCapacity("acme/new/api")
+	pools.startEntered, pools.startRelease = make(chan string, 1), make(chan struct{})
+	release := sync.OnceFunc(func() { close(pools.startRelease) })
+	t.Cleanup(release)
+	started := make(chan error, 1)
+	go func() {
+		_, err := m.Reconcile(ctx, startingID)
+		started <- err
+	}()
+	<-pools.startEntered
 	if _, err := m.MatchingImports(ctx, paths); err == nil {
 		t.Fatal("acknowledged while a Worker could still be loading old source")
 	}
-	finish()
+	release()
+	if err := <-started; err != nil {
+		t.Fatal(err)
+	}
+	pools.startEntered, pools.startRelease = nil, nil
+	startLate := sync.OnceFunc(func() {
+		if _, err := m.Reconcile(ctx, lateID); err != nil {
+			t.Fatal(err)
+		}
+	})
 	m.matchImports = func(_ context.Context, _ string, ids, _ []string) ([]string, error) {
-		finish := m.lockServiceCapacity("acme/new/api")
-		finish()
+		startLate()
 		return ids, nil
 	}
 	if _, err := m.MatchingImports(ctx, paths); err == nil {
@@ -40,7 +95,7 @@ func TestImportScanRetainsPublicationAcrossCapacityStarts(t *testing.T) {
 	}
 	m.matchImports = func(_ context.Context, _ string, ids, _ []string) ([]string, error) { return ids, nil }
 	matched, err := m.MatchingImports(ctx, paths)
-	if err != nil || !slices.Equal(matched, []string{id}) {
+	if err != nil || !slices.Equal(matched, []string{id, lateID, startingID}) {
 		t.Fatalf("ready scan = %v, %v", matched, err)
 	}
 }

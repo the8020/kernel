@@ -855,11 +855,29 @@ func (m *Manager) persistRestoreFailure(record Record, cause error) {
 	}
 	m.logEvent(record, slog.LevelError, "service_failed", "isolated service restore failure", slog.String("error", record.Failure))
 }
+
+type workerStartObserverKey struct{}
+
+// WithWorkerStartObserver attaches a synchronous notification to this capacity
+// operation. The caller owns its lifetime through subsequent routing publication.
+func WithWorkerStartObserver(ctx context.Context, observer func()) context.Context {
+	return context.WithValue(ctx, workerStartObserverKey{}, observer)
+}
+
+// NotifyWorkerStart is called by a pool immediately before starting a Worker,
+// including replacement of a lost Worker at an unchanged desired count.
+func NotifyWorkerStart(ctx context.Context) {
+	if observer, ok := ctx.Value(workerStartObserverKey{}).(func()); ok {
+		observer()
+	}
+}
+
 func (m *Manager) startWorker(ctx context.Context, record Record, permissions supervisor.WorkerPermissions) (string, error) {
 	workerID, err := identity.New("wrk")
 	if err != nil {
 		return "", err
 	}
+	NotifyWorkerStart(ctx)
 	started, err := m.workers.Start(ctx, record.SandboxID, supervisor.StartWorkerRequest{Metadata: supervisor.ExecutionMetadata{WorkerID: workerID, WorkloadType: model.WorkloadService, OwnerID: record.LogicalServiceID, WorkloadID: record.ServiceID, ReleaseID: record.ReleaseID, Entrypoint: record.Entrypoint, DebuggerName: "service:" + record.LogicalServiceID + ":" + workerID, User: record.User, Origin: execution.Origin{Type: execution.OriginService, ID: record.LogicalServiceID}, Service: &supervisor.ServiceExecutionMetadata{CredentialNamespace: record.CredentialNamespace, ServiceID: record.LogicalServiceID, Generation: record.Generation, CanonicalBasePath: record.CanonicalBasePath, ExecutionMode: record.ExecutionMode}}, Permissions: permissions})
 	if err != nil {
 		if supervisor.IsRequestRejected(err) {

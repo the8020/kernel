@@ -602,6 +602,48 @@ func TestServicePoolScaleStreamingDispatchAndStop(t *testing.T) {
 	}
 }
 
+func TestWorkerStartObserverIgnoresUnchangedCapacity(t *testing.T) {
+	store, _ := records.New(t.TempDir())
+	workersFake := &fakeWorkers{states: map[string]string{}}
+	m, err := New(&fakeCoordinator{}, workersFake, store, Policy{Strategy: model.GroupingOwner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var observed []int
+	ctx := WithWorkerStartObserver(t.Context(), func() {
+		observed = append(observed, len(workersFake.starts))
+	})
+	record, err := m.Start(ctx, "api", "file:///programs/api.ts", testOptions(1, 4, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if _, err := m.ReconcileCapacity(ctx, record.ServiceID, 1); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := m.EnsureCapacity(ctx, record.ServiceID, 4, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !slices.Equal(observed, []int{0}) {
+		t.Fatalf("unchanged capacity notified starts: %v", observed)
+	}
+	workersFake.states[record.WorkerIDs[0]] = "failed"
+	if _, err := m.ReconcileCapacity(ctx, record.ServiceID, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Scale(ctx, record.ServiceID, 2); err != nil {
+		t.Fatal(err)
+	}
+	workersFake.startErr = errors.New("start failed")
+	if _, err := m.Scale(ctx, record.ServiceID, 3); err == nil {
+		t.Fatal("accepted failed startup")
+	}
+	if !slices.Equal(observed, []int{0, 1, 2, 3}) {
+		t.Fatalf("notifications must precede actual start attempts: %v", observed)
+	}
+}
+
 func TestServiceScaleReplacesFailedWorkerAtUnchangedDesiredCount(t *testing.T) {
 	store, _ := records.New(t.TempDir())
 	workersFake := &fakeWorkers{states: map[string]string{}}
