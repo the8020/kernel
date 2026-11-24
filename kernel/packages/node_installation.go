@@ -98,8 +98,8 @@ func (s *Store) registerNode(ctx context.Context, commits map[string]string) err
 }
 
 // Catch up to an already published schema/package version without replaying
-// system hooks. The database lock only spans the recheck and local rename.
-func (s *Store) installPublished(ctx context.Context, stage stagedSynchronization) (bool, error) {
+// system hooks. A true result on error retains sources for reconciliation.
+func (s *Store) installPublished(ctx context.Context, stages ...stagedSynchronization) (bool, error) {
 	c, ok := s.schemaDeployment().(*ActivationCoordinator)
 	if !ok || s.nodeID == "" {
 		return false, nil
@@ -114,45 +114,61 @@ func (s *Store) installPublished(ctx context.Context, stage stagedSynchronizatio
 			return false, err
 		}
 	}
-	entry, found, err := s.index.Get(ctx, stage.PackageID)
-	if err != nil {
-		return false, err
-	}
 	selected, _ := ctx.Value(nodeSelectionKey{}).(NodeSelection)
-	if !selected.Restore && (!found || entry.State != "ready" || entry.ActiveCommit != stage.Commit) {
-		return false, nil
-	}
-	var pending bool
-	err = c.database.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM `+activationsTable+` a JOIN `+activationPackagesTable+` p ON p."activationId"=a."activationId" WHERE a."stage" IN `+unfinishedActivationStages+` AND p."packageId"=$1)`, stage.PackageID).Scan(&pending)
-	if err != nil {
-		return false, err
-	}
-	if pending {
-		return false, fmt.Errorf("%s has an unfinished activation", stage.PackageID)
+	for _, stage := range stages {
+		entry, found, err := s.index.Get(ctx, stage.PackageID)
+		if err != nil {
+			return false, err
+		}
+		if !selected.Restore && (!found || entry.State != "ready" || entry.ActiveCommit != stage.Commit) {
+			return false, nil
+		}
+		var pending bool
+		err = c.database.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM `+activationsTable+` a JOIN `+activationPackagesTable+` p ON p."activationId"=a."activationId" WHERE a."stage" IN `+unfinishedActivationStages+` AND p."packageId"=$1)`, stage.PackageID).Scan(&pending)
+		if err != nil {
+			return false, err
+		}
+		if pending {
+			return false, fmt.Errorf("%s has an unfinished activation", stage.PackageID)
+		}
 	}
 	tx, err := c.database.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback()
-	if err = writeNodeCommit(ctx, tx, s.nodeID, stage.PackageID, stage.Commit); err != nil {
-		return false, err
+	for _, stage := range stages {
+		if err := writeNodeCommit(ctx, tx, s.nodeID, stage.PackageID, stage.Commit); err != nil {
+			return false, err
+		}
 	}
 	if err = bumpPackageRevision(ctx, tx, "packages:"+s.nodeID, database.EncodeTime(c.database, time.Now())); err != nil {
 		return false, err
 	}
-	if stage.exists {
-		err = unix.Renameat2(unix.AT_FDCWD, stage.root, unix.AT_FDCWD, stage.destination, unix.RENAME_EXCHANGE)
-	} else {
-		err = os.Rename(stage.root, stage.destination)
-	}
-	if err != nil {
-		return false, err
-	}
-	if err = syncPackageDirectory(filepath.Dir(stage.destination)); err != nil {
-		return false, err
+	for i, stage := range stages {
+		switched := i
+		err := renamePublished(stage.root, stage.destination, stage.exists)
+		if err == nil {
+			switched++
+			err = syncPackageDirectory(filepath.Dir(stage.destination))
+		}
+		if err != nil {
+			var restoreErr error
+			for j := switched - 1; j >= 0; j-- {
+				prior := stages[j]
+				restoreErr = errors.Join(restoreErr, renamePublished(prior.destination, prior.root, prior.exists), syncPackageDirectory(filepath.Dir(prior.destination)))
+			}
+			return restoreErr != nil, errors.Join(err, restoreErr)
+		}
 	}
 	return true, tx.Commit()
+}
+
+func renamePublished(from, to string, exchange bool) error {
+	if exchange {
+		return unix.Renameat2(unix.AT_FDCWD, from, unix.AT_FDCWD, to, unix.RENAME_EXCHANGE)
+	}
+	return os.Rename(from, to)
 }
 
 func (s *Store) validateNodeInstalled(ctx context.Context, commits map[string]string) error {

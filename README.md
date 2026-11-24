@@ -1,5 +1,15 @@
 # 80|20 kernel
 
+## 0.10.18: selected package synchronization
+
+Ordinary development sync prepares compatible packages together. Explicit
+development sync saves displaced work in a separate recovery checkout before
+installing the database-selected revision; import and preview do not opt in.
+A prepared kernel update restores the exact files of selected recommendations,
+including files omitted by sparse checkout. Unselected packages are unchanged.
+The recommended set includes Packages 0.10.12 and UUI 0.10.15, which restores
+Home data after repeated Back navigation.
+
 ## 0.10.17: upgrade and publication fixes
 
 Updates check the complete installed package/source prerequisites before kernel
@@ -494,12 +504,13 @@ and interrupts running work. It preserves data and configuration. After startup,
 it installs missing recommended packages and advances older versions using the
 new kernel's `node/kernel/scripts/bootstrap-packages.toml`. Entries with a
 `version` select that Git tag; entries without one follow the remote default
-branch. Updates only fast-forward and preserve local commits, uncommitted edits,
-custom sources, and newer versions, reporting skipped packages. A package
-installation failure keeps the update pending; retry the same kernel version
-after repairing it. Unpublished edits in shared package directories can block
-activation of other packages; publish that work or move it aside before
-retrying.
+branch. **Save work you want to keep before a prepared update:** when the
+old helper has recorded the target's source selections, the target may replace
+edits and locally advanced versions in those selected packages. Local/custom
+source exclusions and unlisted packages are not replacement targets. A legacy
+preflight without selections grants no such authority. A selected package that
+could not be applied keeps the update pending; retry the same version after
+repair. Standalone recommendations retain their fast-forward and edit guards.
 
 To apply the current kernel's recommendations independently:
 

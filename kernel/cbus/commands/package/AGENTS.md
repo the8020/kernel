@@ -47,11 +47,13 @@ Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
   inspection lists bounded refs without cloning and may name one global secret
   for a private source, applied only as a transient authorization header.
   Version listing fetches and reports bounded commit history. Synchronization
-  accepts one, several, or all indexed packages and reports only package ID,
-  resolved commit, and success for each result; Git and service-refresh details
-  remain internal. The optional `--git-username` selects a Basic username;
-  `--git-token-stdin` supplies either its password or a token securely, without
-  storing either in package state.
+  accepts one, several, or all indexed packages and reports package ID, resolved
+  commit, success and any displaced checkout's `recovery_copy`. The native
+  command requests recovery; a generic runtime invocation must explicitly
+  request `recover_checkout`. Preview and routed transports do neither. Other
+  Git and service-refresh details remain internal. The optional `--git-username`
+  selects a Basic username; `--git-token-stdin` supplies either its password or
+  a token securely, without storing either in package state.
 - Activation invokes the shared package-scoped reindex entry point after source
   publication. Command adapters neither enumerate services nor implement their
   configuration or refresh. Publication failures remain explicit package
@@ -71,6 +73,8 @@ Parent DOX: [kernel/kernel/cbus/commands DOX](../AGENTS.md).
   stage before one activation; failure details distinguish candidates never
   applied. The package store owns version/fast-forward decisions and source
   protection, including preservation of local work and custom sources.
+  `--prepared-update` delegates with the running build ID, not a caller-chosen
+  source or revision. Only matching preflight evidence grants replacement.
 - Repository initialization is explicit, never inferred from discovery, and
   creates one initial commit at the package root. Remote configuration rejects
   embedded credentials. Fetch refreshes refs/tags without changing the checkout.

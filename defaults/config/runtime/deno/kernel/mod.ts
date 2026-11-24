@@ -113,6 +113,7 @@ export interface PackageVersions {
 
 export interface PackageSynchronization {
   package_id: string;
+  recovery_copy?: string;
   commit: string;
   success: boolean;
   error?: string;
@@ -1143,7 +1144,7 @@ export const kernel = Object.freeze({
       packageIds: string[] = [],
       gitToken?: string,
       gitUsername?: string,
-      schema: SchemaActivationOptions = {},
+      schema: SchemaActivationOptions & { recover_checkout?: boolean } = {},
     ): Promise<PackageSynchronization[]> {
       if (
         schema.force_columns?.length || schema.approved_plan ||
@@ -1155,6 +1156,7 @@ export const kernel = Object.freeze({
         "package.synchronize",
         optionalArguments({
           packages: packageIds.length === 0 ? undefined : packageIds.join(","),
+          recover_checkout: schema.recover_checkout,
           git_token: gitToken,
           git_username: gitUsername,
           force_columns: schema.force_columns?.join(","),

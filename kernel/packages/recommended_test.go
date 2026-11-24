@@ -1,6 +1,8 @@
 package packages
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -145,6 +147,94 @@ func TestRecommendedPackagesPreserveWorkAndOnlyAdvance(t *testing.T) {
 	if _, exists, _ := store.index.Get(t.Context(), "acme/unreached"); exists {
 		t.Fatal("continued after failed recommendation")
 	}
+	t.Run("prepared target", func(t *testing.T) {
+		writeFile(t, filepath.Join(working, "new.txt"), "maintainer 0.9.3")
+		writeFile(t, filepath.Join(working, "feature/module.ts"), "export const selected = true;\n")
+		target := commit("selected marker")
+		runTestGit(t, git, working, "tag", "0.9.3")
+		push()
+		setVersion("0.9.3")
+		origin := runTestGit(t, git, installed, "remote", "get-url", "origin")
+		sentinel := filepath.Join(root, "packages/acme/sentinel")
+		runTestGit(t, git, "", "clone", "-q", bare, sentinel)
+		sentinelHead := runTestGit(t, git, sentinel, "rev-parse", "HEAD")
+		sentinelOrigin := runTestGit(t, git, sentinel, "remote", "get-url", "origin")
+		writeFile(t, filepath.Join(sentinel, "private.txt"), "unselected")
+		writeFile(t, filepath.Join(installed, "new.txt"), "client edit")
+		writeFile(t, filepath.Join(installed, "extra.txt"), "client extra")
+		routes := []RecommendedSource{{PackageID: "acme/demo", Source: origin}}
+		rows, err := store.InstallRecommendedPackagesFrom(t.Context(), routes)
+		if err != nil || len(rows) != 1 || rows[0].Status != "skipped" || rows[0].Excluded {
+			t.Fatalf("ordinary result: %+v, %v", rows, err)
+		}
+		if head, err := CleanRepositoryHead(t.Context(), installed); !errors.Is(err, errDirtyRepository) || head != "" {
+			t.Fatalf("startup baseline unexpectedly clean: %s %v", head, err)
+		}
+		build := "0.10.18+" + target
+		manifest, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		update := filepath.Join(root, "node/kernel/update")
+		writeFile(t, filepath.Join(update, "state.json"), `{"phase":"installed","target":"0.10.18"}`)
+		receipt, err := json.Marshal(map[string]any{"target": "0.10.18", "commit": target, "manifest": fmt.Sprintf("%x", sha256.Sum256(manifest)), "routes": routes})
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(update, "prerequisites.json"), string(receipt))
+		if err := store.RestorePreparedBaseline(t.Context(), "wrong build"); err != nil {
+			t.Fatal(err)
+		}
+		read := func(path string) string {
+			t.Helper()
+			b, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return string(b)
+		}
+		if read(filepath.Join(installed, "new.txt")) != "client edit" {
+			t.Fatal("wrong build replaced bytes")
+		}
+		t.Logf("before: selected=acme/demo old=%s target=%s file=%q unselected=%s", fourth, target, read(filepath.Join(installed, "new.txt")), sentinelHead)
+		if err := store.RestorePreparedBaseline(t.Context(), build); err != nil {
+			t.Fatal(err)
+		}
+		if head, err := CleanRepositoryHead(t.Context(), installed); err != nil || head != fourth || read(filepath.Join(installed, "new.txt")) != "second" {
+			t.Fatalf("baseline: %s %v", head, err)
+		}
+		writeFile(t, filepath.Join(sentinel, "new.txt"), "unrelated edit")
+		runTestGit(t, git, installed, "config", "core.worktree", sentinel)
+		if _, err := store.InstallPreparedRecommendationsFrom(t.Context(), routes, build); err == nil || !strings.Contains(err.Error(), "self-contained working tree") {
+			t.Fatalf("redirected checkout: %v", err)
+		}
+		if read(filepath.Join(sentinel, "new.txt")) != "unrelated edit" || read(filepath.Join(installed, "new.txt")) != "second" || runTestGit(t, git, installed, "rev-parse", "HEAD") != fourth {
+			t.Fatal("rejected update changed a checkout")
+		}
+		runTestGit(t, git, installed, "config", "core.worktree", installed)
+		if _, err := store.InstallPreparedRecommendationsFrom(t.Context(), routes, build); err == nil || !strings.Contains(err.Error(), "self-contained working tree") || read(filepath.Join(installed, "new.txt")) != "second" {
+			t.Fatalf("staging copy retained the live working tree: %v", err)
+		}
+		runTestGit(t, git, installed, "config", "--unset", "core.worktree")
+		runTestGit(t, git, installed, "sparse-checkout", "set", "--cone", "other")
+		rows, err = store.InstallPreparedRecommendationsFrom(t.Context(), routes, build)
+		if err != nil || len(rows) != 1 || rows[0].Commit != target || rows[0].Status != "updated" {
+			t.Fatalf("prepared result: %+v, %v", rows, err)
+		}
+		if head, err := CleanRepositoryHead(t.Context(), installed); err != nil || head != target || read(filepath.Join(installed, "new.txt")) != "maintainer 0.9.3" {
+			t.Fatalf("target: %s %v", head, err)
+		}
+		if _, err := os.Stat(filepath.Join(installed, "extra.txt")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("unexpected selected extra file", err)
+		}
+		if read(filepath.Join(installed, "feature/module.ts")) != "export const selected = true;\n" {
+			t.Fatal("selected module content differs from target")
+		}
+		if runTestGit(t, git, installed, "remote", "get-url", "origin") != origin || runTestGit(t, git, sentinel, "remote", "get-url", "origin") != sentinelOrigin || runTestGit(t, git, sentinel, "rev-parse", "HEAD") != sentinelHead || read(filepath.Join(sentinel, "private.txt")) != "unselected" {
+			t.Fatal("upstream or sentinel changed")
+		}
+		t.Logf("after: selected=%s file=%q unchanged sentinel=%s; both origins unchanged", target, read(filepath.Join(installed, "new.txt")), sentinelHead)
+	})
 }
 
 func TestRecommendedSourcesUseAuthenticatedMirrorAndPreserveProtection(t *testing.T) {
@@ -288,7 +378,7 @@ func TestRecommendedPackagesPreserveLocalAndCustomSources(t *testing.T) {
 	path := filepath.Join(root, "node/kernel/scripts/bootstrap-packages.toml")
 	writeFile(t, path, "schema = 1\n[[packages]]\nid = 'acme/local'\nsource = 'https://upstream.test/acme/local.git'\n[[packages]]\nid = 'acme/fork'\nsource = 'https://upstream.test/acme/fork.git'\n")
 	rows, err := store.InstallRecommendedPackages(t.Context())
-	if err != nil || len(rows) != 2 || rows[0].Status != "skipped" || rows[1].Status != "skipped" {
+	if err != nil || len(rows) != 2 || rows[0].Status != "skipped" || rows[1].Status != "skipped" || !rows[0].Excluded || !rows[1].Excluded {
 		t.Fatalf("local/custom recommendations = %+v, %v", rows, err)
 	}
 	fork, _ := store.InspectPackageIndex("acme/fork")

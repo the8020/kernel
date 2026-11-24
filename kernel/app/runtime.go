@@ -623,6 +623,10 @@ func initializeRuntime(ctx context.Context, root, instanceUUID string, paths ins
 		// Recovery may restore other package records after its first index pass.
 		// The initial node index must include the entire settled package set.
 		startupIndexed = false
+		if err := packageStore.RestorePreparedBaseline(ctx, serviceSet.Instance.BuildID); err != nil {
+			runtimeServices.Failure = "restore selected update baseline: " + err.Error()
+			return runtimeServices, closeRuntime
+		}
 	}
 	packageCommits, err := tableEvaluator.PackageSet(ctx)
 	if err != nil {

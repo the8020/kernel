@@ -17,7 +17,7 @@ import (
 )
 
 func New(serviceSet *services.Services) core.Handler {
-	return func(ctx context.Context, _ core.Request) (core.Result, error) {
+	return func(ctx context.Context, request core.Request) (core.Result, error) {
 		management, err := packagecommands.Management(serviceSet)
 		if err != nil {
 			return nil, err
@@ -46,7 +46,12 @@ func New(serviceSet *services.Services) core.Handler {
 		if err := json.Unmarshal(encoded, &sources); err != nil {
 			return nil, commandutil.OperationError(err)
 		}
-		results, err := management.InstallRecommendedPackagesFrom(ctx, sources)
+		var results []packages.RecommendedPackageResult
+		if commandutil.Bool(request, "prepared_update") {
+			results, err = management.InstallPreparedRecommendationsFrom(ctx, sources, serviceSet.Instance.BuildID)
+		} else {
+			results, err = management.InstallRecommendedPackagesFrom(ctx, sources)
+		}
 		failure := commandutil.OperationError(err)
 		var commandError *core.Error
 		if errors.As(failure, &commandError) {

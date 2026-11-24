@@ -50,7 +50,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - `RecommendedPackages` and `InstallRecommendedPackagesFrom` expose the
   installed list and complete transport selection to the recommendation command.
   The ordinary program runner invokes the deployments source selector; the
-  package store retains source protection, version decisions and activation.
+  package store retains source protection, version decisions and activation. The
+  prepared variant also receives the running kernel's build identity.
 - Signing is available before database/runtime startup and exposes no private
   key material. User/session policy is not a kernel dependency.
 - The sandbox handler contract exposes live lifecycle operations separately from

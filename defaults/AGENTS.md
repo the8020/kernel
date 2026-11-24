@@ -64,7 +64,8 @@ Parent DOX: [kernel DOX](../AGENTS.md).
   prerequisite set before adopting this kernel, never deployments alone. Kernel
   updates check policy/schema before switching and invoke recommendations after
   startup; unversioned recommendations follow the remote default branch.
-  Existing local work, custom sources, and newer versions are preserved.
+  Standalone recommendations preserve local work and newer versions. Prepared
+  updates can replace selected work; local/custom source exclusions remain.
 - Materialized images, build caches, downloads, smoke records, and temporary
   construction output belong under `node/kernel/runtime/` or source
   `.development/`, never in this tree.

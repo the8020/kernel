@@ -174,6 +174,7 @@ type PackageManagementService interface {
 	SynchronizePackages(context.Context, []string) ([]workspacepackages.PackageSynchronization, error)
 	RecommendedPackages() ([]workspacepackages.RecommendedPackage, error)
 	InstallRecommendedPackagesFrom(context.Context, []workspacepackages.RecommendedSource) ([]workspacepackages.RecommendedPackageResult, error)
+	InstallPreparedRecommendationsFrom(context.Context, []workspacepackages.RecommendedSource, string) ([]workspacepackages.RecommendedPackageResult, error)
 	DeletePackage(context.Context, string) error
 	CreateLocalPackage(context.Context, string, string, string) (workspacepackages.LocalPackage, error)
 	ListPackageRepositories(context.Context) ([]workspacepackages.Repository, error)

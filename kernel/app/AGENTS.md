@@ -350,6 +350,10 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   accepted state, and healthy fragments publish independently. Pending repair
   batches only the remaining owners. The first startup/recovery reindex fills
   the whole local index; startup does not repeat a completed bootstrap pass.
+- On a prepared target, after pending activation recovery and before startup
+  validates the whole catalog, restore only selected installed Git trees to
+  their node-ready commits. Ordinary startup and unselected checkouts retain the
+  existing validation rules.
 - The same pass runs ordered `index-packages` providers before ordered
   `index-services` providers in one ordinary `hooks/index-packages` invocation.
   Both receive shared package drafts and immutable scope. Both chains

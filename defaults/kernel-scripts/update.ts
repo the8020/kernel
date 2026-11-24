@@ -279,18 +279,28 @@ async function prerequisites(root: string, target: string) {
   }
   console.log("update: checking package/source prerequisites before shutdown");
   // Execute installed application policy through the ordinary Worker runtime.
+  const manifestText = await Deno.readTextFile(manifest);
   const code = `import kernel from "@the8020/kernel";
 import { parse } from "/p/the8020/packages/toml.ts";
 export default async function() {
-  const list = parse(${JSON.stringify(await Deno.readTextFile(manifest))});
+  const list = parse(${JSON.stringify(manifestText)});
   const selected = await kernel.programs.run({
     programId: "the8020/deployments/recommended-sources",
     arguments: [list.packages], timeoutMs: 300000
   });
   if (selected.state !== "succeeded") throw new Error(selected.failure);
   await kernel.database.execute('SELECT "packageId" FROM "the8020__packages__node_packages" WHERE 1=0');
-  return true;
+  const remaining = new Set(list.packages.map(({id}) => id));
+  if (!Array.isArray(selected.result) || remaining.size !== list.packages.length || selected.result.length !== remaining.size) throw new Error("Incomplete recommended source selection");
+  return selected.result.map(({package_id, source, skip}) => {
+    if (!remaining.delete(package_id)) throw new Error("Unexpected recommended package");
+    if (skip) return {package_id, skip: true};
+    const url = new URL(source);
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error("Invalid recommended transport");
+    return {package_id, source};
+  });
 }`;
+  let routes;
   try {
     const result = JSON.parse(
       await command(
@@ -312,8 +322,11 @@ export default async function() {
         320_000,
       ),
     );
-    if (result.success !== true || result.result?.result !== true) {
-      throw new Error(JSON.stringify(result));
+    routes = result.result?.result;
+    if (
+      result.success !== true || !Array.isArray(routes) || routes.length > 256
+    ) {
+      throw new Error("Missing recommended source selections");
     }
   } catch (error) {
     throw new Error(
@@ -321,10 +334,21 @@ export default async function() {
     );
   }
   const metadata = await json<Release>(`${release}/release.json`);
-  await save(`${kernel}/update/prerequisites.json`, {
+  const receipt = {
     target,
     commit: metadata.commit,
-  });
+    manifest: new Uint8Array(
+      await crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(manifestText),
+      ),
+    ).toHex(),
+    routes,
+  };
+  if (new TextEncoder().encode(JSON.stringify(receipt) + "\n").length > 65536) {
+    throw new Error("Oversized package prerequisite receipt");
+  }
+  await save(`${kernel}/update/prerequisites.json`, receipt);
 }
 
 async function prepare(root: string, target: string) {
@@ -638,14 +662,36 @@ async function finish(root: string, state: Update) {
   }
   await migrations(root, state, true);
   console.log("update: installing recommended packages");
-  await command(
-    `${kernel}/bin/admin`,
-    ["--root", root, "kernel.packages.recommended"],
-    undefined,
-    undefined,
-    330_000,
-    "installing recommended packages",
+  const recommendations = JSON.parse(
+    await command(
+      `${kernel}/bin/admin`,
+      [
+        "--root",
+        root,
+        "--json",
+        "kernel.packages.recommended",
+        "--prepared-update",
+      ],
+      undefined,
+      undefined,
+      330_000,
+    ),
   );
+  if (
+    recommendations.success !== true ||
+    !Array.isArray(recommendations.result?.packages)
+  ) {
+    throw new Error("Missing recommended package results");
+  }
+  for (const row of recommendations.result.packages) {
+    if (["installed", "updated", "unchanged"].includes(row.status)) continue;
+    if (row.status === "skipped" && row.excluded === true) continue;
+    throw new Error(
+      `Recommended package ${row.package_id} was not applied: ${
+        row.reason ?? row.status
+      }`,
+    );
+  }
   if (observed.runtime_application_failure) {
     console.log(
       `update: application initialization needs attention: ${observed.runtime_application_failure}`,

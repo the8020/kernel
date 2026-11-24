@@ -37,6 +37,7 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
 - `kernel.packages.synchronize(ids, gitToken?, gitUsername?, schema?)` accepts a
   transient token or Basic password; omitted username retains `x-access-token`.
   Neither credential is persisted in desired package state or Git configuration.
+  A `recovery_copy` result identifies a private local copy of displaced work.
 - `schema` carries exact `force_columns`, `approved_plan` and `schema_preview`.
   Destructive/preview calls first require the native schema-option capability;
   DB capability and all policy are validated at the schema owner before source
@@ -144,9 +145,11 @@ Parent DOX: [kernel/defaults/config/runtime/deno DOX](../AGENTS.md).
   transparent encryption/decryption. The SDK exports no named-secret operations.
 - `kernel.packages` provides typed index list/inspect/set, source inspection,
   version listing, repository inspect/fetch/pull/push/checkout, concise
-  ID/commit/success synchronization results, and local creation through one
-  generic private runtime-operation bridge; the supervisor interprets no package
-  semantics.
+  synchronization results with an optional recovery copy, and local creation
+  through one generic private runtime-operation bridge; the supervisor
+  interprets no package semantics.
+- Development command synchronization explicitly passes `recover_checkout`;
+  generic SDK synchronization (including import/install) does not request it.
 - `kernel.packages.transport` accepts an invocation-scoped Git URL and named
   credential. Fetch and version inspection keep this transport independent of
   the checkout origin. Resolve accepts a commit prefix or a `tag:<name>`.

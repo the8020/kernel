@@ -4,6 +4,7 @@ package synchronize
 import (
 	"context"
 	"the8020/kernel/deployment"
+	"the8020/kernel/packages"
 
 	"the8020/kernel/cbus/commands/internal/commandutil"
 	packagecommands "the8020/kernel/cbus/commands/package"
@@ -14,6 +15,9 @@ import (
 func New(serviceSet *services.Services) core.Handler {
 	return func(ctx context.Context, request core.Request) (core.Result, error) {
 		ctx = deployment.WithSchemaOptions(ctx, deployment.SchemaOptions{ForceColumns: commandutil.CSV(request, "force_columns"), ApprovedPlan: commandutil.String(request, "approved_plan"), Preview: commandutil.Bool(request, "schema_preview")})
+		if !deployment.Options(ctx).Preview && (request.CommandID == "kernel.packages.synchronize" || commandutil.Bool(request, "recover_checkout")) {
+			ctx = packages.WithCheckoutRecovery(ctx)
+		}
 		packages, err := packagecommands.SynchronizeWithCredential(ctx, serviceSet, commandutil.CSV(request, "packages"), commandutil.String(request, "git_token"), commandutil.String(request, "git_username"))
 		return core.Result{"packages": packages}, err
 	}

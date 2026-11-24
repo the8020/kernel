@@ -2,7 +2,7 @@ version = 1
 id = "kernel.packages.synchronize"
 path = ["kernel.packages.synchronize"]
 summary = "Synchronize desired packages"
-description = "Clones or atomically replaces selected indexed package repositories at their desired commit, tag, or latest default-branch commit, then refreshes their services when the runtime is active. Reports only package ID, resolved commit, and success. Omit --packages to synchronize the complete index."
+description = "Synchronize selected indexed repositories to their desired commit, tag, or default branch. Displaced local work is saved under the instance checkout-recovery directory; recovery_copy identifies the complete checkout. Copy it to a new private directory to inspect or recover work. Omit --packages to select the complete index."
 mutates_state = true
 restart_behavior = "none"
 [handler]

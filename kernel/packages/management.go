@@ -3,6 +3,7 @@ package packages
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -94,6 +95,7 @@ type PackageVersions struct {
 }
 
 type PackageSynchronization struct {
+	RecoveryCopy   string          `json:"recovery_copy,omitempty"`
 	PackageID      string          `json:"package_id"`
 	Source         string          `json:"source,omitempty"`
 	Requested      string          `json:"requested"`
@@ -403,6 +405,16 @@ func (s *Store) synchronizePackages(ctx context.Context, packageIDs []string, to
 		ids = append(ids, packageID)
 	}
 	sort.Strings(ids)
+	if len(ids) > 1 {
+		results, err := s.synchronizePackageBatch(ctx, ids, token, username)
+		for i := range results {
+			results[i].Success = err == nil
+			if err != nil {
+				results[i].Error = redactGitCredential(err.Error(), token, username)
+			}
+		}
+		return results, nil
+	}
 	results := make([]PackageSynchronization, 0, len(ids))
 	for _, packageID := range ids {
 		result, err := s.synchronizePackage(ctx, packageID, token, username, nil)
@@ -416,6 +428,150 @@ func (s *Store) synchronizePackages(ctx context.Context, packageIDs []string, to
 			break
 		}
 	}
+	return results, nil
+}
+
+func (s *Store) synchronizePackageBatch(ctx context.Context, ids []string, token, username string) (results []PackageSynchronization, err error) {
+	results = make([]PackageSynchronization, len(ids))
+	for i, id := range ids {
+		results[i].PackageID = id
+	}
+	unlock, err := LockSources(ctx, s.packagesRoot, ids)
+	if err != nil {
+		return results, err
+	}
+	defer unlock()
+	hook := s.schemaDeployment()
+	stages := make([]stagedSynchronization, len(ids))
+	var transactionID string
+	retain, prepared := false, false
+	defer func() {
+		if err != nil && transactionID != "" && hook != nil {
+			cleanup := context.WithoutCancel(ctx)
+			if prepared && !retain {
+				err = errors.Join(err, hook.Complete(cleanup, transactionID, false))
+			}
+			forward, checkErr := deployment.NeedsForward(cleanup, hook, transactionID)
+			if errors.Is(checkErr, sql.ErrNoRows) {
+				checkErr = nil // Preparation can reject before admitting the fresh ID.
+			}
+			retain = retain || forward || checkErr != nil
+			err = errors.Join(err, checkErr)
+		}
+		if !retain {
+			for _, stage := range stages {
+				if stage.stageRoot != "" {
+					err = errors.Join(err, os.RemoveAll(stage.stageRoot))
+				}
+			}
+		}
+		if err != nil && transactionID != "" {
+			err = fmt.Errorf("activation %s: %w", transactionID, err)
+		}
+	}()
+	for i, id := range ids {
+		stages[i], err = s.stagePackageSynchronization(ctx, id, token, username, nil)
+		results[i] = stages[i].PackageSynchronization
+		results[i].PackageID = id
+		if err != nil {
+			return results, fmt.Errorf("stage %s: %w", id, err)
+		}
+		if err := s.checkBatchVersionSwitch(ctx, stages[i], true); err != nil && !(stages[i].RecoveryCopy != "" && errors.Is(err, errNotFastForward)) {
+			return results, fmt.Errorf("stage %s: %w", id, err)
+		}
+	}
+	candidates := []deployment.Candidate{}
+	changed := []int{}
+	coordinator, nodeActivation := hook.(*ActivationCoordinator)
+	nodeActivation = nodeActivation && s.nodeID != ""
+	allPublished := nodeActivation
+	for i, stage := range stages {
+		if stage.root == "" {
+			continue
+		}
+		published := stage.entry.State == "ready" && stage.entry.ActiveCommit == stage.Commit
+		allPublished = allPublished && published
+		if !nodeActivation && published && stage.exists && stage.PreviousCommit == stage.Commit {
+			if _, err := replacePackageDirectory(stage.destination, stage.root); err != nil {
+				return results, err
+			}
+			if err := finalizePackageDirectory(stage.destination); err != nil {
+				return results, err
+			}
+			continue
+		}
+		changed = append(changed, i)
+		candidates = append(candidates, deployment.Candidate{PackageID: stage.PackageID, Root: stage.root, Commit: stage.Commit})
+	}
+	if len(candidates) == 0 {
+		return results, nil
+	}
+	if allPublished {
+		if _, err := coordinator.validate(ctx, candidates); err != nil {
+			return results, err
+		}
+		selected := make([]stagedSynchronization, 0, len(changed))
+		for _, i := range changed {
+			selected = append(selected, stages[i])
+		}
+		done, err := s.installPublished(ctx, selected...)
+		if err != nil {
+			retain = done
+			return results, err
+		}
+		if done {
+			if coordinator.reindex != nil {
+				if err := coordinator.reindex(ctx, ids); err != nil {
+					return results, err
+				}
+			}
+			for _, i := range changed {
+				results[i].Changed, results[i].Cloned = stages[i].PreviousCommit != stages[i].Commit, !stages[i].exists
+			}
+			return results, nil
+		}
+	}
+	transactionID, err = activationID()
+	if err != nil {
+		return results, err
+	}
+	if hook != nil {
+		prepared = true
+		if err := hook.Prepare(ctx, transactionID, candidates); err != nil {
+			return results, fmt.Errorf("prepare synchronized package set: %w", err)
+		}
+		if outcome, ok := hook.(deployment.OutcomeHook); ok {
+			value, err := outcome.SchemaOutcome(ctx, transactionID)
+			if err != nil {
+				return results, err
+			}
+			for _, i := range changed {
+				results[i].SchemaResult = value
+			}
+		}
+	}
+	for _, i := range changed {
+		stage := stages[i]
+		switched, switchErr := replacePackageDirectory(stage.destination, stage.root)
+		retain = retain || switched
+		if switchErr != nil {
+			return results, fmt.Errorf("activate synchronized package %s: %w", stage.PackageID, switchErr)
+		}
+	}
+	if hook != nil {
+		if err := hook.Complete(ctx, transactionID, true); err != nil {
+			return results, fmt.Errorf("complete synchronized package set: %w", err)
+		}
+		prepared = false
+	}
+	for _, i := range changed {
+		if err := finalizePackageDirectory(stages[i].destination); err != nil {
+			return results, err
+		}
+		results[i].Changed = stages[i].PreviousCommit != stages[i].Commit || stages[i].entry.ActiveCommit != stages[i].Commit || stages[i].entry.State != "ready"
+		results[i].Cloned = !stages[i].exists
+	}
+	retain = false
 	return results, nil
 }
 
@@ -442,7 +598,11 @@ func (s *Store) synchronizePackage(ctx context.Context, packageID, transientToke
 	hook := s.schemaDeployment()
 	var transactionID string
 	sourceSwitched := false
+	retainStage := false
 	defer func() {
+		if retainStage {
+			return
+		}
 		if !sourceSwitched && hook != nil && transactionID != "" {
 			forward, checkErr := deployment.NeedsForward(context.WithoutCancel(ctx), hook, transactionID)
 			if checkErr != nil || forward {
@@ -471,6 +631,7 @@ func (s *Store) synchronizePackage(ctx context.Context, packageID, transientToke
 	if s.nodeID != "" && (entry.ActiveCommit == result.Commit || selected.Restore) && len(deployment.Options(ctx).ForceColumns) == 0 && deployment.Options(ctx).ApprovedPlan == "" {
 		done, err := s.installPublished(ctx, staged)
 		if err != nil {
+			retainStage = done
 			return result, err
 		}
 		if done {
@@ -536,6 +697,7 @@ type stagedSynchronization struct {
 	entry                        PackageIndex
 	root, stageRoot, destination string
 	exists                       bool
+	excluded                     bool
 }
 
 // The caller holds the source lock; staging never publishes source or desired state.
@@ -554,6 +716,7 @@ func (s *Store) stagePackageSynchronization(ctx context.Context, packageID, tran
 	if recommendation != nil {
 		if exists && (entry.Local || (entry.Source != recommendation.Source && (recommendation.originalSource == "" || entry.Source != recommendation.originalSource))) {
 			result.skipped = "local package or custom source"
+			result.excluded = true
 			return result, nil
 		}
 		if recommendation.originalSource != "" && recommendation.Source != recommendation.originalSource {
@@ -592,8 +755,26 @@ func (s *Store) stagePackageIndex(ctx context.Context, entry PackageIndex, trans
 			exists = false
 		}
 	}
+	repairEdit := false
+	recoverCheckout := ctx.Value(checkoutRecoveryKey{}) == true && !entry.Local && recommendation == nil
 	if exists {
-		result.PreviousCommit, err = s.cleanRepositoryHead(ctx, destination)
+		if recommendation != nil && recommendation.exact {
+			if err := s.validatePreparedCheckout(ctx, destination); err != nil {
+				return result, err
+			}
+		}
+		if recoverCheckout {
+			if err := validateRecoveryGit(destination); err != nil {
+				return result, err
+			}
+			result.PreviousCommit, err = s.gitValue(ctx, destination, "rev-parse", "--verify", "HEAD^{commit}")
+		} else {
+			result.PreviousCommit, err = s.cleanRepositoryHead(ctx, destination)
+			if recommendation != nil && recommendation.exact && errors.Is(err, errDirtyRepository) {
+				result.PreviousCommit, err = s.gitValue(ctx, destination, "rev-parse", "--verify", "HEAD^{commit}")
+				repairEdit = true
+			}
+		}
 		if err != nil {
 			if recommendation != nil && errors.Is(err, errDirtyRepository) {
 				result.skipped = "uncommitted changes"
@@ -649,14 +830,56 @@ func (s *Store) stagePackageIndex(ctx context.Context, entry PackageIndex, trans
 		if err := copyRepository(destination, stage); err != nil {
 			return result, fmt.Errorf("stage package repository: %w", err)
 		}
-		if recommendation != nil {
+		if recommendation != nil && recommendation.exact {
+			if err := s.validatePreparedCheckout(ctx, stage); err != nil {
+				return result, err
+			}
+		}
+		if repairEdit {
+			if err := s.restorePublishedTree(ctx, stage, result.PreviousCommit); err != nil {
+				return result, err
+			}
+		}
+		if recoverCheckout {
+			if top, err := s.gitValue(ctx, stage, "rev-parse", "--show-toplevel"); err != nil || top != stage {
+				return result, errors.New("checkout recovery requires a self-contained working tree")
+			}
+			staged, err := s.gitValue(ctx, stage, "diff", "--cached", "--name-only", "-z", "HEAD")
+			if err != nil {
+				return result, err
+			}
+			if err := os.Remove(filepath.Join(stage, ".git", "index")); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return result, err
+			}
+			if _, err := s.gitValue(ctx, stage, "-c", "core.sparseCheckout=false", "-c", "core.ignoreStat=false", "read-tree", "HEAD"); err != nil {
+				return result, err
+			}
+			status, err := s.gitValue(ctx, stage, "-c", "core.fsmonitor=false", "status", "--porcelain=v1", "--untracked-files=all", "--ignored")
+			if err != nil {
+				return result, err
+			}
+			if staged != "" || status != "" {
+				result.RecoveryCopy, err = s.saveCheckout(destination, identity)
+				if err != nil {
+					return result, err
+				}
+				for _, args := range [][]string{{"reset", "--hard", "HEAD"}, {"clean", "-ffdx"}} {
+					if _, err := s.gitValue(ctx, stage, append([]string{"--git-dir=" + filepath.Join(stage, ".git"), "--work-tree=" + stage}, args...)...); err != nil {
+						return result, fmt.Errorf("clean staged checkout: %w", err)
+					}
+				}
+			}
+		}
+		if recommendation != nil && !recommendation.exact {
 			origin, _ := s.gitValue(ctx, stage, "remote", "get-url", "origin")
 			recommendation.sourceChanged = origin != entry.Source
 		}
-		if err := s.setPackageOrigin(ctx, stage, entry.Source); err != nil {
-			return result, err
+		if recommendation == nil || !recommendation.exact {
+			if err := s.setPackageOrigin(ctx, stage, entry.Source); err != nil {
+				return result, err
+			}
 		}
-		if recommendation != nil {
+		if recommendation != nil && !recommendation.exact {
 			if output, err := s.runGit(ctx, stage, nil, "config", "--local", "--replace-all", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"); err != nil {
 				return result, fmt.Errorf("configure recommended package refs: %w: %s", err, cleanGitOutput(output))
 			}
@@ -665,8 +888,15 @@ func (s *Store) stagePackageIndex(ctx context.Context, entry PackageIndex, trans
 		return result, fmt.Errorf("clone package: %w: %s", commandErr, cleanGitOutput(output))
 	}
 	var commit string
-	if routed || ctx.Value(reviewedSourceKey{}) == true {
-		if err = s.fetchTransportRefs(ctx, stage, entry.Source, authentication); err != nil {
+	if routed || ctx.Value(reviewedSourceKey{}) == true || (recommendation != nil && recommendation.exact) {
+		transport := stage
+		if exists && recommendation != nil && recommendation.exact {
+			transport = filepath.Join(stageRoot, "upstream.git")
+			if _, err := s.runGit(ctx, "", nil, "init", "--quiet", "--bare", "--template=", transport); err != nil {
+				return result, err
+			}
+		}
+		if err = s.fetchTransportRefs(ctx, transport, entry.Source, authentication); err != nil {
 			return result, err
 		}
 		ref := "refs/8020/head"
@@ -676,7 +906,10 @@ func (s *Store) stagePackageIndex(ctx context.Context, entry PackageIndex, trans
 		if entry.Commit != "" {
 			ref = entry.Commit
 		}
-		commit, err = s.gitValue(ctx, stage, "rev-parse", "--verify", ref+"^{commit}")
+		commit, err = s.gitValue(ctx, transport, "rev-parse", "--verify", ref+"^{commit}")
+		if err == nil && transport != stage {
+			_, err = s.runGit(ctx, stage, nil, "-c", "protocol.allow=never", "-c", "protocol.file.allow=always", "-c", "core.hooksPath=/dev/null", "fetch", "--quiet", "--no-tags", "--", transport, commit)
+		}
 		if err == nil && entry.Commit != "" {
 			var advertised string
 			advertised, err = s.gitValue(ctx, stage, "for-each-ref", "--count=1", "--contains="+commit, "--format=%(refname)", "refs/8020")
@@ -701,17 +934,42 @@ func (s *Store) stagePackageIndex(ctx context.Context, entry PackageIndex, trans
 		return result, err
 	}
 	if recommendation != nil && exists {
-		result.skipped, err = s.recommendationSkip(ctx, stage, result.PreviousCommit, commit, recommendation.Version)
-		if err != nil || result.skipped != "" {
-			return result, err
+		if !recommendation.exact {
+			result.skipped, err = s.recommendationSkip(ctx, stage, result.PreviousCommit, commit, recommendation.Version)
+			if err != nil || result.skipped != "" {
+				return result, err
+			}
 		}
-		if commit == result.PreviousCommit && entry.State == "ready" && entry.ActiveCommit == commit && !recommendation.sourceChanged {
+		if !repairEdit && commit == result.PreviousCommit && entry.State == "ready" && entry.ActiveCommit == commit && !recommendation.sourceChanged {
 			result.Commit = commit
 			return result, nil
 		}
 	}
-	if err := s.checkoutPackageVersion(ctx, stage, "origin", commit); err != nil {
+	if recommendation != nil && recommendation.exact && exists {
+		err = s.restorePublishedTree(ctx, stage, commit)
+	} else if recommendation != nil && recommendation.exact {
+		_, err = s.runGit(ctx, stage, []string{"GIT_NO_REPLACE_OBJECTS=1"}, "-c", "core.hooksPath=/dev/null", "checkout", "--quiet", "--detach", commit)
+	} else {
+		err = s.checkoutPackageVersion(ctx, stage, "origin", commit)
+	}
+	if err != nil {
 		return result, err
+	}
+	if exists && recoverCheckout {
+		config := filepath.Join(stage, ".git", "config")
+		if err := os.Remove(config); err != nil {
+			return result, err
+		}
+		if err := copyRepository(filepath.Join(destination, ".git", "config"), config); err != nil {
+			return result, fmt.Errorf("preserve checkout configuration: %w", err)
+		}
+		status, err := s.gitValue(ctx, stage, "status", "--porcelain=v1", "--ignored", "--untracked-files=all")
+		if err != nil {
+			return result, err
+		}
+		if status != "" {
+			return result, errors.New("staged checkout still has local changes; refusing publication")
+		}
 	}
 	if err := validateStagedPackage(stage); err != nil {
 		return result, err
@@ -719,6 +977,19 @@ func (s *Store) stagePackageIndex(ctx context.Context, entry PackageIndex, trans
 	result.Commit = commit
 	result.entry, result.root, result.stageRoot = entry, stage, stageRoot
 	result.destination, result.exists = destination, exists
+	if exists && recoverCheckout && result.RecoveryCopy == "" {
+		if err := s.checkBatchVersionSwitch(ctx, result, false); err != nil {
+			if !errors.Is(err, errNotFastForward) {
+				result.root = ""
+				return result, err
+			}
+			result.RecoveryCopy, err = s.saveCheckout(destination, identity)
+			if err != nil {
+				result.root = ""
+				return result, err
+			}
+		}
+	}
 	return result, nil
 }
 
@@ -1071,6 +1342,55 @@ func CleanRepositoryHead(ctx context.Context, path string) (string, error) {
 }
 
 var errDirtyRepository = errors.New("installed package has uncommitted changes")
+
+var errNotFastForward = errors.New("local commits or a newer installed revision; update is not a fast-forward")
+
+func (s *Store) checkBatchVersionSwitch(ctx context.Context, stage stagedSynchronization, allowRetainedPin bool) error {
+	if !stage.exists {
+		return nil
+	}
+	branch, err := s.gitValue(ctx, stage.root, "symbolic-ref", "HEAD")
+	if err != nil {
+		return err
+	}
+	branchTip, err := s.gitValue(ctx, stage.destination, "for-each-ref", "--format=%(objectname)", branch)
+	if err != nil {
+		return err
+	}
+	if branchTip != "" && branchTip != stage.PreviousCommit {
+		if err := s.checkBatchRevision(ctx, stage, branchTip, allowRetainedPin); err != nil {
+			return err
+		}
+	}
+	return s.checkBatchRevision(ctx, stage, stage.PreviousCommit, allowRetainedPin)
+}
+
+func (s *Store) checkBatchRevision(ctx context.Context, stage stagedSynchronization, previous string, allowRetainedPin bool) error {
+	if previous == stage.Commit {
+		return nil
+	}
+	err := s.requireFastForward(ctx, stage.root, previous, stage.Commit)
+	if !allowRetainedPin || !errors.Is(err, errNotFastForward) || (stage.entry.Commit == "" && stage.entry.Tag == "") {
+		return err
+	}
+	retained, err := s.gitValue(ctx, stage.root, "for-each-ref", "--contains="+previous, "--count=1", "--format=%(refname)", "refs/remotes", "refs/tags", "refs/8020", "refs/heads")
+	if err != nil {
+		return err
+	}
+	if retained == "" {
+		return errNotFastForward
+	}
+	return nil
+}
+
+func (s *Store) requireFastForward(ctx context.Context, path, previous, commit string) error {
+	_, err := s.runGit(ctx, path, nil, "merge-base", "--is-ancestor", previous, commit)
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return errNotFastForward
+	}
+	return err
+}
 
 func verifyCleanRepositoryHead(path string, run func(...string) (string, error)) (string, error) {
 	if info, err := os.Stat(filepath.Join(path, ".git")); err != nil || !info.IsDir() {

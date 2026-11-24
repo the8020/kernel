@@ -39,6 +39,7 @@ func AnnotatePublication(serviceSet *services.Services, entries []workspacepacka
 // SynchronizationResult is the complete public result for one synchronized
 // package. Detailed Git and service-refresh state remains internal.
 type SynchronizationResult struct {
+	RecoveryCopy string          `json:"recovery_copy,omitempty"`
 	PackageID    string          `json:"package_id"`
 	Commit       string          `json:"commit"`
 	Success      bool            `json:"success"`
@@ -83,6 +84,7 @@ func SynchronizeWithCredential(ctx context.Context, serviceSet *services.Service
 	firstFailure := -1
 	for index, result := range results {
 		summaries = append(summaries, SynchronizationResult{
+			RecoveryCopy: result.RecoveryCopy,
 			PackageID:    result.PackageID,
 			Commit:       result.Commit,
 			Success:      result.Success,

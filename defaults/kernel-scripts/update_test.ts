@@ -130,13 +130,14 @@ elif [[ "$*" == *kernel.packages.recommended* ]]; then
   echo recommended >> "$FIXTURE_ROOT/recommendations"
   [[ ! -f "$FIXTURE_ROOT/pending-application" ]] || exit 4
   [[ ! -f "$FIXTURE_ROOT/fail-recommendations" ]] || exit 3
+  if [[ -f "$FIXTURE_ROOT/recommendation-result" ]]; then cat "$FIXTURE_ROOT/recommendation-result"; exit; fi
   echo '{"success":true,"result":{"packages":[]}}'
 elif [[ "$*" == *"runtime eval"* ]]; then
   if [[ "$*" == *recommended-sources* ]]; then
     [[ "$*" == *"--read /workspace/packages/the8020/packages"* ]] || { echo 'preflight parser read permission missing'; exit 6; }
     echo preflight >> "$FIXTURE_ROOT/preflights"
     if [[ -f "$FIXTURE_ROOT/fail-prerequisites" ]]; then echo 'selector or node schema unavailable'; exit 5; fi
-    echo '{"success":true,"result":{"result":true}}'
+    echo '{"success":true,"result":{"result":[]}}'
   elif [[ -f "$FIXTURE_ROOT/fail-worker" ]]; then echo '{"success":true,"result":{"state":"FAILED"}}';
   else echo '{"success":true,"result":{"result":42}}'; fi
 else
@@ -425,6 +426,43 @@ Deno.test("runtime ready cannot complete an update when ordinary Workers fail", 
     );
     assert((await f.state()).phase === "installed");
     await Deno.remove(`${f.temp}/fail-worker`);
+    assert((await f.update("--finish")).code === 0);
+    assert((await f.state()).phase === "complete");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a successful command that skipped edited selected source cannot complete the update", async () => {
+  const f = await fixture("0.10.17");
+  try {
+    await f.version("0.10.18");
+    assert((await f.update("0.10.18")).code === 0);
+    assert((await f.update("--apply")).code === 0);
+    const receipt = `${f.temp}/recommendation-result`;
+    const skipped = (reason: string, excluded = false) =>
+      Deno.writeTextFile(
+        receipt,
+        JSON.stringify({
+          success: true,
+          result: {
+            packages: [{
+              package_id: "acme/demo",
+              status: "skipped",
+              reason,
+              excluded,
+            }],
+          },
+        }),
+      );
+    await skipped("uncommitted changes");
+    const result = await f.update("--finish");
+    assert(
+      result.code !== 0 && result.output.includes("acme/demo"),
+      result.output,
+    );
+    assert((await f.state()).phase === "installed");
+    await skipped("custom source", true);
     assert((await f.update("--finish")).code === 0);
     assert((await f.state()).phase === "complete");
   } finally {

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -21,6 +20,7 @@ type RecommendedPackage struct {
 	Version        string `toml:"version" json:"version"`
 	originalSource string
 	sourceChanged  bool
+	exact          bool
 }
 
 // RecommendedSource contains transport references, never credential values.
@@ -37,6 +37,7 @@ type RecommendedPackageResult struct {
 	Status    string `json:"status"`
 	Commit    string `json:"commit,omitempty"`
 	Reason    string `json:"reason,omitempty"`
+	Excluded  bool   `json:"excluded,omitempty"`
 }
 
 // RecommendedPackages reads the installed list for application source selection.
@@ -85,7 +86,7 @@ func (s *Store) RecommendedPackages() ([]RecommendedPackage, error) {
 
 // InstallRecommendedPackages retains the direct native installation mechanism.
 func (s *Store) InstallRecommendedPackages(ctx context.Context) ([]RecommendedPackageResult, error) {
-	return s.installRecommendedPackages(ctx, nil)
+	return s.installRecommendedPackages(ctx, nil, nil)
 }
 
 // InstallRecommendedPackagesFrom applies a complete application-selected transport map.
@@ -93,10 +94,21 @@ func (s *Store) InstallRecommendedPackagesFrom(ctx context.Context, sources []Re
 	if sources == nil {
 		return nil, errors.New("recommended package sources are required")
 	}
-	return s.installRecommendedPackages(ctx, sources)
+	return s.installRecommendedPackages(ctx, sources, nil)
 }
 
-func (s *Store) installRecommendedPackages(ctx context.Context, sources []RecommendedSource) (results []RecommendedPackageResult, err error) {
+func (s *Store) InstallPreparedRecommendationsFrom(ctx context.Context, sources []RecommendedSource, build string) ([]RecommendedPackageResult, error) {
+	routes, err := s.preparedRoutes(build)
+	if err != nil {
+		return nil, err
+	}
+	if sources == nil {
+		return nil, errors.New("recommended package sources are required")
+	}
+	return s.installRecommendedPackages(ctx, sources, routes)
+}
+
+func (s *Store) installRecommendedPackages(ctx context.Context, sources []RecommendedSource, prepared map[string]preparedRoute) (results []RecommendedPackageResult, err error) {
 	items, err := s.RecommendedPackages()
 	if err != nil {
 		return nil, err
@@ -129,6 +141,13 @@ func (s *Store) installRecommendedPackages(ctx context.Context, sources []Recomm
 		for _, item := range items {
 			if _, exists := routes[item.ID]; !exists {
 				return nil, fmt.Errorf("missing recommended source for %s", item.ID)
+			}
+			if prepared != nil {
+				old, found := prepared[item.ID]
+				current := routes[item.ID]
+				if !found || old.Skip != (current.Skip != "") || (!old.Skip && old.Source != current.Source) {
+					return nil, fmt.Errorf("prepared source selection changed for %s", item.ID)
+				}
 			}
 		}
 	}
@@ -167,8 +186,9 @@ func (s *Store) installRecommendedPackages(ctx context.Context, sources []Recomm
 	candidates := []deployment.Candidate{}
 	for _, item := range items {
 		route, routed := routes[item.ID]
+		item.exact = prepared != nil
 		if route.Skip != "" {
-			results = append(results, RecommendedPackageResult{PackageID: item.ID, Status: "skipped", Reason: route.Skip})
+			results = append(results, RecommendedPackageResult{PackageID: item.ID, Status: "skipped", Reason: route.Skip, Excluded: true})
 			continue
 		}
 		var token string
@@ -195,7 +215,7 @@ func (s *Store) installRecommendedPackages(ctx context.Context, sources []Recomm
 					return results, readErr
 				}
 				stage.entry.Source = item.originalSource
-				if found && (s.nodeID == "" || existing.Source != route.Source) {
+				if found && (item.exact || s.nodeID == "" || existing.Source != route.Source) {
 					stage.entry.Source, stage.entry.Secret = existing.Source, existing.Secret
 				}
 				if s.nodeID != "" {
@@ -209,6 +229,7 @@ func (s *Store) installRecommendedPackages(ctx context.Context, sources []Recomm
 			row.Status, row.Reason = "failed", stageErr.Error()
 		case stage.skipped != "":
 			row.Status, row.Reason, row.Commit = "skipped", stage.skipped, stage.PreviousCommit
+			row.Excluded = stage.excluded
 		case stage.root != "":
 			row.Status = "not_applied"
 			stages = append(stages, stage)
@@ -327,10 +348,9 @@ func (s *Store) recommendationSkip(ctx context.Context, path, previous, commit, 
 			}
 		}
 	}
-	_, err := s.runGit(ctx, path, nil, "merge-base", "--is-ancestor", previous, commit)
-	var exit *exec.ExitError
-	if errors.As(err, &exit) && exit.ExitCode() == 1 {
-		return "local commits or a newer installed revision; update is not a fast-forward", nil
+	err := s.requireFastForward(ctx, path, previous, commit)
+	if errors.Is(err, errNotFastForward) {
+		return err.Error(), nil
 	}
 	return "", err
 }

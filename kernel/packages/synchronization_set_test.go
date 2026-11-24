@@ -24,10 +24,12 @@ func synchronizationRemotes(t *testing.T) (string, map[string]string) {
 		t.Fatal(err)
 	}
 	root, commits := t.TempDir(), map[string]string{}
-	for _, name := range []string{"alpha", "beta", "missingref", "invalid"} {
+	for _, name := range []string{"alpha", "beta", "missingref", "invalid", "aconsumer"} {
 		repo := writeActivationPackage(t, t.TempDir(), "acme/"+name, true)
 		writeFile(t, filepath.Join(repo, "package.toml"), "schema = 1\ndescription = 'Staged set fixture'\n")
 		switch name {
+		case "aconsumer":
+			writeFile(t, filepath.Join(repo, "events", "sample.toml"), "event = 'sample'\ndescription = 'Selected peer'\nprogram = 'acme/beta/post-activate'\n")
 		case "alpha":
 			writeFile(t, filepath.Join(repo, "mod.ts"), "import { beta } from '/p/acme/beta/mod.ts'; export function alpha() { return 'alpha'; } export function result() { return beta(); }\n")
 		case "beta":

@@ -13,8 +13,8 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   activation history, and hook phase checkpoints. Application service tables,
   declarations, defaults, and overrides belong exclusively to Deno services.
 - Package-index publication diagnostics are read-only annotations supplied by
-  native command composition from the application indexer's pending owner;
-  they are not persisted source state or source-readiness gates.
+  native command composition from the application indexer's pending owner; they
+  are not persisted source state or source-readiness gates.
 - Own package Git source/ref inspection, clean worktree staging/replacement,
   local repository initialization, package deletion, pull/push/checkout, and
   transient named-secret authentication.
@@ -235,8 +235,38 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 - Synchronization stages the existing Git repository, or clones on first
   install, validates the exact commit, and replaces source by rename. Preserve
   Git objects, branch names, and history when applying versions. Dirty shared
-  worktrees are preserved and rejected. One failed batch package has explicit
-  durable failure state.
+  worktrees are rejected except for explicit, non-preview DB-state sync. That
+  command saves displaced work (including detached HEAD or an unpublished
+  checkout branch) under the instance's private `checkout-recovery` directory
+  before switching any selected package. A second ref at the displaced commit
+  does not replace this backup of the original checkout. Inspect staged edits first, then check
+  working files with a fresh staging index so assume-unchanged and skip-worktree
+  flags cannot hide displaced contents. Each result's `recovery_copy` points to
+  a complete local checkout. As the instance owner, copy it with
+  `cp -a -- "$recovery_copy" "$new_private_path"` to a nonexistent scratch path,
+  inspect `git status` and `git log --all`, and recover files or commits there.
+  Do not reset a live source or replay hooks. Retire private backups only after
+  verifying recovery. In ordinary batches without that explicit intent,
+  following the upstream default branch only fast-forwards the installed HEAD
+  and the branch selected for checkout, even if HEAD was detached. A clean ahead
+  or diverged member rejects the whole selection during staging. A tag or commit
+  may roll back only if named refs retain every displaced tip in the staged
+  repository. A saved pin alone cannot discard unpublished work. Ordinary
+  multi-package synchronization holds the selected source locks and stages every
+  source before one Prepare for changed candidates. All changed roots switch
+  before post-hooks and publish together; local peers must already be
+  compatible. Node catch-up validates the published set, switches its checkouts,
+  commits its receipts together and reindexes once without shared schema or
+  hooks. Mixed sets use the activation coordinator, which skips effects for
+  already-published peers. No-ops create no activation. The inherited
+  source-lock bound is 256 selected IDs; never split into sequential
+  activations. A batch failure marks every selected result unsuccessful. System
+  activation retains partial switches and forward-required candidates under its
+  exact ID; ordinary retry never resumes failed hooks. Receipt-only catch-up has
+  no system activation ID. A failed rename restores switched checkouts before
+  rolling back receipts. If restoration fails or the receipt commit is
+  uncertain, retain staging and reconcile exact checkouts and ready receipts on
+  that node before retrying.
 - A requested commit ID, including an abbreviated ID, must match the resolved
   commit before schema preparation or source publication, including after an
   additional fetch. Tag selection still resolves through the selected tag.
@@ -260,6 +290,15 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
   Recommendations set the standard branch fetch refspec on the staged checkout
   and fetch tags from the selected source. Missing routes or credentials fail
   without upstream fallback; the store owns no system-role policy.
+- A prepared kernel update binds the target manifest and selector routes to
+  the active build. Before startup validation, selected nonlocal Git trees may
+  be rebuilt from their previously published node commits; Git configuration
+  and named refs survive. After startup, fetch the exact tag/default HEAD from
+  the revalidated route, without changing existing origins or fetch refspecs.
+  Reject redirected working trees and non-self-contained Git metadata before
+  repair or staged checkout. Materialize the full target tree independently of
+  client sparse-checkout rules. Source exclusions remain nonmutating. Publish the new candidates together;
+  this authority does not extend to ordinary recommendations or synchronization.
 - Fetch/validation failures before source switching publish no candidate roots
   or ready commits. Results distinguish `not_applied` candidates from unchanged
   or skipped packages when staging stops. Durable schema receipts and partial
@@ -331,6 +370,11 @@ Parent DOX: [kernel/kernel DOX](../AGENTS.md).
 
 # Verification
 
+- `TestOrdinarySynchronization*` covers complete-set schema and cyclic pre/post
+  imports in both caller orders, no-op hook cardinality, missing/invalid peer
+  refusal before publication, and failed post-hook publication without ordinary
+  retry replay. The installed baseline fixture's `--batch-only` and
+  `--batch-samples` modes exercise the public development command separately.
 - Staged-set regressions cover both cyclic-import orders, exact recorded input,
   failed staging/validation, missing-handler provenance, source protection,
   unsupported schema/input and recovery without replaying successful phases. The

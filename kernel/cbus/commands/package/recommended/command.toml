@@ -8,6 +8,12 @@ restart_behavior = "none"
 [handler]
 file = "kernel/cbus/commands/package/recommended/recommended.go"
 symbol = "New"
+[[parameters]]
+name = "prepared_update"
+type = "boolean"
+option = "prepared-update"
+required = false
+description = "Use the installed update's build-bound source selection. Without a matching preparation no replacement authority is granted."
 [[result]]
 name = "packages"
 type = "array"

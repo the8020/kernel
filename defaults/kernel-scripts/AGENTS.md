@@ -71,13 +71,11 @@ Parent DOX: [kernel defaults](../AGENTS.md).
   15 seconds; leave verification pending if real sandbox execution fails.
   Application initialization failures remain visible separately. After-start
   migrations precede `kernel.packages.recommended`; completion requires that
-  command to succeed. A failure leaves the installed phase pending for explicit
-  same-version retry. Completed migrations are not repeated; recommendations
-  stage compatible candidates as one set and are idempotent and preserve local
-  edits/commits, custom sources, and newer versions, reporting those skips.
-  Existing activation validation can reject unpublished shared edits while
-  changing another package; retain the pending update until those edits are
-  published or moved out of the shared checkout.
+  command to return applied/unchanged results or explicit policy exclusions. A
+  selected skip leaves the installed phase pending. Current preflight binds
+  non-secret source routes to the candidate commit and manifest digest. Only
+  this prepared operation may replace edited selected Git trees; recheck routes
+  after startup. Older receipts without routes grant no replacement authority.
 - Published `0.9.14` updater and launcher scripts already use the target
   kernel's native recommendation command; the staged-set fix needs no updater
   adapter or migration. An installed pending `0.10.1` update must finish before
