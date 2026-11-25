@@ -1,5 +1,15 @@
 # 80|20 kernel
 
+## 0.10.19: deployment peer authorization
+
+Fresh installations and recommended updates select Deployments 0.10.9.
+Before activating that package on an existing system, grant
+`the8020.deployments.peer.access` to approved existing incoming peer accounts
+that need uninterrupted service. Do not grant it to ordinary users. After
+activation, administrators can assign the managed `the8020.deployments.peer`
+role to approved peer accounts, including on fresh installations. Existing
+accounts receive no automatic grant.
+
 ## 0.10.18: selected package synchronization
 
 Ordinary development sync prepares compatible packages together. Explicit
